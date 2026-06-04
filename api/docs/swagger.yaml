@@ -1,0 +1,683 @@
+basePath: /
+definitions:
+  api.CreateEnvironmentRequest:
+    properties:
+      manifest_inline:
+        type: string
+      secrets:
+        additionalProperties:
+          type: string
+        type: object
+      spec:
+        $ref: '#/definitions/api.ResourceSpec'
+      task_id:
+        type: string
+    type: object
+  api.CreateSnapshotRequest:
+    properties:
+      comment:
+        type: string
+      export_ref:
+        type: string
+      export_status:
+        type: string
+      metadata:
+        additionalProperties:
+          type: string
+        type: object
+      mode:
+        type: string
+      retention_seconds:
+        type: integer
+    type: object
+  api.Environment:
+    properties:
+      created_at:
+        type: string
+      error:
+        type: string
+      gateway:
+        $ref: '#/definitions/api.GatewayBackend'
+      host_id:
+        type: string
+      id:
+        type: string
+      spec:
+        $ref: '#/definitions/api.ResourceSpec'
+      state:
+        type: string
+      task_id:
+        type: string
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  api.EnvironmentList:
+    properties:
+      environments:
+        items:
+          $ref: '#/definitions/api.Environment'
+        type: array
+    type: object
+  api.Error:
+    properties:
+      error:
+        $ref: '#/definitions/api.ErrorBody'
+    type: object
+  api.ErrorBody:
+    properties:
+      code:
+        type: string
+      details:
+        additionalProperties:
+          type: string
+        type: object
+      message:
+        type: string
+    type: object
+  api.GatewayBackend:
+    properties:
+      desired_state:
+        type: string
+      id:
+        type: string
+      last_error:
+        type: string
+      operation_active:
+        type: boolean
+      retry_count:
+        type: integer
+      state:
+        type: string
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  api.HostCapacity:
+    properties:
+      cpus:
+        type: integer
+      ram_mb:
+        type: integer
+      storage_gb:
+        type: integer
+      vm_count:
+        type: integer
+    type: object
+  api.HostInfo:
+    properties:
+      allocated:
+        $ref: '#/definitions/api.HostCapacity'
+      capacity:
+        $ref: '#/definitions/api.HostCapacity'
+      created_at:
+        type: string
+      id:
+        type: string
+      last_seen:
+        type: string
+      region:
+        type: string
+      state:
+        type: string
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  api.HostList:
+    properties:
+      hosts:
+        items:
+          $ref: '#/definitions/api.HostInfo'
+        type: array
+    type: object
+  api.RegisterHostRequest:
+    properties:
+      capacity:
+        $ref: '#/definitions/api.HostCapacity'
+      id:
+        type: string
+      region:
+        type: string
+      token:
+        type: string
+      url:
+        type: string
+    type: object
+  api.ResourceSpec:
+    properties:
+      cpus:
+        type: integer
+      max_runtime_seconds:
+        type: integer
+      ram_mb:
+        type: integer
+      region:
+        type: string
+      storage_gb:
+        type: integer
+    type: object
+  api.Snapshot:
+    properties:
+      comment:
+        type: string
+      created_at:
+        type: string
+      export_ref:
+        type: string
+      exports:
+        items:
+          $ref: '#/definitions/api.SnapshotExport'
+        type: array
+      id:
+        type: string
+      last_error:
+        type: string
+      mode:
+        type: string
+      parent_snapshot_id:
+        type: string
+      retention_until:
+        type: string
+      size_bytes:
+        type: integer
+      state:
+        type: string
+      task_id:
+        type: string
+      tenant_id:
+        type: string
+      updated_at:
+        type: string
+      vm_id:
+        type: string
+    type: object
+  api.SnapshotExport:
+    properties:
+      destination:
+        type: string
+      last_error:
+        type: string
+      requested_at:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  api.SnapshotList:
+    properties:
+      snapshots:
+        items:
+          $ref: '#/definitions/api.Snapshot'
+        type: array
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: Control plane for Surf orchestrator. Provisions, inspects, and destroys
+    VMs; manages snapshots.
+  title: Surf Orchestrator API
+  version: 0.1.0
+paths:
+  /v1/environments:
+    get:
+      parameters:
+      - description: Filter by task ID
+        in: query
+        name: task_id
+        type: string
+      - description: Filter by state
+        enum:
+        - provisioning
+        - running
+        - destroying
+        in: query
+        name: state
+        type: string
+      - description: Filter by host ID
+        in: query
+        name: host_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.EnvironmentList'
+      security:
+      - BearerAuth: []
+      summary: List environments
+      tags:
+      - environments
+    post:
+      consumes:
+      - application/json
+      description: Creates a VM, uploads the manifest, starts surfd, and assigns the
+        task.
+      parameters:
+      - description: Environment spec
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.CreateEnvironmentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.Environment'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Create environment
+      tags:
+      - environments
+  /v1/environments/{vmId}:
+    delete:
+      description: Forcefully destroys the VM and marks its task failed.
+      parameters:
+      - description: VM identifier
+        in: path
+        name: vmId
+        required: true
+        type: string
+      responses:
+        "204":
+          description: VM destroyed
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Destroy environment
+      tags:
+      - environments
+    get:
+      parameters:
+      - description: VM identifier
+        in: path
+        name: vmId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Environment'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Get environment
+      tags:
+      - environments
+    post:
+      description: 'Perform an action on an environment. Currently supports: rotate-token.'
+      parameters:
+      - description: VM identifier
+        in: path
+        name: vmId
+        required: true
+        type: string
+      - description: Action to perform
+        enum:
+        - rotate-token
+        in: query
+        name: action
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Action succeeded
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Environment action
+      tags:
+      - environments
+  /v1/environments/{vmId}/snapshots:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: VM identifier
+        in: path
+        name: vmId
+        required: true
+        type: string
+      - description: Snapshot options
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.CreateSnapshotRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.Snapshot'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Create snapshot
+      tags:
+      - snapshots
+  /v1/hosts:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HostList'
+      security:
+      - BearerAuth: []
+      summary: List hosts
+      tags:
+      - hosts
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Host registration
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.RegisterHostRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.HostInfo'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Register host
+      tags:
+      - hosts
+  /v1/hosts/{hostId}:
+    delete:
+      parameters:
+      - description: Host identifier
+        in: path
+        name: hostId
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Host removed
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Remove host
+      tags:
+      - hosts
+    get:
+      parameters:
+      - description: Host identifier
+        in: path
+        name: hostId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HostInfo'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Get host
+      tags:
+      - hosts
+    post:
+      description: 'Perform an action on a host. Supports: cordon (mark unschedulable),
+        uncordon (return to scheduling).'
+      parameters:
+      - description: Host identifier
+        in: path
+        name: hostId
+        required: true
+        type: string
+      - description: Action to perform
+        enum:
+        - cordon
+        - uncordon
+        in: query
+        name: action
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Action succeeded
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Host action
+      tags:
+      - hosts
+  /v1/snapshots:
+    get:
+      parameters:
+      - description: Filter by VM ID
+        in: query
+        name: vm_id
+        type: string
+      - description: Filter by task ID
+        in: query
+        name: task_id
+        type: string
+      - description: Filter by tenant ID
+        in: query
+        name: tenant_id
+        type: string
+      - description: Filter by state
+        enum:
+        - creating
+        - ready
+        - restoring
+        - deleting
+        - error
+        in: query
+        name: state
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SnapshotList'
+      security:
+      - BearerAuth: []
+      summary: List snapshots
+      tags:
+      - snapshots
+  /v1/snapshots/{snapshotId}:
+    delete:
+      parameters:
+      - description: Snapshot identifier
+        in: path
+        name: snapshotId
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Snapshot deleted
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Delete snapshot
+      tags:
+      - snapshots
+    get:
+      parameters:
+      - description: Snapshot identifier
+        in: path
+        name: snapshotId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.Snapshot'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Get snapshot
+      tags:
+      - snapshots
+    post:
+      description: 'Perform an action on a snapshot. Currently supports: restore.'
+      parameters:
+      - description: Snapshot identifier
+        in: path
+        name: snapshotId
+        required: true
+        type: string
+      - description: Action to perform
+        enum:
+        - restore
+        in: query
+        name: action
+        required: true
+        type: string
+      responses:
+        "204":
+          description: Action succeeded
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Snapshot action
+      tags:
+      - snapshots
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

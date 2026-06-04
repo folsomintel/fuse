@@ -1,0 +1,13 @@
+# Secrets / local env — never commit
+.env
+.env.*
+!.env.example
+
+# Build output
+/bin/
+*.test
+coverage/
+*.out
+
+# OS / editor
+.DS_Store

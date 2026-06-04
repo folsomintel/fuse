@@ -1,0 +1,873 @@
+openapi: 3.0.3
+
+info:
+  title: Surf Orchestrator API
+  version: 0.1.0
+  description: |
+    Control plane for Surf orchestrator. Provisions, inspects, and destroys
+    VMs; manages snapshots. This API is consumed by the harness and by
+    operations tooling. It is the stable HTTP surface for everything that
+    is not surfd (surfd itself exposes gRPC from inside the sandbox).
+
+    Path prefix: `/v1`. Backward-incompatible changes bump the prefix.
+
+    All non-2xx responses use the Error envelope defined below.
+
+    Every response carries an `X-Request-ID` header — either the value
+    the client supplied on the request (when it matches `[A-Za-z0-9_-]{1,128}`)
+    or a freshly generated `req_<32hex>` identifier. The same value is
+    threaded through audit events and server logs for correlation.
+    Probe endpoints (`/health`, `/ready`, `/metrics`) are mounted
+    outside this middleware and do not carry a request ID.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: environments
+    description: VM provisioning and inspection
+  - name: snapshots
+    description: Checkpoint / restore lifecycle
+  - name: hosts
+    description: Host registry and scheduling controls
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      operationId: liveness
+      summary: Liveness probe.
+      description: |
+        Always returns 200 with `{"status":"ok"}`. Mounted outside the
+        auth + CIDR middleware chain so it works for k8s / load-balancer
+        probes that do not (and shouldn't) carry Bearer tokens. Intended
+        for kubelet livenessProbe — failing this triggers a pod restart.
+      security: []
+      responses:
+        '200':
+          description: Process is alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+
+  /ready:
+    get:
+      tags: [health]
+      operationId: readiness
+      summary: Readiness probe.
+      description: |
+        Returns 200 when the orchestrator can serve traffic, 503 otherwise.
+        Checks the state store with a bounded ListVMs call (default 2s
+        timeout) and verifies the FleetManager is initialized. The 503
+        body includes a per-check breakdown so operators can see which
+        dependency is unhealthy. Mounted outside auth — k8s readinessProbe
+        does not carry credentials.
+      security: []
+      responses:
+        '200':
+          description: All checks pass.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status:
+                    type: string
+                    enum: [ready]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      state_store: ok
+                      fleet: ok
+        '503':
+          description: One or more dependencies are unhealthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, checks]
+                properties:
+                  status:
+                    type: string
+                    enum: [not_ready]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    example:
+                      state_store: 'connection refused'
+                      fleet: ok
+
+  /v1/environments:
+    get:
+      tags: [environments]
+      operationId: listEnvironments
+      summary: List tracked environments with optional exact-match filters.
+      parameters:
+        - name: task_id
+          in: query
+          schema:
+            type: string
+          description: Return only the environment assigned to this task ID.
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [provisioning, running, draining, destroying]
+          description: Return only environments in this lifecycle state.
+        - name: host_id
+          in: query
+          schema:
+            type: string
+          description: Return only environments assigned to this host.
+      responses:
+        '200':
+          description: Environment list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentList'
+    post:
+      tags: [environments]
+      operationId: createEnvironment
+      summary: Provision a new environment for a task.
+      description: |
+        Creates a VM, uploads the manifest, starts surfd, and assigns the
+        task. Blocks until the VM is running or creation fails. The
+        manifest and secrets are passed inline as byte strings; a future
+        revision may add manifest-ref indirection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEnvironmentRequest'
+      responses:
+        '201':
+          description: Environment created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Environment'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/environments/{vmId}:
+    parameters:
+      - $ref: '#/components/parameters/VMID'
+    get:
+      tags: [environments]
+      operationId: getEnvironment
+      summary: Fetch a VM by ID.
+      responses:
+        '200':
+          description: Environment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Environment'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [environments]
+      operationId: environmentAction
+      summary: Perform an action on an environment.
+      description: |
+        Supported actions:
+
+        - `rotate-token` — generate fresh per-VM TLS credentials and
+          push them to the guest. Returns 204.
+        - `drain` — first phase of two-phase teardown. Calls surfd's
+          gRPC Down RPC inside the guest so the service DAG stops
+          gracefully and the harness can flush outputs. The VM
+          transitions to the `draining` state but is **not** destroyed;
+          a subsequent DELETE tears it down. Only Running VMs can be
+          drained — any other state returns 409 Conflict. If surfd's
+          Down RPC fails the VM remains in `draining` so the caller
+          can still proceed with DELETE; the error is returned as 5xx.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [rotate-token, drain]
+          description: The action to perform.
+      responses:
+        '200':
+          description: |
+            Drain succeeded. Body is the updated Environment with
+            `state == "draining"`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Environment'
+        '204':
+          description: Action succeeded (rotate-token).
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [environments]
+      operationId: destroyEnvironment
+      summary: Tear down a VM.
+      description: |
+        Forcefully destroys the VM and marks its task failed. Idempotent
+        in the sense that a second call on an already-gone VM returns
+        404, not an error.
+      responses:
+        '204':
+          description: VM destroyed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/environments/{vmId}/events:
+    parameters:
+      - $ref: '#/components/parameters/VMID'
+      - name: last_event_id
+        in: query
+        required: false
+        schema:
+          type: string
+        description: |
+          Optional resume cursor. If supplied, the server will replay
+          events newer than this id before tailing live. v1 ignores
+          this parameter — it is documented for forward compatibility
+          and to match the SSE `Last-Event-ID` request header pattern.
+    get:
+      tags: [environments]
+      operationId: streamEnvironmentEvents
+      summary: Stream state-change events for a VM as Server-Sent Events.
+      description: |
+        Replaces polling `GET /v1/environments/{vmId}` for state
+        transitions. The control-server should use this stream during
+        provisioning instead of a 2s polling loop.
+
+        **Event semantics**
+
+        - The first event is always a snapshot of the current state,
+          emitted immediately on connect. Clients do not need to GET
+          first.
+        - Subsequent events fire on every state transition
+          (`provisioning` → `running` → `draining` → `destroying` →
+          `destroyed` / `failed`).
+        - The stream closes cleanly after a terminal event
+          (`destroyed` or `failed`).
+        - The stream closes cleanly on client disconnect.
+        - A keepalive comment line (`: keepalive\n\n`) is emitted
+          every 15s so proxies don't idle-out the connection.
+
+        **Wire format** — standard SSE. Each event is two lines plus
+        a blank-line terminator:
+
+        ```
+        id: <128-bit hex>
+        data: {"event":"state","vm_id":"...","state":"running","url":"...","updated_at":"..."}
+
+        ```
+
+        **Replication caveat** — this is a single-process pub/sub.
+        Subscribers connected to a different orchestrator replica
+        than the publishing replica will not see events. The
+        orchestrator runs as a single process today, so this is
+        acceptable; cross-replica fanout would require a Redis or
+        NATS backplane.
+      responses:
+        '200':
+          description: SSE stream of EnvironmentEvent objects.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/EnvironmentEvent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/environments/{vmId}/snapshots:
+    parameters:
+      - $ref: '#/components/parameters/VMID'
+    post:
+      tags: [snapshots]
+      operationId: createSnapshot
+      summary: Snapshot a running VM.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSnapshotRequest'
+      responses:
+        '201':
+          description: Snapshot created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/snapshots:
+    get:
+      tags: [snapshots]
+      operationId: listSnapshots
+      summary: List snapshots with optional exact-match filters.
+      parameters:
+        - name: vm_id
+          in: query
+          schema:
+            type: string
+          description: Return only snapshots for this VM ID.
+        - name: task_id
+          in: query
+          schema:
+            type: string
+          description: Return only snapshots tied to this task ID.
+        - name: tenant_id
+          in: query
+          schema:
+            type: string
+          description: Return only snapshots for this tenant ID.
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [creating, ready, restoring, deleting, error]
+          description: Return only snapshots in this lifecycle state.
+      responses:
+        '200':
+          description: Snapshot list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotList'
+
+  /v1/snapshots/{snapshotId}:
+    parameters:
+      - $ref: '#/components/parameters/SnapshotID'
+    get:
+      tags: [snapshots]
+      operationId: getSnapshot
+      summary: Get one snapshot resource by ID.
+      responses:
+        '200':
+          description: Snapshot metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Snapshot'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [snapshots]
+      operationId: snapshotAction
+      summary: Perform an action on a snapshot.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [restore]
+          description: The action to perform. Currently only "restore" is supported.
+      responses:
+        '204':
+          description: Action succeeded.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [snapshots]
+      operationId: deleteSnapshot
+      summary: Delete a leaf snapshot.
+      responses:
+        '204':
+          description: Snapshot deleted.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/hosts:
+    get:
+      tags: [hosts]
+      operationId: listHosts
+      summary: List registered hosts.
+      responses:
+        '200':
+          description: Host list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostList'
+    post:
+      tags: [hosts]
+      operationId: registerHost
+      summary: Register or update a host in the scheduler.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterHostRequest'
+      responses:
+        '201':
+          description: Host registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostInfo'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /v1/hosts/{hostId}:
+    parameters:
+      - $ref: '#/components/parameters/HostID'
+    get:
+      tags: [hosts]
+      operationId: getHost
+      summary: Fetch a host by ID.
+      responses:
+        '200':
+          description: Host.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostInfo'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [hosts]
+      operationId: hostAction
+      summary: Perform an action on a host.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [cordon, uncordon]
+          description: |
+            The action to perform on the host.
+            - cordon: Mark the host unschedulable for new environments.
+            - uncordon: Return the host to active scheduling.
+      responses:
+        '204':
+          description: Action succeeded.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      tags: [hosts]
+      operationId: removeHost
+      summary: Remove a host from the scheduler.
+      responses:
+        '204':
+          description: Host removed.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  parameters:
+    VMID:
+      name: vmId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: VM identifier assigned by the orchestrator.
+    SnapshotID:
+      name: snapshotId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Snapshot identifier returned by createSnapshot.
+    HostID:
+      name: hostId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Host identifier assigned by the caller.
+
+  responses:
+    BadRequest:
+      description: Malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflicts with current state (e.g. duplicate task assignment).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: The orchestrator is rejecting work (e.g. shutting down).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code.
+              enum:
+                - not_found
+                - conflict
+                - invalid_argument
+                - unavailable
+                - internal
+            message:
+              type: string
+              description: Human-readable description.
+            details:
+              type: object
+              additionalProperties: true
+
+    ResourceSpec:
+      type: object
+      description: Hardware requirements for a VM.
+      properties:
+        cpus:
+          type: integer
+          format: int32
+          minimum: 1
+        ram_mb:
+          type: integer
+          format: int32
+          minimum: 1
+        storage_gb:
+          type: integer
+          format: int32
+          minimum: 0
+        region:
+          type: string
+        max_runtime_seconds:
+          type: integer
+          format: int64
+          description: |
+            Leak-detection ceiling for this task. Zero means "use the
+            fleet default". The orchestrator tears down tasks that
+            exceed this age with no state transitions.
+
+    CreateEnvironmentRequest:
+      type: object
+      required: [task_id, spec]
+      properties:
+        task_id:
+          type: string
+          description: Caller-assigned task identifier. Must be unique.
+        spec:
+          $ref: '#/components/schemas/ResourceSpec'
+        manifest_inline:
+          type: string
+          description: |
+            Optional raw manifest JSON, base64-encoded. When omitted,
+            the orchestrator uses a minimal internal manifest.
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+          description: Resolved key/value secrets passed to surfd.
+
+    Environment:
+      type: object
+      required: [id, state, task_id, url, spec, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: Fleet-assigned VM identifier (prefix + task_id).
+        state:
+          type: string
+          enum: [provisioning, running, draining, destroying]
+        task_id:
+          type: string
+          description: Empty when the VM is being torn down.
+        host_id:
+          type: string
+          description: Scheduler-assigned host ID when placement uses the host registry.
+        url:
+          type: string
+          description: Reachable URL for surfd's gRPC surface.
+        spec:
+          $ref: '#/components/schemas/ResourceSpec'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        error:
+          type: string
+          description: Last failure message, empty on the happy path.
+
+    EnvironmentList:
+      type: object
+      required: [environments]
+      properties:
+        environments:
+          type: array
+          items:
+            $ref: '#/components/schemas/Environment'
+
+    EnvironmentEvent:
+      type: object
+      description: |
+        One state-change notification on the SSE stream returned by
+        GET /v1/environments/{vmId}/events. The `event` field is the
+        kind discriminator; for v1 only `state` events are emitted.
+
+        Terminal states (`destroyed`, `failed`) close the stream
+        after the event is delivered. The two synthesised states are
+        not stored on the VM record — they exist only on the wire as
+        a signal that the in-memory record has been removed.
+      required: [id, event, vm_id, state, updated_at]
+      properties:
+        id:
+          type: string
+          description: Opaque 128-bit hex event identifier. Round-trip via Last-Event-ID for resume.
+        event:
+          type: string
+          enum: [state]
+          description: Event kind. Currently only "state" is emitted.
+        vm_id:
+          type: string
+        state:
+          type: string
+          enum: [provisioning, running, draining, destroying, destroyed, failed]
+          description: |
+            VM lifecycle state. `destroyed` and `failed` are terminal
+            and signal the end of the stream.
+        url:
+          type: string
+          description: Reachable URL for surfd's gRPC surface; empty before Running and after Destroyed.
+        error:
+          type: string
+          description: Last error message attached to the VM, empty on the happy path.
+        updated_at:
+          type: string
+          format: date-time
+
+    CreateSnapshotRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+          description: Free-form note attached to the snapshot.
+        mode:
+          type: string
+          enum: [manual, auto]
+        retention_seconds:
+          type: integer
+          format: int64
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+        export_ref:
+          type: string
+        export_status:
+          type: string
+          enum: [pending, ready, error]
+
+    SnapshotExport:
+      type: object
+      required: [destination]
+      properties:
+        destination:
+          type: string
+        status:
+          type: string
+          enum: [pending, ready, error]
+        requested_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+
+    Snapshot:
+      type: object
+      required: [id, vm_id, created_at]
+      properties:
+        id:
+          type: string
+        vm_id:
+          type: string
+        task_id:
+          type: string
+        tenant_id:
+          type: string
+        parent_snapshot_id:
+          type: string
+        mode:
+          type: string
+          enum: [manual, auto]
+        state:
+          type: string
+          enum: [creating, ready, restoring, deleting, error]
+        comment:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        retention_until:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+        export_ref:
+          type: string
+        exports:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotExport'
+
+    SnapshotList:
+      type: object
+      required: [snapshots]
+      properties:
+        snapshots:
+          type: array
+          items:
+            $ref: '#/components/schemas/Snapshot'
+
+    HostCapacity:
+      type: object
+      required: [cpus, ram_mb, storage_gb, vm_count]
+      properties:
+        cpus:
+          type: integer
+        ram_mb:
+          type: integer
+        storage_gb:
+          type: integer
+        vm_count:
+          type: integer
+
+    RegisterHostRequest:
+      type: object
+      required: [id, url, capacity]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        token:
+          type: string
+        region:
+          type: string
+        capacity:
+          $ref: '#/components/schemas/HostCapacity'
+
+    HostInfo:
+      type: object
+      required: [id, url, state, capacity, allocated, last_seen, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        region:
+          type: string
+        state:
+          type: string
+          enum: [active, cordoned, draining]
+        capacity:
+          $ref: '#/components/schemas/HostCapacity'
+        allocated:
+          $ref: '#/components/schemas/HostCapacity'
+        last_seen:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    HostList:
+      type: object
+      required: [hosts]
+      properties:
+        hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HostInfo'

@@ -1,0 +1,1383 @@
+package orchestrator
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"sync"
+	"time"
+
+	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+)
+
+// Sentinel errors exposed by the FleetManager public API. Callers
+// (notably the REST handler layer) use errors.Is to map these to HTTP
+// status codes without string-matching. These are kept intentionally
+// coarse — they cover the cases that differ at the API boundary, not
+// every internal failure mode.
+var (
+	// ErrTaskAlreadyAssigned is returned by ProvisionAndAssign when a
+	// VM is already tracked for the given task id. The existing VM's
+	// id is included in the wrapping fmt.Errorf context.
+	ErrTaskAlreadyAssigned = errors.New("task already assigned")
+
+	// ErrVMNotFound is returned by DestroyVM, CreateSnapshot,
+	// RestoreSnapshot, and ListSnapshots when the vm id does not
+	// match a tracked VM.
+	ErrVMNotFound = errors.New("vm not found")
+
+	// ErrTaskNotFound is returned by CompleteTask when the task id
+	// does not match any VM.
+	ErrTaskNotFound = errors.New("task not found")
+
+	// ErrSnapshotNotFound is returned when a snapshot ID does not
+	// correspond to a persisted snapshot record for the requested VM.
+	ErrSnapshotNotFound = errors.New("snapshot not found")
+
+	// ErrSnapshotQuotaExceeded is returned when creating a snapshot
+	// would exceed the configured retention quota.
+	ErrSnapshotQuotaExceeded = errors.New("snapshot quota exceeded")
+
+	// ErrSnapshotInvalidState is returned when an operation targets a
+	// snapshot that is not currently in the required lifecycle state.
+	ErrSnapshotInvalidState = errors.New("snapshot invalid state")
+
+	// ErrSnapshotHasChildren is returned when deleting a snapshot that
+	// still has descendant snapshots in the lineage graph.
+	ErrSnapshotHasChildren = errors.New("snapshot has children")
+
+	// ErrVMNotRunning is returned by operations that require a VM to be
+	// in the Running state (e.g. Drain). The current state is included
+	// in the wrapping fmt.Errorf context so callers and operators can
+	// see why the transition was rejected.
+	ErrVMNotRunning = errors.New("vm not running")
+)
+
+// VMState represents the lifecycle state of a managed VM.
+//
+// Stored states (recorded on a vm and persisted to the state store):
+//   - VMStateProvisioning, VMStateRunning, VMStateDraining, VMStateDestroying.
+//
+// Synthetic terminal states (emitted only over the wire as SSE events
+// — never stored on a vm record because the underlying record is gone
+// by the time we publish them): VMStateDestroyed, VMStateFailed. Defined
+// alongside the wire format in events.go.
+type VMState string
+
+const (
+	VMStateProvisioning VMState = "provisioning"
+	VMStateRunning      VMState = "running"
+	// VMStateDraining indicates the VM has been asked to gracefully quiesce
+	// in-guest workloads (surfd Down) but the VM itself has not yet
+	// been destroyed. This is the "drain" phase of two-phase teardown:
+	// the harness gets a clean shutdown signal and a chance to flush
+	// outputs before the subsequent DELETE actually tears down the VM.
+	// A Draining VM is still tracked, still consumes host capacity,
+	// and may still be inspected via the API. DELETE is the only
+	// supported state transition out of Draining (no "undrain").
+	VMStateDraining   VMState = "draining"
+	VMStateDestroying VMState = "destroying"
+)
+
+// vm is the internal representation of a tracked VM.
+type vm struct {
+	id                 string
+	state              VMState
+	taskID             string
+	hostID             string // scheduler-assigned host, empty in single-provider mode
+	env                Environment
+	url                string // last-known reachable URL (cached for recovery before env is rehydrated)
+	spec               Spec
+	authTokenEncrypted []byte // AES-GCM encrypted per-VM auth token
+	secretsEncrypted   []byte // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
+	drainCommand       string // graceful-shutdown command run in the guest on Drain ('' => skip)
+	createdAt          time.Time
+	updatedAt          time.Time
+	err                string
+}
+
+func (v *vm) toInfo() VMInfo {
+	info := VMInfo{
+		ID:        v.id,
+		State:     v.state,
+		TaskID:    v.taskID,
+		HostID:    v.hostID,
+		URL:       v.url,
+		Spec:      v.spec,
+		CreatedAt: v.createdAt,
+		UpdatedAt: v.updatedAt,
+		Error:     v.err,
+	}
+	if v.env != nil {
+		info.URL = v.env.URL()
+	}
+	return info
+}
+
+// VMInfo is a read-only snapshot of a managed VM.
+type VMInfo struct {
+	ID        string
+	State     VMState
+	TaskID    string
+	HostID    string
+	URL       string
+	Spec      Spec
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	Error     string
+}
+
+// ReconcileMetrics is an optional callback invoked at the end of every
+// reconcile cycle with a counter summary. Implementations typically feed a
+// Prometheus/OTel exporter — the orchestrator package intentionally does not
+// depend on either. A nil ReconcileMetrics disables metrics reporting.
+type ReconcileMetrics interface {
+	ReconcileCompleted(summary ReconcileSummary)
+}
+
+// ReconcileSummary captures counts from a single reconcile cycle.
+type ReconcileSummary struct {
+	TrackedVMs          int
+	ProviderVMs         int
+	OrphansDestroyed    int
+	OrphansFailed       int
+	OrphansDeadLettered int
+	StuckTasksSuspected int
+	StuckTasksFailed    int
+	VMsMissingProvider  int
+	Duration            time.Duration
+}
+
+// FleetConfig configures the fleet manager.
+type FleetConfig struct {
+	Provider          Provider
+	StateStore        StateStore
+	Prefix            string        // VM name prefix, e.g. "surf-"
+	ReconcileInterval time.Duration // default 30s
+
+	// TaskStuckTimeout is the maximum age of a Running VM with no state
+	// transitions before it is considered stuck. This is a leak-detection
+	// ceiling, NOT a heartbeat — healthy long-running tasks must set
+	// Spec.MaxRuntime to override this. Default 2h.
+	TaskStuckTimeout time.Duration
+
+	// OrphanDestroyMaxRetries is the number of consecutive reconcile cycles
+	// an orphan VM may fail to destroy before being dead-lettered and
+	// skipped on subsequent cycles. Default 5.
+	OrphanDestroyMaxRetries int
+
+	// DefaultSnapshotRetention applies to snapshots created without an
+	// explicit retention window. Zero leaves snapshots unbounded until
+	// explicitly deleted.
+	DefaultSnapshotRetention time.Duration
+
+	// SnapshotQuotaMaxCount limits ready/in-flight snapshots per tenant.
+	// Zero disables count-based enforcement.
+	SnapshotQuotaMaxCount int
+
+	// SnapshotQuotaMaxBytes limits the aggregate size of ready/in-flight
+	// snapshots per tenant. Zero disables byte-based enforcement.
+	SnapshotQuotaMaxBytes int64
+
+	// PlacementPolicy controls how the scheduler picks among hosts
+	// when multiple are registered. Default is spread.
+	PlacementPolicy PlacementPolicy
+
+	// TokenEncryptionKey is the 32-byte AES-256 key used to encrypt
+	// per-VM auth tokens before storing them in the state store.
+	// When nil, VM credential generation is skipped (insecure mode).
+	TokenEncryptionKey []byte
+
+	// HostProviderFactory builds a Provider for a given (url, token)
+	// pair. The fleet uses it during recoverState to rehydrate the
+	// per-host providers that RegisterHost would have created during
+	// normal operation. Without it, an orchestrator restart loses the
+	// scheduler's host registry and falls back to single-provider mode
+	// for all subsequent placements.
+	HostProviderFactory func(url, token string) Provider
+
+	Metrics ReconcileMetrics
+	Logger  *slog.Logger
+}
+
+// FleetManager tracks and manages a fleet of VMs.
+type FleetManager struct {
+	mu       sync.RWMutex
+	provider Provider
+	store    StateStore
+	vms      map[string]*vm // keyed by VM ID
+	prefix   string
+	logger   *slog.Logger
+	metrics  ReconcileMetrics
+
+	reconcileInterval time.Duration
+
+	taskStuckTimeout         time.Duration
+	orphanDestroyMaxRetries  int
+	defaultSnapshotRetention time.Duration
+	snapshotQuotaMaxCount    int
+	snapshotQuotaMaxBytes    int64
+
+	// orphanRetries tracks consecutive destroy failures per orphan VM
+	// name. Cleared when the orphan disappears from the provider.
+	orphanRetries map[string]int
+
+	// stuckStrikes tracks how many consecutive reconcile cycles a VM has
+	// been observed exceeding its runtime ceiling. A VM must accumulate
+	// two strikes before it is failed, which guards against single-cycle
+	// clock skew or transient scheduling pauses.
+	stuckStrikes map[string]int
+
+	// ── Scheduler / multi-host fields ────────────────────────────
+	//
+	// These are populated by RegisterHost and drive the Schedule()
+	// placement function. When len(hosts)==0, ProvisionAndAssign
+	// falls through to the single fm.provider path for backward compat.
+
+	// hosts is the in-memory host registry, keyed by host ID.
+	hosts map[string]*Host
+
+	// hostProviders caches a Provider per registered host. The caller
+	// (typically RegisterHost) supplies the concrete Provider for
+	// each host; the FleetManager only holds the interface to avoid
+	// an import cycle with provider packages.
+	hostProviders map[string]Provider
+
+	// tokenEncryptionKey is the 32-byte AES key for per-VM auth tokens.
+	tokenEncryptionKey []byte
+
+	// hostProviderFactory rebuilds Provider instances for hosts loaded
+	// from the state store at startup. Nil disables host registry
+	// recovery; in that case, recovered VMs fall through to the
+	// single fm.provider path until an operator re-registers the host.
+	hostProviderFactory func(url, token string) Provider
+
+	// placementPolicy is the default scheduling strategy (binpack or
+	// spread). Defaults to spread when empty.
+	placementPolicy PlacementPolicy
+
+	// broadcaster fans out per-VM state-change events to SSE
+	// subscribers. Always non-nil — initialised in NewFleetManager.
+	// See events.go for the contract (single-process pub/sub, no
+	// cross-replica fanout, bounded per-subscriber buffer).
+	broadcaster *eventBroadcaster
+
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+// NewFleetManager creates a fleet manager. Call Start to begin the reconciliation loop.
+func NewFleetManager(cfg FleetConfig) *FleetManager {
+	if cfg.ReconcileInterval == 0 {
+		cfg.ReconcileInterval = 30 * time.Second
+	}
+	if cfg.TaskStuckTimeout == 0 {
+		cfg.TaskStuckTimeout = 2 * time.Hour
+	}
+	if cfg.OrphanDestroyMaxRetries == 0 {
+		cfg.OrphanDestroyMaxRetries = 5
+	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	if cfg.StateStore == nil {
+		cfg.StateStore = NewMemoryStateStore()
+	}
+
+	return &FleetManager{
+		provider:                 cfg.Provider,
+		store:                    cfg.StateStore,
+		vms:                      make(map[string]*vm),
+		prefix:                   cfg.Prefix,
+		logger:                   cfg.Logger,
+		metrics:                  cfg.Metrics,
+		reconcileInterval:        cfg.ReconcileInterval,
+		taskStuckTimeout:         cfg.TaskStuckTimeout,
+		orphanDestroyMaxRetries:  cfg.OrphanDestroyMaxRetries,
+		defaultSnapshotRetention: cfg.DefaultSnapshotRetention,
+		snapshotQuotaMaxCount:    cfg.SnapshotQuotaMaxCount,
+		snapshotQuotaMaxBytes:    cfg.SnapshotQuotaMaxBytes,
+		orphanRetries:            make(map[string]int),
+		stuckStrikes:             make(map[string]int),
+		hosts:                    make(map[string]*Host),
+		hostProviders:            make(map[string]Provider),
+		tokenEncryptionKey:       cfg.TokenEncryptionKey,
+		hostProviderFactory:      cfg.HostProviderFactory,
+		placementPolicy:          cfg.PlacementPolicy,
+		broadcaster:              newEventBroadcaster(),
+	}
+}
+
+// SubscribeEnvironmentEvents registers a subscriber for state-change
+// events on a single VM. The returned channel receives events until
+// cancel is called (idempotent) or the broadcaster drops the
+// connection. Channel capacity is bounded; slow subscribers drop
+// events with a logged warning rather than blocking publishers.
+//
+// This is a single-process broadcaster: events published on one
+// orchestrator replica are not visible to subscribers on a different
+// replica. The orchestrator runs as a single process today, so this
+// is acceptable; cross-replica fanout would require a Redis or NATS
+// backplane and is intentionally deferred.
+func (fm *FleetManager) SubscribeEnvironmentEvents(vmID string) (<-chan EnvironmentEvent, func()) {
+	return fm.broadcaster.subscribe(vmID)
+}
+
+// publishStateChange snapshots the current vm state under the read
+// lock and dispatches an EnvironmentEvent to subscribers. It is the
+// single entry point for state-change notifications: every state
+// mutation site in fleet.go / drain.go / reconcile.go that flips
+// v.state should call this (typically deferred until after the lock
+// is released, so subscribers don't observe an inconsistent
+// snapshot).
+//
+// Pass terminalState != "" to override the wire state for a removed
+// VM. Once a VM is deleted from fm.vms there is no live record to
+// snapshot, so callers (destroyAndRemove, reapDestroyedVMs,
+// ProvisionAndAssign failure path) supply the terminal state
+// explicitly.
+func (fm *FleetManager) publishStateChange(vmID string, terminalState VMState) {
+	if fm.broadcaster == nil {
+		return
+	}
+	ev := EnvironmentEvent{
+		ID:        NewEventID(),
+		Kind:      "state",
+		VMID:      vmID,
+		UpdatedAt: time.Now(),
+	}
+	if terminalState != "" {
+		ev.State = terminalState
+	} else {
+		fm.mu.RLock()
+		v, ok := fm.vms[vmID]
+		if !ok {
+			fm.mu.RUnlock()
+			return
+		}
+		info := v.toInfo()
+		fm.mu.RUnlock()
+		ev.State = info.State
+		ev.URL = info.URL
+		ev.Error = info.Error
+		ev.UpdatedAt = info.UpdatedAt
+	}
+	_, dropped := fm.broadcaster.publish(ev)
+	if dropped > 0 {
+		fm.logger.Warn("dropped sse events for slow subscriber",
+			"vm", vmID, "state", string(ev.State), "dropped", dropped,
+		)
+	}
+}
+
+// publishTerminalEvent emits a synthetic terminal-state event (e.g.
+// "destroyed" or "failed") for a VM that has already been removed
+// from fm.vms. The errMsg is included on the wire so subscribers can
+// surface it to operators without a follow-up GET.
+//
+// This is split from publishStateChange because terminal events have
+// no live vm record to snapshot — the caller has already deleted the
+// map entry — and so the wire fields (state, error) must be passed
+// in explicitly.
+func (fm *FleetManager) publishTerminalEvent(vmID string, state VMState, errMsg string) {
+	if fm.broadcaster == nil {
+		return
+	}
+	ev := EnvironmentEvent{
+		ID:        NewEventID(),
+		Kind:      "state",
+		VMID:      vmID,
+		State:     state,
+		Error:     errMsg,
+		UpdatedAt: time.Now(),
+	}
+	_, dropped := fm.broadcaster.publish(ev)
+	if dropped > 0 {
+		fm.logger.Warn("dropped sse terminal event for slow subscriber",
+			"vm", vmID, "state", string(state), "dropped", dropped,
+		)
+	}
+}
+
+// Start begins the background reconciliation loop.
+func (fm *FleetManager) Start(ctx context.Context) {
+	ctx, fm.cancel = context.WithCancel(ctx)
+	fm.done = make(chan struct{})
+
+	if err := fm.recoverState(ctx); err != nil {
+		fm.logger.Error("state recovery failed", "err", err)
+	}
+
+	// Trigger a boot-time converge so recovered state is reconciled immediately.
+	fm.reconcile(ctx)
+	go fm.reconcileLoop(ctx)
+}
+
+// Stop cancels the reconciliation loop and waits for it to finish.
+func (fm *FleetManager) Stop() {
+	if fm.cancel != nil {
+		fm.cancel()
+	}
+	if fm.done != nil {
+		<-fm.done
+	}
+}
+
+// ProvisionAndAssign provisions a new VM, boots surfd, and assigns the given task.
+// Blocks until the VM is ready or an error occurs.
+func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
+	// Check for duplicate task.
+	fm.mu.RLock()
+	for _, v := range fm.vms {
+		if v.taskID == taskID {
+			existing := v.id
+			fm.mu.RUnlock()
+			return nil, fmt.Errorf("%w: task %s already assigned to vm %s", ErrTaskAlreadyAssigned, taskID, existing)
+		}
+	}
+	fm.mu.RUnlock()
+
+	vmID := fm.prefix + taskID
+	spec.Name = vmID
+	now := time.Now()
+
+	v := &vm{
+		id:        vmID,
+		state:     VMStateProvisioning,
+		taskID:    taskID,
+		spec:      spec,
+		createdAt: now,
+		updatedAt: now,
+	}
+
+	fm.mu.Lock()
+	fm.vms[vmID] = v
+	fm.mu.Unlock()
+	if err := fm.persistVM(ctx, v); err != nil {
+		fm.mu.Lock()
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		return nil, fmt.Errorf("persist vm %s provisioning state: %w", vmID, err)
+	}
+	if err := fm.store.UpsertTask(ctx, TaskRecord{
+		TaskID:     taskID,
+		VMID:       vmID,
+		RunStatus:  TaskRunAssigned,
+		AssignedAt: now,
+		UpdatedAt:  now,
+	}); err != nil {
+		fm.mu.Lock()
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		_ = fm.store.DeleteVM(ctx, vmID)
+		return nil, fmt.Errorf("persist task %s assigned state: %w", taskID, err)
+	}
+	fm.appendEvent(ctx, "vm", vmID, "vm.provisioning", map[string]any{"task_id": taskID})
+	fm.appendEvent(ctx, "task", taskID, "task.assigned", map[string]any{"vm_id": vmID})
+	fm.publishStateChange(vmID, "")
+
+	fm.logger.Info("provisioning vm", "vm", vmID, "task", taskID)
+
+	// Select provider: if hosts are registered, use the scheduler to
+	// pick a host; otherwise fall through to the single fm.provider.
+	bootProvider := fm.provider
+	hosts := fm.activeHosts()
+	if len(hosts) > 0 {
+		selectedHost, decision, schedErr := Schedule(spec, hosts, fm.placementPolicy)
+		if schedErr != nil {
+			fm.mu.Lock()
+			delete(fm.vms, vmID)
+			fm.mu.Unlock()
+			_ = fm.store.DeleteVM(ctx, vmID)
+			return nil, schedErr
+		}
+		fm.mu.Lock()
+		v.hostID = selectedHost.ID
+		hp, hpOK := fm.providerForHost(selectedHost.ID)
+		fm.mu.Unlock()
+		if !hpOK {
+			fm.mu.Lock()
+			delete(fm.vms, vmID)
+			fm.mu.Unlock()
+			_ = fm.store.DeleteVM(ctx, vmID)
+			return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
+		}
+		bootProvider = hp
+		fm.logger.Info("scheduled vm",
+			"vm", vmID, "host", selectedHost.ID,
+			"policy", decision.Policy,
+			"candidates", decision.Candidates,
+			"headroom_cpus", decision.HeadroomCPUs,
+		)
+		fm.appendEvent(ctx, "vm", vmID, "vm.scheduled", map[string]any{
+			"host_id":    decision.HostID,
+			"policy":     string(decision.Policy),
+			"candidates": decision.Candidates,
+		})
+	}
+
+	result, err := Boot(ctx, bootProvider, spec, manifest, secretMap, opts, fm.tokenEncryptionKey)
+	if err != nil {
+		redactedErr := secrets.RedactSecretValues(err.Error(), secretMap)
+		fm.logger.Error("provision failed", "vm", vmID, "task", taskID, "err", redactedErr)
+
+		fm.mu.Lock()
+		v.err = redactedErr
+		v.updatedAt = time.Now()
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		fm.upsertTaskBackground(TaskRecord{
+			TaskID:     taskID,
+			VMID:       vmID,
+			RunStatus:  TaskRunFailed,
+			RetryCount: 0,
+			LastError:  redactedErr,
+			AssignedAt: now,
+			UpdatedAt:  time.Now(),
+		})
+		fm.deleteVMBackground(vmID)
+		fm.appendEventBackground("vm", vmID, "vm.provision_failed", map[string]any{"task_id": taskID, "error": redactedErr})
+		fm.appendEventBackground("task", taskID, "task.failed", map[string]any{"vm_id": vmID, "error": redactedErr})
+		// Synthetic terminal state — the vm has already been removed
+		// from fm.vms above so subscribers must learn of the failure
+		// from this synthesised event rather than from a snapshot.
+		fm.publishTerminalEvent(vmID, VMStateFailed, redactedErr)
+
+		// Best-effort cleanup.
+		// TODO: Track this goroutine so Stop() can wait for it to finish
+		// instead of leaking on shutdown.
+		go func() {
+			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+				fm.logger.Error("cleanup destroy failed", "vm", vmID, "err", destroyErr)
+			}
+		}()
+
+		return nil, fmt.Errorf("provision vm %s: %w", vmID, err)
+	}
+
+	// Persist secrets encrypted under the orchestrator KEK so a crashed
+	// orchestrator can re-upload them to the guest on recovery. Stored
+	// only when both an encryption key is configured and the caller
+	// supplied at least one secret. Failure here is non-fatal: the VM
+	// is already running and serving traffic; we degrade to the legacy
+	// "no recovery for secrets" behavior and log loudly.
+	var secretsEncrypted []byte
+	if len(secretMap) > 0 && len(fm.tokenEncryptionKey) == 32 {
+		secretsJSON, mErr := json.Marshal(secretMap)
+		if mErr != nil {
+			fm.logger.Warn("marshal secrets for persistence failed", "vm", vmID, "err", mErr)
+		} else {
+			ct, encErr := secrets.EncryptBytes(secretsJSON, fm.tokenEncryptionKey)
+			if encErr != nil {
+				fm.logger.Warn("encrypt secrets for persistence failed", "vm", vmID, "err", encErr)
+			} else {
+				secretsEncrypted = ct
+			}
+		}
+	}
+
+	fm.mu.Lock()
+	v.env = result.Env
+	v.url = result.Env.URL()
+	v.state = VMStateRunning
+	v.authTokenEncrypted = result.AuthTokenEncrypted
+	v.secretsEncrypted = secretsEncrypted
+	v.drainCommand = result.DrainCommand
+	v.updatedAt = time.Now()
+	if v.hostID != "" {
+		fm.allocateOnHost(v.hostID, spec)
+	}
+	fm.mu.Unlock()
+	fm.publishStateChange(vmID, "")
+
+	fm.logger.Info("vm running", "vm", vmID, "task", taskID, "boot_time", result.BootTime, "from_cache", result.FromCache, "host", v.hostID)
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		fm.logger.Error("persist running state failed, rolling back", "vm", vmID, "task", taskID, "err", err)
+
+		fm.mu.Lock()
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		errMsg := fmt.Sprintf("persist vm running state failed: %v", err)
+		fm.upsertTaskBackground(TaskRecord{
+			TaskID:     taskID,
+			VMID:       vmID,
+			RunStatus:  TaskRunFailed,
+			RetryCount: 0,
+			LastError:  errMsg,
+			AssignedAt: now,
+			UpdatedAt:  time.Now(),
+		})
+		fm.deleteVMBackground(vmID)
+		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
+
+		go func() {
+			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
+			}
+		}()
+
+		return nil, fmt.Errorf("persist vm %s running state: %w", vmID, err)
+	}
+	if err := fm.store.UpsertTask(ctx, TaskRecord{
+		TaskID:     taskID,
+		VMID:       vmID,
+		RunStatus:  TaskRunRunning,
+		RetryCount: 0,
+		LastError:  "",
+		AssignedAt: now,
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		fm.logger.Error("persist task running state failed, rolling back", "vm", vmID, "task", taskID, "err", err)
+
+		fm.mu.Lock()
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		errMsg := fmt.Sprintf("persist task running state failed: %v", err)
+		fm.upsertTaskBackground(TaskRecord{
+			TaskID:     taskID,
+			VMID:       vmID,
+			RunStatus:  TaskRunFailed,
+			RetryCount: 0,
+			LastError:  errMsg,
+			AssignedAt: now,
+			UpdatedAt:  time.Now(),
+		})
+		fm.deleteVMBackground(vmID)
+		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
+
+		go func() {
+			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
+			}
+		}()
+
+		return nil, fmt.Errorf("persist task %s running state: %w", taskID, err)
+	}
+	fm.appendEvent(ctx, "vm", vmID, "vm.running", map[string]any{"task_id": taskID})
+	fm.appendEvent(ctx, "task", taskID, "task.running", map[string]any{"vm_id": vmID})
+	if len(secretMap) > 0 {
+		fm.appendEvent(ctx, "vm", vmID, "secrets.deployed", map[string]any{
+			"task_id":     taskID,
+			"secret_keys": secrets.SecretKeyNames(secretMap),
+			"count":       len(secretMap),
+		})
+	}
+
+	info := v.toInfo()
+	return &info, nil
+}
+
+// CompleteTask marks a task as done and triggers async VM destruction.
+func (fm *FleetManager) CompleteTask(taskID string) error {
+	fm.mu.Lock()
+	var found *vm
+	for _, v := range fm.vms {
+		if v.taskID == taskID {
+			found = v
+			break
+		}
+	}
+	if found == nil {
+		fm.mu.Unlock()
+		return fmt.Errorf("%w: no vm found for task %s", ErrTaskNotFound, taskID)
+	}
+	prevState := found.state
+	prevTaskID := found.taskID
+	prevUpdatedAt := found.updatedAt
+
+	found.state = VMStateDestroying
+	found.taskID = ""
+	found.updatedAt = time.Now()
+	vmID := found.id
+	assignedAt := found.createdAt
+	fm.mu.Unlock()
+
+	rollback := func() {
+		fm.mu.Lock()
+		current, ok := fm.vms[vmID]
+		if ok {
+			current.state = prevState
+			current.taskID = prevTaskID
+			current.updatedAt = prevUpdatedAt
+		}
+		fm.mu.Unlock()
+		if ok {
+			if err := fm.persistVMByID(context.Background(), vmID); err != nil {
+				fm.logger.Warn("failed to persist vm rollback after complete task failure", "vm", vmID, "err", err)
+			}
+		}
+	}
+
+	if err := fm.persistVMByID(context.Background(), vmID); err != nil {
+		rollback()
+		return fmt.Errorf("persist vm %s destroying state: %w", vmID, err)
+	}
+	if err := fm.store.UpsertTask(context.Background(), TaskRecord{
+		TaskID:     taskID,
+		VMID:       vmID,
+		RunStatus:  TaskRunCompleted,
+		RetryCount: 0,
+		LastError:  "",
+		AssignedAt: assignedAt,
+		UpdatedAt:  time.Now(),
+	}); err != nil {
+		rollback()
+		return fmt.Errorf("persist task %s completion state: %w", taskID, err)
+	}
+	fm.appendEvent(context.Background(), "task", taskID, "task.completed", map[string]any{"vm_id": vmID})
+	fm.appendEvent(context.Background(), "vm", vmID, "vm.destroying", map[string]any{"task_id": taskID})
+	fm.publishStateChange(vmID, "")
+
+	fm.logger.Info("completing task, destroying vm", "vm", found.id, "task", taskID)
+	go fm.destroyAndRemove(vmID)
+
+	return nil
+}
+
+// DestroyVM forcefully tears down a VM by ID.
+func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
+	fm.mu.Lock()
+	v, ok := fm.vms[vmID]
+	if !ok {
+		fm.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+	}
+	prevState := v.state
+	priorTaskID := v.taskID
+	assignedAt := v.createdAt
+	prevUpdatedAt := v.updatedAt
+	v.state = VMStateDestroying
+	v.taskID = ""
+	v.updatedAt = time.Now()
+	fm.mu.Unlock()
+
+	rollback := func() {
+		fm.mu.Lock()
+		current, exists := fm.vms[vmID]
+		if exists {
+			current.state = prevState
+			current.taskID = priorTaskID
+			current.updatedAt = prevUpdatedAt
+		}
+		fm.mu.Unlock()
+		if exists {
+			if err := fm.persistVMByID(context.Background(), vmID); err != nil {
+				fm.logger.Warn("failed to persist vm rollback after destroy failure", "vm", vmID, "err", err)
+			}
+		}
+	}
+
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		rollback()
+		return fmt.Errorf("persist vm %s destroying state: %w", vmID, err)
+	}
+	if priorTaskID != "" {
+		if err := fm.store.UpsertTask(ctx, TaskRecord{
+			TaskID:     priorTaskID,
+			VMID:       vmID,
+			RunStatus:  TaskRunFailed,
+			RetryCount: 0,
+			LastError:  "vm force destroyed",
+			AssignedAt: assignedAt,
+			UpdatedAt:  time.Now(),
+		}); err != nil {
+			rollback()
+			return fmt.Errorf("persist task %s destroy state: %w", priorTaskID, err)
+		}
+		fm.appendEvent(ctx, "task", priorTaskID, "task.failed", map[string]any{"vm_id": vmID, "error": "vm force destroyed"})
+	}
+	fm.appendEvent(ctx, "vm", vmID, "vm.destroying", map[string]any{"reason": "manual_destroy"})
+	fm.publishStateChange(vmID, "")
+
+	fm.logger.Info("destroying vm", "vm", vmID)
+
+	if err := fm.provider.Destroy(ctx, vmID); err != nil {
+		fm.logger.Error("destroy failed", "vm", vmID, "err", err)
+		return fmt.Errorf("destroy vm %s: %w", vmID, err)
+	}
+
+	fm.mu.Lock()
+	if v.hostID != "" {
+		fm.deallocateOnHost(v.hostID, v.spec)
+	}
+	delete(fm.vms, vmID)
+	fm.mu.Unlock()
+	fm.deleteVMBackground(vmID)
+	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "destroyed"})
+	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
+
+	return nil
+}
+
+// VMFilter narrows ListFleetFiltered results on exact-match fields.
+type VMFilter struct {
+	TaskID string
+	State  VMState
+	HostID string
+}
+
+// ListFleet returns a snapshot of all tracked VMs.
+func (fm *FleetManager) ListFleet() []VMInfo {
+	return fm.ListFleetFiltered(VMFilter{})
+}
+
+// ListFleetFiltered returns tracked VMs filtered by optional exact-match fields.
+func (fm *FleetManager) ListFleetFiltered(filter VMFilter) []VMInfo {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
+	out := make([]VMInfo, 0, len(fm.vms))
+	for _, v := range fm.vms {
+		if filter.TaskID != "" && v.taskID != filter.TaskID {
+			continue
+		}
+		if filter.State != "" && v.state != filter.State {
+			continue
+		}
+		if filter.HostID != "" && v.hostID != filter.HostID {
+			continue
+		}
+		out = append(out, v.toInfo())
+	}
+	return out
+}
+
+// GetVM returns info for a specific VM.
+func (fm *FleetManager) GetVM(vmID string) (VMInfo, bool) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
+	v, ok := fm.vms[vmID]
+	if !ok {
+		return VMInfo{}, false
+	}
+	return v.toInfo(), true
+}
+
+// GetVMByTask returns the VM assigned to a given task.
+func (fm *FleetManager) GetVMByTask(taskID string) (VMInfo, bool) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+
+	for _, v := range fm.vms {
+		if v.taskID == taskID {
+			return v.toInfo(), true
+		}
+	}
+	return VMInfo{}, false
+}
+
+func (fm *FleetManager) reconcileLoop(ctx context.Context) {
+	defer close(fm.done)
+
+	tick := time.NewTicker(fm.reconcileInterval)
+	defer tick.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			fm.reconcile(ctx)
+		}
+	}
+}
+
+func (fm *FleetManager) reconcile(ctx context.Context) {
+	start := time.Now()
+	summary := ReconcileSummary{}
+
+	// Multi-host mode: list VMs from all registered host providers.
+	// Single-provider fallback: list from fm.provider (legacy path).
+	var envs []Environment
+	var listErr error
+	fm.mu.RLock()
+	multiHost := len(fm.hosts) > 0
+	fm.mu.RUnlock()
+	if multiHost {
+		envs, listErr = fm.listAllHostVMs(ctx)
+	} else {
+		envs, listErr = fm.provider.List(ctx, fm.prefix)
+	}
+	if listErr != nil {
+		fm.logger.Error("reconcile list failed", "err", listErr)
+		if fm.metrics != nil {
+			summary.Duration = time.Since(start)
+			fm.metrics.ReconcileCompleted(summary)
+		}
+		return
+	}
+
+	providerVMs := make(map[string]bool, len(envs))
+	for _, e := range envs {
+		providerVMs[e.Name()] = true
+	}
+	summary.ProviderVMs = len(providerVMs)
+
+	fm.mu.Lock()
+	summary.TrackedVMs = len(fm.vms)
+	// Detect VMs we track that vanished from the provider.
+	changedVMs := make([]string, 0)
+	failedTasks := make([]TaskRecord, 0)
+	for id, v := range fm.vms {
+		if v.state == VMStateProvisioning || v.state == VMStateDestroying {
+			continue
+		}
+		if !providerVMs[id] {
+			fm.logger.Warn("vm missing from provider, marking destroying", "vm", id)
+			oldTaskID := v.taskID
+			v.state = VMStateDestroying
+			v.taskID = ""
+			v.err = "vm missing from provider"
+			v.updatedAt = time.Now()
+			changedVMs = append(changedVMs, id)
+			summary.VMsMissingProvider++
+			if oldTaskID != "" {
+				failedTasks = append(failedTasks, TaskRecord{
+					TaskID:     oldTaskID,
+					VMID:       id,
+					RunStatus:  TaskRunFailed,
+					RetryCount: 0,
+					LastError:  "vm missing from provider",
+					AssignedAt: v.createdAt,
+					UpdatedAt:  time.Now(),
+				})
+			}
+		}
+	}
+
+	// Build set of tracked IDs for orphan detection.
+	tracked := make(map[string]bool, len(fm.vms))
+	for id := range fm.vms {
+		tracked[id] = true
+	}
+	fm.mu.Unlock()
+	for _, vmID := range changedVMs {
+		fm.persistVMBackground(vmID)
+		fm.appendEventBackground("vm", vmID, "vm.destroying", map[string]any{"reason": "missing_from_provider"})
+		fm.publishStateChange(vmID, "")
+	}
+	for _, task := range failedTasks {
+		fm.upsertTaskBackground(task)
+		fm.appendEventBackground("task", task.TaskID, "task.failed", map[string]any{"vm_id": task.VMID, "error": task.LastError})
+	}
+
+	// Handle orphans and stuck tasks in their own pass. These helpers live
+	// in reconcile.go so that fleet.go stays focused on the lifecycle API.
+	fm.reconcileOrphans(ctx, envs, tracked, &summary)
+	fm.reconcileStuckTasks(ctx, &summary)
+	fm.reconcileSnapshots(ctx)
+
+	// Sweep VMs that have been marked destroying and are no longer present
+	// in the provider so they don't accumulate in memory or in the store.
+	fm.reapDestroyedVMs(providerVMs)
+
+	if fm.metrics != nil {
+		summary.Duration = time.Since(start)
+		fm.metrics.ReconcileCompleted(summary)
+	}
+}
+
+func (fm *FleetManager) destroyAndRemove(vmID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	if err := fm.provider.Destroy(ctx, vmID); err != nil {
+		fm.logger.Error("async destroy failed", "vm", vmID, "err", err)
+	}
+
+	fm.mu.Lock()
+	v, ok := fm.vms[vmID]
+	if ok {
+		if v.hostID != "" {
+			fm.deallocateOnHost(v.hostID, v.spec)
+		}
+		delete(fm.vms, vmID)
+	}
+	fm.mu.Unlock()
+	fm.deleteVMBackground(vmID)
+	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "async_destroy"})
+	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
+}
+
+// reapDestroyedVMs removes tracked VMs that are in the Destroying state
+// and are no longer present in the provider (set provided by reconcile).
+// VM resources are returned to their host, the VM is removed from the
+// in-memory fleet, and the persisted record is deleted.
+func (fm *FleetManager) reapDestroyedVMs(providerVMs map[string]bool) {
+	fm.mu.Lock()
+	toRemove := make([]string, 0)
+	for id, v := range fm.vms {
+		if v.state != VMStateDestroying {
+			continue
+		}
+		if providerVMs[id] {
+			continue
+		}
+		if v.hostID != "" {
+			fm.deallocateOnHost(v.hostID, v.spec)
+		}
+		delete(fm.vms, id)
+		toRemove = append(toRemove, id)
+	}
+	fm.mu.Unlock()
+	for _, id := range toRemove {
+		fm.deleteVMBackground(id)
+		fm.appendEventBackground("vm", id, "vm.removed", map[string]any{"reason": "destroyed"})
+		fm.publishTerminalEvent(id, VMStateDestroyed, "")
+	}
+}
+
+func (fm *FleetManager) recoverState(ctx context.Context) error {
+	if fm.store == nil {
+		return nil
+	}
+
+	// Phase 0: rebuild the host registry. We do this first so VM
+	// recovery can dispatch to the correct per-host provider and the
+	// scheduler is immediately usable post-restart. Without this step
+	// every subsequent provision would fall through to the single
+	// fm.provider path and ignore registered hosts entirely.
+	hostRecords, err := fm.store.ListHosts(ctx)
+	if err != nil {
+		return fmt.Errorf("list persisted hosts: %w", err)
+	}
+	for _, hr := range hostRecords {
+		host := fm.hostFromRecord(hr)
+		var p Provider
+		if fm.hostProviderFactory != nil {
+			p = fm.hostProviderFactory(host.URL, host.Token)
+		}
+		fm.mu.Lock()
+		fm.hosts[host.ID] = &host
+		if p != nil {
+			fm.hostProviders[host.ID] = p
+		}
+		fm.mu.Unlock()
+	}
+
+	records, err := fm.store.ListVMs(ctx)
+	if err != nil {
+		return fmt.Errorf("list persisted vms: %w", err)
+	}
+
+	recovered := make(map[string]*vm, len(records))
+	for _, record := range records {
+		recoveredVM := &vm{
+			id:                 record.ID,
+			state:              record.State,
+			taskID:             record.TaskID,
+			hostID:             record.HostID,
+			url:                record.URL,
+			spec:               record.Spec,
+			authTokenEncrypted: record.AuthTokenEncrypted,
+			secretsEncrypted:   record.SecretsEncrypted,
+			// All recovered VMs run the surfd profile today, so the drain
+			// command is reconstructed from the single profile rather than
+			// persisted as a DB column.
+			drainCommand: DefaultSurfdDrainCommand,
+			createdAt:    record.CreatedAt,
+			updatedAt:    record.UpdatedAt,
+			err:          record.LastError,
+		}
+
+		if recoveredVM.state == VMStateRunning {
+			// Prefer the per-host provider when the VM was scheduled
+			// onto a known host; fall back to the single fm.provider
+			// (single-provider mode or hosts not yet recovered).
+			lookupProvider := fm.provider
+			if recoveredVM.hostID != "" {
+				if hp, ok := fm.providerForHost(recoveredVM.hostID); ok {
+					lookupProvider = hp
+				}
+			}
+			env, getErr := lookupProvider.Get(ctx, recoveredVM.id)
+			if getErr != nil {
+				recoveredVM.state = VMStateDestroying
+				recoveredVM.taskID = ""
+				recoveredVM.err = "vm missing from provider during recovery"
+				recoveredVM.updatedAt = time.Now()
+			} else {
+				recoveredVM.env = env
+				recoveredVM.url = env.URL()
+				// Restore the per-VM auth token so env.Token() returns the
+				// active token for provider operations that authenticate
+				// against the guest URL (e.g. firecracker DNAT). Without
+				// this, env.Token() returns "" after recovery.
+				if len(recoveredVM.authTokenEncrypted) > 0 && len(fm.tokenEncryptionKey) == 32 {
+					if plain, decErr := secrets.DecryptToken(recoveredVM.authTokenEncrypted, fm.tokenEncryptionKey); decErr == nil {
+						if ts, ok := env.(TokenSetter); ok {
+							ts.SetToken(plain)
+						}
+					} else {
+						fm.logger.Warn("recover: decrypt auth token failed", "vm", recoveredVM.id, "err", decErr)
+					}
+				}
+			}
+		} else if recoveredVM.state == VMStateProvisioning {
+			// Provisioning was interrupted by a crash. The VM may or may not exist
+			// in the provider. Clean up by marking it as destroying and clearing
+			// the task ID so the task can be retried.
+			recoveredVM.state = VMStateDestroying
+			recoveredVM.taskID = ""
+			recoveredVM.err = "provisioning interrupted by orchestrator crash"
+			recoveredVM.updatedAt = time.Now()
+		}
+
+		recovered[recoveredVM.id] = recoveredVM
+	}
+
+	fm.mu.Lock()
+	for id, recoveredVM := range recovered {
+		fm.vms[id] = recoveredVM
+	}
+	fm.mu.Unlock()
+
+	for id, recoveredVM := range recovered {
+		if err := fm.persistVM(ctx, recoveredVM); err != nil {
+			fm.logger.Warn("persist recovered vm failed", "vm", id, "err", err)
+		}
+		if recoveredVM.taskID != "" {
+			if err := fm.store.UpsertTask(ctx, TaskRecord{
+				TaskID:     recoveredVM.taskID,
+				VMID:       recoveredVM.id,
+				RunStatus:  TaskRunRunning,
+				RetryCount: 0,
+				LastError:  "",
+				AssignedAt: recoveredVM.createdAt,
+				UpdatedAt:  time.Now(),
+			}); err != nil {
+				fm.logger.Warn("persist recovered task failed", "task", recoveredVM.taskID, "vm", recoveredVM.id, "err", err)
+			}
+		}
+		fm.appendEvent(ctx, "vm", id, "vm.recovered", map[string]any{"state": recoveredVM.state})
+
+		// Re-upload secrets to recovered, still-running VMs. Without
+		// this step, a guest whose tmpfs survived the orchestrator
+		// crash (which it generally does — the orchestrator running
+		// is independent of the guest's own lifetime) would still
+		// have its old copy at the guest agent's secrets path, but a
+		// guest that *also* rebooted in the meantime would come up
+		// with no secrets. Re-uploading is cheap and idempotent so we
+		// always do it.
+		if recoveredVM.state == VMStateRunning && len(recoveredVM.secretsEncrypted) > 0 && recoveredVM.env != nil {
+			if err := fm.reuploadSecrets(ctx, recoveredVM); err != nil {
+				fm.logger.Warn("recover: re-upload secrets failed", "vm", id, "err", err)
+				fm.appendEvent(ctx, "vm", id, "secrets.recovery_failed", map[string]any{"error": err.Error()})
+			} else {
+				fm.appendEvent(ctx, "vm", id, "secrets.recovered", nil)
+			}
+		}
+	}
+
+	tasks, err := fm.store.ListTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("list persisted tasks: %w", err)
+	}
+	for _, task := range tasks {
+		if task.RunStatus != TaskRunAssigned && task.RunStatus != TaskRunRunning {
+			continue
+		}
+		recoveredVM, ok := recovered[task.VMID]
+		if ok && recoveredVM.state == VMStateRunning {
+			continue
+		}
+		task.RunStatus = TaskRunFailed
+		task.LastError = "vm missing during orchestrator recovery"
+		task.UpdatedAt = time.Now()
+		if err := fm.store.UpsertTask(ctx, task); err != nil {
+			fm.logger.Warn("mark orphaned task failed", "task", task.TaskID, "vm", task.VMID, "err", err)
+			continue
+		}
+		fm.appendEvent(ctx, "task", task.TaskID, "task.failed", map[string]any{"vm_id": task.VMID, "error": task.LastError})
+	}
+
+	return nil
+}
+
+func (fm *FleetManager) persistVM(ctx context.Context, v *vm) error {
+	if fm.store == nil || v == nil {
+		return nil
+	}
+	fm.mu.RLock()
+	record := fm.vmRecordFromVM(v)
+	fm.mu.RUnlock()
+	return fm.store.UpsertVM(ctx, record)
+}
+
+func (fm *FleetManager) persistVMByID(ctx context.Context, vmID string) error {
+	if fm.store == nil {
+		return nil
+	}
+	record, ok := fm.snapshotVMRecord(vmID)
+	if !ok {
+		return nil
+	}
+	return fm.store.UpsertVM(ctx, record)
+}
+
+// TODO: Track background goroutines with a sync.WaitGroup so Stop() can
+// wait for in-flight persists to complete before returning. Currently
+// background writes can race with shutdown and lose data.
+func (fm *FleetManager) persistVMBackground(vmID string) {
+	go func() {
+		if err := fm.persistVMByID(context.Background(), vmID); err != nil {
+			fm.logger.Warn("persist vm failed", "vm", vmID, "err", err)
+		}
+	}()
+}
+
+func (fm *FleetManager) deleteVMBackground(vmID string) {
+	if fm.store == nil {
+		return
+	}
+	go func() {
+		if err := fm.store.DeleteVM(context.Background(), vmID); err != nil {
+			fm.logger.Warn("delete persisted vm failed", "vm", vmID, "err", err)
+		}
+	}()
+}
+
+func (fm *FleetManager) upsertTaskBackground(task TaskRecord) {
+	if fm.store == nil {
+		return
+	}
+	go func() {
+		if err := fm.store.UpsertTask(context.Background(), task); err != nil {
+			fm.logger.Warn("persist task failed", "task", task.TaskID, "err", err)
+		}
+	}()
+}
+
+// persistHostRecordBackground writes a host record snapshot to the
+// state store from a goroutine. The caller is expected to have already
+// snapshotted the record under fm.mu (so the persisted view is
+// consistent with the in-memory state at the moment of the snapshot).
+//
+// Used by allocateOnHost / deallocateOnHost so capacity counters
+// survive an orchestrator restart. Without it, a restart would reset
+// all hosts' allocated capacity to whatever was last persisted by an
+// explicit UpsertHost call (registration / cordon / uncordon), losing
+// every accumulated VM placement.
+func (fm *FleetManager) persistHostRecordBackground(rec HostRecord) {
+	if fm.store == nil {
+		return
+	}
+	go func() {
+		if err := fm.store.UpsertHost(context.Background(), rec); err != nil {
+			fm.logger.Warn("persist host failed", "host", rec.ID, "err", err)
+		}
+	}()
+}
+
+// AuditEvent records a security or operational event in the state
+// store's event table. It is the public face of appendEvent, exposed
+// so the REST middleware can log auth failures and IP rejections
+// without reaching into FleetManager internals.
+func (fm *FleetManager) AuditEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) {
+	fm.appendEvent(ctx, entityType, entityID, eventType, payload)
+}
+
+func (fm *FleetManager) appendEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) {
+	if fm.store == nil {
+		return
+	}
+	raw := json.RawMessage(`{}`)
+	if payload != nil {
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			fm.logger.Warn("marshal event payload failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
+			return
+		}
+		raw = payloadJSON
+	}
+	if err := fm.store.AppendEvent(ctx, EventRecord{
+		EntityType: entityType,
+		EntityID:   entityID,
+		EventType:  eventType,
+		Payload:    raw,
+		CreatedAt:  time.Now(),
+	}); err != nil {
+		fm.logger.Warn("append event failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
+	}
+}
+
+func (fm *FleetManager) appendEventBackground(entityType, entityID, eventType string, payload map[string]any) {
+	go fm.appendEvent(context.Background(), entityType, entityID, eventType, payload)
+}
+
+func (fm *FleetManager) snapshotVMRecord(vmID string) (VMRecord, bool) {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	v, ok := fm.vms[vmID]
+	if !ok {
+		return VMRecord{}, false
+	}
+	return fm.vmRecordFromVM(v), true
+}
+
+func (fm *FleetManager) vmRecordFromVM(v *vm) VMRecord {
+	vmURL := v.url
+	if v.env != nil {
+		vmURL = v.env.URL()
+	}
+	return VMRecord{
+		ID:                 v.id,
+		HostID:             v.hostID,
+		NetworkHost:        networkHostFromURL(vmURL),
+		State:              v.state,
+		URL:                vmURL,
+		TaskID:             v.taskID,
+		Spec:               v.spec,
+		AuthTokenEncrypted: v.authTokenEncrypted,
+		SecretsEncrypted:   v.secretsEncrypted,
+		LastError:          v.err,
+		CreatedAt:          v.createdAt,
+		UpdatedAt:          v.updatedAt,
+	}
+}
+
+// reuploadSecrets decrypts the persisted secret blob for a recovered VM
+// and writes it back to the guest agent's secrets path inside the guest.
+// This is the "auto re-upload on restart" leg of the secrets-persistence
+// design (see VMRecord.SecretsEncrypted).
+//
+// Returns an error if decryption fails (wrong key, tampered ciphertext)
+// or the upload fails. Callers should treat both as recoverable
+// (warn-and-continue) rather than fatal — the orchestrator can still
+// serve the rest of its API; the affected VM just runs with whatever
+// secrets it had on disk before the crash.
+func (fm *FleetManager) reuploadSecrets(ctx context.Context, v *vm) error {
+	if len(fm.tokenEncryptionKey) != 32 {
+		return fmt.Errorf("token encryption key not configured")
+	}
+	if v.env == nil {
+		return fmt.Errorf("vm %s has no environment handle", v.id)
+	}
+	plaintext, err := secrets.DecryptBytes(v.secretsEncrypted, fm.tokenEncryptionKey)
+	if err != nil {
+		return fmt.Errorf("decrypt secrets: %w", err)
+	}
+	if err := v.env.Upload(ctx, plaintext, SurfSecretsPath); err != nil {
+		return fmt.Errorf("upload secrets: %w", err)
+	}
+	return nil
+}
+
+// networkHostFromURL extracts the host:port (or bare host) from a URL
+// or returns the input verbatim when it's already in host:port form.
+// orchestrator_vms.network_host stores this so reconcile and the API
+// can address the VM without re-parsing.
+func networkHostFromURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return raw
+}

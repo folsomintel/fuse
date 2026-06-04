@@ -1,0 +1,9 @@
+{
+  "name": "@surf/firecracker-tools",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "python3 -m py_compile fc-agent.py"
+  }
+}

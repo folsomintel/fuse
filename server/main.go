@@ -1,0 +1,422 @@
+// Command orchestrator-server runs the Surf orchestrator REST API.
+//
+// It boots a FleetManager (currently backed by the Firecracker provider,
+// with an in-memory stub fallback when FIRECRACKER_BASE_URL is unset),
+// mounts the api package's chi router, and serves HTTP with graceful
+// shutdown on SIGINT / SIGTERM.
+//
+// Configuration is flag-driven, with env-var fallbacks for anything
+// that's reasonable to set in an operator environment. The binary
+// lives at apps/orchestrator/server/ (not cmd/) so the relationship
+// between the library package and its HTTP surface is visible at a
+// glance.
+//
+//	@title						Surf Orchestrator API
+//	@version					0.1.0
+//	@description				Control plane for Surf orchestrator. Provisions, inspects, and destroys VMs; manages snapshots.
+//	@host						localhost:8080
+//	@BasePath					/
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+package main
+
+import (
+	"context"
+	"database/sql"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/api"
+	"github.com/surf-dev/surf/apps/orchestrator/daytona"
+	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
+	"github.com/surf-dev/surf/apps/orchestrator/providers"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "orchestrator: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// env returns os.Getenv(name) or fallback when unset.
+func env(name, fallback string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// envInt parses an int env var, returning fallback on miss or parse error.
+func envInt(name string, fallback int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func run() error {
+	var (
+		listenAddr        string
+		prefix            string
+		readHeaderTimeout time.Duration
+		writeTimeout      time.Duration
+		shutdownTimeout   time.Duration
+		fcBaseURL         string
+		fcToken           string
+		databaseURL       string
+		tlsCert           string
+		tlsKey            string
+		authToken         string
+		allowedCIDRs      string
+	)
+
+	flag.StringVar(&listenAddr, "listen", env("ORCH_LISTEN", ":8080"),
+		"HTTP listen address")
+	flag.StringVar(&prefix, "vm-prefix", env("ORCH_VM_PREFIX", "surf-"),
+		"VM name prefix used by the fleet manager")
+	flag.DurationVar(&readHeaderTimeout, "read-header-timeout", 5*time.Second,
+		"max time to read request headers")
+	flag.DurationVar(&writeTimeout, "write-timeout", 60*time.Second,
+		"max time to write a response (including streaming handlers)")
+	flag.DurationVar(&shutdownTimeout, "shutdown-timeout",
+		time.Duration(envInt("ORCH_SHUTDOWN_TIMEOUT_SECONDS", 30))*time.Second,
+		"graceful shutdown ceiling")
+	flag.StringVar(&fcBaseURL, "firecracker-url", env("FIRECRACKER_BASE_URL", ""),
+		"Firecracker host-agent base URL (empty = in-memory stub)")
+	flag.StringVar(&fcToken, "firecracker-token", env("FIRECRACKER_TOKEN", ""),
+		"Firecracker host-agent auth token")
+	flag.StringVar(&databaseURL, "database-url", env("DATABASE_URL", ""),
+		"Postgres connection string (empty = in-memory state store)")
+	flag.StringVar(&tlsCert, "tls-cert", env("ORCH_TLS_CERT", ""),
+		"path to TLS certificate PEM (empty = plaintext HTTP)")
+	flag.StringVar(&tlsKey, "tls-key", env("ORCH_TLS_KEY", ""),
+		"path to TLS private key PEM")
+	flag.StringVar(&authToken, "auth-token", env("ORCH_AUTH_TOKEN", ""),
+		"static Bearer token for API auth (empty = no auth)")
+	flag.StringVar(&allowedCIDRs, "allowed-cidrs", env("ORCH_ALLOWED_CIDRS", ""),
+		"comma-separated CIDR allowlist (empty = open access)")
+
+	tokenEncKeyHex := env("TOKEN_ENCRYPTION_KEY", "")
+
+	// Strict mode: refuse to boot when running unauthenticated or
+	// without persisted-token encryption. Set ORCH_REQUIRE_AUTH=true
+	// in any production-like deploy (e.g. Railway). The flag is
+	// opt-in so dev/test can keep running with empty values.
+	requireAuth := env("ORCH_REQUIRE_AUTH", "") == "true"
+
+	flag.Parse()
+
+	// Parse token encryption key (hex-encoded 32 bytes = 64 hex chars).
+	var tokenEncKey []byte
+	if tokenEncKeyHex != "" {
+		var err error
+		tokenEncKey, err = hex.DecodeString(tokenEncKeyHex)
+		if err != nil {
+			return fmt.Errorf("TOKEN_ENCRYPTION_KEY: invalid hex: %w", err)
+		}
+		if len(tokenEncKey) != 32 {
+			return fmt.Errorf("TOKEN_ENCRYPTION_KEY: must be 32 bytes (64 hex chars), got %d bytes", len(tokenEncKey))
+		}
+	}
+
+	// Strict-mode enforcement. Done after parsing so error messages
+	// can surface every missing prereq at once rather than one at a
+	// time on successive restarts.
+	if requireAuth {
+		var missing []string
+		if authToken == "" {
+			missing = append(missing, "ORCH_AUTH_TOKEN")
+		}
+		if len(tokenEncKey) == 0 {
+			missing = append(missing, "TOKEN_ENCRYPTION_KEY")
+		}
+		if databaseURL == "" {
+			missing = append(missing, "DATABASE_URL")
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("ORCH_REQUIRE_AUTH=true but required vars unset: %s", strings.Join(missing, ", "))
+		}
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	// Provider selection.
+	//
+	// SURF_PROVIDER picks the implementation:
+	//   - "" / "firecracker" (default): Firecracker host-agent client.
+	//     Empty FIRECRACKER_BASE_URL falls back to an in-memory stub
+	//     inside the firecracker package — that's the dev default.
+	//   - "daytona": Daytona-backed sandbox provider. Reads
+	//     DAYTONA_API_KEY (required), DAYTONA_BASE_URL (optional),
+	//     AGENT_DOWNLOAD_URL (optional, fetches the guest agent binary into
+	//     the sandbox; SURFD_DOWNLOAD_URL is accepted as a back-compat alias).
+	providerKind := strings.ToLower(env("SURF_PROVIDER", string(providers.Firecracker)))
+	var (
+		provider orchestrator.Provider
+		mode     string
+	)
+	switch providers.Kind(providerKind) {
+	case providers.Daytona:
+		dtnKey := env("DAYTONA_API_KEY", "")
+		if dtnKey == "" {
+			return fmt.Errorf("SURF_PROVIDER=daytona requires DAYTONA_API_KEY")
+		}
+		provider = daytona.New(daytona.Config{
+			BaseURL:     env("DAYTONA_BASE_URL", ""),
+			APIKey:      dtnKey,
+			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
+		})
+		mode = "daytona"
+	case "", providers.Firecracker:
+		provider = firecracker.New(firecracker.Config{
+			BaseURL:     fcBaseURL,
+			Token:       fcToken,
+			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
+		})
+		mode = "firecracker"
+		if fcBaseURL == "" {
+			mode = "firecracker-stub"
+		}
+	default:
+		return fmt.Errorf("unknown SURF_PROVIDER: %q (valid: firecracker, daytona)", providerKind)
+	}
+
+	// State store: Postgres if DATABASE_URL is set, in-memory otherwise.
+	var store orchestrator.StateStore
+	if databaseURL != "" {
+		db, err := sql.Open("pgx", databaseURL)
+		if err != nil {
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer db.Close()
+
+		// Verify connectivity.
+		if err := db.PingContext(context.Background()); err != nil {
+			return fmt.Errorf("ping database: %w", err)
+		}
+
+		pgStore := orchestrator.NewPostgresStateStore(db)
+		if err := pgStore.ApplyMigrations(context.Background()); err != nil {
+			return fmt.Errorf("apply migrations: %w", err)
+		}
+		store = pgStore
+		logger.Info("state store: postgres", "url", redactDSN(databaseURL))
+	} else {
+		store = orchestrator.NewMemoryStateStore()
+		logger.Info("state store: in-memory (no DATABASE_URL)")
+	}
+
+	metrics := orchestrator.NewPrometheusMetrics(prometheus.DefaultRegisterer)
+
+	// Single shared factory for per-host providers. Used both at the
+	// API layer (POST /v1/hosts) and during recovery to rehydrate
+	// hosts loaded from the state store after a restart.
+	hostProviderFactory := func(url, token string) orchestrator.Provider {
+		return firecracker.New(firecracker.Config{
+			BaseURL:     url,
+			Token:       token,
+			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
+		})
+	}
+
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider:            provider,
+		StateStore:          store,
+		Prefix:              prefix,
+		TokenEncryptionKey:  tokenEncKey,
+		HostProviderFactory: hostProviderFactory,
+		Metrics:             metrics,
+		Logger:              logger,
+	})
+
+	// Reconcile loop starts with the binary.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	fm.Start(rootCtx)
+	defer fm.Stop()
+
+	// Parse CIDR allowlist.
+	var cidrList []string
+	if allowedCIDRs != "" {
+		for _, c := range strings.Split(allowedCIDRs, ",") {
+			c = strings.TrimSpace(c)
+			if c != "" {
+				cidrList = append(cidrList, c)
+			}
+		}
+	}
+
+	// Audit callbacks for auth/IP rejections. The requestID
+	// argument comes from api.RequestIDMiddleware and lets ops
+	// correlate the audit event with the matching response (whose
+	// X-Request-ID header carries the same value).
+	auditAuthFail := func(remoteAddr, method, path, requestID string) {
+		fm.AuditEvent(context.Background(), "api", remoteAddr, "auth.failed", map[string]any{
+			"method":     method,
+			"path":       path,
+			"request_id": requestID,
+		})
+		logger.Warn("auth failed",
+			"remote", remoteAddr,
+			"method", method,
+			"path", path,
+			"request_id", requestID,
+		)
+	}
+	auditIPReject := func(remoteAddr, method, path, requestID string) {
+		fm.AuditEvent(context.Background(), "api", remoteAddr, "ip.rejected", map[string]any{
+			"method":     method,
+			"path":       path,
+			"request_id": requestID,
+		})
+		logger.Warn("ip rejected",
+			"remote", remoteAddr,
+			"method", method,
+			"path", path,
+			"request_id", requestID,
+		)
+	}
+
+	handler := &api.Handler{
+		Fleet:       fm,
+		NewProvider: hostProviderFactory,
+		AuthToken:               authToken,
+		AllowedCIDRs:            cidrList,
+		OnAuthFailure:           auditAuthFail,
+		OnIPReject:              auditIPReject,
+		MetricsRequestsTotal:    metrics.HTTPRequestsTotal,
+		MetricsRequestDuration:  metrics.HTTPRequestDuration,
+		MetricsRequestsInFlight: metrics.HTTPRequestsInFlight,
+	}
+
+	router, err := handler.Router()
+	if err != nil {
+		return fmt.Errorf("build router: %w", err)
+	}
+
+	// Serve /metrics, /health, and /ready outside the auth-protected
+	// router so Prometheus and load-balancer / k8s probes can scrape
+	// without a Bearer token. These probes intentionally do not (and
+	// shouldn't) carry credentials.
+	hc := &api.Healthcheck{Fleet: fm, Store: store}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/health", hc.Liveness)
+	mux.HandleFunc("/ready", hc.Readiness)
+	mux.Handle("/", router)
+
+	srv := &http.Server{
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout:      writeTimeout,
+	}
+
+	// Signal handling + graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	useTLS := tlsCert != "" && tlsKey != ""
+	scheme := "http"
+	if useTLS {
+		scheme = "https"
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("orchestrator server listening",
+			"addr", listenAddr,
+			"scheme", scheme,
+			"provider", mode,
+			"prefix", prefix,
+			"auth", authToken != "",
+			"cidrs", len(cidrList),
+		)
+		if useTLS {
+			if err := srv.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		} else {
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- err
+			}
+		}
+	}()
+
+	select {
+	case sig := <-sigCh:
+		logger.Info("shutdown signal received", "signal", sig.String())
+	case err := <-errCh:
+		return fmt.Errorf("http listener: %w", err)
+	}
+
+	// Graceful shutdown bounded by shutdownTimeout.
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("http shutdown: %w", err)
+	}
+	logger.Info("orchestrator server stopped")
+	return nil
+}
+
+// redactDSN masks the password in a Postgres connection string for
+// safe logging. If parsing fails it falls back to "<unparseable>".
+func redactDSN(dsn string) string {
+	// Quick-and-dirty: replace anything between ":" and "@" after "://"
+	// with "***". Handles both postgres://user:pass@host and
+	// postgres://user@host (no password).
+	const prefix = "://"
+	idx := 0
+	for i := range dsn {
+		if i+3 <= len(dsn) && dsn[i:i+3] == prefix {
+			idx = i + 3
+			break
+		}
+	}
+	if idx == 0 {
+		return "<unparseable>"
+	}
+	atIdx := -1
+	for i := idx; i < len(dsn); i++ {
+		if dsn[i] == '@' {
+			atIdx = i
+			break
+		}
+	}
+	if atIdx < 0 {
+		return dsn // no @ — no credentials to redact
+	}
+	colonIdx := -1
+	for i := idx; i < atIdx; i++ {
+		if dsn[i] == ':' {
+			colonIdx = i
+			break
+		}
+	}
+	if colonIdx < 0 {
+		return dsn // user but no password
+	}
+	return dsn[:colonIdx+1] + "***" + dsn[atIdx:]
+}

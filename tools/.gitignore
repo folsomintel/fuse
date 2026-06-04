@@ -1,0 +1,26 @@
+# Large binaries — fetched via fc-install.sh or baked separately
+*.ext4
+vmlinux.bin
+surfd
+surfd.sha256
+
+# SSH key for the guest (shipped by Firecracker CI, not ours)
+ubuntu.id_rsa
+*.id_rsa
+
+# Secrets + runtime
+.env
+.fc-agent.env
+.fc-agent.pid
+.fc-proxy.env
+.fc-proxy.pid
+
+# Logs
+*.log
+
+# Runtime state (per-VM metadata, rootfs copies, snapshots)
+agent-state/
+
+# Python
+__pycache__/
+*.pyc
