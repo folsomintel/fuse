@@ -96,7 +96,7 @@ var ErrNoHosts = errors.New("no hosts registered")
 type PlacementDecision struct {
 	HostID       string          `json:"host_id"`
 	Policy       PlacementPolicy `json:"policy"`
-	Candidates   int             `json:"candidates"`   // eligible hosts considered
+	Candidates   int             `json:"candidates"`    // eligible hosts considered
 	HeadroomCPUs int             `json:"headroom_cpus"` // CPUs remaining after placement
 	HeadroomRam  int             `json:"headroom_ram"`  // RAM remaining after placement
 }

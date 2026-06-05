@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // defaultHealthCheckTimeout bounds each readiness dependency check.

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 	"github.com/surf-dev/surf/apps/orchestrator/secrets"
 )
 

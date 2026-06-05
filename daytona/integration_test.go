@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 func TestIntegration_Daytona_RoundTrip(t *testing.T) {

@@ -145,7 +145,7 @@ func buildSurfdCommand(creds *secrets.VMCredentials, opts BootOptions) string {
 }
 
 // shellEscape produces a single-quoted shell literal safe to embed in a
-// command line. Internal single quotes use the standard '\'' technique.
+// command line. Internal single quotes use the standard '\” technique.
 func shellEscape(s string) string {
 	if s == "" {
 		return "''"

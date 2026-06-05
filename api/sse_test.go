@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // sseEvent is a parsed SSE message: optional id and a JSON-decoded

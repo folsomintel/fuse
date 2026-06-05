@@ -10,9 +10,9 @@ import (
 
 // Secrets validation limits.
 const (
-	MaxSecretKeys      = 256
-	MaxSecretKeyLength = 256
-	MaxSecretValueSize = 65536   // 64 KB per value
+	MaxSecretKeys       = 256
+	MaxSecretKeyLength  = 256
+	MaxSecretValueSize  = 65536   // 64 KB per value
 	MaxSecretsTotalSize = 1048576 // 1 MB aggregate
 )
 

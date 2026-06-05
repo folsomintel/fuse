@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // surfNameLabel is how we tag sandboxes with their orchestrator-side Spec.Name.
@@ -440,7 +440,7 @@ func buildShellCommand(name string, args []string) string {
 
 // shellEscape produces a single-quoted shell literal that is safe to
 // embed inside a shell pipeline. Internal single quotes are escaped via
-// the standard '\'' technique.
+// the standard '\” technique.
 func shellEscape(s string) string {
 	if s == "" {
 		return "''"

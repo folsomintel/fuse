@@ -13,10 +13,10 @@ hardcoding a specific daemon.
 > The **daytona** provider runs an arbitrary `AgentSpec.Command`. Graceful drain stops surfd
 > via SIGTERM (`systemctl stop surfd`), which runs surfd's real DAG teardown — no extra guest
 > tooling. The `/start-agent` + `DownloadURL` path needs a host running the updated
-> `tools/fc-agent.py`. See [`DECOUPLING.md`](DECOUPLING.md) → *Runtime-seam fixes*.
+> `tools/fc-agent.py`. See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) → *Runtime-seam fixes*.
 
 Fuse was extracted from the Surf orchestrator and decoupled from `surfd` (Surf's in-guest
-daemon). See [`DECOUPLING.md`](DECOUPLING.md) for the design and what changed.
+daemon). See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) for the design and what changed.
 
 ## What it does
 

@@ -1,0 +1,100 @@
+# GoReleaser configuration (v2 schema)
+# Docs: https://goreleaser.com
+version: 2
+
+project_name: orchestrator
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: orchestrator
+    main: ./server
+    binary: orchestrator
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # Keep ldflags minimal to avoid build breakage if version vars do not exist.
+    # To wire version metadata later, declare vars in package main, e.g.:
+    #   var ( version = "dev"; commit = "none"; date = "unknown" )
+    # then extend ldflags with:
+    #   -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    ldflags:
+      - -s -w
+
+  - id: dbcheck
+    main: ./cmd/dbcheck
+    binary: dbcheck
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    # See the note above to inject version metadata via -X main.version={{.Version}} etc.
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - src: README.md
+        default: true
+      # LICENSE is included automatically when present.
+      - src: LICENSE*
+        default: true
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-SNAPSHOT"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "^build:"
+      - "^style:"
+      - "^refactor:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance improvements
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: andrewn6
+    name: fuse

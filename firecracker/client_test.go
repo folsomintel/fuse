@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // TestClientContract validates HTTP paths, auth header, and basic lifecycle calls

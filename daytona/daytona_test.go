@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // fakeServer wires a deterministic Daytona mock around an httptest server.
@@ -22,8 +22,8 @@ type fakeServer struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	createCount  atomic.Int32
-	deleteCount  atomic.Int32
+	createCount   atomic.Int32
+	deleteCount   atomic.Int32
 	listSandboxes []Sandbox
 	previewURL    string
 	previewToken  string

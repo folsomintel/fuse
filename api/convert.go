@@ -1,7 +1,7 @@
 package api
 
 import (
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 	"time"
 )
 

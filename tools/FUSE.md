@@ -18,7 +18,7 @@ Point Fuse at the printed `FIRECRACKER_BASE_URL` / `FIRECRACKER_TOKEN`.
 ## The in-guest agent (surfd vs. your own)
 
 Fuse no longer hardcodes a specific in-guest daemon — it uploads a set of files into the
-guest and launches a configurable command (`AgentSpec`; see `../DECOUPLING.md`). The
+guest and launches a configurable command (`AgentSpec`; see `../docs/DECOUPLING.md`). The
 **reference** in-guest agent is `surfd`, baked into the rootfs by `fc-bake-rootfs.sh`.
 
 These **surfd-runtime scripts were intentionally NOT bundled** here (they live in the Surf

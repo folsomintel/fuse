@@ -279,8 +279,8 @@ func TestRedactSecretValues_emptyInputs(t *testing.T) {
 
 func TestRedactSecretValues_longestFirst(t *testing.T) {
 	secrets := map[string]string{
-		"short":    "secret12",          // 8 chars
-		"long":     "secret12-extended", // 17 chars, contains "secret12"
+		"short": "secret12",          // 8 chars
+		"long":  "secret12-extended", // 17 chars, contains "secret12"
 	}
 	msg := "value is secret12-extended here"
 	got := RedactSecretValues(msg, secrets)

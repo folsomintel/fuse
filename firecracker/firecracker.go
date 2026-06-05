@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // httpStatusError carries the HTTP status code (and trimmed body) from a

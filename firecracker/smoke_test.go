@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // TestSmoke exercises create/list/destroy against a live Firecracker agent.

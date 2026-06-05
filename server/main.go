@@ -40,10 +40,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
 	"github.com/surf-dev/surf/apps/orchestrator/api"
 	"github.com/surf-dev/surf/apps/orchestrator/daytona"
 	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 	"github.com/surf-dev/surf/apps/orchestrator/providers"
 )
 
@@ -299,8 +299,8 @@ func run() error {
 	}
 
 	handler := &api.Handler{
-		Fleet:       fm,
-		NewProvider: hostProviderFactory,
+		Fleet:                   fm,
+		NewProvider:             hostProviderFactory,
 		AuthToken:               authToken,
 		AllowedCIDRs:            cidrList,
 		OnAuthFailure:           auditAuthFail,

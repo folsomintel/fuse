@@ -45,7 +45,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // TestE2E_GRPCWeb provisions a real Daytona sandbox, deploys the

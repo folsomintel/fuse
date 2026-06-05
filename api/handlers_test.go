@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/surf-dev/surf/apps/orchestrator"
+	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // TODO: Add test cases for invalid/edge-case inputs: negative CPU counts,

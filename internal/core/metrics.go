@@ -9,16 +9,16 @@ import (
 // gauges that are updated each reconcile cycle.
 type PrometheusMetrics struct {
 	// Reconcile cycle metrics.
-	reconcileDuration    prometheus.Histogram
-	reconcileTotal       prometheus.Counter
-	trackedVMs           prometheus.Gauge
-	providerVMs          prometheus.Gauge
-	orphansDestroyed     prometheus.Counter
-	orphansFailed        prometheus.Counter
-	orphansDeadLettered  prometheus.Counter
-	stuckTasksSuspected  prometheus.Counter
-	stuckTasksFailed     prometheus.Counter
-	vmsMissingProvider   prometheus.Counter
+	reconcileDuration   prometheus.Histogram
+	reconcileTotal      prometheus.Counter
+	trackedVMs          prometheus.Gauge
+	providerVMs         prometheus.Gauge
+	orphansDestroyed    prometheus.Counter
+	orphansFailed       prometheus.Counter
+	orphansDeadLettered prometheus.Counter
+	stuckTasksSuspected prometheus.Counter
+	stuckTasksFailed    prometheus.Counter
+	vmsMissingProvider  prometheus.Counter
 
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
