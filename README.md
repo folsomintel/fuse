@@ -10,10 +10,10 @@ hardcoding a specific daemon.
 > the `surfd` reference profile over the host-agent wire, but now prefers an additive
 > `/start-agent` endpoint that supports `DownloadURL` (fetch your agent binary from a URL,
 > e.g. a GitHub release — no rootfs re-bake) and falls back to `/start-surfd` on older hosts.
-> The **daytona** provider runs an arbitrary `AgentSpec.Command`. Graceful drain stops surfd
-> via SIGTERM (`systemctl stop surfd`), which runs surfd's real DAG teardown — no extra guest
-> tooling. The `/start-agent` + `DownloadURL` path needs a host running the updated
-> `tools/fc-agent.py`. See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) → *Runtime-seam fixes*.
+> Graceful drain stops surfd via SIGTERM (`systemctl stop surfd`), which runs surfd's real DAG
+> teardown — no extra guest tooling. The `/start-agent` + `DownloadURL` path needs a host
+> running the updated `tools/fc-agent.py`. See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) →
+> *Runtime-seam fixes*.
 
 Fuse was extracted from the Surf orchestrator and decoupled from `surfd` (Surf's in-guest
 daemon). See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) for the design and what changed.
@@ -53,9 +53,9 @@ agent, supply a different `AgentSpec` (and bake your binary into the rootfs — 
 
 - **firecracker** (default) — drives a per-host `fc-agent` (see [`tools/`](tools/)). Falls
   back to an in-memory stub when `FIRECRACKER_BASE_URL` is unset.
-- **daytona** — Daytona-backed sandboxes.
 
-Selected via `SURF_PROVIDER` (`firecracker` | `daytona`).
+Fuse runs Firecracker microVMs on your own bare-metal hosts — no third-party sandbox
+service. Selected via `SURF_PROVIDER` (`firecracker`).
 
 ## Quickstart
 
@@ -89,8 +89,8 @@ cd tools
 | `FIRECRACKER_TOKEN` | | | Bearer token for the host agent |
 | `DATABASE_URL` | `--database-url` | _(empty → in-memory)_ | Postgres state store |
 | `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption |
-| `SURF_PROVIDER` | | `firecracker` | Provider: `firecracker` \| `daytona` |
-| `AGENT_DOWNLOAD_URL` | | | Daytona: URL to fetch the agent binary (`SURFD_DOWNLOAD_URL` alias) |
+| `SURF_PROVIDER` | | `firecracker` | Provider: `firecracker` |
+| `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary (`SURFD_DOWNLOAD_URL` alias) |
 | `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS |
 | `ORCH_AUTH_TOKEN` / `ORCH_ALLOWED_CIDRS` | | | API auth + IP allowlist |
 
@@ -111,7 +111,6 @@ reconcile.go    reconcile loop
 state_store*.go state (in-memory + Postgres)
 secrets/        per-VM credential generation + token encryption
 firecracker/    Firecracker provider (talks to fc-agent)
-daytona/        Daytona provider
 api/            REST handlers
 tools/          fc-agent host toolchain (bring up a Firecracker host)
 ```

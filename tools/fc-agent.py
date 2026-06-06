@@ -511,8 +511,8 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
     if not meta:
         raise HTTPError(404, "vm not found")
     # Optionally fetch the agent binary into the guest first (skip rootfs
-    # re-bake). Idempotent like daytona's ensureAgentBinary: only download
-    # when the target isn't already an executable.
+    # re-bake). Idempotent: only download when the target isn't already an
+    # executable.
     if download_url:
         fetch = (
             f"test -x {shlex.quote(binary_path)} || "

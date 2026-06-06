@@ -41,7 +41,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/surf-dev/surf/apps/orchestrator/api"
-	"github.com/surf-dev/surf/apps/orchestrator/daytona"
 	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
 	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 	"github.com/surf-dev/surf/apps/orchestrator/providers"
@@ -167,27 +166,14 @@ func run() error {
 	//   - "" / "firecracker" (default): Firecracker host-agent client.
 	//     Empty FIRECRACKER_BASE_URL falls back to an in-memory stub
 	//     inside the firecracker package — that's the dev default.
-	//   - "daytona": Daytona-backed sandbox provider. Reads
-	//     DAYTONA_API_KEY (required), DAYTONA_BASE_URL (optional),
-	//     AGENT_DOWNLOAD_URL (optional, fetches the guest agent binary into
-	//     the sandbox; SURFD_DOWNLOAD_URL is accepted as a back-compat alias).
+	//     AGENT_DOWNLOAD_URL (optional) fetches the guest agent binary
+	//     into the VM; SURFD_DOWNLOAD_URL is accepted as a back-compat alias.
 	providerKind := strings.ToLower(env("SURF_PROVIDER", string(providers.Firecracker)))
 	var (
 		provider orchestrator.Provider
 		mode     string
 	)
 	switch providers.Kind(providerKind) {
-	case providers.Daytona:
-		dtnKey := env("DAYTONA_API_KEY", "")
-		if dtnKey == "" {
-			return fmt.Errorf("SURF_PROVIDER=daytona requires DAYTONA_API_KEY")
-		}
-		provider = daytona.New(daytona.Config{
-			BaseURL:     env("DAYTONA_BASE_URL", ""),
-			APIKey:      dtnKey,
-			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
-		})
-		mode = "daytona"
 	case "", providers.Firecracker:
 		provider = firecracker.New(firecracker.Config{
 			BaseURL:     fcBaseURL,
@@ -199,7 +185,7 @@ func run() error {
 			mode = "firecracker-stub"
 		}
 	default:
-		return fmt.Errorf("unknown SURF_PROVIDER: %q (valid: firecracker, daytona)", providerKind)
+		return fmt.Errorf("unknown SURF_PROVIDER: %q (valid: firecracker)", providerKind)
 	}
 
 	// State store: Postgres if DATABASE_URL is set, in-memory otherwise.

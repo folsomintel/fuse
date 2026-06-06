@@ -35,7 +35,7 @@ const SurfSecretsPath = surfSecretsPath
 // live inside the guest. It must match the binary path referenced by the
 // command line SurfdAgentSpec assembles (and the destination a download-based
 // provider writes to).
-const surfAgentBinaryPath = "/home/daytona/surfd"
+const surfAgentBinaryPath = "/usr/local/bin/surfd"
 
 // DefaultSurfdDrainCommand is the surfd profile's graceful-stop invocation, run
 // inside the guest via Environment.ExecStream on Drain.
@@ -46,8 +46,7 @@ const surfAgentBinaryPath = "/home/daytona/surfd"
 // drain. On the firecracker profile surfd is a systemd unit, so `systemctl stop`
 // delivers SIGTERM, waits for the clean exit, and (because the stop is clean)
 // the unit's Restart=on-failure does NOT bring it back. The `pkill -TERM`
-// fallback covers non-systemd guests (e.g. Daytona's session-launched surfd),
-// which also quiesce on SIGTERM.
+// fallback covers non-systemd guests, which also quiesce on SIGTERM.
 //
 // No trailing `|| true`: a genuine failure (neither a unit nor a process was
 // stopped) propagates a non-zero exit so Drain records the error and keeps the
@@ -80,11 +79,11 @@ func surfdCredentialFiles(creds *secrets.VMCredentials) map[string][]byte {
 // secrets JSON (defaulting to "{}" when nil/empty), and — when creds is set —
 // the TLS/auth credential files. Command is the surfd launch line.
 //
-// NOTE on Command: the Command field is consumed verbatim only by providers
-// that launch a free-form shell line (Daytona). The firecracker host agent
-// IGNORES Command and instead reads structured fields off the frozen
-// /start-surfd wire (manifest/secrets/TLS paths), sourcing them from its own
-// path constants that mirror the consts above.
+// NOTE on Command: the Command field is the generic launch line for providers
+// that run a free-form shell command. The firecracker host agent IGNORES
+// Command and instead reads structured fields off the frozen /start-surfd wire
+// (manifest/secrets/TLS paths), sourcing them from its own path constants that
+// mirror the consts above.
 func SurfdAgentSpec(manifest []byte, secretMap map[string]string, creds *secrets.VMCredentials, opts BootOptions) AgentSpec {
 	files := map[string][]byte{
 		surfManifestPath: manifest,
