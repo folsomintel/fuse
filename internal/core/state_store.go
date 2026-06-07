@@ -58,7 +58,7 @@ type SnapshotExportRecord struct {
 // VMRecord is the durable representation of a fleet VM.
 //
 // HostID is the loose reference to the placement host (orchestrator_hosts.host_id).
-// NetworkHost is the externally-reachable host:port surf clients dial; it is
+// NetworkHost is the externally-reachable host:port Fuse clients dial; it is
 // derived from the provider-returned URL and stored verbatim so reconcile
 // can rebuild routing without re-parsing.
 //

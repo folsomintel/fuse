@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+	"github.com/andrewn6/fuse/secrets"
 )
 
 // Sentinel errors exposed by the FleetManager public API. Callers
@@ -71,7 +71,7 @@ const (
 	VMStateProvisioning VMState = "provisioning"
 	VMStateRunning      VMState = "running"
 	// VMStateDraining indicates the VM has been asked to gracefully quiesce
-	// in-guest workloads (surfd Down) but the VM itself has not yet
+	// in-guest workloads (agent shutdown) but the VM itself has not yet
 	// been destroyed. This is the "drain" phase of two-phase teardown:
 	// the harness gets a clean shutdown signal and a chance to flush
 	// outputs before the subsequent DELETE actually tears down the VM.
@@ -155,7 +155,7 @@ type ReconcileSummary struct {
 type FleetConfig struct {
 	Provider          Provider
 	StateStore        StateStore
-	Prefix            string        // VM name prefix, e.g. "surf-"
+	Prefix            string        // VM name prefix, e.g. "fuse-"
 	ReconcileInterval time.Duration // default 30s
 
 	// TaskStuckTimeout is the maximum age of a Running VM with no state
@@ -426,7 +426,7 @@ func (fm *FleetManager) Stop() {
 	}
 }
 
-// ProvisionAndAssign provisions a new VM, boots surfd, and assigns the given task.
+// ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
 // Blocks until the VM is ready or an error occurs.
 func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
 	// Check for duplicate task.
@@ -1075,10 +1075,10 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			spec:               record.Spec,
 			authTokenEncrypted: record.AuthTokenEncrypted,
 			secretsEncrypted:   record.SecretsEncrypted,
-			// All recovered VMs run the surfd profile today, so the drain
+			// All recovered VMs run the fused profile today, so the drain
 			// command is reconstructed from the single profile rather than
 			// persisted as a DB column.
-			drainCommand: DefaultSurfdDrainCommand,
+			drainCommand: DefaultFusedDrainCommand,
 			createdAt:    record.CreatedAt,
 			updatedAt:    record.UpdatedAt,
 			err:          record.LastError,
@@ -1361,7 +1361,7 @@ func (fm *FleetManager) reuploadSecrets(ctx context.Context, v *vm) error {
 	if err != nil {
 		return fmt.Errorf("decrypt secrets: %w", err)
 	}
-	if err := v.env.Upload(ctx, plaintext, SurfSecretsPath); err != nil {
+	if err := v.env.Upload(ctx, plaintext, FuseSecretsPath); err != nil {
 		return fmt.Errorf("upload secrets: %w", err)
 	}
 	return nil

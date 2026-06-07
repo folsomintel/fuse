@@ -159,7 +159,7 @@ func TestProvisionAndAssign(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -168,8 +168,8 @@ func TestProvisionAndAssign(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 
-	if info.ID != "surf-task-1" {
-		t.Errorf("got id %q, want surf-task-1", info.ID)
+	if info.ID != "fuse-task-1" {
+		t.Errorf("got id %q, want fuse-task-1", info.ID)
 	}
 	if info.State != VMStateRunning {
 		t.Errorf("got state %q, want running", info.State)
@@ -177,8 +177,8 @@ func TestProvisionAndAssign(t *testing.T) {
 	if info.TaskID != "task-1" {
 		t.Errorf("got task %q, want task-1", info.TaskID)
 	}
-	if info.URL != "http://surf-task-1.test" {
-		t.Errorf("got url %q, want http://surf-task-1.test", info.URL)
+	if info.URL != "http://fuse-task-1.test" {
+		t.Errorf("got url %q, want http://fuse-task-1.test", info.URL)
 	}
 }
 
@@ -186,7 +186,7 @@ func TestDuplicateTaskRejected(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -205,7 +205,7 @@ func TestCompleteTaskDestroysVM(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -232,7 +232,7 @@ func TestCompleteTaskDestroysVM(t *testing.T) {
 func TestCompleteTaskNotFound(t *testing.T) {
 	fm := NewFleetManager(FleetConfig{
 		Provider: newMockProvider(),
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	if err := fm.CompleteTask("nonexistent"); err == nil {
@@ -245,7 +245,7 @@ func TestCompleteTaskRollbackOnPersistFailure(t *testing.T) {
 	store := newFlakyStateStore()
 	fm := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 
@@ -282,7 +282,7 @@ func TestListFleet(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -303,13 +303,13 @@ func TestGetVM(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
 	_, _ = fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
 
-	info, ok := fm.GetVM("surf-task-1")
+	info, ok := fm.GetVM("fuse-task-1")
 	if !ok {
 		t.Fatal("expected to find vm")
 	}
@@ -327,7 +327,7 @@ func TestGetVMByTask(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -337,8 +337,8 @@ func TestGetVMByTask(t *testing.T) {
 	if !ok {
 		t.Fatal("expected to find vm by task")
 	}
-	if info.ID != "surf-task-1" {
-		t.Errorf("got id %q, want surf-task-1", info.ID)
+	if info.ID != "fuse-task-1" {
+		t.Errorf("got id %q, want fuse-task-1", info.ID)
 	}
 }
 
@@ -346,13 +346,13 @@ func TestDestroyVM(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
 	_, _ = fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
 
-	if err := fm.DestroyVM(ctx, "surf-task-1"); err != nil {
+	if err := fm.DestroyVM(ctx, "fuse-task-1"); err != nil {
 		t.Fatalf("destroy: %v", err)
 	}
 
@@ -369,7 +369,7 @@ func TestDestroyVMRollbackOnPersistFailure(t *testing.T) {
 	store := newFlakyStateStore()
 	fm := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 
@@ -380,11 +380,11 @@ func TestDestroyVMRollbackOnPersistFailure(t *testing.T) {
 	}
 
 	store.setFailFailedTask(true)
-	if err := fm.DestroyVM(ctx, "surf-task-1"); err == nil {
+	if err := fm.DestroyVM(ctx, "fuse-task-1"); err == nil {
 		t.Fatal("expected destroy to fail when task persistence fails")
 	}
 
-	info, ok := fm.GetVM("surf-task-1")
+	info, ok := fm.GetVM("fuse-task-1")
 	if !ok {
 		t.Fatal("expected vm to remain tracked after failed destroy persistence")
 	}
@@ -396,7 +396,7 @@ func TestDestroyVMRollbackOnPersistFailure(t *testing.T) {
 	}
 
 	store.setFailFailedTask(false)
-	if err := fm.DestroyVM(ctx, "surf-task-1"); err != nil {
+	if err := fm.DestroyVM(ctx, "fuse-task-1"); err != nil {
 		t.Fatalf("retry destroy should succeed: %v", err)
 	}
 
@@ -412,13 +412,13 @@ func TestReconcileOrphans(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider:          p,
-		Prefix:            "surf-",
+		Prefix:            "fuse-",
 		ReconcileInterval: 50 * time.Millisecond,
 	})
 
 	// Inject an orphan directly into the provider (not via fleet manager).
 	p.mu.Lock()
-	p.envs["surf-orphan"] = &mockEnv{name: "surf-orphan", url: "http://orphan.test"}
+	p.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan", url: "http://orphan.test"}
 	p.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -438,7 +438,7 @@ func TestReconcileDeadVM(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider:          p,
-		Prefix:            "surf-",
+		Prefix:            "fuse-",
 		ReconcileInterval: 50 * time.Millisecond,
 	})
 
@@ -447,7 +447,7 @@ func TestReconcileDeadVM(t *testing.T) {
 
 	// Simulate provider losing the VM.
 	p.mu.Lock()
-	delete(p.envs, "surf-task-1")
+	delete(p.envs, "fuse-task-1")
 	p.mu.Unlock()
 
 	ctx2, cancel := context.WithCancel(context.Background())
@@ -470,7 +470,7 @@ func TestProvisionFailureCleanup(t *testing.T) {
 
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 
 	ctx := context.Background()
@@ -490,7 +490,7 @@ func TestStateRecoveryLoadsPersistedVMs(t *testing.T) {
 
 	fm := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 
@@ -502,7 +502,7 @@ func TestStateRecoveryLoadsPersistedVMs(t *testing.T) {
 
 	recovered := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -511,7 +511,7 @@ func TestStateRecoveryLoadsPersistedVMs(t *testing.T) {
 	defer recovered.Stop()
 
 	waitFor(t, 2*time.Second, func() bool {
-		info, ok := recovered.GetVM("surf-task-1")
+		info, ok := recovered.GetVM("fuse-task-1")
 		return ok && info.State == VMStateRunning && info.TaskID == "task-1"
 	}, "expected vm to be recovered from persisted state")
 }
@@ -522,7 +522,7 @@ func TestStateRecoveryMarksMissingProviderVMTaskFailed(t *testing.T) {
 
 	fm := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 
@@ -533,12 +533,12 @@ func TestStateRecoveryMarksMissingProviderVMTaskFailed(t *testing.T) {
 	}
 
 	p.mu.Lock()
-	delete(p.envs, "surf-task-1")
+	delete(p.envs, "fuse-task-1")
 	p.mu.Unlock()
 
 	recovered := NewFleetManager(FleetConfig{
 		Provider:   p,
-		Prefix:     "surf-",
+		Prefix:     "fuse-",
 		StateStore: store,
 	})
 	runCtx, cancel := context.WithCancel(context.Background())

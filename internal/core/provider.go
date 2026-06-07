@@ -8,7 +8,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+	"github.com/andrewn6/fuse/secrets"
 )
 
 // Provider manages sandboxed environments.
@@ -31,7 +31,7 @@ type Provider interface {
 
 // Spec describes the resources needed for a sandbox.
 type Spec struct {
-	Name      string // e.g. "surf-{task-id}"
+	Name      string // e.g. "fuse-{task-id}"
 	CPUs      int
 	RamMB     int
 	StorageGB int
@@ -95,8 +95,8 @@ type SnapshotDeleter interface {
 }
 
 // AgentSpec is the generic, provider-agnostic description of the guest agent
-// to launch inside a sandbox. surfd is expressed as one configuration of this
-// spec via SurfdAgentSpec (see agent_profile.go); nothing surf-specific is
+// to launch inside a sandbox. fused is expressed as one configuration of this
+// spec via FusedAgentSpec (see agent_profile.go); nothing fuse-specific is
 // hardcoded in the core boot path.
 type AgentSpec struct {
 	Files        map[string][]byte // arbitrary files to upload into the guest (path -> bytes)
@@ -158,7 +158,7 @@ func uploadFiles(ctx context.Context, env Environment, files map[string][]byte) 
 // setTokenIfSupported records the per-VM auth token on the env (when it
 // implements TokenSetter) so env.Token() returns the active token without a
 // separate fetch. Credential files themselves are uploaded via AgentSpec.Files
-// (see SurfdAgentSpec); this helper only handles the in-memory token side
+// (see FusedAgentSpec); this helper only handles the in-memory token side
 // effect. Reused by Boot (fresh/restore) and RotateToken.
 func setTokenIfSupported(env Environment, creds *secrets.VMCredentials) {
 	if creds == nil {
@@ -227,10 +227,10 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 		return nil, err
 	}
 
-	// Upload everything the agent profile declared. For surfd this is the
+	// Upload everything the agent profile declared. For fused this is the
 	// manifest, secrets JSON, and (when present) the TLS/auth credential
 	// files. The guest is responsible for mounting any sensitive paths on
-	// tmpfs (see PRD-08 for the surfd profile's /surf contract).
+	// tmpfs (see PRD-08 for the fused profile's /fuse contract).
 	if err := uploadFiles(ctx, env, in.agentSpec.Files); err != nil {
 		return nil, err
 	}
@@ -260,8 +260,8 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 // bytes), per-VM TLS credentials and an auth token are generated and injected.
 // The encrypted token is returned in BootResult for persistence.
 //
-// The guest agent is described by an AgentSpec; today that is always the surfd
-// profile (SurfdAgentSpec), which carries the surfd manifest/secrets/TLS files
+// The guest agent is described by an AgentSpec; today that is always the fused
+// profile (FusedAgentSpec), which carries the fused manifest/secrets/TLS files
 // and launch command. Boot itself is profile-agnostic.
 func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions, encryptionKey []byte) (*BootResult, error) {
 	start := time.Now()
@@ -281,12 +281,12 @@ func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap
 		}
 	}
 
-	// Build the surfd profile: this is the SINGLE place the surfd /surf/*
+	// Build the fused profile: this is the SINGLE place the fused /fuse/*
 	// paths and launch command are assembled (see agent_profile.go). Credential
 	// files are included in AgentSpec.Files and uploaded generically; the
 	// in-memory token side effect is applied by setTokenIfSupported in
 	// bootFresh/bootRestore.
-	agentSpec := SurfdAgentSpec(manifest, secretMap, creds, opts)
+	agentSpec := FusedAgentSpec(manifest, secretMap, creds, opts)
 
 	in := bootInputs{
 		spec:      spec,

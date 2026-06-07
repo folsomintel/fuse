@@ -114,7 +114,7 @@ func provisionSnapshotTestVM(t *testing.T, fm *FleetManager, taskID string) stri
 	if err != nil {
 		t.Fatalf("provision vm: %v", err)
 	}
-	return "surf-" + taskID
+	return "fuse-" + taskID
 }
 
 func mustDecodeBase64(t *testing.T, encoded string) []byte {
@@ -130,7 +130,7 @@ func TestCreateSnapshot_persistsLineageAndMetadata(t *testing.T) {
 	provider := newSnapshotTestProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: provider,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
@@ -164,7 +164,7 @@ func TestDeleteSnapshot_rejectsParentWithChildren(t *testing.T) {
 	provider := newSnapshotTestProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: provider,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
@@ -184,7 +184,7 @@ func TestReconcileSnapshots_deletesExpiredLeaf(t *testing.T) {
 	provider := newSnapshotTestProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: provider,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
@@ -218,7 +218,7 @@ func TestRestoreSnapshot_marksMissingProviderSnapshotError(t *testing.T) {
 	provider := newSnapshotTestProvider()
 	fm := NewFleetManager(FleetConfig{
 		Provider: provider,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 

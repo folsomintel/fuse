@@ -73,13 +73,13 @@ func TestReconcileOrphan_successClearsRetries(t *testing.T) {
 	metrics := &captureMetrics{}
 	fm := NewFleetManager(FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 		Metrics:  metrics,
 	})
 
 	// Inject an orphan — not tracked in the fleet.
 	p.mu.Lock()
-	p.envs["surf-orphan"] = &mockEnv{name: "surf-orphan", url: "http://orphan.test"}
+	p.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan", url: "http://orphan.test"}
 	p.mu.Unlock()
 
 	fm.reconcile(context.Background())
@@ -99,27 +99,27 @@ func TestReconcileOrphan_successClearsRetries(t *testing.T) {
 	}
 
 	fm.mu.RLock()
-	if retries := fm.orphanRetries["surf-orphan"]; retries != 0 {
+	if retries := fm.orphanRetries["fuse-orphan"]; retries != 0 {
 		t.Errorf("retry counter not cleared: %d", retries)
 	}
 	fm.mu.RUnlock()
 }
 
 func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
-	p := newFailingDestroyProvider("surf-orphan")
+	p := newFailingDestroyProvider("fuse-orphan")
 	store := NewMemoryStateStore()
 	metrics := &captureMetrics{}
 
 	fm := NewFleetManager(FleetConfig{
 		Provider:                p,
 		StateStore:              store,
-		Prefix:                  "surf-",
+		Prefix:                  "fuse-",
 		OrphanDestroyMaxRetries: 3,
 		Metrics:                 metrics,
 	})
 
 	p.mu.Lock()
-	p.envs["surf-orphan"] = &mockEnv{name: "surf-orphan", url: "http://orphan.test"}
+	p.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan", url: "http://orphan.test"}
 	p.mu.Unlock()
 
 	// Run reconcile repeatedly. Each cycle should fail once and bump the
@@ -143,7 +143,7 @@ func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
 	if entries[0].Kind != DeadLetterOrphanDestroy {
 		t.Errorf("Kind = %q, want %q", entries[0].Kind, DeadLetterOrphanDestroy)
 	}
-	if entries[0].EntityID != "surf-orphan" {
+	if entries[0].EntityID != "fuse-orphan" {
 		t.Errorf("EntityID = %q", entries[0].EntityID)
 	}
 	if entries[0].RetryCount < 3 {
@@ -162,22 +162,22 @@ func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
 }
 
 func TestReconcileOrphan_retriesClearedWhenOrphanDisappears(t *testing.T) {
-	p := newFailingDestroyProvider("surf-orphan")
+	p := newFailingDestroyProvider("fuse-orphan")
 	fm := NewFleetManager(FleetConfig{
 		Provider:                p,
-		Prefix:                  "surf-",
+		Prefix:                  "fuse-",
 		OrphanDestroyMaxRetries: 5,
 	})
 
 	p.mu.Lock()
-	p.envs["surf-orphan"] = &mockEnv{name: "surf-orphan", url: "http://orphan.test"}
+	p.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan", url: "http://orphan.test"}
 	p.mu.Unlock()
 
 	fm.reconcile(context.Background())
 	fm.reconcile(context.Background())
 
 	fm.mu.RLock()
-	beforeRetries := fm.orphanRetries["surf-orphan"]
+	beforeRetries := fm.orphanRetries["fuse-orphan"]
 	fm.mu.RUnlock()
 	if beforeRetries != 2 {
 		t.Fatalf("expected 2 retries recorded, got %d", beforeRetries)
@@ -185,13 +185,13 @@ func TestReconcileOrphan_retriesClearedWhenOrphanDisappears(t *testing.T) {
 
 	// Orphan disappears from the provider (some other actor cleaned it up).
 	p.mu.Lock()
-	delete(p.envs, "surf-orphan")
+	delete(p.envs, "fuse-orphan")
 	p.mu.Unlock()
 
 	fm.reconcile(context.Background())
 
 	fm.mu.RLock()
-	_, stillTracked := fm.orphanRetries["surf-orphan"]
+	_, stillTracked := fm.orphanRetries["fuse-orphan"]
 	fm.mu.RUnlock()
 	if stillTracked {
 		t.Error("retry counter should be cleared when orphan disappears")
@@ -206,11 +206,11 @@ func fleetWithRunningVM(t *testing.T, cfg FleetConfig, taskID string, age time.D
 		cfg.Provider = newMockProvider()
 	}
 	if cfg.Prefix == "" {
-		cfg.Prefix = "surf-"
+		cfg.Prefix = "fuse-"
 	}
 	fm := NewFleetManager(cfg)
 
-	vmID := "surf-" + taskID
+	vmID := "fuse-" + taskID
 	now := time.Now()
 	createdAt := now.Add(-age)
 	fm.mu.Lock()
@@ -357,7 +357,7 @@ func TestStuckTask_specMaxRuntimeOverridesDefault(t *testing.T) {
 
 	// Override: task is allowed to run 1h.
 	fm.mu.Lock()
-	fm.vms["surf-task-1"].spec.MaxRuntime = 1 * time.Hour
+	fm.vms["fuse-task-1"].spec.MaxRuntime = 1 * time.Hour
 	fm.mu.Unlock()
 
 	fm.reconcile(context.Background())
@@ -405,7 +405,7 @@ func TestMemoryDeadLetter_upsertAdvancesLastSeen(t *testing.T) {
 	first := time.Now().Add(-1 * time.Hour)
 	if err := s.UpsertDeadLetter(ctx, DeadLetterRecord{
 		Kind:        DeadLetterOrphanDestroy,
-		EntityID:    "surf-x",
+		EntityID:    "fuse-x",
 		RetryCount:  1,
 		FirstSeenAt: first,
 		LastSeenAt:  first,
@@ -416,7 +416,7 @@ func TestMemoryDeadLetter_upsertAdvancesLastSeen(t *testing.T) {
 	second := time.Now()
 	if err := s.UpsertDeadLetter(ctx, DeadLetterRecord{
 		Kind:       DeadLetterOrphanDestroy,
-		EntityID:   "surf-x",
+		EntityID:   "fuse-x",
 		RetryCount: 3,
 		LastSeenAt: second,
 	}); err != nil {
@@ -446,7 +446,7 @@ func TestReconcile_metricsAlwaysEmitted(t *testing.T) {
 	metrics := &captureMetrics{}
 	fm := NewFleetManager(FleetConfig{
 		Provider: newMockProvider(),
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 		Metrics:  metrics,
 	})
 

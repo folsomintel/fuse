@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+	"github.com/andrewn6/fuse/secrets"
 )
 
 // ErrHostNotFound is returned when a host operation targets an

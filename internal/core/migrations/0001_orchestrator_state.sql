@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS orchestrator_hosts_region_idx    ON orchestrator_host
 CREATE INDEX IF NOT EXISTS orchestrator_hosts_tenant_idx    ON orchestrator_hosts (tenant_id);
 
 -- ── vms ────────────────────────────────────────────────────────────────
--- network_host stores the externally-reachable DNAT host:port surf clients
+-- network_host stores the externally-reachable DNAT host:port Fuse clients
 -- dial. host_id is the loose reference to the placement host (or '' when
 -- the orchestrator runs single-provider without a host registry).
 CREATE TABLE IF NOT EXISTS orchestrator_vms (

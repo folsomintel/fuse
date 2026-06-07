@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+	"github.com/andrewn6/fuse/secrets"
 )
 
 // RotateToken generates new TLS credentials and an auth token for a
 // running VM, uploads them to the guest filesystem, and persists the
-// new encrypted token. Surfd's credential poller detects the file
+// new encrypted token. Fused's credential poller detects the file
 // changes and hot-reloads the new token and TLS cert without a restart.
 //
 // Rotation is a server-side operation: the orchestrator updates its
@@ -45,8 +45,8 @@ func (fm *FleetManager) RotateToken(ctx context.Context, vmID string) error {
 	}
 
 	// Upload the agent's credential files (cert, key, auth token) to the
-	// guest. Paths are owned by the agent profile (surfdCredentialFiles).
-	if err := uploadFiles(ctx, env, surfdCredentialFiles(creds)); err != nil {
+	// guest. Paths are owned by the agent profile (fusedCredentialFiles).
+	if err := uploadFiles(ctx, env, fusedCredentialFiles(creds)); err != nil {
 		return fmt.Errorf("upload credentials: %w", err)
 	}
 	setTokenIfSupported(env, creds)

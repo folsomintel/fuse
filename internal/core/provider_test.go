@@ -105,10 +105,10 @@ func TestBoot_fresh_provision(t *testing.T) {
 		t.Fatal("expected positive boot time")
 	}
 
-	// Verify the manifest declared by the surfd profile was uploaded to the
+	// Verify the manifest declared by the fused profile was uploaded to the
 	// profile-declared path.
 	env := p.envs["test-vm"]
-	if env.uploads[surfManifestPath] == nil {
+	if env.uploads[fuseManifestPath] == nil {
 		t.Fatal("expected manifest upload")
 	}
 }
@@ -125,7 +125,7 @@ func TestBoot_with_secrets(t *testing.T) {
 	}
 
 	env := result.Env.(*bootMockEnv)
-	secretsData := env.uploads[surfSecretsPath]
+	secretsData := env.uploads[fuseSecretsPath]
 	if secretsData == nil {
 		t.Fatal("expected secrets upload")
 	}
