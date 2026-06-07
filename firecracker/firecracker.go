@@ -446,7 +446,7 @@ func (p *Provider) doJSON(ctx context.Context, method, path string, reqBody any,
 	if err != nil {
 		return err
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)

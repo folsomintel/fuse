@@ -161,7 +161,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list vms: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []VMRecord
 	for rows.Next() {
@@ -238,7 +238,7 @@ func (s *PostgresStateStore) ListTasks(ctx context.Context) ([]TaskRecord, error
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []TaskRecord
 	for rows.Next() {
@@ -350,7 +350,7 @@ func (s *PostgresStateStore) ListSnapshots(ctx context.Context) ([]SnapshotRecor
 	if err != nil {
 		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []SnapshotRecord
 	for rows.Next() {
@@ -464,7 +464,7 @@ func (s *PostgresStateStore) ListDeadLetters(ctx context.Context) ([]DeadLetterR
 	if err != nil {
 		return nil, fmt.Errorf("list dead letters: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []DeadLetterRecord
 	for rows.Next() {
@@ -598,7 +598,7 @@ func (s *PostgresStateStore) ListHosts(ctx context.Context) ([]HostRecord, error
 	if err != nil {
 		return nil, fmt.Errorf("list hosts: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []HostRecord
 	for rows.Next() {

@@ -84,6 +84,31 @@ These must stay GREEN (the loop's termination condition):
 
 <!-- newest first -->
 
+### 2026-06-07 — releases, self-host auto-update, green CI/CD, full e2e
+
+- **Versioned releases (GoReleaser).** `server` and `cmd/fused` now carry a
+  `-X main.version` stamp and a `--version` flag. `.goreleaser.yaml` publishes the
+  control-plane tarball (orchestrator + dbcheck) and `fused` as a raw, directly
+  downloadable asset (`fused_Linux_x86_64`) for `AGENT_DOWNLOAD_URL` and the updater.
+  Fixed a pre-existing invalid `archives.files.default` field that failed `goreleaser check`.
+- **Self-host auto-update.** `tools/fc-update.sh` polls the latest `andrewn6/fuse` GitHub
+  release, compares `fused --version` to the latest tag, and on a newer release: `git pull`s
+  the checkout, downloads the new `fused`, re-bakes the rootfs, and restarts the agent
+  (optionally updating a co-located orchestrator via `FUSE_ORCH_SERVICE`/`FUSE_ORCH_BIN`).
+  `./fc-agent.sh install-updater` wires it as a weekly systemd timer — public repo, no token
+  required (`GH_TOKEN` optional for rate limits).
+- **CI/CD green.** Fixed the long-standing data race (`activeHosts` handed out shared
+  `*Host` pointers that `Schedule` read while `allocateOnHost` wrote — now snapshots copies),
+  so `go test -race ./...` passes. Added `.golangci.yml`, made the lint job **blocking**
+  (pinned `golangci-lint v2.12.2`, repo is clean), and added a `goreleaser check` CI job so a
+  CD-config regression fails on PRs. Fixed all prod lint findings (unchecked `Close`, unused
+  `nextID`/`subscriberCount`, a De Morgan simplification).
+- **Full e2e (`e2e/deploy_test.go`).** Now covers the whole API surface — environment
+  lifecycle, **hosts** register/list/get/cordon/uncordon/remove, **rotate-token**, and the
+  **SSE events** stream — in addition to the deploy lifecycle. Hermetic against the stub by
+  default; set `FUSE_E2E_REMOTE=1` (reads `FIRECRACKER_BASE_URL`/`FIRECRACKER_TOKEN` from
+  `.env`) or `FUSE_E2E_FIRECRACKER_URL`/`_TOKEN` to run the same suite against a real host.
+
 ### 2026-06-07 — reference `fused` agent + full deploy test
 
 The repo had no buildable in-guest agent after the rename (the old `surfd` lived in another

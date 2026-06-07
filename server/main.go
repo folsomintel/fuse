@@ -46,6 +46,9 @@ import (
 	"github.com/andrewn6/fuse/providers"
 )
 
+// version is stamped at release time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "orchestrator: %v\n", err)
@@ -116,6 +119,9 @@ func run() error {
 	flag.StringVar(&allowedCIDRs, "allowed-cidrs", env("ORCH_ALLOWED_CIDRS", ""),
 		"comma-separated CIDR allowlist (empty = open access)")
 
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+
 	tokenEncKeyHex := env("TOKEN_ENCRYPTION_KEY", "")
 
 	// Strict mode: refuse to boot when running unauthenticated or
@@ -125,6 +131,11 @@ func run() error {
 	requireAuth := env("ORCH_REQUIRE_AUTH", "") == "true"
 
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		return nil
+	}
 
 	// Parse token encryption key (hex-encoded 32 bytes = 64 hex chars).
 	var tokenEncKey []byte
@@ -195,7 +206,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
 		}
-		defer db.Close()
+		defer func() { _ = db.Close() }()
 
 		// Verify connectivity.
 		if err := db.PingContext(context.Background()); err != nil {

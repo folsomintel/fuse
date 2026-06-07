@@ -20,13 +20,11 @@ builds:
     goarch:
       - amd64
       - arm64
-    # Keep ldflags minimal to avoid build breakage if version vars do not exist.
-    # To wire version metadata later, declare vars in package main, e.g.:
-    #   var ( version = "dev"; commit = "none"; date = "unknown" )
-    # then extend ldflags with:
-    #   -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    # main.version is stamped here (declared as `var version = "dev"` in package
+    # main); `fused --version` / `orchestrator --version` report the release tag,
+    # which the self-host updater (tools/fc-update.sh) compares against GitHub.
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{.Version}}
 
   - id: dbcheck
     main: ./cmd/dbcheck
@@ -41,7 +39,7 @@ builds:
       - arm64
     # See the note above to inject version metadata via -X main.version={{.Version}} etc.
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{.Version}}
 
   # fused: the reference in-guest agent baked into the microVM rootfs (or fetched
   # at boot via AGENT_DOWNLOAD_URL / start-agent download_url). Linux only — it
@@ -57,10 +55,14 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w
+      - -s -w -X main.version={{.Version}}
 
 archives:
+  # Control-plane archive (orchestrator + dbcheck) as a tarball.
   - id: default
+    ids:
+      - orchestrator
+      - dbcheck
     formats:
       - tar.gz
     name_template: >-
@@ -71,10 +73,23 @@ archives:
       {{- else }}{{ .Arch }}{{ end }}
     files:
       - src: README.md
-        default: true
-      # LICENSE is included automatically when present.
+      # LICENSE* / CHANGELOG* are included automatically by goreleaser.
       - src: LICENSE*
-        default: true
+
+  # fused as a raw, directly-downloadable binary asset, so AGENT_DOWNLOAD_URL and
+  # the self-host updater can fetch it without unpacking a tarball, e.g.
+  #   https://github.com/andrewn6/fuse/releases/download/<tag>/fused_Linux_x86_64
+  - id: fused
+    ids:
+      - fused
+    formats:
+      - binary
+    name_template: >-
+      fused_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
 
 checksum:
   name_template: checksums.txt

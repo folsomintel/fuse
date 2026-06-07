@@ -1,0 +1,32 @@
+# golangci-lint v2 configuration.
+# Run locally with: golangci-lint run ./...
+version: "2"
+
+linters:
+  # Start from the default set (errcheck, govet, ineffassign, staticcheck,
+  # unused) and keep it strict for production code.
+  default: standard
+
+  settings:
+    staticcheck:
+      # golangci-lint's default checks (which already exclude the noisy ST10xx
+      # naming/style checks) PLUS one extra: QF1003 ("could use tagged switch")
+      # would force an awkward single-case switch in the recovery path
+      # (fleet.go), so disable just that one. SA bug checks stay on.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        - -QF1003
+
+  exclusions:
+    rules:
+      # Test code routinely ignores cleanup/encode errors (Body.Close, Encode,
+      # Unmarshal in assertions); requiring explicit checks there is noise.
+      - path: _test\.go
+        linters:
+          - errcheck

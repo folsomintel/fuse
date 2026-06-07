@@ -11,3 +11,6 @@ coverage/
 
 # OS / editor
 .DS_Store
+
+# GoReleaser build output
+dist/
