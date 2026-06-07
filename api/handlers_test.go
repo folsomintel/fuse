@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // TODO: Add test cases for invalid/edge-case inputs: negative CPU counts,
@@ -159,7 +159,7 @@ func newTestHandler(t *testing.T) (*Handler, *orchestrator.FleetManager, *fakePr
 	p := newFakeProvider()
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
 		Provider: p,
-		Prefix:   "surf-",
+		Prefix:   "fuse-",
 	})
 	return &Handler{Fleet: fm}, fm, p
 }
@@ -228,8 +228,8 @@ func TestCreateEnvironment_happyPath(t *testing.T) {
 	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
-	if env.ID != "surf-task-1" {
-		t.Errorf("id = %q, want surf-task-1", env.ID)
+	if env.ID != "fuse-task-1" {
+		t.Errorf("id = %q, want fuse-task-1", env.ID)
 	}
 	if env.State != "running" {
 		t.Errorf("state = %q, want running", env.State)
@@ -303,7 +303,7 @@ func TestGetEnvironment_notFoundReturns404(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	r := mustRouter(t, h)
 
-	rr := doJSON(t, r, http.MethodGet, "/v1/environments/surf-missing", nil)
+	rr := doJSON(t, r, http.MethodGet, "/v1/environments/fuse-missing", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rr.Code)
 	}
@@ -323,13 +323,13 @@ func TestGetEnvironment_happyPath(t *testing.T) {
 		ManifestInline: encodeManifest(t),
 	})
 
-	rr := doJSON(t, r, http.MethodGet, "/v1/environments/surf-task-1", nil)
+	rr := doJSON(t, r, http.MethodGet, "/v1/environments/fuse-task-1", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	var env Environment
 	_ = json.NewDecoder(rr.Body).Decode(&env)
-	if env.ID != "surf-task-1" {
+	if env.ID != "fuse-task-1" {
 		t.Errorf("id = %q", env.ID)
 	}
 }
@@ -366,7 +366,7 @@ func TestDestroyEnvironment_returns204AndMissingReturns404(t *testing.T) {
 		ManifestInline: encodeManifest(t),
 	})
 
-	rr := doJSON(t, r, http.MethodDelete, "/v1/environments/surf-task-1", nil)
+	rr := doJSON(t, r, http.MethodDelete, "/v1/environments/fuse-task-1", nil)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204. body: %s", rr.Code, rr.Body.String())
 	}
@@ -412,7 +412,7 @@ func TestSnapshotLifecycle_createListRestore(t *testing.T) {
 	})
 
 	// Create snapshot.
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1/snapshots", CreateSnapshotRequest{
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1/snapshots", CreateSnapshotRequest{
 		Comment: "before-migration",
 	})
 	if rr.Code != http.StatusCreated {
@@ -423,7 +423,7 @@ func TestSnapshotLifecycle_createListRestore(t *testing.T) {
 	if snap.ID != "cp-1" {
 		t.Errorf("snapshot id = %q, want cp-1", snap.ID)
 	}
-	if snap.VMID != "surf-task-1" {
+	if snap.VMID != "fuse-task-1" {
 		t.Errorf("vm_id = %q", snap.VMID)
 	}
 	if snap.Comment != "before-migration" {
@@ -434,7 +434,7 @@ func TestSnapshotLifecycle_createListRestore(t *testing.T) {
 	}
 
 	// List snapshots.
-	rr = doJSON(t, r, http.MethodGet, "/v1/snapshots?vm_id=surf-task-1", nil)
+	rr = doJSON(t, r, http.MethodGet, "/v1/snapshots?vm_id=fuse-task-1", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("list status = %d", rr.Code)
 	}
@@ -498,7 +498,7 @@ func TestSnapshot_deleteLifecycle(t *testing.T) {
 		TaskID:         "task-1",
 		ManifestInline: encodeManifest(t),
 	})
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1/snapshots", CreateSnapshotRequest{
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1/snapshots", CreateSnapshotRequest{
 		Comment: "delete-me",
 	})
 	if rr.Code != http.StatusCreated {
@@ -520,7 +520,7 @@ func TestSnapshot_quotaExceededReturns409(t *testing.T) {
 	p := newFakeProvider()
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
 		Provider:              p,
-		Prefix:                "surf-",
+		Prefix:                "fuse-",
 		SnapshotQuotaMaxCount: 1,
 	})
 	h := &Handler{Fleet: fm}
@@ -531,11 +531,11 @@ func TestSnapshot_quotaExceededReturns409(t *testing.T) {
 		ManifestInline: encodeManifest(t),
 	})
 
-	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1/snapshots", CreateSnapshotRequest{}); rr.Code != http.StatusCreated {
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1/snapshots", CreateSnapshotRequest{}); rr.Code != http.StatusCreated {
 		t.Fatalf("first create status = %d", rr.Code)
 	}
 
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1/snapshots", CreateSnapshotRequest{})
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1/snapshots", CreateSnapshotRequest{})
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("quota status = %d, want 409", rr.Code)
 	}
@@ -575,8 +575,8 @@ func TestInlineResolver_rejectsInvalidBase64(t *testing.T) {
 //
 // Drain delegates to FleetManager.Drain, which runs the configured
 // DrainCommand inside the guest via Environment.ExecStream. Provisioning goes
-// through the real ProvisionAndAssign → Boot → SurfdAgentSpec path, so the VM
-// picks up DefaultSurfdDrainCommand automatically. These tests assert the HTTP
+// through the real ProvisionAndAssign → Boot → FusedAgentSpec path, so the VM
+// picks up DefaultFusedDrainCommand automatically. These tests assert the HTTP
 // contract and that the command was Exec'd on the env the Fleet actually holds.
 
 // drainExecCount returns how many ExecStream calls the provisioned env
@@ -603,7 +603,7 @@ func TestEnvironmentAction_Drain_HappyPath(t *testing.T) {
 		t.Fatalf("create status = %d body=%s", rr.Code, rr.Body.String())
 	}
 
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1?action=drain", nil)
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=drain", nil)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("drain status = %d, want 200. body: %s", rr.Code, rr.Body.String())
 	}
@@ -615,10 +615,10 @@ func TestEnvironmentAction_Drain_HappyPath(t *testing.T) {
 	if env.State != "draining" {
 		t.Errorf("state = %q, want draining", env.State)
 	}
-	if env.ID != "surf-task-1" {
+	if env.ID != "fuse-task-1" {
 		t.Errorf("id = %q", env.ID)
 	}
-	if got := drainExecCount(t, p, "surf-task-1"); got != 1 {
+	if got := drainExecCount(t, p, "fuse-task-1"); got != 1 {
 		t.Errorf("drain command exec count = %d, want 1", got)
 	}
 }
@@ -627,7 +627,7 @@ func TestEnvironmentAction_Drain_NotFound(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	r := mustRouter(t, h)
 
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-missing?action=drain", nil)
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-missing?action=drain", nil)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404. body: %s", rr.Code, rr.Body.String())
 	}
@@ -644,16 +644,16 @@ func TestEnvironmentAction_Drain_AlreadyDrainingReturns409(t *testing.T) {
 		t.Fatalf("create status = %d", rr.Code)
 	}
 
-	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1?action=drain", nil); rr.Code != http.StatusOK {
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=drain", nil); rr.Code != http.StatusOK {
 		t.Fatalf("first drain status = %d", rr.Code)
 	}
 
-	rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1?action=drain", nil)
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=drain", nil)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("second drain status = %d, want 409. body: %s", rr.Code, rr.Body.String())
 	}
 	// The rejected second drain must not run the command again.
-	if got := drainExecCount(t, p, "surf-task-1"); got != 1 {
+	if got := drainExecCount(t, p, "fuse-task-1"); got != 1 {
 		t.Errorf("drain command exec count = %d, want 1 (second drain must not exec)", got)
 	}
 }
@@ -668,10 +668,10 @@ func TestEnvironmentAction_Drain_ThenDeleteSucceeds(t *testing.T) {
 	}); rr.Code != http.StatusCreated {
 		t.Fatalf("create: %d", rr.Code)
 	}
-	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/surf-task-1?action=drain", nil); rr.Code != http.StatusOK {
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=drain", nil); rr.Code != http.StatusOK {
 		t.Fatalf("drain: %d", rr.Code)
 	}
-	if rr := doJSON(t, r, http.MethodDelete, "/v1/environments/surf-task-1", nil); rr.Code != http.StatusNoContent {
+	if rr := doJSON(t, r, http.MethodDelete, "/v1/environments/fuse-task-1", nil); rr.Code != http.StatusNoContent {
 		t.Fatalf("delete after drain: %d body=%s", rr.Code, rr.Body.String())
 	}
 }

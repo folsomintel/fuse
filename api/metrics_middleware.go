@@ -30,7 +30,7 @@ func MetricsMiddleware(
 			elapsed := time.Since(start).Seconds()
 
 			// Use chi's route pattern so /v1/environments/{vmId} is the
-			// label, not /v1/environments/surf-abc123.
+			// label, not /v1/environments/fuse-abc123.
 			route := chi.RouteContext(r.Context()).RoutePattern()
 			if route == "" {
 				route = "unknown"

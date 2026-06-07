@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // errStore is a StateStore that returns a configurable error from

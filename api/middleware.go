@@ -27,7 +27,7 @@ type IPRejectFunc func(remoteAddr, method, path, requestID string)
 // envelope on mismatch.
 //
 // If expectedToken is empty, the middleware is a no-op pass-through
-// (insecure/dev mode, matching surfd's Insecure flag pattern).
+// (insecure/dev mode, matching fused's Insecure flag pattern).
 func BearerAuth(expectedToken string, onFailure AuthFailureFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if expectedToken == "" {

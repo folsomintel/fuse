@@ -218,9 +218,9 @@ definitions:
 host: localhost:8080
 info:
   contact: {}
-  description: Control plane for Surf orchestrator. Provisions, inspects, and destroys
+  description: Control plane for Fuse orchestrator. Provisions, inspects, and destroys
     VMs; manages snapshots.
-  title: Surf Orchestrator API
+  title: Fuse Orchestrator API
   version: 0.1.0
 paths:
   /v1/environments:
@@ -257,7 +257,7 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a VM, uploads the manifest, starts surfd, and assigns the
+      description: Creates a VM, uploads the manifest, starts the agent, and assigns the
         task.
       parameters:
       - description: Environment spec

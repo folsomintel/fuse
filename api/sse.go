@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/andrewn6/fuse/internal/core"
 	"github.com/go-chi/chi/v5"
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
 )
 
 // sseKeepaliveInterval is the cadence at which the handler emits a

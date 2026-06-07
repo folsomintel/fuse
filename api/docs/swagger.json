@@ -1,8 +1,8 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Control plane for Surf orchestrator. Provisions, inspects, and destroys VMs; manages snapshots.",
-        "title": "Surf Orchestrator API",
+        "description": "Control plane for Fuse orchestrator. Provisions, inspects, and destroys VMs; manages snapshots.",
+        "title": "Fuse Orchestrator API",
         "contact": {},
         "version": "0.1.0"
     },
@@ -63,7 +63,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a VM, uploads the manifest, starts surfd, and assigns the task.",
+                "description": "Creates a VM, uploads the manifest, starts the agent, and assigns the task.",
                 "consumes": [
                     "application/json"
                 ],

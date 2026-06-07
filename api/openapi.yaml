@@ -1,13 +1,13 @@
 openapi: 3.0.3
 
 info:
-  title: Surf Orchestrator API
+  title: Fuse Orchestrator API
   version: 0.1.0
   description: |
-    Control plane for Surf orchestrator. Provisions, inspects, and destroys
+    Control plane for Fuse orchestrator. Provisions, inspects, and destroys
     VMs; manages snapshots. This API is consumed by the harness and by
     operations tooling. It is the stable HTTP surface for everything that
-    is not surfd (surfd itself exposes gRPC from inside the sandbox).
+    is not the in-guest agent (which exposes gRPC from inside the sandbox).
 
     Path prefix: `/v1`. Backward-incompatible changes bump the prefix.
 
@@ -142,7 +142,7 @@ paths:
       operationId: createEnvironment
       summary: Provision a new environment for a task.
       description: |
-        Creates a VM, uploads the manifest, starts surfd, and assigns the
+        Creates a VM, uploads the manifest, starts the agent, and assigns the
         task. Blocks until the VM is running or creation fails. The
         manifest and secrets are passed inline as byte strings; a future
         revision may add manifest-ref indirection.
@@ -193,12 +193,12 @@ paths:
 
         - `rotate-token` — generate fresh per-VM TLS credentials and
           push them to the guest. Returns 204.
-        - `drain` — first phase of two-phase teardown. Calls surfd's
+        - `drain` — first phase of two-phase teardown. Calls the agent's
           gRPC Down RPC inside the guest so the service DAG stops
           gracefully and the harness can flush outputs. The VM
           transitions to the `draining` state but is **not** destroyed;
           a subsequent DELETE tears it down. Only Running VMs can be
-          drained — any other state returns 409 Conflict. If surfd's
+          drained — any other state returns 409 Conflict. If the agent's
           Down RPC fails the VM remains in `draining` so the caller
           can still proceed with DELETE; the error is returned as 5xx.
       parameters:
@@ -635,7 +635,7 @@ components:
           type: object
           additionalProperties:
             type: string
-          description: Resolved key/value secrets passed to surfd.
+          description: Resolved key/value secrets passed to the agent.
 
     Environment:
       type: object

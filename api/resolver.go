@@ -4,16 +4,16 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // defaultManifest is the manifest used when a caller omits an inline manifest.
-// It is surfd-PROFILE data (the surfd manifest schema), not a generic core
+// It is fused-profile data (the fused manifest schema), not a generic core
 // default: the Resolver treats manifest bytes as opaque, so the default it
 // falls back to belongs to the configured agent profile. It is sourced from
-// the orchestrator surfd profile (orchestrator.DefaultSurfdManifest) so the
+// the orchestrator fused profile (orchestrator.DefaultFusedManifest) so the
 // schema lives in exactly one place.
-var defaultManifest = orchestrator.DefaultSurfdManifest
+var defaultManifest = orchestrator.DefaultFusedManifest
 
 // Resolver turns a CreateEnvironmentRequest into raw manifest bytes.
 // The default implementation understands inline base64 only; a future

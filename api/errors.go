@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
-	"github.com/surf-dev/surf/apps/orchestrator/secrets"
+	"github.com/andrewn6/fuse/internal/core"
+	"github.com/andrewn6/fuse/secrets"
 )
 
 // writeJSON writes v as a JSON body with the given status code. Any

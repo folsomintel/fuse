@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // sseEvent is a parsed SSE message: optional id and a JSON-decoded
@@ -157,7 +157,7 @@ func TestStreamEnvironmentEvents_SnapshotThenLive(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/surf-task-1/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/fuse-task-1/events", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -190,7 +190,7 @@ func TestStreamEnvironmentEvents_SnapshotThenLive(t *testing.T) {
 	// Give the server a moment to emit the snapshot, then trigger
 	// a state change by destroying the VM.
 	time.Sleep(50 * time.Millisecond)
-	if err := fm.DestroyVM(context.Background(), "surf-task-1"); err != nil {
+	if err := fm.DestroyVM(context.Background(), "fuse-task-1"); err != nil {
 		t.Fatalf("destroy: %v", err)
 	}
 
@@ -200,7 +200,7 @@ func TestStreamEnvironmentEvents_SnapshotThenLive(t *testing.T) {
 			t.Fatalf("got 0 events; want at least 1 (snapshot)")
 		}
 		// First event should be the snapshot showing running state.
-		if res.evs[0].Data.VMID != "surf-task-1" {
+		if res.evs[0].Data.VMID != "fuse-task-1" {
 			t.Errorf("snapshot vm_id = %q", res.evs[0].Data.VMID)
 		}
 		if res.evs[0].Data.State != orchestrator.VMStateRunning {
@@ -246,7 +246,7 @@ func TestStreamEnvironmentEvents_TerminalClosesStream(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/surf-task-1/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/fuse-task-1/events", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -256,7 +256,7 @@ func TestStreamEnvironmentEvents_TerminalClosesStream(t *testing.T) {
 	// Trigger destroy in another goroutine after a small pause.
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		_ = fm.DestroyVM(context.Background(), "surf-task-1")
+		_ = fm.DestroyVM(context.Background(), "fuse-task-1")
 	}()
 
 	// Read until EOF or our deadline.
@@ -281,7 +281,7 @@ func TestStreamEnvironmentEvents_ClientDisconnect(t *testing.T) {
 	before := runtime.NumGoroutine()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/surf-task-1/events", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/environments/fuse-task-1/events", nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -322,7 +322,7 @@ func TestStreamEnvironmentEvents_ClientDisconnect(t *testing.T) {
 
 	// Triggering a state change should not panic on the closed
 	// subscriber — best-effort cleanup test.
-	_ = fm.DestroyVM(context.Background(), "surf-task-1")
+	_ = fm.DestroyVM(context.Background(), "fuse-task-1")
 }
 
 func TestStreamEnvironmentEvents_Keepalive(t *testing.T) {
