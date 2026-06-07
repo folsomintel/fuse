@@ -3,8 +3,8 @@ package providers
 import (
 	"fmt"
 
-	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/firecracker"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // Kind identifies a sandbox provider implementation.

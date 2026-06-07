@@ -27,15 +27,20 @@ the HTTP contract, and the networking model are in [`README.md`](README.md).
 
 Fuse does not hardcode a specific in-guest daemon — it uploads a set of files into the
 guest and launches a configurable command (`AgentSpec`; see `../docs/DECOUPLING.md`). The
-**reference** in-guest agent is `fused`, baked into the rootfs by `fc-bake-rootfs.sh`.
+**reference** in-guest agent is `fused`, a small Go daemon in [`../cmd/fused`](../cmd/fused):
+it reads the uploaded `/fuse/manifest.json` + `/fuse/secrets.json`, binds `--listen`
+(`:9550`), serves `/health` + `/v1/info`, and quiesces cleanly on SIGTERM (the drain path).
 
-`fc-bake-rootfs.sh` expects two inputs in this directory, which you supply (they are not
-bundled): the `fused` binary (static `linux/amd64`) and a `fused.service` systemd unit that
-supervises it inside the guest.
+`fc-bake-rootfs.sh` bakes two inputs from this directory:
 
-**To run your own in-guest agent instead of fused:** adapt `fc-bake-rootfs.sh` to bake your
-binary + a supervisor unit into the rootfs, and have your agent consume the files Fuse
-uploads (manifest/secrets/credentials) and accept the same start/stop entry points. The
-agent is baked into the image, so re-bake whenever the binary changes. (Fuse's
-`AgentSpec.DownloadURL` / the `/start-agent` `download_url` field can alternatively fetch the
-binary from a URL at boot, but the default model here is bake-every-time.)
+- `fused` — the agent binary. Build it with `./fc-build-agent.sh` (static `linux/amd64`),
+  or drop your own here to run a different agent.
+- `fused.service` — the systemd unit (committed in `tools/`; the host fc-agent overrides its
+  `ExecStart` via a drop-in on start-agent).
+
+**To run your own in-guest agent instead of fused:** replace `fused` (+ `fused.service`) and
+have your agent consume the files Fuse uploads (manifest/secrets/credentials) and accept the
+same start/stop entry points. The agent is baked into the image, so re-bake whenever the
+binary changes. (Fuse's `AgentSpec.DownloadURL` / the `/start-agent` `download_url` field can
+alternatively fetch the binary from a URL at boot — e.g. a GitHub release of `fused` — but
+the default model here is bake-every-time.)

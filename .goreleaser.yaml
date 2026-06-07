@@ -43,6 +43,22 @@ builds:
     ldflags:
       - -s -w
 
+  # fused: the reference in-guest agent baked into the microVM rootfs (or fetched
+  # at boot via AGENT_DOWNLOAD_URL / start-agent download_url). Linux only — it
+  # runs inside a Firecracker guest, never on the control-plane host.
+  - id: fused
+    main: ./cmd/fused
+    binary: fused
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
 archives:
   - id: default
     formats:

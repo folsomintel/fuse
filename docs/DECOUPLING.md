@@ -1,4 +1,4 @@
-# Fuse — surfd decoupling design (authoritative)
+# Fuse — guest-agent decoupling design (authoritative)
 
 Fuse is a standalone **Firecracker orchestrator for agents**, extracted from the Surf
 orchestrator. It runs Firecracker microVMs on your own bare-metal hosts — there is **no
@@ -8,14 +8,15 @@ must conform to it.
 
 ## Why
 
-The orchestrator originally hardcoded **surfd** (Surf's in-guest daemon) into its Boot path
-and drain logic, and tied Fuse to the Surf monorepo via the
-`github.com/surf-dev/surf/packages/manifest-schema/api/surf/v1` proto import (used only for
-the gRPC `Down` call). That coupling has been removed.
+The orchestrator originally hardcoded **surfd** (Surf's in-guest daemon — since renamed to
+the `fused` reference agent) into its Boot path and drain logic, and tied Fuse to the Surf
+monorepo via the `github.com/surf-dev/surf/packages/manifest-schema/api/surf/v1` proto import
+(used only for the gRPC `Down` call). That coupling has been removed.
 
-**Goal:** surfd is *one configuration* of a generic, pluggable **guest-agent** abstraction.
-Operators bring their own in-guest daemon (or use the surfd reference profile), fetched from
-a URL (e.g. GitHub releases). Fuse core imports nothing from Surf.
+**Goal:** the reference agent (`fused`) is *one configuration* of a generic, pluggable
+**guest-agent** abstraction. Operators bring their own in-guest daemon (or use the `fused`
+reference profile), fetched from a URL (e.g. GitHub releases). Fuse core imports nothing
+from Surf.
 
 ## The three coupling points → generic moves
 
@@ -24,15 +25,15 @@ a URL (e.g. GitHub releases). Fuse core imports nothing from Surf.
      `DownloadURL string` (fetch the agent binary, e.g. GitHub releases),
      `Command string` (how to launch), plus pass-through `AuthToken`, `Gateway`,
      `GatewayToken`, and `DrainCommand string`.
-   - surfd is expressed as a **default AgentSpec profile** (`SurfdAgentSpec` in
+   - the reference agent is expressed as a **default AgentSpec profile** (`FusedAgentSpec` in
      `internal/core/agent_profile.go`) that reproduces today's behavior
-     (manifest/secrets/tls/auth-token files + surfd launch command). Nothing surf-specific
-     is hardcoded in the core.
+     (manifest/secrets/tls/auth-token files + the `fused` launch command). Nothing
+     fuse-specific is hardcoded in the core.
 
-2. **Boot's hardcoded `/surf/...` uploads → `AgentSpec.Files`**
-   - Boot uploads whatever `AgentSpec.Files` specifies. The `/surf/manifest.json`,
-     `/surf/secrets.json`, `/surf/tls/*`, `/surf/auth-token` paths live only inside the
-     surfd profile, not in Boot.
+2. **Boot's hardcoded `/fuse/...` uploads → `AgentSpec.Files`**
+   - Boot uploads whatever `AgentSpec.Files` specifies. The `/fuse/manifest.json`,
+     `/fuse/secrets.json`, `/fuse/tls/*`, `/fuse/auth-token` paths live only inside the
+     `fused` profile, not in Boot.
 
 3. **`surfd_client.go` gRPC `Down` drain → configurable drain command via `Exec`**
    - Drain runs `AgentSpec.DrainCommand` inside the guest via the existing
@@ -45,15 +46,16 @@ a URL (e.g. GitHub releases). Fuse core imports nothing from Surf.
 
 Fuse ships a **single provider: firecracker**. It drives a per-host `fc-agent`
 (`tools/fc-agent.py`) and falls back to an in-memory stub when `FIRECRACKER_BASE_URL` is
-unset (the dev default). Selected via `SURF_PROVIDER` (`firecracker`).
+unset (the dev default). Selected via `FUSE_PROVIDER` (`firecracker`).
 
 The firecracker host-agent wire is deliberately frozen (the external host agent cannot be
 changed): `StartAgent` posts the generalized `POST /v1/vm/{id}/start-agent` (which adds
 `DownloadURL` support so you can fetch your agent binary instead of re-baking the rootfs)
-and **falls back to the frozen `/start-surfd` wire on a 404**. The structured surfd paths
-it sends come from private package-local constants
-(`surfdManifestGuestPath`/`surfdSecretsGuestPath`/`surfdTLSCertGuestPath`/
-`surfdTLSKeyGuestPath`) that mirror the core profile by design. The host agent owns the
+and **falls back to the frozen `/start-surfd` wire on a 404** (the route name is kept for
+back-compat; its payload now carries the `/fuse/*` paths). The structured guest paths it
+sends come from private package-local constants
+(`fusedManifestGuestPath`/`fusedSecretsGuestPath`/`fusedTLSCertGuestPath`/
+`fusedTLSKeyGuestPath`) that mirror the core profile by design. The host agent owns the
 launch mechanism, so it IGNORES `AgentSpec.Command` and reads the structured fields off the
 wire.
 
@@ -71,14 +73,79 @@ These must stay GREEN (the loop's termination condition):
 
 ## Hard constraints
 
-- **No module-path rename** yet. Keep `module github.com/surf-dev/surf/apps/orchestrator`.
+- **Module path** is `module github.com/andrewn6/fuse` (renamed from
+  `github.com/surf-dev/surf/apps/orchestrator`; keep it stable now).
 - Do **not** cut the gateway registration or the provider abstraction. The
   `AgentSpec`/`StartAgent` seam is the OSS extension point and must stay generic — the
-  simplicity target is **surfd specifically**, not the abstraction around it.
+  simplicity target is the **reference agent (`fused`) specifically**, not the abstraction
+  around it.
 
 ## Changelog
 
 <!-- newest first -->
+
+### 2026-06-07 — reference `fused` agent + full deploy test
+
+The repo had no buildable in-guest agent after the rename (the old `surfd` lived in another
+repo and its fetch alias was dropped), so `fc-bake-rootfs.sh` couldn't complete and no real
+deploy was possible. Added a minimal reference agent and an end-to-end deploy test.
+
+- **`cmd/fused`** — the reference in-guest agent: reads the uploaded `/fuse/manifest.json` +
+  `/fuse/secrets.json`, binds `--listen` (default `:9550`), serves unauthenticated `/health`
+  and bearer-protected `/v1/info`, supports `--tls-cert/--tls-key/--auth-token-file/--gateway/
+  --vm-id/--insecure`, and exits 0 on SIGTERM (so the `systemctl stop fused` drain is clean
+  and `Restart=on-failure` does not revive it). Unit-tested (`cmd/fused/main_test.go`).
+- **`tools/fc-build-agent.sh`** builds `tools/fused` (static `linux/amd64`) from `cmd/fused`;
+  **`tools/fused.service`** is the systemd unit (its `ExecStart` is overridden by the host
+  fc-agent drop-in on start-agent). `fc-bake-rootfs.sh` now bakes these.
+- **`.goreleaser.yaml`** ships `fused` (linux amd64/arm64) so it can be fetched at boot via
+  `AGENT_DOWNLOAD_URL` / the `/start-agent` `download_url` field (no rebake).
+- **End-to-end deploy tests** (`e2e/deploy_test.go` + `tools/fc-e2e.sh`): assemble the full
+  stack like `server/main.go` and walk the lifecycle over HTTP (probes → create → get → list
+  → snapshot → restore → drain → destroy → 404). They run against the in-memory stub by
+  default (hermetic); set `FUSE_E2E_FIRECRACKER_URL`/`_TOKEN` (Go) or `FUSE_E2E_REMOTE=1`
+  (shell, reads `.env`) to target a real host. NOTE: the stub provider's `Exec`/`ExecStream`
+  were made no-ops so the stub server can run the full lifecycle locally; the drain step is
+  therefore *simulated* under the stub — real guest-exec/drain semantics are covered by the
+  `TestDrain_*` unit tests, and the real path requires a host running the new agent.
+
+### 2026-06-07 — rename the reference agent `surfd` → `fused`
+
+De-Surf the OSS product: the reference in-guest daemon is now `fused`. This was a
+system-wide rename across the Go core, the firecracker provider, the `tools/` host
+toolchain, and the docs.
+
+- Go core (`agent_profile.go`): `SurfdAgentSpec`→`FusedAgentSpec`,
+  `DefaultSurfdDrainCommand`→`DefaultFusedDrainCommand`,
+  `DefaultSurfdManifest`→`DefaultFusedManifest`, `buildSurfdCommand`→`buildFusedCommand`,
+  `surfdCredentialFiles`→`fusedCredentialFiles`, the `surf*Path` consts →`fuse*Path`,
+  `SurfSecretsPath`→`FuseSecretsPath`, `surfAgentBinaryPath` value →`/usr/local/bin/fused`,
+  drain command →`systemctl stop fused 2>/dev/null || pkill -TERM fused`.
+- Guest path convention `/surf/*` → `/fuse/*` (manifest/secrets/tls/auth-token), kept in
+  sync between the core profile and the firecracker frozen-wire consts
+  (`surfdManifestGuestPath`→`fusedManifestGuestPath`, etc.).
+- Baked image: `rootfs-surfd.ext4`→`rootfs-fused.ext4`, guest binary
+  `/usr/local/bin/surfd`→`/usr/local/bin/fused`, unit `surfd.service`→`fused.service`,
+  `/etc/default/surfd`→`/etc/default/fused`, `SURFD_EXTRA_ARGS`→`FUSED_EXTRA_ARGS`.
+  `fc-bake-rootfs.sh` now expects operator-supplied `fused` + `fused.service` inputs.
+- **FROZEN, deliberately NOT renamed:** the `/start-surfd` HTTP route (and the
+  `startSurfdRequest` struct / `do_start_surfd` handler that model it). The Go provider still
+  posts `/start-agent` first and falls back to `/start-surfd` on a 404; the route name is a
+  back-compat alias whose payload now carries the `/fuse/*` paths. On the **new** host the
+  `/start-surfd` alias launches `fused`. (An already-deployed **old** host running the old
+  `fc-agent.py` + old `rootfs-surfd.ext4` is not path-compatible with the new `/fuse/*`
+  uploads — for OSS that's a non-issue since hosts bake fresh and run the new agent.)
+- Build/vet/`go test ./...` green after the rename.
+- Follow-up (same day) — completed the rest of the de-Surf so the OSS product carries no
+  Surf branding outside genuine historical references and the frozen `/start-surfd` route:
+  - **Go module path** `github.com/surf-dev/surf/apps/orchestrator` → `github.com/andrewn6/fuse`
+    (every import across 23 files + `go.mod`).
+  - **VM-name prefix** default `surf-` → `fuse-` (`ORCH_VM_PREFIX`, plus test fixtures and the
+    `cmd/dbcheck` example).
+  - **API title/branding** "Surf Orchestrator" → "Fuse Orchestrator" (`server/main.go` `@title`
+    + comments; `api/docs/swagger.*` regenerate from the annotation).
+  - **Env vars**: `SURF_PROVIDER` → `FUSE_PROVIDER`, `SURF_CONTAINER_BIN` → `FUSE_CONTAINER_BIN`;
+    **dropped** the `SURFD_DOWNLOAD_URL` back-compat alias (use `AGENT_DOWNLOAD_URL`).
 
 ### 2026-06-05 — remove the Daytona provider (bare-metal only)
 
@@ -89,7 +156,7 @@ The Daytona provider has been removed.
   `*_test.go`, `integration_test.go`, `e2e_grpcweb_test.go`).
 - `providers/factory.go`: dropped the `Daytona` `Kind`, the `daytona` import, the
   `Config.Daytona` field, and the `case Daytona` construction branch.
-- `server/main.go`: dropped the `daytona` import and the `SURF_PROVIDER=daytona`
+- `server/main.go`: dropped the `daytona` import and the `FUSE_PROVIDER=daytona`
   selection branch (and its `DAYTONA_API_KEY`/`DAYTONA_BASE_URL` reads). The valid-provider
   error message is now `(valid: firecracker)`.
 - `internal/core/agent_profile.go`: renamed the guest binary path constant from
@@ -97,7 +164,7 @@ The Daytona provider has been removed.
   comments that referenced Daytona (the firecracker host agent still ignores `Command`).
 - `tools/fc-agent.py`: dropped the comment cross-reference to Daytona's
   `ensureAgentBinary`.
-- README updated: removed the daytona provider bullet, the `SURF_PROVIDER` daytona option,
+- README updated: removed the daytona provider bullet, the `FUSE_PROVIDER` daytona option,
   the layout entry, and re-framed the `AGENT_DOWNLOAD_URL` row as a generic guest-agent
   download (it was always wired into the firecracker provider, not just Daytona).
 - The generic `AgentSpec.Command` / `buildSurfdCommand` seam is **kept**: it is Fuse's own
@@ -172,6 +239,6 @@ parameterizes the systemd-drop-in `ExecStart` by `binary_path`/`listen` and, whe
 with the surfd defaults, so its bytes are unchanged. The firecracker provider's `StartAgent`
 posts `/start-agent` first (including `DownloadURL` from `spec` or `Config`) and **falls back
 to `/start-surfd` on a 404** (via a typed `httpStatusError`); other errors propagate.
-`server/main.go` wires `AGENT_DOWNLOAD_URL` (with `SURFD_DOWNLOAD_URL` alias) into the
+`server/main.go` wires `AGENT_DOWNLOAD_URL` into the
 firecracker provider and the per-host factory. This keeps the surfd structured launch while
 adding the OSS win: fetch your agent binary from a URL instead of re-baking.

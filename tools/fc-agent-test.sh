@@ -2,7 +2,12 @@
 # End-to-end smoke test of the Fuse fc-agent contract against the local host agent.
 set -euo pipefail
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$FC_DIR/.fc-agent.env"
+# Token is written to .env by fc-agent.sh (legacy: .fc-agent.env). Prefer .env.
+ENV_FILE="$FC_DIR/.env"
+[ -f "$ENV_FILE" ] || ENV_FILE="$FC_DIR/.fc-agent.env"
+[ -f "$ENV_FILE" ] || { echo "no agent env file found at $FC_DIR/.env — run ./fc-agent.sh start first" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "$ENV_FILE"
 BASE="http://127.0.0.1:${FC_AGENT_PORT:-8090}"
 AUTH=(-H "Authorization: Bearer $FC_AGENT_TOKEN" -H "Content-Type: application/json")
 NAME="smoke-$(date +%s)"

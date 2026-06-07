@@ -55,16 +55,18 @@ git clone <this repo> ~/fc && cd ~/fc/tools
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
 ./fc-install.sh
 
-# 2. Bake the guest rootfs (rootfs-fused.ext4). You must do this before first
-#    start, and re-bake whenever your in-guest agent binary changes — the agent
-#    is baked into the image (see "Baking the rootfs" below). Drop your agent
-#    binary (the reference is `fused`) next to the scripts first.
+# 2. Build the reference in-guest agent (produces tools/fused). Needs Go.
+#    To run your own agent instead, drop your binary here as `fused` and skip this.
+./fc-build-agent.sh
+
+# 3. Bake the guest rootfs (rootfs-fused.ext4). Bakes in `fused` + fused.service.
+#    Re-run whenever the agent binary changes — the agent is baked into the image.
 ./fc-bake-rootfs.sh
 
-# 3. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
+# 4. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
 ./fc-agent.sh start
 
-# 4. Smoke-test the contract end to end.
+# 5. Smoke-test the contract end to end.
 ./fc-agent-test.sh
 ```
 
@@ -114,9 +116,10 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 
 `./fc-bake-rootfs.sh` builds the guest image. **The in-guest agent is baked into the
 image**, so you must (re-)bake before first start and whenever the agent binary changes.
-The reference agent is `fused` — drop a `fused` binary (+ a `fused.service` unit) next to the
-scripts before baking, or adapt the script to bake your own agent and its supervisor unit
-(see [`FUSE.md`](FUSE.md)).
+The reference agent is `fused`, built from this repo's [`cmd/fused`](../cmd/fused) by
+`./fc-build-agent.sh` (output: `tools/fused`); its systemd unit `fused.service` ships in
+`tools/`. To bake your own agent instead, drop your binary here as `fused` (and replace
+`fused.service`) — see [`FUSE.md`](FUSE.md).
 
 Built on top of the Firecracker CI Ubuntu 22.04 rootfs. Contents injected:
 

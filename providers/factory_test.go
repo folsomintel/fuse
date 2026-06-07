@@ -3,7 +3,7 @@ package providers
 import (
 	"testing"
 
-	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
+	"github.com/andrewn6/fuse/firecracker"
 )
 
 func TestNew_default_firecracker(t *testing.T) {
