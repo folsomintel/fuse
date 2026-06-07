@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Rebuild rootfs-surfd.ext4 from rootfs.ext4 + surfd + podman-static + iptables.
+# Rebuild rootfs-fused.ext4 from rootfs.ext4 + fused + podman-static + iptables.
 # Idempotent. Requires: podman on host (for the iptables bundle extraction),
 # sudo, mount, truncate, e2fsck, resize2fs, curl, tar.
 #
 # Inputs in the working directory:
 #   rootfs.ext4          base Firecracker CI rootfs
-#   surfd                statically linked Linux/amd64 surfd binary
+#   fused                statically linked Linux/amd64 agent binary (the reference agent)
+#   fused.service        systemd unit that supervises the agent in the guest
 #
 # Output:
-#   rootfs-surfd.ext4    baked image the fc-agent boots per VM
+#   rootfs-fused.ext4    baked image the fc-agent boots per VM
 set -euo pipefail
 
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$FC_DIR"
 
 BASE=rootfs.ext4
-OUT=rootfs-surfd.ext4
+OUT=rootfs-fused.ext4
 SIZE=${FC_ROOTFS_SIZE:-4G}
 PODMAN_STATIC_VERSION=${PODMAN_STATIC_VERSION:-v5.8.1}
 PODMAN_STATIC_URL="https://github.com/mgoltzsche/podman-static/releases/download/${PODMAN_STATIC_VERSION}/podman-linux-amd64.tar.gz"
@@ -29,7 +30,8 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; };
 for c in sudo mount umount truncate e2fsck resize2fs curl tar podman; do need "$c"; done
 
 [ -f "$BASE" ]  || { echo "$BASE not found — run ./fc-install.sh first" >&2; exit 1; }
-[ -f surfd ]   || { echo "surfd not found — download from your artifact store" >&2; exit 1; }
+[ -f fused ]   || { echo "fused not found — drop your agent binary (named 'fused') here" >&2; exit 1; }
+[ -f fused.service ] || { echo "fused.service not found — drop the agent's systemd unit here" >&2; exit 1; }
 
 cleanup() {
   sudo -n umount "$MOUNT_POINT" 2>/dev/null || true
@@ -50,11 +52,11 @@ log "mount loopback at $MOUNT_POINT"
 sudo -n mkdir -p "$MOUNT_POINT"
 sudo -n mount -o loop "$OUT" "$MOUNT_POINT"
 
-# --- 1. surfd + systemd unit + /surf + /var/tmp + CA bundle ------------------
+# --- 1. fused + systemd unit + /fuse + /var/tmp + CA bundle ------------------
 
-log "inject surfd + systemd unit"
+log "inject fused + systemd unit"
 sudo -n mkdir -p \
-  "$MOUNT_POINT/surf" \
+  "$MOUNT_POINT/fuse" \
   "$MOUNT_POINT/usr/local/bin" \
   "$MOUNT_POINT/var/tmp" \
   "$MOUNT_POINT/var/lib/containers" \
@@ -63,12 +65,12 @@ sudo -n mkdir -p \
   "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants" \
   "$MOUNT_POINT/etc/containers"
 sudo -n chmod 1777 "$MOUNT_POINT/var/tmp"
-sudo -n install -m 0755 surfd "$MOUNT_POINT/usr/local/bin/surfd"
-sudo -n install -m 0644 surfd.service "$MOUNT_POINT/etc/systemd/system/surfd.service"
-sudo -n ln -sf /etc/systemd/system/surfd.service \
-  "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/surfd.service"
-echo '# populated by fc-agent start-surfd' | \
-  sudo -n tee "$MOUNT_POINT/etc/default/surfd" >/dev/null
+sudo -n install -m 0755 fused "$MOUNT_POINT/usr/local/bin/fused"
+sudo -n install -m 0644 fused.service "$MOUNT_POINT/etc/systemd/system/fused.service"
+sudo -n ln -sf /etc/systemd/system/fused.service \
+  "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/fused.service"
+echo '# populated by fc-agent start-agent' | \
+  sudo -n tee "$MOUNT_POINT/etc/default/fused" >/dev/null
 
 if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
   sudo -n install -m 0644 /etc/ssl/certs/ca-certificates.crt \
@@ -169,7 +171,7 @@ CONF
 # --- 5. sanity ---------------------------------------------------------------
 
 log "sanity check"
-sudo -n test -x "$MOUNT_POINT/usr/local/bin/surfd"
+sudo -n test -x "$MOUNT_POINT/usr/local/bin/fused"
 sudo -n test -x "$MOUNT_POINT/usr/local/bin/podman"
 sudo -n test -x "$MOUNT_POINT/usr/libexec/docker/cli-plugins/docker-compose"
 sudo -n test -L "$MOUNT_POINT/usr/sbin/iptables"

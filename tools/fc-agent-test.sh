@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test of the Surf contract against the local host agent.
+# End-to-end smoke test of the Fuse fc-agent contract against the local host agent.
 set -euo pipefail
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$FC_DIR/.fc-agent.env"
@@ -25,7 +25,7 @@ say "list prefix=smoke"
 j "$BASE/v1/vm?prefix=smoke"; echo
 
 say "upload /root/hello.txt"
-B64=$(printf 'hi from surf\n' | base64 -w0)
+B64=$(printf 'hi from fuse\n' | base64 -w0)
 j -X POST "$BASE/v1/vm/$NAME/upload" -d "{\"path\":\"/root/hello.txt\",\"content_b64\":\"$B64\"}"
 echo
 

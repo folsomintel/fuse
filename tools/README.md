@@ -1,7 +1,25 @@
 # fc-agent
 
-Surf-compatible host agent for Firecracker. Drives per-VM microVMs and speaks
-the contract the Surf orchestrator's Firecracker provider client expects.
+The **Fuse host agent for Firecracker**. Runs on each Firecracker host, drives one
+microVM per VM, and speaks the HTTP contract Fuse's `firecracker` provider expects
+(`POST /v1/vm`, upload/exec, `start-agent`, snapshots). Fuse is the control plane; `fc-agent`
+is the per-host worker.
+
+## Requirements (read first)
+
+Firecracker needs **hardware virtualization (KVM)**. You must run `fc-agent` on a host that
+exposes `/dev/kvm`:
+
+- **Bare-metal Linux**, or a cloud instance type with **nested virtualization** enabled
+  (e.g. GCP `*-metal` / nested-virt images, AWS `*.metal`, bare-metal providers like Equinix
+  / Hetzner dedicated). It will **not** run inside an ordinary container or a VM without
+  nested virt.
+- Confirm before you start: `ls -l /dev/kvm` and `[ -r /dev/kvm ] && [ -w /dev/kvm ] && echo ok`.
+  If `/dev/kvm` is missing, the host can't run Firecracker.
+- Linux only (the agent shells out to `ip`, `iptables`, `firecracker`, SSH). `x86_64` today
+  — the baked rootfs pulls `amd64` podman/iptables.
+- Needs `sudo` (TAP devices, iptables, mounting the rootfs to bake), plus `curl`, `tar`,
+  `ssh`, and `iptables` on the host.
 
 ## Layout
 
@@ -20,30 +38,47 @@ Runtime-only (ignored in git):
 ```
 vmlinux.bin         # guest kernel
 rootfs.ext4         # base Firecracker CI rootfs
-rootfs-surfd.ext4   # baked rootfs with surfd + systemd unit
+rootfs-fused.ext4   # baked rootfs with fused + systemd unit
 ubuntu.id_rsa       # SSH key for root@<guest>
-surfd               # binary (used only for baking the rootfs)
+fused               # binary (used only for baking the rootfs)
 agent-state/        # per-VM metadata, rootfs copies, snapshots
 .fc-agent.env       # bearer token (generated on first start)
 ```
 
-## Bringing up a new host
+## Setup (bring up a host)
+
+On a host that meets the requirements above:
 
 ```bash
-git clone <this repo> ~/fc && cd ~/fc
-./fc-install.sh                 # fetches firecracker binary + CI kernel/rootfs
-# Drop a baked rootfs-surfd.ext4 next to rootfs.ext4
-# (build instructions below, or fetch a prebuilt from your artifact store)
-./fc-agent.sh start             # prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN
-./fc-agent-test.sh              # smoke test
+git clone <this repo> ~/fc && cd ~/fc/tools
+
+# 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
+./fc-install.sh
+
+# 2. Bake the guest rootfs (rootfs-fused.ext4). You must do this before first
+#    start, and re-bake whenever your in-guest agent binary changes — the agent
+#    is baked into the image (see "Baking the rootfs" below). Drop your agent
+#    binary (the reference is `fused`) next to the scripts first.
+./fc-bake-rootfs.sh
+
+# 3. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
+./fc-agent.sh start
+
+# 4. Smoke-test the contract end to end.
+./fc-agent-test.sh
 ```
 
-Then feed the printed env vars into the Surf orchestrator:
+Point Fuse at the printed values:
 
 ```
 FIRECRACKER_BASE_URL=http://<host>:8090
 FIRECRACKER_TOKEN=<generated>
 ```
+
+Open these at your cloud / external firewall:
+
+- `8090/tcp` — the agent's HTTP API
+- `19551–19799/tcp` — the per-VM guest-agent DNAT range
 
 ## Contract
 
@@ -57,7 +92,8 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 | DELETE | `/v1/vm/{id}` | Tear down, free TAP + DNAT. |
 | POST   | `/v1/vm/{id}/upload` | `{path, content_b64}` — writes into the guest (mkdir -p). |
 | POST   | `/v1/vm/{id}/exec` | `{cmd:[...]}` — returns `{exit_code, stdout (b64), stderr (b64)}`. |
-| POST   | `/v1/vm/{id}/start-surfd` | `{manifest_path, secrets_path, gateway?, extra_args?}` — writes a systemd drop-in and `systemctl start surfd`. |
+| POST   | `/v1/vm/{id}/start-agent` | Preferred. `{manifest_path, secrets_path, gateway?, extra_args?, tls_cert_path?, tls_key_path?, auth_token?, download_url?, binary_path?, listen?}` — optionally fetches the agent binary via `download_url`, then writes a systemd drop-in and starts it. |
+| POST   | `/v1/vm/{id}/start-surfd` | Frozen legacy wire. Same as `start-agent` with fused defaults and no `download_url`. Fuse falls back to this on a 404 from `start-agent`. |
 | POST   | `/v1/vm/{id}/snapshot` | `{comment, include_ram}` — disk-only (`include_ram` ignored). |
 | GET    | `/v1/vm/{id}/snapshots` | `{snapshots:[...]}` |
 | POST   | `/v1/vm/{id}/restore` | `{snapshot_id, include_ram}` — stops fc, swaps rootfs, reboots VM. |
@@ -70,22 +106,28 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 
 - One TAP per VM (`fcv<N>`), /30 subnet `10.200.<N>.0/30`, host `.1`, guest `.2`.
 - Host iptables: MASQUERADE for egress, FORWARD accept for the TAP, per-VM
-  PREROUTING DNAT `<public_host>:<port> -> <guest>:9550` for surfd.
+  PREROUTING DNAT `<public_host>:<port> -> <guest>:9550` to the guest agent.
 - Cloud SG / external firewall must allow inbound TCP to the agent port (8090)
   and the DNAT range (19551–19799 at current defaults).
 
-## Building the surfd rootfs (`rootfs-surfd.ext4`)
+## Baking the rootfs (`rootfs-fused.ext4`)
+
+`./fc-bake-rootfs.sh` builds the guest image. **The in-guest agent is baked into the
+image**, so you must (re-)bake before first start and whenever the agent binary changes.
+The reference agent is `fused` — drop a `fused` binary (+ a `fused.service` unit) next to the
+scripts before baking, or adapt the script to bake your own agent and its supervisor unit
+(see [`FUSE.md`](FUSE.md)).
 
 Built on top of the Firecracker CI Ubuntu 22.04 rootfs. Contents injected:
 
-- `/usr/local/bin/surfd` — static Go binary, linux/amd64
+- `/usr/local/bin/fused` — static Go binary, linux/amd64 (the reference agent)
 - `/usr/local/bin/podman` + crun/runc/conmon/netavark/pasta/fuse-overlayfs —
   [`mgoltzsche/podman-static`](https://github.com/mgoltzsche/podman-static) v5.8.1
 - `iptables` + libxtables + `/usr/lib/x86_64-linux-gnu/xtables/*` extracted from
   Ubuntu 22.04 (`iptables` deb). `/usr/sbin/iptables` etc. re-symlinked to
   `xtables-legacy-multi` because the kernel has no nftables.
 - `/etc/ssl/certs/ca-certificates.crt` (copied from host)
-- `/etc/systemd/system/surfd.service` with drop-in slot; `start-surfd` writes
+- `/etc/systemd/system/fused.service` with drop-in slot; `start-surfd` writes
   a drop-in with `--manifest/--secrets/--gateway/--vm-id` and `systemctl start`.
 - `/etc/containers/storage.conf` — native kernel overlay (kernel has
   `CONFIG_OVERLAY_FS=y` but no `CONFIG_FUSE_FS`, so fuse-overlayfs is unused).
@@ -116,20 +158,25 @@ Built on top of the Firecracker CI Ubuntu 22.04 rootfs. Contents injected:
 
 ## Re-baking
 
-Script-less for now — the current rootfs was built interactively. Rough recipe:
+Re-run `./fc-bake-rootfs.sh` — it rebuilds `rootfs-fused.ext4` idempotently from
+`rootfs.ext4` + your `fused` binary + podman-static + the iptables bundle. New VMs pick up
+the new image on their next `create`; existing VMs keep their per-VM copy until recreated.
+
+Under the hood it does roughly this (kept here as a reference for adapting the bake to your
+own agent):
 
 ```bash
-cp rootfs.ext4 rootfs-surfd.ext4
-sudo truncate -s 4G rootfs-surfd.ext4
-sudo e2fsck -f -y rootfs-surfd.ext4 && sudo resize2fs rootfs-surfd.ext4
-sudo mount -o loop rootfs-surfd.ext4 /tmp/fcroot
+cp rootfs.ext4 rootfs-fused.ext4
+sudo truncate -s 4G rootfs-fused.ext4
+sudo e2fsck -f -y rootfs-fused.ext4 && sudo resize2fs rootfs-fused.ext4
+sudo mount -o loop rootfs-fused.ext4 /tmp/fcroot
 
-# surfd + systemd unit + /surf + CA bundle + container dirs
-sudo cp surfd /tmp/fcroot/usr/local/bin/surfd && sudo chmod 755 $_
-sudo cp surfd.service /tmp/fcroot/etc/systemd/system/
-sudo ln -sf /etc/systemd/system/surfd.service \
-  /tmp/fcroot/etc/systemd/system/multi-user.target.wants/surfd.service
-sudo mkdir -p /tmp/fcroot/surf /tmp/fcroot/var/tmp \
+# fused + systemd unit + /fuse + CA bundle + container dirs
+sudo cp fused /tmp/fcroot/usr/local/bin/fused && sudo chmod 755 $_
+sudo cp fused.service /tmp/fcroot/etc/systemd/system/
+sudo ln -sf /etc/systemd/system/fused.service \
+  /tmp/fcroot/etc/systemd/system/multi-user.target.wants/fused.service
+sudo mkdir -p /tmp/fcroot/fuse /tmp/fcroot/var/tmp \
   /tmp/fcroot/var/lib/containers /tmp/fcroot/run/containers
 sudo chmod 1777 /tmp/fcroot/var/tmp
 sudo cp /etc/ssl/certs/ca-certificates.crt /tmp/fcroot/etc/ssl/certs/
@@ -166,9 +213,9 @@ sudo umount /tmp/fcroot
 # systemd integration (optional, for long-lived hosts)
 ./fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
 ./fc-agent.sh uninstall-service
-./fc-agent.sh install-updater      # weekly `fc-update-surfd.sh` via systemd timer
-./fc-agent.sh uninstall-updater
 ```
+
+To pick up a new agent binary, re-run `./fc-bake-rootfs.sh` and `./fc-agent.sh restart`.
 
 ## Re-attach on restart
 
@@ -182,40 +229,7 @@ That means you can `systemctl restart fc-agent` without losing VMs, and
 host reboots transparently bring everything back (as long as the systemd unit
 is installed).
 
-## Bringing up a fresh host
-
-```bash
-git clone <repo> ~/fc && cd ~/fc
-./fc-install.sh                    # firecracker binary + CI kernel + base rootfs
-# provide the surfd binary (any of):
-#   - GH_TOKEN=... ./fc-update-surfd.sh          (pulls from surf-systems/surf)
-#   - gh release download 0.0 -R surf-systems/surf -p surfd -p surfd.sha256
-./fc-bake-rootfs.sh                # builds rootfs-surfd.ext4
-./fc-agent.sh install-service      # enable + start the agent
-./fc-agent.sh install-updater      # weekly surfd refresh (needs .fc-updater.env)
-./fc-agent-test.sh                 # smoke test
-```
-
-Open these at the cloud-provider firewall:
-
-- `8090/tcp` — agent HTTP
-- `19551–19799/tcp` — per-VM surfd DNAT range
-
-## Weekly surfd updates
-
-`fc-update-surfd.sh` checks `surf-systems/surf`'s latest release, verifies the
-`surfd.sha256`, rebakes `rootfs-surfd.ext4` if the binary changed, then bounces
-the agent. Runs idempotent — no-op if already at latest.
-
-Install the timer with `./fc-agent.sh install-updater`. Required file:
-
-```bash
-echo 'GH_TOKEN=ghp_xxxxxx' > ~/fc/.fc-updater.env
-chmod 600 ~/fc/.fc-updater.env
-```
-
-Fires Mondays at 04:00 UTC with 30-minute jitter. `Persistent=true` catches up
-on missed runs if the host was down.
+## State
 
 State lives under `agent-state/vms/<vm_id>/` — safe to `rm -rf` if the agent is
 stopped and you want a clean slate.

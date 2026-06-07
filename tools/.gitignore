@@ -1,8 +1,8 @@
 # Large binaries — fetched via fc-install.sh or baked separately
 *.ext4
 vmlinux.bin
-surfd
-surfd.sha256
+fused
+fused.sha256
 
 # SSH key for the guest (shipped by Firecracker CI, not ours)
 ubuntu.id_rsa

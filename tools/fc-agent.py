@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Surf-compatible Firecracker host agent.
+"""Fuse Firecracker host agent.
 
 Speaks the contract documented in ~/fc/README.md (POST /v1/vm, upload/exec,
-snapshots, ...). One firecracker process per VM; state persisted under
-~/fc/agent-state/vms/<vm_id>/.
+snapshots, ...). Fuse's `firecracker` provider talks to this agent. One
+firecracker process per VM; state persisted under ~/fc/agent-state/vms/<vm_id>/.
 
 Auth: Authorization: Bearer $FC_AGENT_TOKEN
-Transport for guest ops (upload/exec/start-surfd): SSH to root@<guest_ip>.
+Transport for guest ops (upload/exec/start-agent): SSH to root@<guest_ip>.
 """
 from __future__ import annotations
 
@@ -34,13 +34,14 @@ FC_DIR = Path(os.environ.get("FC_DIR", "/home/ubuntu/fc"))
 STATE_DIR = FC_DIR / "agent-state"
 VMS_DIR = STATE_DIR / "vms"
 KERNEL = FC_DIR / "vmlinux.bin"
-BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(FC_DIR / "rootfs-surfd.ext4")))
+BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(FC_DIR / "rootfs-fused.ext4")))
 SSH_KEY = FC_DIR / "ubuntu.id_rsa"
 TOKEN = os.environ.get("FC_AGENT_TOKEN")
 PORT = int(os.environ.get("FC_AGENT_PORT", "8090"))
 FC_BIN = os.environ.get("FC_BIN", "/usr/local/bin/firecracker")
-SURFD_PORT = int(os.environ.get("SURFD_PORT", "9550"))
-HOST_PORT_BASE = int(os.environ.get("SURFD_HOST_PORT_BASE", "19550"))
+# Port the in-guest agent listens on; per-VM host ports DNAT to this.
+FUSED_PORT = int(os.environ.get("FUSED_PORT", "9550"))
+HOST_PORT_BASE = int(os.environ.get("FUSE_HOST_PORT_BASE", "19550"))
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST") or (
     subprocess.run(["curl", "-fsS", "ifconfig.me"], capture_output=True, text=True).stdout.strip()
     or subprocess.run(["bash", "-lc", "hostname -I | awk '{print $1}'"], capture_output=True, text=True).stdout.strip()
@@ -173,19 +174,19 @@ def host_iface() -> str:
     ).decode().strip()
 
 
-def add_surfd_forward(host_port: int, guest_ip: str) -> None:
-    """DNAT <host>:host_port -> guest_ip:SURFD_PORT, plus FORWARD allow."""
+def add_agent_forward(host_port: int, guest_ip: str) -> None:
+    """DNAT <host>:host_port -> guest_ip:FUSED_PORT, plus FORWARD allow."""
     iface = host_iface()
     rules = [
         ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
-         "--to-destination", f"{guest_ip}:{SURFD_PORT}"],
+         "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
         # Also accept traffic arriving via lo (so 127.0.0.1:<host_port> works).
         ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
-         "--to-destination", f"{guest_ip}:{SURFD_PORT}"],
+         "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
         ["iptables", "-I", "FORWARD", "-p", "tcp", "-d", guest_ip,
-         "--dport", str(SURFD_PORT), "-j", "ACCEPT"],
+         "--dport", str(FUSED_PORT), "-j", "ACCEPT"],
         ["iptables", "-I", "INPUT", "-p", "tcp", "--dport", str(host_port),
          "-j", "ACCEPT"],
     ]
@@ -193,17 +194,17 @@ def add_surfd_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
-def del_surfd_forward(host_port: int, guest_ip: str) -> None:
+def del_agent_forward(host_port: int, guest_ip: str) -> None:
     iface = host_iface()
     rules = [
         ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
-         "--to-destination", f"{guest_ip}:{SURFD_PORT}"],
+         "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
         ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
-         "--to-destination", f"{guest_ip}:{SURFD_PORT}"],
+         "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
         ["iptables", "-D", "FORWARD", "-p", "tcp", "-d", guest_ip,
-         "--dport", str(SURFD_PORT), "-j", "ACCEPT"],
+         "--dport", str(FUSED_PORT), "-j", "ACCEPT"],
         ["iptables", "-D", "INPUT", "-p", "tcp", "--dport", str(host_port),
          "-j", "ACCEPT"],
     ]
@@ -348,7 +349,7 @@ def create_vm(req: dict) -> dict:
     tap, host_ip, guest_ip = setup_tap(idx)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
-    add_surfd_forward(host_port, guest_ip)
+    add_agent_forward(host_port, guest_ip)
 
     rootfs = d / "rootfs.ext4"
     # Per-VM rootfs copy (so writes don't affect other VMs).
@@ -392,7 +393,7 @@ def create_vm(req: dict) -> dict:
     except Exception:
         # Roll back on failure.
         stop_firecracker(meta)
-        del_surfd_forward(host_port, guest_ip)
+        del_agent_forward(host_port, guest_ip)
         teardown_tap(tap)
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -405,7 +406,7 @@ def destroy_vm(vm_id: str) -> None:
         raise HTTPError(404, "vm not found")
     stop_firecracker(meta)
     if "host_port" in meta:
-        del_surfd_forward(meta["host_port"], meta["guest_ip"])
+        del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
 
@@ -455,12 +456,12 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     stop_firecracker(meta)
     time.sleep(0.3)
     if "host_port" in meta:
-        del_surfd_forward(meta["host_port"], meta["guest_ip"])
+        del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])
     tap, host_ip, guest_ip = setup_tap(meta["index"])
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
-        add_surfd_forward(meta["host_port"], guest_ip)
+        add_agent_forward(meta["host_port"], guest_ip)
     sudo(["cp", str(snap_rootfs), meta["rootfs"]])
     sudo(["chmod", "666", meta["rootfs"]], check=False)
     start_firecracker(meta)
@@ -468,7 +469,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     wait_for_ssh(meta["guest_ip"], timeout=30.0)
 
 
-# -- Upload / Exec / start-surfd ---------------------------------------------
+# -- Upload / Exec / start-agent ---------------------------------------------
 
 def do_upload(vm_id: str, path: str, content_b64: str) -> None:
     meta = load_meta(vm_id)
@@ -505,7 +506,7 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                    gateway: str | None = None, extra_args: str | None = None,
                    tls_cert_path: str | None = None, tls_key_path: str | None = None,
                    auth_token: str | None = None, download_url: str | None = None,
-                   binary_path: str = "/usr/local/bin/surfd",
+                   binary_path: str = "/usr/local/bin/fused",
                    listen: str = "0.0.0.0:9550") -> None:
     meta = load_meta(vm_id)
     if not meta:
@@ -535,28 +536,28 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
     if tls_key_path:
         extras += ["--tls-key", tls_key_path]
     if auth_token:
-        extras += ["--auth-token-file", "/surf/auth-token"]
+        extras += ["--auth-token-file", "/fuse/auth-token"]
     if extra_args:
         extras.append(extra_args)
     extras_str = " ".join(shlex.quote(e) if " " not in e else e for e in extras)
-    # Write /etc/default/surfd with the extra flags the unit picks up, then
+    # Write /etc/default/fused with the extra flags the unit picks up, then
     # retarget the ExecStart's manifest/secrets paths via a drop-in, and start.
     drop_in = (
         "[Service]\n"
         "ExecStart=\n"
         f"ExecStart={binary_path} --listen {listen} "
         f"--manifest {shlex.quote(manifest_path)} "
-        f"--secrets {shlex.quote(secrets_path)} $SURFD_EXTRA_ARGS\n"
+        f"--secrets {shlex.quote(secrets_path)} $FUSED_EXTRA_ARGS\n"
     )
     remote = (
         "export LC_ALL=C; set -e; "
-        "command -v surfd >/dev/null 2>&1 || { echo 'surfd not in guest image' >&2; exit 127; }; "
-        f"printf '%s\\n' 'SURFD_EXTRA_ARGS={extras_str}' > /etc/default/surfd; "
-        "mkdir -p /etc/systemd/system/surfd.service.d; "
-        f"cat > /etc/systemd/system/surfd.service.d/override.conf <<'EOF'\n{drop_in}EOF\n"
+        "command -v fused >/dev/null 2>&1 || { echo 'fused not in guest image' >&2; exit 127; }; "
+        f"printf '%s\\n' 'FUSED_EXTRA_ARGS={extras_str}' > /etc/default/fused; "
+        "mkdir -p /etc/systemd/system/fused.service.d; "
+        f"cat > /etc/systemd/system/fused.service.d/override.conf <<'EOF'\n{drop_in}EOF\n"
         "systemctl daemon-reload; "
-        "systemctl restart surfd; "
-        "sleep 0.3; systemctl is-active surfd"
+        "systemctl restart fused; "
+        "sleep 0.3; systemctl is-active fused"
     )
     rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=20.0)
     if rc != 0:
@@ -564,7 +565,7 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
         stdout = out.decode(errors="replace").strip()
         if stdout:
             detail = f"{detail} | stdout: {stdout}" if detail else stdout
-        raise HTTPError(500, f"start-surfd failed: {detail or 'unknown error (rc={rc})'}")
+        raise HTTPError(500, f"agent start failed: {detail or 'unknown error (rc={rc})'}")
 
 
 def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
@@ -572,13 +573,13 @@ def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
                    tls_cert_path: str | None = None, tls_key_path: str | None = None,
                    auth_token: str | None = None) -> None:
     # Thin wrapper preserving the FROZEN /start-surfd behavior byte-for-byte:
-    # surfd defaults, no download. The generic launch lives in do_start_agent.
+    # fused defaults, no download. The generic launch lives in do_start_agent.
     do_start_agent(
         vm_id, manifest_path, secrets_path,
         gateway=gateway, extra_args=extra_args,
         tls_cert_path=tls_cert_path, tls_key_path=tls_key_path,
         auth_token=auth_token, download_url=None,
-        binary_path="/usr/local/bin/surfd", listen="0.0.0.0:9550",
+        binary_path="/usr/local/bin/fused", listen="0.0.0.0:9550",
     )
 
 
@@ -698,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
                             tls_key_path=body.get("tls_key_path"),
                             auth_token=body.get("auth_token"),
                             download_url=body.get("download_url"),
-                            binary_path=body.get("binary_path") or "/usr/local/bin/surfd",
+                            binary_path=body.get("binary_path") or "/usr/local/bin/fused",
                             listen=body.get("listen") or "0.0.0.0:9550",
                         )
                         return self._json(200, {"ok": True})
@@ -757,8 +758,8 @@ def reattach_vms() -> None:
             tap, host_ip, guest_ip = setup_tap(meta["index"])
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
             if "host_port" in meta:
-                del_surfd_forward(meta["host_port"], guest_ip)
-                add_surfd_forward(meta["host_port"], guest_ip)
+                del_agent_forward(meta["host_port"], guest_ip)
+                add_agent_forward(meta["host_port"], guest_ip)
             start_firecracker(meta)
             save_meta(meta)
         except Exception as e:

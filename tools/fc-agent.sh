@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# start/stop/env wrapper for the Surf-compatible Firecracker host agent.
+# start/stop/env wrapper for the Fuse Firecracker host agent.
 set -euo pipefail
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${FC_AGENT_PORT:-8090}"
@@ -55,7 +55,7 @@ case "$cmd" in
     UNIT=/etc/systemd/system/fc-agent.service
     sudo -n tee "$UNIT" >/dev/null <<EOF
 [Unit]
-Description=Surf Firecracker host agent
+Description=Fuse Firecracker host agent
 After=network-online.target
 Wants=network-online.target
 
@@ -87,16 +87,17 @@ EOF
     echo "[fc-agent] service removed"
     ;;
   install-updater)
-    # Weekly surfd auto-update via systemd timer. Requires GH_TOKEN in the env file
-    # next to .fc-agent.env so the updater can reach the private release.
+    # Optional weekly re-bake timer. Requires you to supply fc-update-fused.sh
+    # (not bundled — it pulls your agent binary and rebakes the rootfs) and an
+    # env file with any credentials it needs (e.g. GH_TOKEN for private releases).
     UPDATER_ENV="$FC_DIR/.fc-updater.env"
     if [ ! -f "$UPDATER_ENV" ]; then
       echo "Create $UPDATER_ENV with 'GH_TOKEN=...' before installing the timer." >&2
       exit 1
     fi
-    sudo -n tee /etc/systemd/system/fc-update-surfd.service >/dev/null <<EOF
+    sudo -n tee /etc/systemd/system/fc-update-fused.service >/dev/null <<EOF
 [Unit]
-Description=Pull latest surfd and rebake rootfs
+Description=Pull latest fused and rebake rootfs
 After=network-online.target
 Wants=network-online.target
 
@@ -105,11 +106,11 @@ Type=oneshot
 User=root
 WorkingDirectory=$FC_DIR
 EnvironmentFile=$UPDATER_ENV
-ExecStart=$FC_DIR/fc-update-surfd.sh
+ExecStart=$FC_DIR/fc-update-fused.sh
 EOF
-    sudo -n tee /etc/systemd/system/fc-update-surfd.timer >/dev/null <<EOF
+    sudo -n tee /etc/systemd/system/fc-update-fused.timer >/dev/null <<EOF
 [Unit]
-Description=Weekly surfd refresh
+Description=Weekly fused refresh
 
 [Timer]
 OnCalendar=Mon *-*-* 04:00:00
@@ -120,13 +121,13 @@ RandomizedDelaySec=30min
 WantedBy=timers.target
 EOF
     sudo -n systemctl daemon-reload
-    sudo -n systemctl enable --now fc-update-surfd.timer
-    sudo -n systemctl list-timers fc-update-surfd.timer --no-pager | head -5
+    sudo -n systemctl enable --now fc-update-fused.timer
+    sudo -n systemctl list-timers fc-update-fused.timer --no-pager | head -5
     echo "[fc-agent] weekly updater installed (Mon 04:00 UTC, ±30min jitter)"
     ;;
   uninstall-updater)
-    sudo -n systemctl disable --now fc-update-surfd.timer 2>/dev/null || true
-    sudo -n rm -f /etc/systemd/system/fc-update-surfd.{service,timer}
+    sudo -n systemctl disable --now fc-update-fused.timer 2>/dev/null || true
+    sudo -n rm -f /etc/systemd/system/fc-update-fused.{service,timer}
     sudo -n systemctl daemon-reload
     echo "[fc-agent] updater removed"
     ;;
@@ -136,7 +137,7 @@ EOF
     source "$ENV_FILE"
     IP=$(public_ip)
     echo
-    echo "# ---- Surf orchestrator env ----"
+    echo "# ---- Fuse orchestrator env ----"
     echo "FIRECRACKER_BASE_URL=http://${IP}:${PORT}"
     echo "FIRECRACKER_TOKEN=${FC_AGENT_TOKEN}"
     echo "# --------------------------------"

@@ -1,5 +1,5 @@
 {
-  "name": "@surf/firecracker-tools",
+  "name": "@fuse/firecracker-tools",
   "version": "0.0.1",
   "private": true,
   "type": "module",
