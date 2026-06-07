@@ -11,6 +11,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$REPO_ROOT/tools/fused"
 
+if ! command -v go >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+[build-agent] Go not found.
+  fused is a static linux/amd64 binary, so you can build it anywhere:
+   • on a machine that has Go:   ./fc-build-agent.sh && scp tools/fused <host>:~/fuse/tools/
+   • or install Go on this host: ./fc-deps.sh --with-go && export PATH=$PATH:/usr/local/go/bin
+EOF
+  exit 1
+fi
+
 echo "[build-agent] building reference agent -> $OUT (linux/amd64, static)"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$REPO_ROOT" build \
   -ldflags='-s -w' -o "$OUT" ./cmd/fused
