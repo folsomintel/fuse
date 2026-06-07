@@ -13,7 +13,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // ── Stub provider tests ─────────────────────────────────────────────────
@@ -106,8 +106,8 @@ func TestStub_list(t *testing.T) {
 	p := New(Config{UseStub: true})
 	ctx := context.Background()
 
-	p.Create(ctx, orchestrator.Spec{Name: "surf-a"})
-	p.Create(ctx, orchestrator.Spec{Name: "surf-b"})
+	p.Create(ctx, orchestrator.Spec{Name: "fuse-a"})
+	p.Create(ctx, orchestrator.Spec{Name: "fuse-b"})
 	p.Create(ctx, orchestrator.Spec{Name: "other-c"})
 
 	all, err := p.List(ctx, "")
@@ -118,12 +118,12 @@ func TestStub_list(t *testing.T) {
 		t.Fatalf("expected 3 envs, got %d", len(all))
 	}
 
-	filtered, err := p.List(ctx, "surf-")
+	filtered, err := p.List(ctx, "fuse-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(filtered) != 2 {
-		t.Fatalf("expected 2 envs with prefix 'surf-', got %d", len(filtered))
+		t.Fatalf("expected 2 envs with prefix 'fuse-', got %d", len(filtered))
 	}
 }
 
@@ -322,7 +322,7 @@ func TestStartAgent_start_agent_happy_path(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://example.com/surfd"})
+	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://example.com/fused"})
 	env := &remoteEnv{id: "vm-1", client: p}
 
 	if err := env.StartAgent(context.Background(), orchestrator.AgentSpec{AuthToken: "tok"}); err != nil {
@@ -335,7 +335,7 @@ func TestStartAgent_start_agent_happy_path(t *testing.T) {
 		t.Fatal("did not expect /start-surfd fallback on 200")
 	}
 	// Provider-configured DownloadURL must be forwarded when spec has none.
-	if gotDownloadURL != "https://example.com/surfd" {
+	if gotDownloadURL != "https://example.com/fused" {
 		t.Fatalf("expected download_url forwarded, got %q", gotDownloadURL)
 	}
 	// binary_path / listen stay unset (omitempty) so the host uses its defaults.
@@ -357,14 +357,14 @@ func TestStartAgent_spec_download_url_overrides_provider(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://provider.example/surfd"})
+	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://provider.example/fused"})
 	env := &remoteEnv{id: "vm-1", client: p}
 
-	spec := orchestrator.AgentSpec{DownloadURL: "https://spec.example/surfd"}
+	spec := orchestrator.AgentSpec{DownloadURL: "https://spec.example/fused"}
 	if err := env.StartAgent(context.Background(), spec); err != nil {
 		t.Fatal(err)
 	}
-	if gotDownloadURL != "https://spec.example/surfd" {
+	if gotDownloadURL != "https://spec.example/fused" {
 		t.Fatalf("expected spec download_url to win, got %q", gotDownloadURL)
 	}
 }
@@ -394,7 +394,7 @@ func TestStartAgent_404_falls_back_to_start_surfd(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://example.com/surfd"})
+	p := New(Config{BaseURL: srv.URL, DownloadURL: "https://example.com/fused"})
 	env := &remoteEnv{id: "vm-1", client: p}
 
 	spec := orchestrator.AgentSpec{
@@ -413,10 +413,10 @@ func TestStartAgent_404_falls_back_to_start_surfd(t *testing.T) {
 	}
 	// The fallback payload must be the FROZEN start-surfd wire.
 	want := startSurfdRequest{
-		ManifestPath: surfdManifestGuestPath,
-		SecretsPath:  surfdSecretsGuestPath,
-		TLSCertPath:  surfdTLSCertGuestPath,
-		TLSKeyPath:   surfdTLSKeyGuestPath,
+		ManifestPath: fusedManifestGuestPath,
+		SecretsPath:  fusedSecretsGuestPath,
+		TLSCertPath:  fusedTLSCertGuestPath,
+		TLSKeyPath:   fusedTLSKeyGuestPath,
 		AuthToken:    "tok",
 		Gateway:      "wss://gw",
 		GatewayToken: "gw-tok",

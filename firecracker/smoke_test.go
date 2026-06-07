@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // TestSmoke exercises create/list/destroy against a live Firecracker agent.
@@ -23,7 +23,7 @@ func TestSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	name := "surf-smoke-" + strings.ReplaceAll(time.Now().Format("20060102-150405"), "-", "")
+	name := "fuse-smoke-" + strings.ReplaceAll(time.Now().Format("20060102-150405"), "-", "")
 	cfg := Config{BaseURL: baseURL, Token: token}
 
 	p := New(cfg)

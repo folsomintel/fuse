@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
+	"github.com/andrewn6/fuse/internal/core"
 )
 
 // httpStatusError carries the HTTP status code (and trimmed body) from a
@@ -33,17 +33,17 @@ func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
 }
 
-// surfd guest paths for the FROZEN host-agent /start-surfd wire. The external
+// fused guest paths for the FROZEN host-agent /start-surfd wire. The external
 // firecracker host agent cannot be changed, so its request still carries the
 // structured manifest/secrets/TLS guest paths. These constants exist solely to
-// populate that frozen wire and mirror the core surfd profile's path constants
+// populate that frozen wire and mirror the core fused profile's path constants
 // (see orchestrator/agent_profile.go). The firecracker package cannot import
 // the orchestrator's unexported consts, hence the duplication by design.
 const (
-	surfdManifestGuestPath = "/surf/manifest.json"
-	surfdSecretsGuestPath  = "/surf/secrets.json"
-	surfdTLSCertGuestPath  = "/surf/tls/cert.pem"
-	surfdTLSKeyGuestPath   = "/surf/tls/key.pem"
+	fusedManifestGuestPath = "/fuse/manifest.json"
+	fusedSecretsGuestPath  = "/fuse/secrets.json"
+	fusedTLSCertGuestPath  = "/fuse/tls/cert.pem"
+	fusedTLSKeyGuestPath   = "/fuse/tls/key.pem"
 )
 
 // Config configures the Firecracker provider client.
@@ -252,7 +252,7 @@ func (e *remoteEnv) Upload(ctx context.Context, data []byte, path string) error 
 // actions; in that case we transparently FALL BACK to the FROZEN /start-surfd
 // wire. Any non-404 error propagates.
 //
-// The structured surfd-profile guest paths come from the local frozen-wire
+// The structured fused-profile guest paths come from the local frozen-wire
 // constants (the host agent owns the launch mechanism, not spec.Command), and
 // only the generic spec fields (auth token, gateway) pass through.
 func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec) error {
@@ -262,10 +262,10 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 	}
 
 	agentReq := startAgentRequest{
-		ManifestPath: surfdManifestGuestPath,
-		SecretsPath:  surfdSecretsGuestPath,
-		TLSCertPath:  surfdTLSCertGuestPath,
-		TLSKeyPath:   surfdTLSKeyGuestPath,
+		ManifestPath: fusedManifestGuestPath,
+		SecretsPath:  fusedSecretsGuestPath,
+		TLSCertPath:  fusedTLSCertGuestPath,
+		TLSKeyPath:   fusedTLSKeyGuestPath,
 		AuthToken:    spec.AuthToken,
 		Gateway:      spec.Gateway,
 		GatewayToken: spec.GatewayToken,
@@ -282,10 +282,10 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 
 	// Fall back to the FROZEN /start-surfd wire (unchanged payload).
 	req := startSurfdRequest{
-		ManifestPath: surfdManifestGuestPath,
-		SecretsPath:  surfdSecretsGuestPath,
-		TLSCertPath:  surfdTLSCertGuestPath,
-		TLSKeyPath:   surfdTLSKeyGuestPath,
+		ManifestPath: fusedManifestGuestPath,
+		SecretsPath:  fusedSecretsGuestPath,
+		TLSCertPath:  fusedTLSCertGuestPath,
+		TLSKeyPath:   fusedTLSKeyGuestPath,
 		AuthToken:    spec.AuthToken,
 		Gateway:      spec.Gateway,
 		GatewayToken: spec.GatewayToken,
