@@ -551,7 +551,10 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
     )
     remote = (
         "export LC_ALL=C; set -e; "
-        "command -v fused >/dev/null 2>&1 || { echo 'fused not in guest image' >&2; exit 127; }; "
+        # Check the absolute binary path, not `command -v fused`: a
+        # non-interactive SSH shell's PATH may exclude /usr/local/bin even when
+        # the binary is baked in, which would wrongly report it missing.
+        f"test -x {shlex.quote(binary_path)} || {{ echo 'agent binary not found at {binary_path}' >&2; exit 127; }}; "
         f"printf '%s\\n' 'FUSED_EXTRA_ARGS={extras_str}' > /etc/default/fused; "
         "mkdir -p /etc/systemd/system/fused.service.d; "
         f"cat > /etc/systemd/system/fused.service.d/override.conf <<'EOF'\n{drop_in}EOF\n"
