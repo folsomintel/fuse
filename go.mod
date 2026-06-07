@@ -1,4 +1,4 @@
-module github.com/surf-dev/surf/apps/orchestrator
+module github.com/andrewn6/fuse
 
 go 1.26.1
 

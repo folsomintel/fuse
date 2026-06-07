@@ -22,12 +22,12 @@ var ErrSecretsValidation = errors.New("secrets validation failed")
 
 // manifestSecretExtractor is a minimal struct that unmarshals only the
 // secret references from a compiled manifest. It ignores everything
-// else — no dependency on surfd's manifest package.
+// else — no dependency on fused's manifest package.
 //
 // COUPLING NOTE: the manifest-shaped secret cross-check below
-// (services -> env -> secret) embeds surfd's manifest contract. It is a
-// surfd-PROFILE validation, not a hard requirement of the generic create
-// path; a non-surfd agent profile with a different manifest schema would
+// (services -> env -> secret) embeds fused's manifest contract. It is a
+// fused-profile validation, not a hard requirement of the generic create
+// path; a non-fused agent profile with a different manifest schema would
 // supply its own validation. Flagged per the decoupling scan; no behavioral
 // change.
 type manifestSecretExtractor struct {

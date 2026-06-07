@@ -7,16 +7,16 @@ daemon-agnostic: Boot drives a configurable **in-guest agent** via `AgentSpec` r
 hardcoding a specific daemon.
 
 > **Generalization status:** the core is daemon-agnostic. The **firecracker** provider boots
-> the `surfd` reference profile over the host-agent wire, but now prefers an additive
+> the `fused` reference profile over the host-agent wire, but now prefers an additive
 > `/start-agent` endpoint that supports `DownloadURL` (fetch your agent binary from a URL,
 > e.g. a GitHub release — no rootfs re-bake) and falls back to `/start-surfd` on older hosts.
-> Graceful drain stops surfd via SIGTERM (`systemctl stop surfd`), which runs surfd's real DAG
+> Graceful drain stops fused via SIGTERM (`systemctl stop fused`), which runs fused's real DAG
 > teardown — no extra guest tooling. The `/start-agent` + `DownloadURL` path needs a host
 > running the updated `tools/fc-agent.py`. See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) →
 > *Runtime-seam fixes*.
 
-Fuse was extracted from the Surf orchestrator and decoupled from `surfd` (Surf's in-guest
-daemon). See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) for the design and what changed.
+Fuse was extracted from the Surf orchestrator and decoupled from `fused` (its original
+in-guest daemon). See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) for the design and what changed.
 
 ## What it does
 
@@ -44,8 +44,8 @@ type AgentSpec struct {
 }
 ```
 
-`surfd` is provided as the reference profile (`SurfdAgentSpec` in `agent_profile.go`) — the
-single home for all `/surf/*` path knowledge and the surfd launch line. To run your own
+`fused` is provided as the reference profile (`FusedAgentSpec` in `agent_profile.go`) — the
+single home for all `/fuse/*` path knowledge and the fused launch line. To run your own
 agent, supply a different `AgentSpec` (and bake your binary into the rootfs — see
 [`tools/FUSE.md`](tools/FUSE.md)).
 
@@ -55,7 +55,7 @@ agent, supply a different `AgentSpec` (and bake your binary into the rootfs — 
   back to an in-memory stub when `FIRECRACKER_BASE_URL` is unset.
 
 Fuse runs Firecracker microVMs on your own bare-metal hosts — no third-party sandbox
-service. Selected via `SURF_PROVIDER` (`firecracker`).
+service. Selected via `FUSE_PROVIDER` (`firecracker`).
 
 ## Quickstart
 
@@ -89,8 +89,8 @@ cd tools
 | `FIRECRACKER_TOKEN` | | | Bearer token for the host agent |
 | `DATABASE_URL` | `--database-url` | _(empty → in-memory)_ | Postgres state store |
 | `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption |
-| `SURF_PROVIDER` | | `firecracker` | Provider: `firecracker` |
-| `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary (`SURFD_DOWNLOAD_URL` alias) |
+| `FUSE_PROVIDER` | | `firecracker` | Provider: `firecracker` |
+| `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot |
 | `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS |
 | `ORCH_AUTH_TOKEN` / `ORCH_ALLOWED_CIDRS` | | | API auth + IP allowlist |
 
@@ -104,7 +104,7 @@ REST on chi. Key endpoints: `POST/GET /v1/environments`, `POST /v1/hosts`, and
 ```
 server/         entrypoint (main)
 provider.go     Provider/Environment interfaces, Boot, AgentSpec
-agent_profile.go  surfd reference profile (the only surfd-aware Go file)
+agent_profile.go  fused reference profile (the only fused-aware Go file)
 fleet.go        FleetManager — lifecycle + tracking
 scheduler.go    host scheduling
 reconcile.go    reconcile loop

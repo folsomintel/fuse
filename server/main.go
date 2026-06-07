@@ -1,4 +1,4 @@
-// Command orchestrator-server runs the Surf orchestrator REST API.
+// Command orchestrator-server runs the Fuse orchestrator REST API.
 //
 // It boots a FleetManager (currently backed by the Firecracker provider,
 // with an in-memory stub fallback when FIRECRACKER_BASE_URL is unset),
@@ -11,9 +11,9 @@
 // between the library package and its HTTP surface is visible at a
 // glance.
 //
-//	@title						Surf Orchestrator API
+//	@title						Fuse Orchestrator API
 //	@version					0.1.0
-//	@description				Control plane for Surf orchestrator. Provisions, inspects, and destroys VMs; manages snapshots.
+//	@description				Control plane for Fuse orchestrator. Provisions, inspects, and destroys VMs; manages snapshots.
 //	@host						localhost:8080
 //	@BasePath					/
 //	@securityDefinitions.apikey	BearerAuth
@@ -40,10 +40,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/surf-dev/surf/apps/orchestrator/api"
-	"github.com/surf-dev/surf/apps/orchestrator/firecracker"
-	"github.com/surf-dev/surf/apps/orchestrator/internal/core"
-	"github.com/surf-dev/surf/apps/orchestrator/providers"
+	"github.com/andrewn6/fuse/api"
+	"github.com/andrewn6/fuse/firecracker"
+	"github.com/andrewn6/fuse/internal/core"
+	"github.com/andrewn6/fuse/providers"
 )
 
 func main() {
@@ -92,7 +92,7 @@ func run() error {
 
 	flag.StringVar(&listenAddr, "listen", env("ORCH_LISTEN", ":8080"),
 		"HTTP listen address")
-	flag.StringVar(&prefix, "vm-prefix", env("ORCH_VM_PREFIX", "surf-"),
+	flag.StringVar(&prefix, "vm-prefix", env("ORCH_VM_PREFIX", "fuse-"),
 		"VM name prefix used by the fleet manager")
 	flag.DurationVar(&readHeaderTimeout, "read-header-timeout", 5*time.Second,
 		"max time to read request headers")
@@ -162,13 +162,13 @@ func run() error {
 
 	// Provider selection.
 	//
-	// SURF_PROVIDER picks the implementation:
+	// FUSE_PROVIDER picks the implementation:
 	//   - "" / "firecracker" (default): Firecracker host-agent client.
 	//     Empty FIRECRACKER_BASE_URL falls back to an in-memory stub
 	//     inside the firecracker package — that's the dev default.
 	//     AGENT_DOWNLOAD_URL (optional) fetches the guest agent binary
-	//     into the VM; SURFD_DOWNLOAD_URL is accepted as a back-compat alias.
-	providerKind := strings.ToLower(env("SURF_PROVIDER", string(providers.Firecracker)))
+	//     into the VM at boot.
+	providerKind := strings.ToLower(env("FUSE_PROVIDER", string(providers.Firecracker)))
 	var (
 		provider orchestrator.Provider
 		mode     string
@@ -178,14 +178,14 @@ func run() error {
 		provider = firecracker.New(firecracker.Config{
 			BaseURL:     fcBaseURL,
 			Token:       fcToken,
-			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
+			DownloadURL: env("AGENT_DOWNLOAD_URL", ""),
 		})
 		mode = "firecracker"
 		if fcBaseURL == "" {
 			mode = "firecracker-stub"
 		}
 	default:
-		return fmt.Errorf("unknown SURF_PROVIDER: %q (valid: firecracker)", providerKind)
+		return fmt.Errorf("unknown FUSE_PROVIDER: %q (valid: firecracker)", providerKind)
 	}
 
 	// State store: Postgres if DATABASE_URL is set, in-memory otherwise.
@@ -222,7 +222,7 @@ func run() error {
 		return firecracker.New(firecracker.Config{
 			BaseURL:     url,
 			Token:       token,
-			DownloadURL: env("AGENT_DOWNLOAD_URL", env("SURFD_DOWNLOAD_URL", "")),
+			DownloadURL: env("AGENT_DOWNLOAD_URL", ""),
 		})
 	}
 

@@ -545,12 +545,18 @@ func (e *stubEnv) SetToken(token string) {
 	e.mu.Unlock()
 }
 
+// Exec simulates a successful guest command. The in-memory stub has no real
+// guest, so it returns empty output and no error — enough for the dev/stub
+// server to drive the full VM lifecycle (including drain) end to end.
 func (e *stubEnv) Exec(_ context.Context, _ string, _ ...string) ([]byte, error) {
-	return nil, fmt.Errorf("firecracker stub: Exec not implemented")
+	return nil, nil
 }
 
+// ExecStream simulates a successful guest command (no output written). Like
+// Exec, the stub succeeds so the dev server can exercise drain and other
+// guest-exec paths without a real microVM.
 func (e *stubEnv) ExecStream(_ context.Context, _, _ io.Writer, _ string, _ ...string) error {
-	return fmt.Errorf("firecracker stub: ExecStream not implemented")
+	return nil
 }
 
 func (e *stubEnv) Upload(_ context.Context, data []byte, path string) error {

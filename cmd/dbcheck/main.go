@@ -11,8 +11,8 @@
 //
 // Use (DATABASE_URL must be set):
 //
-//	/tmp/dbcheck "SELECT vm_id, state FROM orchestrator_vms WHERE vm_id=$1" "surf-foo"
-//	# → "surf-foo	running"
+//	/tmp/dbcheck "SELECT vm_id, state FROM orchestrator_vms WHERE vm_id=$1" "fuse-foo"
+//	# → "fuse-foo	running"
 //
 // The helper prints column names as the first line when --headers is
 // passed (handy for ad-hoc debugging), otherwise just data rows. NULL
