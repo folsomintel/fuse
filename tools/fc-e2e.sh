@@ -39,11 +39,18 @@ body_of() { printf '%s' "$1" | sed '$d'; }
 field() { printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" | head -n1 | sed -E "s/.*:[[:space:]]*\"([^\"]*)\"/\1/"; }
 
 step "build"
-go build -o "$BIN" ./server
-pass "built $BIN"
+if command -v go >/dev/null 2>&1; then
+  go build -o "$BIN" ./server
+  pass "built $BIN"
+elif [ -x "$BIN" ]; then
+  pass "using prebuilt $BIN (Go not installed on this host)"
+else
+  die "Go not installed and no prebuilt binary at $BIN — cross-build ./server elsewhere (GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/fuse ./server) and copy it here"
+fi
 
-# Environment for the server process.
-ENVV=(ORCH_LISTEN=":${PORT}")
+# Environment for the server process. A token-encryption key makes Boot generate
+# per-VM TLS creds + auth token (the full secure deploy path).
+ENVV=(ORCH_LISTEN=":${PORT}" "TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)")
 MODE="stub (in-memory provider)"
 if [ "${FUSE_E2E_REMOTE:-0}" = "1" ]; then
   [ -f "$REPO_ROOT/.env" ] || die ".env not found for remote mode"

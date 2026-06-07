@@ -87,17 +87,18 @@ EOF
     echo "[fc-agent] service removed"
     ;;
   install-updater)
-    # Optional weekly re-bake timer. Requires you to supply fc-update-fused.sh
-    # (not bundled — it pulls your agent binary and rebakes the rootfs) and an
-    # env file with any credentials it needs (e.g. GH_TOKEN for private releases).
+    # Weekly self-host auto-update via systemd timer: fc-update.sh pulls the
+    # latest GitHub release of andrewn6/fuse, refreshes fused, re-bakes, and
+    # restarts the agent. Public repo — no token required. An optional
+    # .fc-updater.env (e.g. GH_TOKEN=... to dodge API rate limits, or
+    # FUSE_ORCH_SERVICE/FUSE_ORCH_BIN to also update a co-located orchestrator)
+    # is sourced if present.
     UPDATER_ENV="$FC_DIR/.fc-updater.env"
-    if [ ! -f "$UPDATER_ENV" ]; then
-      echo "Create $UPDATER_ENV with 'GH_TOKEN=...' before installing the timer." >&2
-      exit 1
-    fi
-    sudo -n tee /etc/systemd/system/fc-update-fused.service >/dev/null <<EOF
+    ENVLINE=""
+    [ -f "$UPDATER_ENV" ] && ENVLINE="EnvironmentFile=$UPDATER_ENV"
+    sudo -n tee /etc/systemd/system/fc-update.service >/dev/null <<EOF
 [Unit]
-Description=Pull latest fused and rebake rootfs
+Description=Fuse self-host updater (pull latest release, rebake, restart)
 After=network-online.target
 Wants=network-online.target
 
@@ -105,12 +106,12 @@ Wants=network-online.target
 Type=oneshot
 User=root
 WorkingDirectory=$FC_DIR
-EnvironmentFile=$UPDATER_ENV
-ExecStart=$FC_DIR/fc-update-fused.sh
+$ENVLINE
+ExecStart=$FC_DIR/fc-update.sh
 EOF
-    sudo -n tee /etc/systemd/system/fc-update-fused.timer >/dev/null <<EOF
+    sudo -n tee /etc/systemd/system/fc-update.timer >/dev/null <<EOF
 [Unit]
-Description=Weekly fused refresh
+Description=Weekly Fuse update check
 
 [Timer]
 OnCalendar=Mon *-*-* 04:00:00
@@ -121,13 +122,13 @@ RandomizedDelaySec=30min
 WantedBy=timers.target
 EOF
     sudo -n systemctl daemon-reload
-    sudo -n systemctl enable --now fc-update-fused.timer
-    sudo -n systemctl list-timers fc-update-fused.timer --no-pager | head -5
+    sudo -n systemctl enable --now fc-update.timer
+    sudo -n systemctl list-timers fc-update.timer --no-pager | head -5
     echo "[fc-agent] weekly updater installed (Mon 04:00 UTC, ±30min jitter)"
     ;;
   uninstall-updater)
-    sudo -n systemctl disable --now fc-update-fused.timer 2>/dev/null || true
-    sudo -n rm -f /etc/systemd/system/fc-update-fused.{service,timer}
+    sudo -n systemctl disable --now fc-update.timer 2>/dev/null || true
+    sudo -n rm -f /etc/systemd/system/fc-update.{service,timer}
     sudo -n systemctl daemon-reload
     echo "[fc-agent] updater removed"
     ;;
