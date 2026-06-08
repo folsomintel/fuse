@@ -43,7 +43,6 @@ import (
 	"github.com/andrewn6/fuse/api"
 	"github.com/andrewn6/fuse/firecracker"
 	"github.com/andrewn6/fuse/internal/core"
-	"github.com/andrewn6/fuse/providers"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".
@@ -171,32 +170,18 @@ func run() error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	// Provider selection.
-	//
-	// FUSE_PROVIDER picks the implementation:
-	//   - "" / "firecracker" (default): Firecracker host-agent client.
-	//     Empty FIRECRACKER_BASE_URL falls back to an in-memory stub
-	//     inside the firecracker package — that's the dev default.
-	//     AGENT_DOWNLOAD_URL (optional) fetches the guest agent binary
-	//     into the VM at boot.
-	providerKind := strings.ToLower(env("FUSE_PROVIDER", string(providers.Firecracker)))
-	var (
-		provider orchestrator.Provider
-		mode     string
-	)
-	switch providers.Kind(providerKind) {
-	case "", providers.Firecracker:
-		provider = firecracker.New(firecracker.Config{
-			BaseURL:     fcBaseURL,
-			Token:       fcToken,
-			DownloadURL: env("AGENT_DOWNLOAD_URL", ""),
-		})
-		mode = "firecracker"
-		if fcBaseURL == "" {
-			mode = "firecracker-stub"
-		}
-	default:
-		return fmt.Errorf("unknown FUSE_PROVIDER: %q (valid: firecracker)", providerKind)
+	// Firecracker is the only backend. Empty FIRECRACKER_BASE_URL falls back
+	// to an in-memory stub inside the firecracker package — that's the dev
+	// default. AGENT_DOWNLOAD_URL (optional) fetches the guest agent binary
+	// into the VM at boot.
+	provider := firecracker.New(firecracker.Config{
+		BaseURL:     fcBaseURL,
+		Token:       fcToken,
+		DownloadURL: env("AGENT_DOWNLOAD_URL", ""),
+	})
+	mode := "firecracker"
+	if fcBaseURL == "" {
+		mode = "firecracker-stub"
 	}
 
 	// State store: Postgres if DATABASE_URL is set, in-memory otherwise.
