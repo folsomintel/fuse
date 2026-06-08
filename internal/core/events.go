@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -76,8 +75,7 @@ func IsTerminalState(s VMState) bool {
 // FleetManager critical section) or to an unbounded buffer (memory
 // leak risk under sustained load).
 type eventBroadcaster struct {
-	mu     sync.RWMutex
-	nextID atomic.Uint64
+	mu sync.RWMutex
 
 	// subs maps vmID -> set of subscribers. Each subscriber has its
 	// own channel so unsubscribes only need to delete one map entry
@@ -152,14 +150,6 @@ func (b *eventBroadcaster) publish(ev EnvironmentEvent) (delivered, dropped int)
 		}
 	}
 	return delivered, dropped
-}
-
-// subscriberCount returns the number of active subscribers for a VM.
-// Used by tests and metrics; not part of the public Fleet surface.
-func (b *eventBroadcaster) subscriberCount(vmID string) int {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return len(b.subs[vmID])
 }
 
 // NewEventID returns a 128-bit hex-encoded random identifier suitable

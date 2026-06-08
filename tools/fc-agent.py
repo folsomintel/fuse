@@ -540,22 +540,36 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
     if extra_args:
         extras.append(extra_args)
     extras_str = " ".join(shlex.quote(e) if " " not in e else e for e in extras)
-    # Write /etc/default/fused with the extra flags the unit picks up, then
-    # retarget the ExecStart's manifest/secrets paths via a drop-in, and start.
-    drop_in = (
+    # Write a SELF-CONTAINED systemd unit (not a drop-in). A drop-in extends a
+    # baked-in base fused.service; writing the whole unit here means the agent
+    # also works on a plain (unbaked) rootfs as long as `fused` is present —
+    # combined with download_url, that's a no-bake deploy.
+    unit = (
+        "[Unit]\n"
+        "Description=Fuse in-guest agent (fused)\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n\n"
         "[Service]\n"
-        "ExecStart=\n"
+        "Type=simple\n"
+        "EnvironmentFile=-/etc/default/fused\n"
         f"ExecStart={binary_path} --listen {listen} "
         f"--manifest {shlex.quote(manifest_path)} "
         f"--secrets {shlex.quote(secrets_path)} $FUSED_EXTRA_ARGS\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
     )
     remote = (
         "export LC_ALL=C; set -e; "
-        "command -v fused >/dev/null 2>&1 || { echo 'fused not in guest image' >&2; exit 127; }; "
+        # Check the absolute binary path, not `command -v fused`: a
+        # non-interactive SSH shell's PATH may exclude /usr/local/bin even when
+        # the binary is baked in, which would wrongly report it missing.
+        f"test -x {shlex.quote(binary_path)} || {{ echo 'agent binary not found at {binary_path}' >&2; exit 127; }}; "
         f"printf '%s\\n' 'FUSED_EXTRA_ARGS={extras_str}' > /etc/default/fused; "
-        "mkdir -p /etc/systemd/system/fused.service.d; "
-        f"cat > /etc/systemd/system/fused.service.d/override.conf <<'EOF'\n{drop_in}EOF\n"
+        f"cat > /etc/systemd/system/fused.service <<'EOF'\n{unit}EOF\n"
         "systemctl daemon-reload; "
+        "systemctl enable fused >/dev/null 2>&1 || true; "
         "systemctl restart fused; "
         "sleep 0.3; systemctl is-active fused"
     )

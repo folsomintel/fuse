@@ -17,6 +17,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,9 @@ import (
 	"syscall"
 	"time"
 )
+
+// version is stamped at release time via -ldflags "-X main.version=...".
+var version = "dev"
 
 // config holds the flags fc-agent passes on the ExecStart line.
 type config struct {
@@ -38,6 +42,7 @@ type config struct {
 	gatewayToken  string
 	vmID          string
 	insecure      bool
+	showVersion   bool
 }
 
 func parseFlags() config {
@@ -52,12 +57,17 @@ func parseFlags() config {
 	flag.StringVar(&c.gatewayToken, "gateway-token", "", "gateway token (pass-through)")
 	flag.StringVar(&c.vmID, "vm-id", "", "VM identifier assigned by the orchestrator")
 	flag.BoolVar(&c.insecure, "insecure", false, "run without TLS/auth (dev only)")
+	flag.BoolVar(&c.showVersion, "version", false, "print version and exit")
 	flag.Parse()
 	return c
 }
 
 func main() {
 	c := parseFlags()
+	if c.showVersion {
+		fmt.Println(version)
+		return
+	}
 	log.SetPrefix("[fused] ")
 	log.SetFlags(log.LstdFlags | log.LUTC)
 
@@ -75,9 +85,20 @@ func main() {
 		authToken = strings.TrimSpace(string(b))
 	}
 
+	// Decide TLS. The Fuse host agent always passes --tls-cert/--tls-key on the
+	// frozen wire, but the cert/key files are only uploaded when the orchestrator
+	// has a TOKEN_ENCRYPTION_KEY (per-VM creds). So enable TLS only when the
+	// files are actually present and non-empty; otherwise fall back to plaintext
+	// rather than crashing on a path that points at nothing.
+	useTLS := c.tlsCert != "" && c.tlsKey != ""
+	if useTLS && (!fileNonEmpty(c.tlsCert) || !fileNonEmpty(c.tlsKey)) {
+		log.Printf("WARNING: --tls-cert/--tls-key given but files missing/empty (%s, %s); serving plaintext", c.tlsCert, c.tlsKey)
+		useTLS = false
+	}
+
 	srv := &http.Server{
 		Addr:              c.listen,
-		Handler:           newHandler(c, authToken, manifestBytes, secretCount),
+		Handler:           newHandler(c, authToken, manifestBytes, secretCount, useTLS),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -88,15 +109,11 @@ func main() {
 
 	errCh := make(chan error, 1)
 	go func() {
-		tls := c.tlsCert != "" && c.tlsKey != ""
 		log.Printf("listening on %s (vm=%s tls=%t auth=%t manifest=%dB secrets=%d gateway=%t)",
-			c.listen, c.vmID, tls, authToken != "", len(manifestBytes), secretCount, c.gateway != "")
-		if tls {
+			c.listen, c.vmID, useTLS, authToken != "", len(manifestBytes), secretCount, c.gateway != "")
+		if useTLS {
 			errCh <- srv.ListenAndServeTLS(c.tlsCert, c.tlsKey)
 		} else {
-			if !c.insecure {
-				log.Print("WARNING: no TLS cert/key provided and --insecure not set; serving plaintext")
-			}
 			errCh <- srv.ListenAndServe()
 		}
 	}()
@@ -120,7 +137,7 @@ func main() {
 // newHandler builds the agent's HTTP routes. /health is unauthenticated so the
 // host and load balancers can probe it; /v1/info is bearer-protected when a
 // token was provided. Extracted from main so it can be exercised in tests.
-func newHandler(c config, authToken string, manifestBytes []byte, secretCount int) http.Handler {
+func newHandler(c config, authToken string, manifestBytes []byte, secretCount int, useTLS bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "vm_id": c.vmID})
@@ -131,10 +148,16 @@ func newHandler(c config, authToken string, manifestBytes []byte, secretCount in
 			"manifest_bytes": len(manifestBytes),
 			"secret_count":   secretCount,
 			"gateway":        c.gateway != "",
-			"tls":            c.tlsCert != "" && c.tlsKey != "",
+			"tls":            useTLS,
 		})
 	}))
 	return mux
+}
+
+// fileNonEmpty reports whether path exists and has non-zero size.
+func fileNonEmpty(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir() && fi.Size() > 0
 }
 
 // protect wraps h with a constant-time bearer check when token is non-empty.

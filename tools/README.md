@@ -232,6 +232,41 @@ That means you can `systemctl restart fc-agent` without losing VMs, and
 host reboots transparently bring everything back (as long as the systemd unit
 is installed).
 
+## Auto-update (self-host)
+
+`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It compares the baked
+`fused --version` to the newest `andrewn6/fuse` tag and, when there's a newer one, pulls the
+repo, downloads the new `fused`, re-bakes the rootfs, and restarts the agent:
+
+```bash
+./fc-update.sh                 # one-shot: update now if a newer release exists (no-op if current)
+./fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC ±30m)
+./fc-agent.sh uninstall-updater
+```
+
+Public repo — no token needed. Optional `tools/.fc-updater.env` is sourced if present, e.g.
+`GH_TOKEN=...` (dodge API rate limits) or `FUSE_ORCH_SERVICE=fuse FUSE_ORCH_BIN=/usr/local/bin/fuse`
+to also update a co-located orchestrator. Override the source repo with `FUSE_REPO=owner/name`.
+
+## End-to-end test
+
+`../e2e` drives the whole orchestrator API (deploy lifecycle, hosts, rotate-token, events).
+It runs hermetically against the in-memory stub by default; point it at a real host to test
+everything end to end:
+
+```bash
+# hermetic (no host needed)
+go test ./e2e/
+
+# against the host in ../.env (FIRECRACKER_BASE_URL / FIRECRACKER_TOKEN)
+FUSE_E2E_REMOTE=1 go test ./e2e/ -v
+
+# or an explicit host
+FUSE_E2E_FIRECRACKER_URL=http://<host>:8090 FUSE_E2E_FIRECRACKER_TOKEN=<tok> go test ./e2e/ -v
+```
+
+`tools/fc-e2e.sh` is the binary-level equivalent (boots `./bin/fuse` and curls the lifecycle).
+
 ## State
 
 State lives under `agent-state/vms/<vm_id>/` — safe to `rm -rf` if the agent is

@@ -45,14 +45,12 @@ jobs:
       - name: Test
         run: go test ./... -race -count=1
 
-  # The lint job is intentionally non-blocking (continue-on-error: true) because
-  # golangci-lint has NOT yet been confirmed clean on this codebase. Findings are
-  # advisory and will never fail the overall CI run. Once the codebase is verified
-  # clean, make lint blocking by removing the 'continue-on-error: true' below.
+  # Blocking lint. The repo is golangci-lint-clean under the pinned version +
+  # .golangci.yml config; keep the version pinned so a new golangci-lint release
+  # can't fail CI out from under a green PR.
   lint:
-    name: Lint (advisory)
+    name: Lint
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,6 +61,26 @@ jobs:
           go-version-file: go.mod
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.12.2
+
+  # Validate the GoReleaser config on every PR so a CD-breaking change is caught
+  # here instead of only when a release tag is pushed.
+  release-config:
+    name: Release config check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: goreleaser check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
