@@ -1,59 +1,100 @@
 # Fuse
 
-A standalone **Firecracker orchestrator for agents**. Fuse is the control plane that
-schedules microVMs across hosts, manages their lifecycle (provision → running → drain →
-destroy), persists state in Postgres, and exposes a REST API. Its Go core is
-daemon-agnostic: Boot drives a configurable **in-guest agent** via `AgentSpec` rather than
-hardcoding a specific daemon.
+**A control plane for agents — deploy Firecracker microVMs anywhere, with one script.**
 
-> **Generalization status:** the core is daemon-agnostic. The **firecracker** provider boots
-> the `fused` reference profile over the host-agent wire, but now prefers an additive
-> `/start-agent` endpoint that supports `DownloadURL` (fetch your agent binary from a URL,
-> e.g. a GitHub release — no rootfs re-bake) and falls back to `/start-surfd` on older hosts.
-> Graceful drain stops fused via SIGTERM (`systemctl stop fused`), which runs fused's real DAG
-> teardown — no extra guest tooling. The `/start-agent` + `DownloadURL` path needs a host
-> running the updated `tools/fc-agent.py`. See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) →
-> *Runtime-seam fixes*.
+Fuse lets you stand up isolated microVMs on your own hosts and drive their full
+lifecycle (provision → running → drain → destroy) through a REST API. It's the
+orchestration layer agents need for sandboxed compute — scheduling, snapshots, host
+management, and live event streams — built on Firecracker and entirely open source.
 
-Fuse was extracted from the Surf orchestrator and decoupled from `fused` (its original
-in-guest daemon). See [`docs/DECOUPLING.md`](docs/DECOUPLING.md) for the design and what changed.
+The hard part of Firecracker has always been getting it running: the host setup, the
+in-guest agent, building a rootfs. Fuse collapses all of that into a single script — one
+command brings up a host with the agent installed and a rootfs baked and ready.
 
-## What it does
+## What you get out of the box
 
-1. Receives `POST /v1/environments` with a task ID + spec.
-2. The scheduler picks a host (or uses an in-memory stub when no hosts/Firecracker are
-   configured).
-3. The provider creates a Firecracker VM and uploads the agent's files
-   (manifest/secrets/credentials) into the guest.
-4. Fuse launches the configured in-guest agent and tracks the VM through its lifecycle.
-5. A reconcile loop detects orphans, stuck tasks, and registration drift.
+- **One-script Firecracker setup** — host, agent, and a baked rootfs, ready to boot.
+- **Scheduling across hosts** — register hosts, and Fuse places microVMs for you.
+- **Full VM lifecycle** — provision → running → drain → destroy, tracked and reconciled.
+- **Snapshots** — capture a running microVM and restore from it.
+- **Live event streams** — tail a microVM's events over SSE.
+- **Durable state** — backed by Postgres (or in-memory for local runs).
+- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at rest.
+- **REST API + Prometheus metrics** — drive everything over HTTP; observe it out of the box.
 
-## The pluggable agent (`AgentSpec`)
+## Firecracker, made simple
 
-Instead of hardcoding an in-guest daemon, Boot drives an `AgentSpec`:
+Getting Firecracker production-ready is normally a slog: install the binary, fetch a
+kernel, build a rootfs, customize it, wire up networking, expose a control port. Fuse ships
+that whole toolchain as a set of idempotent scripts in [`tools/`](tools/), so a host goes
+from bare to bootable in a few commands:
 
-```go
-type AgentSpec struct {
-    Files        map[string][]byte // arbitrary files uploaded into the guest
-    DownloadURL  string            // optional: fetch the agent binary (e.g. a GitHub release)
-    Command      string            // how to launch the daemon
-    DrainCommand string            // graceful-stop command, run via Exec on drain
-    AuthToken    string
-    Gateway      string
-    GatewayToken string
-}
+```bash
+cd tools
+./fc-install.sh          # firecracker binary + kernel + base rootfs
+./fc-bake-rootfs.sh      # build your guest rootfs
+./fc-agent.sh start      # start the host agent — prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN
 ```
 
-`fused` is provided as the reference profile (`FusedAgentSpec` in `agent_profile.go`) — the
-single home for all `/fuse/*` path knowledge and the fused launch line. To run your own
-agent, supply a different `AgentSpec` (and bake your binary into the rootfs — see
-[`tools/FUSE.md`](tools/FUSE.md)).
+Copy those two printed values into Fuse's config and you're scheduling microVMs. Every
+script is idempotent and safe to re-run. By default the rootfs ships with `fused`, our
+reference in-guest agent — but the rootfs is yours to customize (more on the agent
+[below](#the-in-guest-agent)).
 
-## Firecracker
+## Concepts
 
-Fuse runs Firecracker microVMs on your own bare-metal hosts — no third-party sandbox
-service. It drives a per-host `fc-agent` (see [`tools/`](tools/)) and falls back to an
-in-memory stub when `FIRECRACKER_BASE_URL` is unset.
+### Environments
+
+An **environment** is a single Firecracker microVM and the task running inside it. You
+create one with a spec (CPU/memory), an optional manifest and secrets, and an optional
+startup script; Fuse picks a host, boots the VM, uploads your files, starts the in-guest
+agent, and tracks it through `provision → running → drain → destroy`. A background
+reconcile loop catches orphans and stuck VMs.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/environments` | Create a microVM for a task |
+| `GET` | `/v1/environments` | List environments |
+| `GET` | `/v1/environments/{id}` | Get one environment |
+| `POST` | `/v1/environments/{id}?action=drain` | Gracefully drain (or `rotate-token`) |
+| `DELETE` | `/v1/environments/{id}` | Destroy the microVM |
+
+### Hosts
+
+A **host** is a machine running the Firecracker host agent. Register your hosts and Fuse
+schedules microVMs across them. You can **cordon** a host to stop new placements (e.g.
+before maintenance) and **uncordon** it to resume.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/hosts` | Register a host |
+| `GET` | `/v1/hosts` | List hosts |
+| `GET` | `/v1/hosts/{id}` | Get one host |
+| `POST` | `/v1/hosts/{id}?action=cordon` | Cordon (or `uncordon`) |
+| `DELETE` | `/v1/hosts/{id}` | Remove a host |
+
+### Snapshots
+
+A **snapshot** captures a running microVM's state so you can restore from it later — useful
+for fast cold-starts, checkpointing long tasks, or branching from a known-good point.
+Snapshots are persisted records and can carry a comment, retention, and metadata.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/v1/environments/{id}/snapshots` | Snapshot a running microVM |
+| `GET` | `/v1/snapshots` | List snapshots |
+| `GET` | `/v1/snapshots/{id}` | Get one snapshot |
+| `POST` | `/v1/snapshots/{id}?action=restore` | Restore a microVM from a snapshot |
+| `DELETE` | `/v1/snapshots/{id}` | Delete a snapshot |
+
+### Logs & events
+
+Each environment exposes a live **event stream** over Server-Sent Events — tail state
+transitions and activity as they happen, no polling.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/v1/environments/{id}/events` | Stream environment events (SSE) |
 
 ## Quickstart
 
@@ -67,16 +108,31 @@ export FIRECRACKER_TOKEN=<token>
 export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
 ./bin/fuse                       # listens on :8080 (ORCH_LISTEN)
 
-# Or run with no host configured — the in-memory stub provider is used
+# Or run with no host configured — an in-memory stub is used, handy for local dev
 ./bin/fuse
 ```
 
-Provision a host toolchain with the bundled scripts:
+## The in-guest agent
 
-```bash
-cd tools
-./fc-install.sh && ./fc-agent.sh start   # prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN
+Fuse doesn't hardcode a daemon. Boot drives a pluggable `AgentSpec` — files to upload, an
+optional download URL for the agent binary, and the commands to launch and gracefully
+drain it:
+
+```go
+type AgentSpec struct {
+    Files        map[string][]byte // arbitrary files uploaded into the guest
+    DownloadURL  string            // optional: fetch the agent binary (e.g. a GitHub release)
+    Command      string            // how to launch the daemon
+    DrainCommand string            // graceful-stop command, run via Exec on drain
+    AuthToken    string
+    Gateway      string
+    GatewayToken string
+}
 ```
+
+`fused` ships as the reference profile (`FusedAgentSpec` in `agent_profile.go`). To run
+your own agent, supply a different `AgentSpec` and bake your binary into the rootfs — see
+[`tools/FUSE.md`](tools/FUSE.md).
 
 ## Configuration
 
@@ -93,21 +149,24 @@ cd tools
 
 ## API
 
-REST on chi. Key endpoints: `POST/GET /v1/environments`, `POST /v1/hosts`, and
-`/metrics` (Prometheus, unauthenticated). See [`api/openapi.yaml`](api/openapi.yaml).
+REST on [chi](https://github.com/go-chi/chi). The full surface is in the concept tables
+above; `/metrics` exposes Prometheus metrics (unauthenticated). Spec:
+[`api/openapi.yaml`](api/openapi.yaml).
+
+## Use cases
+
+> _Coming soon._ This section will collect real-world examples of how people run Fuse —
+> from agent sandboxes to ephemeral CI runners and beyond. Using Fuse for something
+> interesting? Open a PR and add it here.
 
 ## Layout
 
 ```
-server/         entrypoint (main)
-provider.go     Provider/Environment interfaces, Boot, AgentSpec
-agent_profile.go  fused reference profile (the only fused-aware Go file)
-fleet.go        FleetManager — lifecycle + tracking
-scheduler.go    host scheduling
-reconcile.go    reconcile loop
-state_store*.go state (in-memory + Postgres)
-secrets/        per-VM credential generation + token encryption
-firecracker/    Firecracker provider (talks to fc-agent)
-api/            REST handlers
-tools/          fc-agent host toolchain (bring up a Firecracker host)
+server/             entrypoint (main)
+internal/core/      Boot, AgentSpec, FleetManager, scheduler, reconcile, snapshots, state
+internal/core/agent_profile.go   fused reference profile (the only fused-aware Go file)
+secrets/            per-VM credential generation + token encryption
+firecracker/        Firecracker provider (talks to fc-agent)
+api/                REST handlers
+tools/              fc-agent host toolchain (bring up a Firecracker host)
 ```
