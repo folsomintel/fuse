@@ -74,10 +74,13 @@ func setupServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
 	url, token := remoteTarget()
+	// AGENT_DOWNLOAD_URL lets the host fetch the agent binary into the guest at
+	// boot (no baked-in fused needed). Honored only against a real host.
+	downloadURL := os.Getenv("AGENT_DOWNLOAD_URL")
 	var provider orchestrator.Provider
 	if url != "" {
-		t.Logf("e2e: targeting real Firecracker host %s", url)
-		provider = firecracker.New(firecracker.Config{BaseURL: url, Token: token})
+		t.Logf("e2e: targeting real Firecracker host %s (download_url=%q)", url, downloadURL)
+		provider = firecracker.New(firecracker.Config{BaseURL: url, Token: token, DownloadURL: downloadURL})
 	} else {
 		provider = firecracker.New(firecracker.Config{UseStub: true})
 	}
