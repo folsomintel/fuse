@@ -42,11 +42,11 @@ from Surf.
    - This removed the `manifest-schema/api/surf/v1` proto import; the `require`/`replace`
      in `go.mod` are gone and Fuse builds standalone.
 
-## Provider
+## Firecracker
 
-Fuse ships a **single provider: firecracker**. It drives a per-host `fc-agent`
+Fuse is **Firecracker-only**. It drives a per-host `fc-agent`
 (`tools/fc-agent.py`) and falls back to an in-memory stub when `FIRECRACKER_BASE_URL` is
-unset (the dev default). Selected via `FUSE_PROVIDER` (`firecracker`).
+unset (the dev default).
 
 The firecracker host-agent wire is deliberately frozen (the external host agent cannot be
 changed): `StartAgent` posts the generalized `POST /v1/vm/{id}/start-agent` (which adds
@@ -83,6 +83,23 @@ These must stay GREEN (the loop's termination condition):
 ## Changelog
 
 <!-- newest first -->
+
+### 2026-06-08 — remove the provider abstraction (Firecracker-only, natively)
+
+Fuse is natively Firecracker and stays that way. The selectable-backend scaffolding
+left over from the Daytona era is gone.
+
+- **DELETED** the `providers/` package (`factory.go`, `factory_test.go`): the `Kind`
+  enum, the `Config` wrapper, and the `New()` factory switch.
+- `server/main.go`: dropped the `providers` import, the `FUSE_PROVIDER` env var, and
+  the kind-selection `switch`. Startup now constructs `firecracker.New(...)` directly.
+- README + this doc: removed the `## Providers` section framing and the `FUSE_PROVIDER`
+  config row; reframed as Firecracker-only.
+- **Kept** the internal `orchestrator.Provider` interface (`internal/core/provider.go`).
+  It is the decoupling seam that lets `internal/core` stay free of a `firecracker`
+  import — `firecracker` imports `internal/core`, so collapsing the interface would
+  create an import cycle. `firecracker.Provider` is its sole production implementation;
+  the `api` host-registration DI seam (`ProviderFactory`) is unchanged.
 
 ### 2026-06-07 — releases, self-host auto-update, green CI/CD, full e2e
 

@@ -49,13 +49,11 @@ single home for all `/fuse/*` path knowledge and the fused launch line. To run y
 agent, supply a different `AgentSpec` (and bake your binary into the rootfs — see
 [`tools/FUSE.md`](tools/FUSE.md)).
 
-## Providers
-
-- **firecracker** (default) — drives a per-host `fc-agent` (see [`tools/`](tools/)). Falls
-  back to an in-memory stub when `FIRECRACKER_BASE_URL` is unset.
+## Firecracker
 
 Fuse runs Firecracker microVMs on your own bare-metal hosts — no third-party sandbox
-service. Selected via `FUSE_PROVIDER` (`firecracker`).
+service. It drives a per-host `fc-agent` (see [`tools/`](tools/)) and falls back to an
+in-memory stub when `FIRECRACKER_BASE_URL` is unset.
 
 ## Quickstart
 
@@ -89,7 +87,6 @@ cd tools
 | `FIRECRACKER_TOKEN` | | | Bearer token for the host agent |
 | `DATABASE_URL` | `--database-url` | _(empty → in-memory)_ | Postgres state store |
 | `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption |
-| `FUSE_PROVIDER` | | `firecracker` | Provider: `firecracker` |
 | `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot |
 | `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS |
 | `ORCH_AUTH_TOKEN` / `ORCH_ALLOWED_CIDRS` | | | API auth + IP allowlist |
