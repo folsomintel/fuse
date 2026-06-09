@@ -280,11 +280,14 @@ func run() error {
 		)
 	}
 
+	useTLS := tlsCert != "" && tlsKey != ""
+
 	handler := &api.Handler{
 		Fleet:                   fm,
 		NewProvider:             hostProviderFactory,
 		AuthToken:               authToken,
 		AllowedCIDRs:            cidrList,
+		SecureCookies:           useTLS,
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
 		MetricsRequestsTotal:    metrics.HTTPRequestsTotal,
@@ -319,7 +322,6 @@ func run() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	useTLS := tlsCert != "" && tlsKey != ""
 	scheme := "http"
 	if useTLS {
 		scheme = "https"

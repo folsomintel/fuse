@@ -22,9 +22,14 @@ type AuthFailureFunc func(remoteAddr, method, path, requestID string)
 type IPRejectFunc func(remoteAddr, method, path, requestID string)
 
 // BearerAuth returns a chi-compatible middleware that validates the
-// Authorization header against a static Bearer token using
-// constant-time comparison. Returns 401 with the standard Error
-// envelope on mismatch.
+// caller's token against a static Bearer token using constant-time
+// comparison. Returns 401 with the standard Error envelope on mismatch.
+//
+// The token is read from the Authorization header ("Bearer <token>")
+// for CLI/server callers, or — when no usable header is present — from
+// the SessionCookieName cookie for browser callers (a separate SPA
+// stores the token in an HttpOnly cookie via POST /login rather than
+// in JavaScript). Either source is compared against the same token.
 //
 // If expectedToken is empty, the middleware is a no-op pass-through
 // (insecure/dev mode, matching fused's Insecure flag pattern).
@@ -34,32 +39,21 @@ func BearerAuth(expectedToken string, onFailure AuthFailureFunc) func(http.Handl
 			return next // insecure mode
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			header := r.Header.Get("Authorization")
-			if header == "" {
+			token, ok := tokenFromRequest(r)
+			if !ok {
 				if onFailure != nil {
 					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
 				}
-				writeError(w, http.StatusUnauthorized, "unauthorized",
-					"missing Authorization header", nil)
+				writeError(w, http.StatusUnauthorized, CodeUnauthorized,
+					"missing or malformed credentials", nil)
 				return
 			}
 
-			const prefix = "Bearer "
-			if !strings.HasPrefix(header, prefix) {
-				if onFailure != nil {
-					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
-				}
-				writeError(w, http.StatusUnauthorized, "unauthorized",
-					"Authorization header must use Bearer scheme", nil)
-				return
-			}
-
-			token := header[len(prefix):]
 			if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
 				if onFailure != nil {
 					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
 				}
-				writeError(w, http.StatusUnauthorized, "unauthorized",
+				writeError(w, http.StatusUnauthorized, CodeUnauthorized,
 					"invalid token", nil)
 				return
 			}
@@ -67,6 +61,26 @@ func BearerAuth(expectedToken string, onFailure AuthFailureFunc) func(http.Handl
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// tokenFromRequest extracts the caller's bearer token from either the
+// Authorization header or the session cookie. The header takes
+// precedence; the cookie is only consulted when the header is absent.
+// Returns ("", false) when neither yields a usable token.
+func tokenFromRequest(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	if header := r.Header.Get("Authorization"); header != "" {
+		if !strings.HasPrefix(header, prefix) {
+			return "", false
+		}
+		return header[len(prefix):], true
+	}
+
+	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
+		return c.Value, true
+	}
+
+	return "", false
 }
 
 // CIDRAllowlist returns a middleware that rejects requests whose

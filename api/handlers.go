@@ -43,6 +43,12 @@ type Handler struct {
 	// accepted. Empty means open access.
 	AllowedCIDRs []string
 
+	// SecureCookies sets the Secure attribute on the session cookie
+	// issued by POST /login. The server wires this to whether it is
+	// serving TLS; it must be true in any cross-site browser deployment
+	// (SameSite=None requires Secure) and should be true in production.
+	SecureCookies bool
+
 	// OnAuthFailure is called on every rejected auth attempt. The
 	// server wires this to the FleetManager's event append for audit.
 	// The requestID argument is the per-request correlation ID set
@@ -101,10 +107,26 @@ func (h *Handler) Router() (http.Handler, error) {
 		r.Use(cidrMW)
 	}
 
-	// Bearer auth (if configured).
-	r.Use(BearerAuth(h.AuthToken, h.OnAuthFailure))
+	// Auth endpoints live *outside* BearerAuth so an unauthenticated
+	// browser can exchange the token for a session cookie. They still
+	// sit behind the CIDR allowlist above. login itself constant-time
+	// compares the posted token; logout just clears the cookie. chi
+	// requires all r.Use middleware before any route, so these are
+	// registered as their own group rather than after the BearerAuth
+	// Use call below.
+	r.Group(func(pub chi.Router) {
+		pub.Post("/login", h.login)
+		pub.Post("/logout", h.logout)
+	})
 
-	h.register(r)
+	// Everything else requires the bearer token (header or session
+	// cookie). The protected routes are registered inside a group that
+	// applies BearerAuth, so the auth endpoints above stay open.
+	r.Group(func(priv chi.Router) {
+		priv.Use(BearerAuth(h.AuthToken, h.OnAuthFailure))
+		h.register(priv)
+	})
+
 	return r, nil
 }
 

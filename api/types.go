@@ -121,6 +121,7 @@ const (
 	CodeInvalidArgument = "invalid_argument"
 	CodeUnavailable     = "unavailable"
 	CodeInternal        = "internal"
+	CodeUnauthorized    = "unauthorized"
 )
 
 // ── Host management types ──────────────────────────────────────────
