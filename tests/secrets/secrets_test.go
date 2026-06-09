@@ -1,14 +1,16 @@
-package secrets
+package secrets_test
 
 import (
 	"errors"
 	"strings"
 	"testing"
+
+	secpkg "github.com/andrewn6/fuse/secrets"
 )
 
 func TestExtractRequiredSecrets_empty(t *testing.T) {
 	manifest := []byte(`{"version":"1","services":{}}`)
-	got, err := ExtractRequiredSecrets(manifest)
+	got, err := secpkg.ExtractRequiredSecrets(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +39,7 @@ func TestExtractRequiredSecrets_findsSecretRefs(t *testing.T) {
 		}
 	}`)
 
-	got, err := ExtractRequiredSecrets(manifest)
+	got, err := secpkg.ExtractRequiredSecrets(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +66,7 @@ func TestExtractRequiredSecrets_noEnvField(t *testing.T) {
 		}
 	}`)
 
-	got, err := ExtractRequiredSecrets(manifest)
+	got, err := secpkg.ExtractRequiredSecrets(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +76,7 @@ func TestExtractRequiredSecrets_noEnvField(t *testing.T) {
 }
 
 func TestExtractRequiredSecrets_invalidJSON(t *testing.T) {
-	_, err := ExtractRequiredSecrets([]byte("not json"))
+	_, err := secpkg.ExtractRequiredSecrets([]byte("not json"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -95,7 +97,7 @@ func TestValidateSecrets_happyPath(t *testing.T) {
 		"db_password": "hunter2",
 	}
 
-	if err := ValidateSecrets(manifest, secrets); err != nil {
+	if err := secpkg.ValidateSecrets(manifest, secrets); err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 }
@@ -117,12 +119,12 @@ func TestValidateSecrets_missingRequired(t *testing.T) {
 		// api_key missing
 	}
 
-	err := ValidateSecrets(manifest, secrets)
+	err := secpkg.ValidateSecrets(manifest, secrets)
 	if err == nil {
 		t.Fatal("expected error for missing secret")
 	}
-	if !errors.Is(err, ErrSecretsValidation) {
-		t.Errorf("expected ErrSecretsValidation, got: %v", err)
+	if !errors.Is(err, secpkg.ErrSecretsValidation) {
+		t.Errorf("expected secpkg.ErrSecretsValidation, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "api_key") {
 		t.Errorf("error should mention missing key, got: %v", err)
@@ -145,19 +147,19 @@ func TestValidateSecrets_extraSecretsAllowed(t *testing.T) {
 		"extra_key":   "extra_value", // not referenced by manifest
 	}
 
-	if err := ValidateSecrets(manifest, secrets); err != nil {
+	if err := secpkg.ValidateSecrets(manifest, secrets); err != nil {
 		t.Fatalf("extra secrets should not cause error, got: %v", err)
 	}
 }
 
 func TestValidateSecrets_tooManyKeys(t *testing.T) {
 	manifest := []byte(`{"services":{}}`)
-	secrets := make(map[string]string, MaxSecretKeys+1)
-	for i := 0; i <= MaxSecretKeys; i++ {
+	secrets := make(map[string]string, secpkg.MaxSecretKeys+1)
+	for i := 0; i <= secpkg.MaxSecretKeys; i++ {
 		secrets[strings.Repeat("k", 4)+string(rune('a'+i%26))+string(rune('0'+i/26))] = "v"
 	}
 
-	err := ValidateSecrets(manifest, secrets)
+	err := secpkg.ValidateSecrets(manifest, secrets)
 	if err == nil {
 		t.Fatal("expected error for too many keys")
 	}
@@ -169,10 +171,10 @@ func TestValidateSecrets_tooManyKeys(t *testing.T) {
 func TestValidateSecrets_keyTooLong(t *testing.T) {
 	manifest := []byte(`{"services":{}}`)
 	secrets := map[string]string{
-		strings.Repeat("x", MaxSecretKeyLength+1): "value",
+		strings.Repeat("x", secpkg.MaxSecretKeyLength+1): "value",
 	}
 
-	err := ValidateSecrets(manifest, secrets)
+	err := secpkg.ValidateSecrets(manifest, secrets)
 	if err == nil {
 		t.Fatal("expected error for oversized key")
 	}
@@ -184,10 +186,10 @@ func TestValidateSecrets_keyTooLong(t *testing.T) {
 func TestValidateSecrets_valueTooLarge(t *testing.T) {
 	manifest := []byte(`{"services":{}}`)
 	secrets := map[string]string{
-		"big": strings.Repeat("x", MaxSecretValueSize+1),
+		"big": strings.Repeat("x", secpkg.MaxSecretValueSize+1),
 	}
 
-	err := ValidateSecrets(manifest, secrets)
+	err := secpkg.ValidateSecrets(manifest, secrets)
 	if err == nil {
 		t.Fatal("expected error for oversized value")
 	}
@@ -200,13 +202,13 @@ func TestValidateSecrets_totalTooLarge(t *testing.T) {
 	manifest := []byte(`{"services":{}}`)
 	// Create enough secrets to exceed total limit.
 	secrets := make(map[string]string)
-	perValue := MaxSecretValueSize // just under individual limit
-	count := (MaxSecretsTotalSize / perValue) + 1
+	perValue := secpkg.MaxSecretValueSize // just under individual limit
+	count := (secpkg.MaxSecretsTotalSize / perValue) + 1
 	for i := 0; i < count; i++ {
 		secrets[strings.Repeat("k", 3)+string(rune('a'+i%26))] = strings.Repeat("v", perValue)
 	}
 
-	err := ValidateSecrets(manifest, secrets)
+	err := secpkg.ValidateSecrets(manifest, secrets)
 	if err == nil {
 		t.Fatal("expected error for total size exceeded")
 	}
@@ -217,10 +219,10 @@ func TestValidateSecrets_totalTooLarge(t *testing.T) {
 
 func TestValidateSecrets_noSecretsNoManifestRefs(t *testing.T) {
 	manifest := []byte(`{"version":"1","services":{"api":{"kind":"cmd","run":["sleep","60"]}}}`)
-	if err := ValidateSecrets(manifest, nil); err != nil {
+	if err := secpkg.ValidateSecrets(manifest, nil); err != nil {
 		t.Fatalf("nil secrets with no refs should be ok, got: %v", err)
 	}
-	if err := ValidateSecrets(manifest, map[string]string{}); err != nil {
+	if err := secpkg.ValidateSecrets(manifest, map[string]string{}); err != nil {
 		t.Fatalf("empty secrets with no refs should be ok, got: %v", err)
 	}
 }
@@ -231,7 +233,7 @@ func TestSecretKeyNames(t *testing.T) {
 		"alpha": "a",
 		"mango": "m",
 	}
-	got := SecretKeyNames(secrets)
+	got := secpkg.SecretKeyNames(secrets)
 	if len(got) != 3 {
 		t.Fatalf("expected 3, got %d", len(got))
 	}
@@ -245,7 +247,7 @@ func TestRedactSecretValues_replacesLongValues(t *testing.T) {
 		"password": "super-secret-password-123",
 	}
 	msg := "error: connection failed with password super-secret-password-123 on host db"
-	got := RedactSecretValues(msg, secrets)
+	got := secpkg.RedactSecretValues(msg, secrets)
 	if strings.Contains(got, "super-secret-password-123") {
 		t.Errorf("secret value not redacted: %s", got)
 	}
@@ -259,20 +261,20 @@ func TestRedactSecretValues_skipsShortValues(t *testing.T) {
 		"port": "8080", // too short to redact (< 8 chars)
 	}
 	msg := "listening on port 8080"
-	got := RedactSecretValues(msg, secrets)
+	got := secpkg.RedactSecretValues(msg, secrets)
 	if got != msg {
 		t.Errorf("short values should not be redacted: %s", got)
 	}
 }
 
 func TestRedactSecretValues_emptyInputs(t *testing.T) {
-	if got := RedactSecretValues("", nil); got != "" {
+	if got := secpkg.RedactSecretValues("", nil); got != "" {
 		t.Errorf("expected empty, got %q", got)
 	}
-	if got := RedactSecretValues("hello", nil); got != "hello" {
+	if got := secpkg.RedactSecretValues("hello", nil); got != "hello" {
 		t.Errorf("expected hello, got %q", got)
 	}
-	if got := RedactSecretValues("hello", map[string]string{}); got != "hello" {
+	if got := secpkg.RedactSecretValues("hello", map[string]string{}); got != "hello" {
 		t.Errorf("expected hello, got %q", got)
 	}
 }
@@ -283,7 +285,7 @@ func TestRedactSecretValues_longestFirst(t *testing.T) {
 		"long":  "secret12-extended", // 17 chars, contains "secret12"
 	}
 	msg := "value is secret12-extended here"
-	got := RedactSecretValues(msg, secrets)
+	got := secpkg.RedactSecretValues(msg, secrets)
 	// The longer value should be redacted first, preventing partial match.
 	if strings.Contains(got, "secret12") {
 		t.Errorf("partial secret leaked: %s", got)
