@@ -14,3 +14,5 @@ coverage/
 
 # GoReleaser build output
 dist/
+
+.claude
