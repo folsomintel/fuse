@@ -1,11 +1,55 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"net"
 	"net/http"
 	"strings"
 )
+
+// APIKeyAuthenticator validates a presented bearer token against the set
+// of issued API keys. It is implemented by the orchestrator's API key
+// store. A nil APIKeyAuthenticator disables key auth (only the master
+// token is accepted).
+type APIKeyAuthenticator interface {
+	// Authenticate returns (keyID, true) for a live, non-revoked key, or
+	// ("", false) if the token matches no key or the key is revoked.
+	Authenticate(ctx context.Context, rawToken string) (string, bool)
+}
+
+// Principal identifies how a request authenticated. It is stored in the
+// request context by BearerAuth so handlers (and audit) can distinguish
+// the master operator from an individual API key — e.g. to restrict key
+// management to the master token.
+type Principal struct {
+	// Master is true when the request authenticated with the static
+	// master token (ORCH_AUTH_TOKEN). When auth is disabled (empty
+	// master token, insecure mode), requests are also treated as Master.
+	Master bool
+	// KeyID is the public id of the authenticating API key, empty for a
+	// master-token request.
+	KeyID string
+}
+
+type principalKey struct{}
+
+// withPrincipal returns a derived context carrying p.
+func withPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalKey{}, p)
+}
+
+// PrincipalFromContext returns the authenticated principal for the request.
+// When auth is disabled (insecure mode) no principal is set; callers should
+// treat a missing principal as the master operator, mirroring BearerAuth's
+// open pass-through. The bool reports whether a principal was present.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	if ctx == nil {
+		return Principal{}, false
+	}
+	p, ok := ctx.Value(principalKey{}).(Principal)
+	return p, ok
+}
 
 // AuthFailureFunc is invoked once for every rejected authentication
 // attempt. It receives the per-request correlation ID (see
@@ -21,44 +65,60 @@ type AuthFailureFunc func(remoteAddr, method, path, requestID string)
 // CIDR allowlist. Same shape and contract as [AuthFailureFunc].
 type IPRejectFunc func(remoteAddr, method, path, requestID string)
 
-// BearerAuth returns a chi-compatible middleware that validates the
-// caller's token against a static Bearer token using constant-time
-// comparison. Returns 401 with the standard Error envelope on mismatch.
+// BearerAuth returns a chi-compatible middleware that authenticates the
+// caller as either the static master token or a live API key, and records
+// the resulting Principal in the request context. Returns 401 with the
+// standard Error envelope on mismatch.
 //
 // The token is read from the Authorization header ("Bearer <token>")
 // for CLI/server callers, or — when no usable header is present — from
 // the SessionCookieName cookie for browser callers (a separate SPA
 // stores the token in an HttpOnly cookie via POST /login rather than
-// in JavaScript). Either source is compared against the same token.
+// in JavaScript). The same token is checked against the master secret
+// first (constant-time), then against the API key store.
 //
-// If expectedToken is empty, the middleware is a no-op pass-through
-// (insecure/dev mode, matching fused's Insecure flag pattern).
-func BearerAuth(expectedToken string, onFailure AuthFailureFunc) func(http.Handler) http.Handler {
+// keys may be nil to disable API-key auth (only the master token is
+// accepted). If expectedToken is empty AND keys is nil, the middleware
+// is a no-op pass-through (insecure/dev mode, matching fused's Insecure
+// flag pattern); requests carry no Principal.
+func BearerAuth(expectedToken string, keys APIKeyAuthenticator, onFailure AuthFailureFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		if expectedToken == "" {
+		if expectedToken == "" && keys == nil {
 			return next // insecure mode
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reject := func(msg string) {
+				if onFailure != nil {
+					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
+				}
+				writeError(w, http.StatusUnauthorized, CodeUnauthorized, msg, nil)
+			}
+
 			token, ok := tokenFromRequest(r)
 			if !ok {
-				if onFailure != nil {
-					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
-				}
-				writeError(w, http.StatusUnauthorized, CodeUnauthorized,
-					"missing or malformed credentials", nil)
+				reject("missing or malformed credentials")
 				return
 			}
 
-			if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
-				if onFailure != nil {
-					onFailure(r.RemoteAddr, r.Method, r.URL.Path, RequestID(r.Context()))
-				}
-				writeError(w, http.StatusUnauthorized, CodeUnauthorized,
-					"invalid token", nil)
+			// Master token path (constant-time). Skipped when no master
+			// token is configured.
+			if expectedToken != "" &&
+				subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) == 1 {
+				ctx := withPrincipal(r.Context(), Principal{Master: true})
+				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			// API key path.
+			if keys != nil {
+				if keyID, ok := keys.Authenticate(r.Context(), token); ok {
+					ctx := withPrincipal(r.Context(), Principal{KeyID: keyID})
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
+			reject("invalid token")
 		})
 	}
 }

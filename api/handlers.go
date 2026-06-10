@@ -39,6 +39,12 @@ type Handler struct {
 	// Empty means no auth (insecure/dev mode).
 	AuthToken string
 
+	// APIKeys is the store of revocable API keys. When non-nil it is
+	// consulted by BearerAuth as a second accept path (after the master
+	// token) and backs the /v1/api-keys management endpoints. Nil
+	// disables API-key auth entirely.
+	APIKeys APIKeyStore
+
 	// AllowedCIDRs is a list of CIDR blocks from which requests are
 	// accepted. Empty means open access.
 	AllowedCIDRs []string
@@ -123,7 +129,11 @@ func (h *Handler) Router() (http.Handler, error) {
 	// cookie). The protected routes are registered inside a group that
 	// applies BearerAuth, so the auth endpoints above stay open.
 	r.Group(func(priv chi.Router) {
-		priv.Use(BearerAuth(h.AuthToken, h.OnAuthFailure))
+		var keyAuth APIKeyAuthenticator
+		if h.APIKeys != nil {
+			keyAuth = h.APIKeys
+		}
+		priv.Use(BearerAuth(h.AuthToken, keyAuth, h.OnAuthFailure))
 		h.register(priv)
 	})
 
@@ -148,6 +158,14 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/snapshots/{snapshotId}", h.getSnapshot)
 	r.Post("/v1/snapshots/{snapshotId}", h.snapshotAction)
 	r.Delete("/v1/snapshots/{snapshotId}", h.deleteSnapshot)
+
+	// API key management (master-token only; enforced per-handler).
+	// Registered only when a key store is configured.
+	if h.APIKeys != nil {
+		r.Post("/v1/api-keys", h.createAPIKey)
+		r.Get("/v1/api-keys", h.listAPIKeys)
+		r.Delete("/v1/api-keys/{id}", h.revokeAPIKey)
+	}
 
 	// Host management (scheduler).
 	r.Post("/v1/hosts", h.registerHost)

@@ -151,7 +151,7 @@ func TestAuthFailureIncludesRequestID(t *testing.T) {
 
 	r := chi.NewRouter()
 	r.Use(RequestIDMiddleware)
-	r.Use(BearerAuth("expected-token", cb))
+	r.Use(BearerAuth("expected-token", nil, cb))
 	r.Get("/v1/foo", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
