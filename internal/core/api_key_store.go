@@ -97,9 +97,9 @@ func (s *APIKeyStore) Create(ctx context.Context, label string, now time.Time) (
 // APIKeyAuthenticator interface consumed by the api package's BearerAuth.
 func (s *APIKeyStore) Authenticate(ctx context.Context, rawToken string) (string, bool) {
 	var (
-		id       string
-		keyHash  []byte
-		revoked  *time.Time
+		id      string
+		keyHash []byte
+		revoked *time.Time
 	)
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, key_hash, revoked_at
@@ -139,7 +139,7 @@ func (s *APIKeyStore) List(ctx context.Context) ([]APIKeyRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list api keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var out []APIKeyRecord
 	for rows.Next() {
