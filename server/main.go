@@ -63,6 +63,17 @@ func env(name, fallback string) string {
 	return fallback
 }
 
+// apiKeyStoreOrNil returns s as an api.APIKeyStore, or an untyped nil when
+// s is nil. Assigning a typed-nil *orchestrator.APIKeyStore directly to the
+// interface field would make it compare non-nil and enable key auth with a
+// nil store; this keeps the "no DB ⇒ no key auth" contract correct.
+func apiKeyStoreOrNil(s *orchestrator.APIKeyStore) api.APIKeyStore {
+	if s == nil {
+		return nil
+	}
+	return s
+}
+
 // envInt parses an int env var, returning fallback on miss or parse error.
 func envInt(name string, fallback int) int {
 	v := os.Getenv(name)
@@ -186,6 +197,7 @@ func run() error {
 
 	// State store: Postgres if DATABASE_URL is set, in-memory otherwise.
 	var store orchestrator.StateStore
+	var apiKeyStore *orchestrator.APIKeyStore
 	if databaseURL != "" {
 		db, err := sql.Open("pgx", databaseURL)
 		if err != nil {
@@ -203,6 +215,10 @@ func run() error {
 			return fmt.Errorf("apply migrations: %w", err)
 		}
 		store = pgStore
+		// API keys share the same DB and migrations. Without a database
+		// there is nowhere to persist keys, so key auth is Postgres-only;
+		// the master token still works in either case.
+		apiKeyStore = orchestrator.NewAPIKeyStore(db)
 		logger.Info("state store: postgres", "url", redactDSN(databaseURL))
 	} else {
 		store = orchestrator.NewMemoryStateStore()
@@ -286,6 +302,7 @@ func run() error {
 		Fleet:                   fm,
 		NewProvider:             hostProviderFactory,
 		AuthToken:               authToken,
+		APIKeys:                 apiKeyStoreOrNil(apiKeyStore),
 		AllowedCIDRs:            cidrList,
 		SecureCookies:           useTLS,
 		OnAuthFailure:           auditAuthFail,

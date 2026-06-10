@@ -124,6 +124,36 @@ const (
 	CodeUnauthorized    = "unauthorized"
 )
 
+// ── API key types ──────────────────────────────────────────────────
+
+// CreateAPIKeyRequest is the JSON body accepted by POST /v1/api-keys.
+// label is an optional human memory aid ("ci", "partner-acme").
+type CreateAPIKeyRequest struct {
+	Label string `json:"label,omitempty"`
+}
+
+// APIKey is the JSON shape of a key's metadata. The raw secret is never
+// included here — it appears only once, in CreateAPIKeyResponse.
+type APIKey struct {
+	ID         string     `json:"id"`
+	Label      string     `json:"label,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+}
+
+// CreateAPIKeyResponse is returned by POST /v1/api-keys. Key is the raw
+// secret and is shown exactly once — it cannot be recovered afterward.
+type CreateAPIKeyResponse struct {
+	APIKey
+	Key string `json:"key"`
+}
+
+// APIKeyList is the response body for GET /v1/api-keys.
+type APIKeyList struct {
+	APIKeys []APIKey `json:"api_keys"`
+}
+
 // ── Host management types ──────────────────────────────────────────
 
 // HostCapacity is the wire shape of a host's resource envelope.

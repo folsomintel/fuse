@@ -24,7 +24,7 @@ func findCookie(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 // browser flow where the token lives only in the HttpOnly cookie.
 func TestBearerAuth_CookieFallback(t *testing.T) {
 	const token = "expected-token"
-	mw := BearerAuth(token, nil)
+	mw := BearerAuth(token, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -44,7 +44,7 @@ func TestBearerAuth_CookieFallback(t *testing.T) {
 // so a caller can't smuggle a stale header past a good session.
 func TestBearerAuth_HeaderWins(t *testing.T) {
 	const token = "expected-token"
-	mw := BearerAuth(token, nil)
+	mw := BearerAuth(token, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -62,7 +62,7 @@ func TestBearerAuth_HeaderWins(t *testing.T) {
 
 // TestBearerAuth_BadCookie verifies a wrong cookie value is rejected.
 func TestBearerAuth_BadCookie(t *testing.T) {
-	mw := BearerAuth("expected-token", nil)
+	mw := BearerAuth("expected-token", nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
