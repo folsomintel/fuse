@@ -31,6 +31,7 @@ func TestHandler_InfoRequiresToken(t *testing.T) {
 	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "secret-token", manifest, 3, false))
 	defer srv.Close()
 
+
 	// No token -> 401.
 	resp, err := http.Get(srv.URL + "/v1/info")
 	if err != nil {
