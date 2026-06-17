@@ -49,12 +49,22 @@ const (
 	StateFailed       = "failed"
 )
 
-// Event is one item from env.Events. Err is set only on a stream-level
-// failure, as the final event before the channel closes.
+// IsTerminalState reports whether state is a terminal lifecycle state.
+func IsTerminalState(state string) bool {
+	return state == StateDestroyed || state == StateFailed
+}
+
+// Event is one item from env.Events. It matches the server's wire
+// payload. Err is set only on a stream-level failure, as the final
+// event before the channel closes.
 type Event struct {
+	ID        string    `json:"id"`
+	Kind      string    `json:"event"`
+	VMID      string    `json:"vm_id"`
 	State     string    `json:"state"`
-	Message   string    `json:"message,omitempty"`
-	Timestamp time.Time `json:"timestamp,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
 	Err       error     `json:"-"`
 }
 
@@ -64,6 +74,8 @@ type SnapshotRequest struct {
 	Mode             string            `json:"mode,omitempty"`
 	RetentionSeconds int64             `json:"retention_seconds,omitempty"`
 	Metadata         map[string]string `json:"metadata,omitempty"`
+	ExportRef        string            `json:"export_ref,omitempty"`
+	ExportStatus     string            `json:"export_status,omitempty"`
 }
 
 // SnapshotExport is an optional exported snapshot artifact.
