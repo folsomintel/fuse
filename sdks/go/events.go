@@ -48,13 +48,13 @@ func (s *EnvironmentsService) Events(ctx context.Context, vmID string) (<-chan E
 	ch := make(chan Event)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		// closing the body when ctx is done unblocks the scanner so a
 		// canceled context is observed promptly.
 		go func() {
 			<-ctx.Done()
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}()
 
 		scanner := bufio.NewScanner(resp.Body)

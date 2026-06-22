@@ -136,7 +136,7 @@ func (s *EnvironmentsService) List(ctx context.Context, opt ListEnvironmentsOpti
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out environmentList
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode environments: %w", err)
@@ -163,7 +163,7 @@ func (s *EnvironmentsService) Get(ctx context.Context, vmID string) (*Environmen
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return nil, fmt.Errorf("decode environment: %w", err)
@@ -186,7 +186,7 @@ func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest)
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return nil, fmt.Errorf("decode environment: %w", err)
@@ -268,7 +268,7 @@ func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		return nil, fmt.Errorf("decode environment: %w", err)

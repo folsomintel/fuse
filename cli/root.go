@@ -42,19 +42,6 @@ func (a *appState) client() (*fuse.Client, *config.Context, error) {
 	return cl, cur, nil
 }
 
-// requireActiveHost returns the host selected via `fuse host <id>` or an error
-// telling the user to select one.
-func (a *appState) requireActiveHost() (string, error) {
-	cur, err := a.cfg.Current(a.ctxName)
-	if err != nil {
-		return "", err
-	}
-	if cur.ActiveHost == "" {
-		return "", fmt.Errorf("no host selected: run `fuse host <id>` first (see `fuse hosts list`)")
-	}
-	return cur.ActiveHost, nil
-}
-
 // isJSON reports whether output should be machine-readable json.
 func (a *appState) isJSON() bool { return a.output == outputJSON }
 

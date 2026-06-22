@@ -43,7 +43,7 @@ func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody Snap
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var snap Snapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
 		return nil, fmt.Errorf("decode snapshot: %w", err)
@@ -79,7 +79,7 @@ func (s *SnapshotsService) List(ctx context.Context, opt ListSnapshotsOptions) (
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out snapshotList
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode snapshots: %w", err)
@@ -106,7 +106,7 @@ func (s *SnapshotsService) Get(ctx context.Context, snapshotID string) (*Snapsho
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var snap Snapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
 		return nil, fmt.Errorf("decode snapshot: %w", err)

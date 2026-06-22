@@ -42,7 +42,7 @@ func newMetricsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			// map auth/forbidden/etc through the same friendly mapping as the rest
 			// of the cli (CheckResponse returns nil for 2xx without reading body).
 			if err := fuse.CheckResponse(resp); err != nil {

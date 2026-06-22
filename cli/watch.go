@@ -46,7 +46,7 @@ func streamPlain(ch <-chan fuse.Event) error {
 			if ev.Error != "" {
 				detail = ev.Error
 			}
-			fmt.Fprintf(os.Stdout, "%s  %-12s %s\n", shortTime(ev.UpdatedAt), ev.State, detail)
+			_, _ = fmt.Fprintf(os.Stdout, "%s  %-12s %s\n", shortTime(ev.UpdatedAt), ev.State, detail)
 		}
 		if fuse.IsTerminalState(ev.State) {
 			return nil

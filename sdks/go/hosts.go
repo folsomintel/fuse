@@ -32,7 +32,7 @@ func (s *HostsService) Register(ctx context.Context, req RegisterHostRequest) (*
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var host Host
 	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
 		return nil, fmt.Errorf("decode host: %w", err)
@@ -55,7 +55,7 @@ func (s *HostsService) List(ctx context.Context) ([]Host, error) {
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out hostList
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode hosts: %w", err)
@@ -82,7 +82,7 @@ func (s *HostsService) Get(ctx context.Context, hostID string) (*Host, error) {
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var host Host
 	if err := json.NewDecoder(resp.Body).Decode(&host); err != nil {
 		return nil, fmt.Errorf("decode host: %w", err)

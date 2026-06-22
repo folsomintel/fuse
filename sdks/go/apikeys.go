@@ -41,7 +41,7 @@ func (s *APIKeysService) Create(ctx context.Context, label string) (*CreatedAPIK
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var key CreatedAPIKey
 	if err := json.NewDecoder(resp.Body).Decode(&key); err != nil {
 		return nil, fmt.Errorf("decode api key: %w", err)
@@ -66,7 +66,7 @@ func (s *APIKeysService) List(ctx context.Context) ([]APIKey, error) {
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var out apiKeyList
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode api keys: %w", err)
