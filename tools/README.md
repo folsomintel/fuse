@@ -86,19 +86,19 @@ Open these at your cloud / external firewall:
 
 All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in/out.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST   | `/v1/vm` | Create a microVM. Body: `{name,cpus,memory_mb,storage_gb,region}`. Returns `{vm_id,url}`. |
-| GET    | `/v1/vm/{id}` | `{vm_id,url}` |
-| GET    | `/v1/vm?prefix=` | `{vms:[{vm_id,url}]}` — prefix match on `name` |
-| DELETE | `/v1/vm/{id}` | Tear down, free TAP + DNAT. |
-| POST   | `/v1/vm/{id}/upload` | `{path, content_b64}` — writes into the guest (mkdir -p). |
-| POST   | `/v1/vm/{id}/exec` | `{cmd:[...]}` — returns `{exit_code, stdout (b64), stderr (b64)}`. |
+| Method | Path                      | Purpose                                                                                                                                                                                                                                                    |
+| ------ | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POST   | `/v1/vm`                  | Create a microVM. Body: `{name,cpus,memory_mb,storage_gb,region}`. Returns `{vm_id,url}`.                                                                                                                                                                  |
+| GET    | `/v1/vm/{id}`             | `{vm_id,url}`                                                                                                                                                                                                                                              |
+| GET    | `/v1/vm?prefix=`          | `{vms:[{vm_id,url}]}` — prefix match on `name`                                                                                                                                                                                                             |
+| DELETE | `/v1/vm/{id}`             | Tear down, free TAP + DNAT.                                                                                                                                                                                                                                |
+| POST   | `/v1/vm/{id}/upload`      | `{path, content_b64}` — writes into the guest (mkdir -p).                                                                                                                                                                                                  |
+| POST   | `/v1/vm/{id}/exec`        | `{cmd:[...]}` — returns `{exit_code, stdout (b64), stderr (b64)}`.                                                                                                                                                                                         |
 | POST   | `/v1/vm/{id}/start-agent` | Preferred. `{manifest_path, secrets_path, gateway?, extra_args?, tls_cert_path?, tls_key_path?, auth_token?, download_url?, binary_path?, listen?}` — optionally fetches the agent binary via `download_url`, then writes a systemd drop-in and starts it. |
-| POST   | `/v1/vm/{id}/start-surfd` | Frozen legacy wire. Same as `start-agent` with fused defaults and no `download_url`. Fuse falls back to this on a 404 from `start-agent`. |
-| POST   | `/v1/vm/{id}/snapshot` | `{comment, include_ram}` — disk-only (`include_ram` ignored). |
-| GET    | `/v1/vm/{id}/snapshots` | `{snapshots:[...]}` |
-| POST   | `/v1/vm/{id}/restore` | `{snapshot_id, include_ram}` — stops fc, swaps rootfs, reboots VM. |
+| POST   | `/v1/vm/{id}/start-surfd` | Frozen legacy wire. Same as `start-agent` with fused defaults and no `download_url`. Fuse falls back to this on a 404 from `start-agent`.                                                                                                                  |
+| POST   | `/v1/vm/{id}/snapshot`    | `{comment, include_ram}` — disk-only (`include_ram` ignored).                                                                                                                                                                                              |
+| GET    | `/v1/vm/{id}/snapshots`   | `{snapshots:[...]}`                                                                                                                                                                                                                                        |
+| POST   | `/v1/vm/{id}/restore`     | `{snapshot_id, include_ram}` — stops fc, swaps rootfs, reboots VM.                                                                                                                                                                                         |
 
 `url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port =
 `19550 + vm_index`. Public host is auto-detected; override with
@@ -216,9 +216,45 @@ sudo umount /tmp/fcroot
 # systemd integration (optional, for long-lived hosts)
 ./fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
 ./fc-agent.sh uninstall-service
+./fc-agent.sh install-orchestrator # co-locate the orchestrator here (see below)
 ```
 
 To pick up a new agent binary, re-run `./fc-bake-rootfs.sh` and `./fc-agent.sh restart`.
+
+## Co-locating the orchestrator (control plane)
+
+The orchestrator (`bin/fuse`, built from [`server/`](../server)) is a plain HTTP client to
+this agent, so the simplest production setup runs it on the same host and talks to the agent
+over loopback. One command installs it as a systemd service next to the agent:
+
+```bash
+./fc-agent.sh install-orchestrator
+```
+
+It resolves the `orchestrator` binary (from `ORCH_BIN_SRC=/path`, a local `./orchestrator`,
+an existing `/usr/local/bin/orchestrator`, or the latest GitHub release), writes
+`/etc/default/orchestrator` prefilled with `FIRECRACKER_BASE_URL=http://127.0.0.1:8090`, this
+host's `FIRECRACKER_TOKEN`, and freshly generated `ORCH_AUTH_TOKEN` + `TOKEN_ENCRYPTION_KEY`
+(it never overwrites an existing file), then installs and enables `orchestrator.service`
+(ordered after `fc-agent.service`).
+
+Auth is on by default, so the orchestrator refuses to boot until you provide a Postgres
+`DATABASE_URL`. The installer leaves that as a placeholder and does not start the service
+until you fill it in:
+
+```bash
+sudoedit /etc/default/orchestrator   # set DATABASE_URL=postgres://...
+sudo systemctl start orchestrator    # the schema is created on first boot
+```
+
+It then prints the `FUSE_BASE_URL` + `FUSE_TOKEN` for the dashboard
+([`fuse-frontend`](../../fuse-frontend)); the dashboard's `FUSE_TOKEN` must match the
+orchestrator's `ORCH_AUTH_TOKEN`. Open `8080/tcp` (or terminate TLS at a proxy and point the
+dashboard there). Remove it with `./fc-agent.sh uninstall-orchestrator`.
+
+To run the orchestrator somewhere else instead (one control plane scheduling across many
+hosts), skip this and point its `FIRECRACKER_BASE_URL` at each host's agent URL from
+`./fc-agent.sh env`.
 
 ## Re-attach on restart
 
@@ -245,7 +281,7 @@ repo, downloads the new `fused`, re-bakes the rootfs, and restarts the agent:
 ```
 
 Public repo — no token needed. Optional `tools/.fc-updater.env` is sourced if present, e.g.
-`GH_TOKEN=...` (dodge API rate limits) or `FUSE_ORCH_SERVICE=fuse FUSE_ORCH_BIN=/usr/local/bin/fuse`
+`GH_TOKEN=...` (dodge API rate limits) or `FUSE_ORCH_SERVICE=orchestrator.service FUSE_ORCH_BIN=/usr/local/bin/orchestrator`
 to also update a co-located orchestrator. Override the source repo with `FUSE_REPO=owner/name`.
 
 ## End-to-end test

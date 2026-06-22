@@ -51,13 +51,13 @@ startup script; Fuse picks a host, boots the VM, uploads your files, starts the 
 agent, and tracks it through `provision → running → drain → destroy`. A background
 reconcile loop catches orphans and stuck VMs.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/environments` | Create a microVM for a task |
-| `GET` | `/v1/environments` | List environments |
-| `GET` | `/v1/environments/{id}` | Get one environment |
-| `POST` | `/v1/environments/{id}?action=drain` | Gracefully drain (or `rotate-token`) |
-| `DELETE` | `/v1/environments/{id}` | Destroy the microVM |
+| Method   | Path                                 | Purpose                              |
+| -------- | ------------------------------------ | ------------------------------------ |
+| `POST`   | `/v1/environments`                   | Create a microVM for a task          |
+| `GET`    | `/v1/environments`                   | List environments                    |
+| `GET`    | `/v1/environments/{id}`              | Get one environment                  |
+| `POST`   | `/v1/environments/{id}?action=drain` | Gracefully drain (or `rotate-token`) |
+| `DELETE` | `/v1/environments/{id}`              | Destroy the microVM                  |
 
 ### Hosts
 
@@ -65,13 +65,13 @@ A **host** is a machine running the Firecracker host agent. Register your hosts 
 schedules microVMs across them. You can **cordon** a host to stop new placements (e.g.
 before maintenance) and **uncordon** it to resume.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/hosts` | Register a host |
-| `GET` | `/v1/hosts` | List hosts |
-| `GET` | `/v1/hosts/{id}` | Get one host |
-| `POST` | `/v1/hosts/{id}?action=cordon` | Cordon (or `uncordon`) |
-| `DELETE` | `/v1/hosts/{id}` | Remove a host |
+| Method   | Path                           | Purpose                |
+| -------- | ------------------------------ | ---------------------- |
+| `POST`   | `/v1/hosts`                    | Register a host        |
+| `GET`    | `/v1/hosts`                    | List hosts             |
+| `GET`    | `/v1/hosts/{id}`               | Get one host           |
+| `POST`   | `/v1/hosts/{id}?action=cordon` | Cordon (or `uncordon`) |
+| `DELETE` | `/v1/hosts/{id}`               | Remove a host          |
 
 ### Snapshots
 
@@ -79,22 +79,22 @@ A **snapshot** captures a running microVM's state so you can restore from it lat
 for fast cold-starts, checkpointing long tasks, or branching from a known-good point.
 Snapshots are persisted records and can carry a comment, retention, and metadata.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/v1/environments/{id}/snapshots` | Snapshot a running microVM |
-| `GET` | `/v1/snapshots` | List snapshots |
-| `GET` | `/v1/snapshots/{id}` | Get one snapshot |
-| `POST` | `/v1/snapshots/{id}?action=restore` | Restore a microVM from a snapshot |
-| `DELETE` | `/v1/snapshots/{id}` | Delete a snapshot |
+| Method   | Path                                | Purpose                           |
+| -------- | ----------------------------------- | --------------------------------- |
+| `POST`   | `/v1/environments/{id}/snapshots`   | Snapshot a running microVM        |
+| `GET`    | `/v1/snapshots`                     | List snapshots                    |
+| `GET`    | `/v1/snapshots/{id}`                | Get one snapshot                  |
+| `POST`   | `/v1/snapshots/{id}?action=restore` | Restore a microVM from a snapshot |
+| `DELETE` | `/v1/snapshots/{id}`                | Delete a snapshot                 |
 
 ### Logs & events
 
 Each environment exposes a live **event stream** over Server-Sent Events — tail state
 transitions and activity as they happen, no polling.
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/v1/environments/{id}/events` | Stream environment events (SSE) |
+| Method | Path                           | Purpose                         |
+| ------ | ------------------------------ | ------------------------------- |
+| `GET`  | `/v1/environments/{id}/events` | Stream environment events (SSE) |
 
 ## Quickstart
 
@@ -110,6 +110,49 @@ export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
 
 # Or run with no host configured — an in-memory stub is used, handy for local dev
 ./bin/fuse
+```
+
+## Deploy
+
+For anything past local dev, run the orchestrator as a service. The simplest topology
+co-locates it on a Firecracker host, and the host toolchain installs it next to the agent:
+
+```bash
+cd tools
+./fc-install.sh                     # firecracker + kernel + rootfs
+./fc-agent.sh install-service       # host agent (systemd, :8090)
+./fc-agent.sh install-orchestrator  # orchestrator (systemd, :8080), co-located
+sudoedit /etc/default/orchestrator  # set DATABASE_URL (Postgres)
+sudo systemctl start orchestrator
+```
+
+`install-orchestrator` prefills `/etc/default/orchestrator` with this host's
+`FIRECRACKER_TOKEN` and generated auth/encryption keys (you supply only the Postgres
+`DATABASE_URL`), installs the unit, and prints the `FUSE_BASE_URL` + `FUSE_TOKEN` for the
+dashboard. Auth is required by default: the orchestrator refuses to boot until
+`ORCH_AUTH_TOKEN` and `DATABASE_URL` are set, and the Postgres schema is created on first
+start. Full walkthrough in
+[`tools/README.md`](tools/README.md#co-locating-the-orchestrator-control-plane).
+
+Topology is just one env var. Leave `FIRECRACKER_BASE_URL` on loopback to co-locate, or
+point it at a remote agent (and register more hosts via `/v1/hosts`) to run the orchestrator
+as a standalone control plane scheduling across many hosts.
+
+## Dashboard
+
+[**fuse-frontend**](../fuse-frontend) is the Fuse Control Plane: a Phoenix/LiveView console
+for environments, hosts, snapshots, and a live event log, driving this orchestrator over its
+REST API. Point it at your orchestrator with the two values `install-orchestrator` prints:
+
+| Variable        | Value                                                           |
+| --------------- | --------------------------------------------------------------- |
+| `FUSE_BASE_URL` | orchestrator URL, e.g. `http://<host>:8080` (or your TLS proxy) |
+| `FUSE_TOKEN`    | the orchestrator's `ORCH_AUTH_TOKEN` (same value)               |
+
+```bash
+cd ../fuse-frontend
+FUSE_BASE_URL=http://<host>:8080 FUSE_TOKEN=<orch-auth-token> mix phx.server
+# dashboard on http://localhost:4000
 ```
 
 ## The in-guest agent
@@ -136,16 +179,17 @@ your own agent, supply a different `AgentSpec` and bake your binary into the roo
 
 ## Configuration
 
-| Env var | Flag | Default | Purpose |
-|---|---|---|---|
-| `ORCH_LISTEN` | `--listen` | `:8080` | API listen address |
-| `FIRECRACKER_BASE_URL` | `--firecracker-url` | _(empty → stub)_ | Firecracker host agent URL |
-| `FIRECRACKER_TOKEN` | | | Bearer token for the host agent |
-| `DATABASE_URL` | `--database-url` | _(empty → in-memory)_ | Postgres state store |
-| `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption |
-| `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot |
-| `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS |
-| `ORCH_AUTH_TOKEN` / `ORCH_ALLOWED_CIDRS` | | | API auth + IP allowlist |
+| Env var                                  | Flag                | Default               | Purpose                                                                       |
+| ---------------------------------------- | ------------------- | --------------------- | ----------------------------------------------------------------------------- |
+| `ORCH_LISTEN`                            | `--listen`          | `:8080`               | API listen address                                                            |
+| `FIRECRACKER_BASE_URL`                   | `--firecracker-url` | _(empty → stub)_      | Firecracker host agent URL                                                    |
+| `FIRECRACKER_TOKEN`                      |                     |                       | Bearer token for the host agent                                               |
+| `DATABASE_URL`                           | `--database-url`    | _(empty → in-memory)_ | Postgres state store                                                          |
+| `TOKEN_ENCRYPTION_KEY`                   |                     |                       | Hex-encoded 32-byte AES key for per-VM token encryption                       |
+| `AGENT_DOWNLOAD_URL`                     |                     |                       | URL to fetch the guest agent binary at boot                                   |
+| `ORCH_TLS_CERT` / `ORCH_TLS_KEY`         |                     |                       | Serve the API over TLS                                                        |
+| `ORCH_REQUIRE_AUTH`                      |                     |                       | Fail closed: refuse to boot unless `ORCH_AUTH_TOKEN` + `DATABASE_URL` are set |
+| `ORCH_AUTH_TOKEN` / `ORCH_ALLOWED_CIDRS` |                     |                       | API auth + IP allowlist                                                       |
 
 ## API
 
