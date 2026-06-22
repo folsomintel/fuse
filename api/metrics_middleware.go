@@ -65,3 +65,20 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	}
 	return w.ResponseWriter.Write(b)
 }
+
+// Flush implements http.Flusher so streaming handlers (e.g. SSE) keep
+// working behind this middleware. Without it, a handler's
+// w.(http.Flusher) assertion fails on the wrapper and the stream is
+// rejected. Delegates to the underlying writer when it supports flushing.
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the wrapped ResponseWriter so http.ResponseController can
+// reach transport capabilities (SetWriteDeadline, Hijack, ...) through the
+// wrapper. See the SSE handler's use of http.NewResponseController.
+func (w *statusWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
