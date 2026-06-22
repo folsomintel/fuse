@@ -7,6 +7,10 @@ ENV_FILE="$FC_DIR/.env"
 LEGACY_ENV_FILE="$FC_DIR/.fc-agent.env"
 PID_FILE="$FC_DIR/.fc-agent.pid"
 LOG="$FC_DIR/fc-agent.log"
+# co-located orchestrator (control plane) install targets; ORCH_BIN overridable
+ORCH_BIN="${ORCH_BIN:-/usr/local/bin/orchestrator}"
+ORCH_DEFAULTS=/etc/default/orchestrator
+ORCH_UNIT=/etc/systemd/system/orchestrator.service
 
 cmd="${1:-start}"
 public_ip() { curl -fsS ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}'; }
@@ -143,6 +147,126 @@ EOF
     echo "FIRECRACKER_TOKEN=${FC_AGENT_TOKEN}"
     echo "# --------------------------------"
     ;;
+  install-orchestrator)
+    # Co-locate the Fuse orchestrator (control plane) next to this agent.
+    # Topology is just config: FIRECRACKER_BASE_URL defaults to loopback here,
+    # but the same binary runs anywhere you point it. Production defaults are
+    # auth-on + Postgres; you fill DATABASE_URL before the first start.
+    ensure_token
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"   # FC_AGENT_TOKEN
+    case "$(uname -m)" in
+      x86_64)        ASSET_ARCH="x86_64" ;;
+      aarch64|arm64) ASSET_ARCH="arm64" ;;
+      *) echo "[orch] unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+
+    # 1. resolve the orchestrator binary: ORCH_BIN_SRC, then ./orchestrator next
+    #    to this script, then an existing install, else the latest release.
+    if [ -n "${ORCH_BIN_SRC:-}" ] && [ -x "$ORCH_BIN_SRC" ]; then
+      sudo -n install -m0755 "$ORCH_BIN_SRC" "$ORCH_BIN"
+    elif [ -x "$FC_DIR/orchestrator" ]; then
+      sudo -n install -m0755 "$FC_DIR/orchestrator" "$ORCH_BIN"
+    elif [ -x "$ORCH_BIN" ]; then
+      echo "[orch] reusing existing $ORCH_BIN"
+    else
+      REPO="${FUSE_REPO:-andrewn6/fuse}"
+      TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+        | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 \
+        | sed -E 's/.*"([^"]+)"$/\1/')
+      [ -n "$TAG" ] || { echo "[orch] no release found; set ORCH_BIN_SRC=/path/to/orchestrator" >&2; exit 1; }
+      TGZ=$(mktemp); EXDIR=$(mktemp -d)
+      echo "[orch] downloading orchestrator_Linux_${ASSET_ARCH}.tar.gz ($TAG)"
+      curl -fsSL -o "$TGZ" "https://github.com/$REPO/releases/download/$TAG/orchestrator_Linux_${ASSET_ARCH}.tar.gz" \
+        || { echo "[orch] download failed" >&2; exit 1; }
+      tar -xzf "$TGZ" -C "$EXDIR" orchestrator
+      sudo -n install -m0755 "$EXDIR/orchestrator" "$ORCH_BIN"
+      rm -rf "$TGZ" "$EXDIR"
+    fi
+    echo "[orch] binary -> $ORCH_BIN ($("$ORCH_BIN" --version 2>/dev/null || echo '?'))"
+
+    # 2. write /etc/default/orchestrator only if absent (never clobber edits).
+    #    FIRECRACKER_TOKEN matches this host's agent; auth + encryption keys are
+    #    generated; DATABASE_URL is left as a placeholder for you to fill.
+    if [ ! -f "$ORCH_DEFAULTS" ]; then
+      sudo -n tee "$ORCH_DEFAULTS" >/dev/null <<EOF
+# /etc/default/orchestrator - Fuse orchestrator config. Edit, then:
+#   sudo systemctl restart orchestrator
+# Topology is just the agent URL: loopback = co-located, remote = split.
+FIRECRACKER_BASE_URL=http://127.0.0.1:${PORT}
+FIRECRACKER_TOKEN=${FC_AGENT_TOKEN}
+ORCH_LISTEN=:8080
+
+# State: Postgres (survives restarts). REQUIRED - fill this in before first start.
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/fuse_orchestrator?sslmode=require
+
+# Auth: required, fail-closed. Set the UI's FUSE_TOKEN to the SAME value.
+ORCH_REQUIRE_AUTH=true
+ORCH_AUTH_TOKEN=$(openssl rand -hex 32)
+
+# Encrypt per-host agent tokens at rest in Postgres.
+TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
+
+# TLS: terminate at a reverse proxy (recommended). To terminate here instead:
+# ORCH_TLS_CERT=/etc/fuse/tls/orchestrator.crt
+# ORCH_TLS_KEY=/etc/fuse/tls/orchestrator.key
+
+# Optional: restrict the source networks that may reach the API.
+# ORCH_ALLOWED_CIDRS=10.0.0.0/8,100.64.0.0/10
+EOF
+      sudo -n chmod 600 "$ORCH_DEFAULTS"
+      echo "[orch] wrote $ORCH_DEFAULTS (token + keys filled; DATABASE_URL is a placeholder)"
+    else
+      echo "[orch] $ORCH_DEFAULTS exists - leaving it untouched"
+    fi
+
+    # 3. install the systemd unit.
+    sudo -n tee "$ORCH_UNIT" >/dev/null <<EOF
+[Unit]
+Description=Fuse orchestrator (control plane)
+After=network-online.target fc-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=$ORCH_DEFAULTS
+ExecStart=$ORCH_BIN
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    sudo -n systemctl daemon-reload
+    sudo -n systemctl enable orchestrator.service
+
+    # 4. only start once DATABASE_URL is real - auth-on + a placeholder DB would
+    #    just crash-loop.
+    if grep -q 'USER:PASSWORD@HOST' "$ORCH_DEFAULTS"; then
+      echo "[orch] enabled but NOT started - edit $ORCH_DEFAULTS (set DATABASE_URL), then:"
+      echo "       sudo systemctl start orchestrator"
+    else
+      sudo -n systemctl restart orchestrator.service
+      sudo -n systemctl status --no-pager orchestrator.service | head -15
+    fi
+
+    # 5. print the UI wiring + the updater hint.
+    TOK=$(grep -E '^ORCH_AUTH_TOKEN=' "$ORCH_DEFAULTS" | cut -d= -f2- || true)
+    echo
+    echo "# ---- point the Fuse UI (fuse-frontend) at this orchestrator ----"
+    echo "FUSE_BASE_URL=http://$(public_ip):8080   # or your TLS proxy URL"
+    echo "FUSE_TOKEN=${TOK}"
+    echo "# ----------------------------------------------------------------"
+    echo "[orch] tip: add FUSE_ORCH_SERVICE=orchestrator.service and FUSE_ORCH_BIN=$ORCH_BIN"
+    echo "       to $FC_DIR/.fc-updater.env so the weekly updater keeps it current"
+    ;;
+  uninstall-orchestrator)
+    sudo -n systemctl disable --now orchestrator.service 2>/dev/null || true
+    sudo -n rm -f "$ORCH_UNIT"
+    sudo -n systemctl daemon-reload
+    echo "[orch] orchestrator service removed (left $ORCH_DEFAULTS and $ORCH_BIN in place)"
+    ;;
   *)
-    echo "usage: $0 {start|stop|restart|log|env|install-service|uninstall-service|install-updater|uninstall-updater}" >&2; exit 1 ;;
+    echo "usage: $0 {start|stop|restart|log|env|install-service|uninstall-service|install-updater|uninstall-updater|install-orchestrator|uninstall-orchestrator}" >&2; exit 1 ;;
 esac

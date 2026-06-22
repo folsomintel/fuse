@@ -1,0 +1,38 @@
+# /etc/default/orchestrator - Fuse orchestrator (control plane) configuration.
+#
+# Reference template. `./fc-agent.sh install-orchestrator` writes a real copy to
+# /etc/default/orchestrator with FIRECRACKER_TOKEN + the auth/encryption keys
+# already filled in; you only need to set DATABASE_URL. Edit, then:
+#   sudo systemctl restart orchestrator
+#
+# Topology is just the agent URL: loopback = co-located, remote URL = split.
+
+# --- Firecracker host agent (co-located default: loopback) ---
+FIRECRACKER_BASE_URL=http://127.0.0.1:8090
+# Must equal the agent's FC_AGENT_TOKEN (see tools/.env on the host).
+FIRECRACKER_TOKEN=
+
+# --- HTTP listener ---
+ORCH_LISTEN=:8080
+
+# --- State store: Postgres (survives restarts). REQUIRED for a real deploy. ---
+# Without DATABASE_URL the orchestrator runs in-memory and loses every host/VM
+# record on restart. Use a database dedicated to the orchestrator.
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/fuse_orchestrator?sslmode=require
+
+# --- Auth: required, fail-closed (won't boot without a token) ---
+ORCH_REQUIRE_AUTH=true
+# Shared bearer token. Set the UI's FUSE_TOKEN to the SAME value.
+ORCH_AUTH_TOKEN=
+
+# --- Encrypt per-host agent tokens at rest in Postgres (recommended) ---
+# 32-byte hex key. Generate: openssl rand -hex 32
+TOKEN_ENCRYPTION_KEY=
+
+# --- TLS: terminate at a reverse proxy (recommended). To terminate in the   ---
+# --- orchestrator itself instead, uncomment both and point at your cert/key. ---
+# ORCH_TLS_CERT=/etc/fuse/tls/orchestrator.crt
+# ORCH_TLS_KEY=/etc/fuse/tls/orchestrator.key
+
+# --- Optional: restrict the source networks that may reach the API ---
+# ORCH_ALLOWED_CIDRS=10.0.0.0/8,100.64.0.0/10
