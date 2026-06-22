@@ -7,6 +7,8 @@ import (
 	"net/url"
 
 	"github.com/spf13/cobra"
+
+	fuse "github.com/andrewn6/fuse/sdks/go"
 )
 
 func newMetricsCmd() *cobra.Command {
@@ -41,12 +43,14 @@ func newMetricsCmd() *cobra.Command {
 				return err
 			}
 			defer resp.Body.Close()
+			// map auth/forbidden/etc through the same friendly mapping as the rest
+			// of the cli (CheckResponse returns nil for 2xx without reading body).
+			if err := fuse.CheckResponse(resp); err != nil {
+				return friendly(err)
+			}
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
 				return err
-			}
-			if resp.StatusCode != http.StatusOK {
-				return fmt.Errorf("metrics request failed: %s\n%s", resp.Status, string(body))
 			}
 			fmt.Print(string(body))
 			return nil

@@ -84,7 +84,7 @@ func friendly(err error) error {
 	}
 	switch {
 	case apiErr.Status == http.StatusForbidden || apiErr.Code == "forbidden":
-		return fmt.Errorf("forbidden: %s\n  api-key commands require the master token; the endpoint may also be CIDR-restricted", msg)
+		return fmt.Errorf("forbidden: %s\n  your token may lack permission (api-key commands need the master token), or the endpoint may be CIDR-restricted", msg)
 	case fuse.IsUnauthorized(err):
 		return fmt.Errorf("unauthorized: %s\n  re-run `fuse connect <url> --token <token>` with a valid token", msg)
 	case fuse.IsNotFound(err):

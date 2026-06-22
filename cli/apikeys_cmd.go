@@ -33,6 +33,9 @@ func newAPIKeyCreateCmd() *cobra.Command {
 			if err != nil {
 				return friendly(err)
 			}
+			// warn before the output-mode branch so json/scripted callers are
+			// warned too (warnf goes to stderr, leaving json stdout clean).
+			warnf("save this key now: the secret is shown only once and cannot be recovered")
 			if app.isJSON() {
 				return printJSON(key)
 			}
@@ -42,7 +45,6 @@ func newAPIKeyCreateCmd() *cobra.Command {
 				{"created", shortTime(key.CreatedAt)},
 				{"key", styleGood.Render(key.Key)},
 			})
-			warnf("save this key now: the secret is shown only once and cannot be recovered")
 			return nil
 		},
 	}
