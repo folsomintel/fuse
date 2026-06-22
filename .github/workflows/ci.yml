@@ -84,3 +84,37 @@ jobs:
         with:
           version: "~> v2"
           args: check
+
+  # TypeScript SDK (sdks/typescript): lint, typecheck, test, and build. Runs in
+  # parallel with the Go jobs and is independent of them.
+  sdk-ts:
+    name: TS SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build

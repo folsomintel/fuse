@@ -34,3 +34,53 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Publish the TypeScript SDK to npm on the same v* tags as the Go release.
+  # The package version is stamped from the tag at publish time, so the npm
+  # version tracks the repo's release cadence.
+  #
+  # Auth uses npm Trusted Publishing (OIDC) — no NPM_TOKEN. Configure a trusted
+  # publisher for @andrewn6/fuse on npmjs.com pointing at this repo + workflow
+  # (.github/workflows/release.yml). npm generates provenance automatically.
+  publish-ts:
+    name: Publish TS SDK to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # OIDC: required for npm Trusted Publishing + provenance
+    defaults:
+      run:
+        working-directory: sdks/typescript
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing needs npm >= 11.5.1; ensure a new-enough CLI
+      # regardless of what the runner image bundles.
+      - name: Upgrade npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Set version from tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      # OIDC authenticates the publish; provenance is attached automatically.
+      - name: Publish
+        run: npm publish

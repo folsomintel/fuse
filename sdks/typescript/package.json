@@ -1,0 +1,63 @@
+{
+  "name": "@folsom/fuse",
+  "version": "0.0.1",
+  "description": "TypeScript SDK for the Fuse microVM control plane",
+  "license": "MIT",
+  "author": "andrewn6",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/andrewn6/fuse.git",
+    "directory": "sdks/typescript"
+  },
+  "homepage": "https://github.com/andrewn6/fuse/tree/main/sdks/typescript#readme",
+  "bugs": {
+    "url": "https://github.com/andrewn6/fuse/issues"
+  },
+  "keywords": [
+    "fuse",
+    "microvm",
+    "firecracker",
+    "sdk",
+    "api-client"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "prettier --check . && tsc --noEmit",
+    "format": "prettier --write .",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "prettier": "^3.3.0",
+    "tsup": "^8.2.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
