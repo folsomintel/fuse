@@ -58,10 +58,16 @@ testpaths = ["tests"]
 [tool.ruff]
 src = ["src", "tests"]
 line-length = 100
+# pinned to the requires-python floor: pydantic evaluates annotations at
+# runtime, where the `X | None` union syntax (UP045) fails on 3.9.
+target-version = "py39"
 
 [tool.ruff.lint]
 # pyflakes, pycodestyle, isort, pyupgrade, bugbear
 select = ["F", "E", "W", "I", "UP", "B"]
+# UP045/UP007 want `X | None`, but pydantic evaluates model annotations at
+# runtime and that union syntax errors on python 3.9 (our floor). keep Optional.
+ignore = ["UP045", "UP007"]
 
 [tool.mypy]
 strict = true
