@@ -1,4 +1,4 @@
-// Command orchestrator-server runs the Fuse orchestrator REST API.
+// Command orchestrator runs the Fuse orchestrator REST API.
 //
 // It boots a FleetManager (currently backed by the Firecracker provider,
 // with an in-memory stub fallback when FIRECRACKER_BASE_URL is unset),
@@ -6,10 +6,7 @@
 // shutdown on SIGINT / SIGTERM.
 //
 // Configuration is flag-driven, with env-var fallbacks for anything
-// that's reasonable to set in an operator environment. The binary
-// lives at apps/orchestrator/server/ (not cmd/) so the relationship
-// between the library package and its HTTP surface is visible at a
-// glance.
+// that's reasonable to set in an operator environment.
 //
 //	@title						Fuse Orchestrator API
 //	@version					0.1.0

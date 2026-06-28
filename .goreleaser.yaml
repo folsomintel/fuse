@@ -10,7 +10,7 @@ before:
 
 builds:
   - id: orchestrator
-    main: ./server
+    main: ./cmd/orchestrator
     binary: orchestrator
     env:
       - CGO_ENABLED=0
