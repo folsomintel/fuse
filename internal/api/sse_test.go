@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // sseEvent is a parsed SSE message: optional id and a JSON-decoded

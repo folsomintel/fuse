@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/go-chi/chi/v5"
 )
 

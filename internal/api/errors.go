@@ -5,7 +5,7 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/secrets"
 )
 

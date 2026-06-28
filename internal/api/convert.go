@@ -1,7 +1,7 @@
 package api
 
 import (
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 	"time"
 )
 

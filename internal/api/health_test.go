@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // errStore is a StateStore that returns a configurable error from

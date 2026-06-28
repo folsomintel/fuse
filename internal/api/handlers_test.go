@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // TODO: Add test cases for invalid/edge-case inputs: negative CPU counts,

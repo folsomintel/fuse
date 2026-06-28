@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // stubKeyStore is an in-memory APIKeyStore for handler/middleware tests.

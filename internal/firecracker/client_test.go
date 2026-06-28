@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // TestClientContract validates HTTP paths, auth header, and basic lifecycle calls
