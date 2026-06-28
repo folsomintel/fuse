@@ -1,10 +1,12 @@
-package orchestrator
+package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
-// PrometheusMetrics implements ReconcileMetrics using Prometheus
+// PrometheusMetrics implements orchestrator.ReconcileMetrics using Prometheus
 // counters, gauges, and histograms. It also exposes VM lifecycle
 // gauges that are updated each reconcile cycle.
 type PrometheusMetrics struct {
@@ -133,9 +135,9 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 	return m
 }
 
-// ReconcileCompleted implements the ReconcileMetrics interface. Called
+// ReconcileCompleted implements the orchestrator.ReconcileMetrics interface. Called
 // at the end of each reconcile cycle with a summary of what happened.
-func (m *PrometheusMetrics) ReconcileCompleted(s ReconcileSummary) {
+func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) {
 	m.reconcileTotal.Inc()
 	m.reconcileDuration.Observe(s.Duration.Seconds())
 	m.trackedVMs.Set(float64(s.TrackedVMs))

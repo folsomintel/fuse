@@ -40,6 +40,7 @@ import (
 	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/apikeys"
 	"github.com/folsomintel/fuse/internal/firecracker"
+	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -223,7 +224,7 @@ func run() error {
 		logger.Info("state store: in-memory (no DATABASE_URL)")
 	}
 
-	metrics := orchestrator.NewPrometheusMetrics(prometheus.DefaultRegisterer)
+	promMetrics := metrics.NewPrometheusMetrics(prometheus.DefaultRegisterer)
 
 	// Single shared factory for per-host providers. Used both at the
 	// API layer (POST /v1/hosts) and during recovery to rehydrate
@@ -242,7 +243,7 @@ func run() error {
 		Prefix:              prefix,
 		TokenEncryptionKey:  tokenEncKey,
 		HostProviderFactory: hostProviderFactory,
-		Metrics:             metrics,
+		Metrics:             promMetrics,
 		Logger:              logger,
 	})
 
@@ -305,9 +306,9 @@ func run() error {
 		SecureCookies:           useTLS,
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
-		MetricsRequestsTotal:    metrics.HTTPRequestsTotal,
-		MetricsRequestDuration:  metrics.HTTPRequestDuration,
-		MetricsRequestsInFlight: metrics.HTTPRequestsInFlight,
+		MetricsRequestsTotal:    promMetrics.HTTPRequestsTotal,
+		MetricsRequestDuration:  promMetrics.HTTPRequestDuration,
+		MetricsRequestsInFlight: promMetrics.HTTPRequestsInFlight,
 	}
 
 	router, err := handler.Router()

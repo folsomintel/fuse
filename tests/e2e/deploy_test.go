@@ -20,6 +20,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/firecracker"
+	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -86,7 +87,7 @@ func setupServer(t *testing.T) *httptest.Server {
 	}
 
 	store := orchestrator.NewMemoryStateStore()
-	metrics := orchestrator.NewPrometheusMetrics(prometheus.NewRegistry())
+	promMetrics := metrics.NewPrometheusMetrics(prometheus.NewRegistry())
 
 	encKey := make([]byte, 32)
 	if _, err := rand.Read(encKey); err != nil {
@@ -103,7 +104,7 @@ func setupServer(t *testing.T) *httptest.Server {
 		Prefix:              "fuse-",
 		TokenEncryptionKey:  encKey,
 		HostProviderFactory: hostFactory,
-		Metrics:             metrics,
+		Metrics:             promMetrics,
 		Logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 
