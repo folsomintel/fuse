@@ -40,7 +40,7 @@ jobs:
   # version tracks the repo's release cadence.
   #
   # Auth uses npm Trusted Publishing (OIDC) — no NPM_TOKEN. Configure a trusted
-  # publisher for @andrewn6/fuse on npmjs.com pointing at this repo + workflow
+  # publisher for @folsom/fuse on npmjs.com pointing at this repo + workflow
   # (.github/workflows/release.yml). npm generates provenance automatically.
   publish-ts:
     name: Publish TS SDK to npm

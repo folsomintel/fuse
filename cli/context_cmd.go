@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andrewn6/fuse/cli/config"
+	"github.com/folsomintel/fuse/cli/config"
 )
 
 func newConnectCmd() *cobra.Command {

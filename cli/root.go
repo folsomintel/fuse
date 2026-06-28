@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/andrewn6/fuse/cli/config"
-	fuse "github.com/andrewn6/fuse/sdks/go"
+	"github.com/folsomintel/fuse/cli/config"
+	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
 // version is the cli version, also sent as the user agent.

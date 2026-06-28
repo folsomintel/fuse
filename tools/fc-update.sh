@@ -14,7 +14,7 @@
 # repo — no token needed; set GH_TOKEN to avoid GitHub API rate limits.
 #
 # Env knobs:
-#   FUSE_REPO          owner/name for releases (default: andrewn6/fuse)
+#   FUSE_REPO          owner/name for releases (default: folsomintel/fuse)
 #   GH_TOKEN           optional GitHub token (rate limits / private forks)
 #   FC_FORCE=1         re-bake/restart even if already current
 #   FC_SKIP_REBAKE=1   update the binary but don't re-bake/restart
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${FUSE_REPO:-andrewn6/fuse}"
+REPO="${FUSE_REPO:-folsomintel/fuse}"
 MARKER="$FC_DIR/.fc-version"
 
 log()  { printf '\033[1;36m[update] %s\033[0m\n' "$*"; }

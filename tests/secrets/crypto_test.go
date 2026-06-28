@@ -5,7 +5,7 @@ import (
 	"encoding/pem"
 	"testing"
 
-	secpkg "github.com/andrewn6/fuse/secrets"
+	secpkg "github.com/folsomintel/fuse/secrets"
 )
 
 func TestGenerateVMCredentials(t *testing.T) {

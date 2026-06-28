@@ -13,7 +13,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // ── Stub provider tests ─────────────────────────────────────────────────

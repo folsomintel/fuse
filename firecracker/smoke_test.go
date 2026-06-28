@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // TestSmoke exercises create/list/destroy against a live Firecracker agent.

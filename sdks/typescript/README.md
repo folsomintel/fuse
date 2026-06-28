@@ -1,10 +1,10 @@
 # @folsom/fuse
 
-**TypeScript SDK for [Fuse](https://github.com/andrewn6/fuse)** — the control
+**TypeScript SDK for [Fuse](https://github.com/folsomintel/fuse)** — the control
 plane for agents that deploys and drives Firecracker microVMs over a REST API.
 
 A typed, zero-dependency, ESM client that mirrors the
-[Go SDK](https://github.com/andrewn6/fuse/tree/main/sdks/go) one-to-one. It uses
+[Go SDK](https://github.com/folsomintel/fuse/tree/main/sdks/go) one-to-one. It uses
 the platform `fetch`/streams, so it runs on Node 18+, Deno, Bun, edge runtimes,
 and the browser.
 
@@ -117,7 +117,7 @@ for await (const event of stream) {
 ## API reference
 
 The full REST surface is documented in the repository's OpenAPI spec:
-[`api/openapi.yaml`](https://github.com/andrewn6/fuse/blob/main/api/openapi.yaml).
+[`api/openapi.yaml`](https://github.com/folsomintel/fuse/blob/main/api/openapi.yaml).
 
 ## License
 

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	fuse "github.com/andrewn6/fuse/sdks/go"
+	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
 func TestParseKeyVals(t *testing.T) {

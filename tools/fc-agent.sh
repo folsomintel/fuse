@@ -92,7 +92,7 @@ EOF
     ;;
   install-updater)
     # Weekly self-host auto-update via systemd timer: fc-update.sh pulls the
-    # latest GitHub release of andrewn6/fuse, refreshes fused, re-bakes, and
+    # latest GitHub release of folsomintel/fuse, refreshes fused, re-bakes, and
     # restarts the agent. Public repo — no token required. An optional
     # .fc-updater.env (e.g. GH_TOKEN=... to dodge API rate limits, or
     # FUSE_ORCH_SERVICE/FUSE_ORCH_BIN to also update a co-located orchestrator)
@@ -170,7 +170,7 @@ EOF
     elif [ -x "$ORCH_BIN" ]; then
       echo "[orch] reusing existing $ORCH_BIN"
     else
-      REPO="${FUSE_REPO:-andrewn6/fuse}"
+      REPO="${FUSE_REPO:-folsomintel/fuse}"
       TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
         | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' | head -n1 \
         | sed -E 's/.*"([^"]+)"$/\1/')

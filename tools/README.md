@@ -271,7 +271,7 @@ is installed).
 ## Auto-update (self-host)
 
 `fc-update.sh` keeps a self-hosted box on the latest GitHub release. It compares the baked
-`fused --version` to the newest `andrewn6/fuse` tag and, when there's a newer one, pulls the
+`fused --version` to the newest `folsomintel/fuse` tag and, when there's a newer one, pulls the
 repo, downloads the new `fused`, re-bakes the rootfs, and restarts the agent:
 
 ```bash

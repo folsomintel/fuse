@@ -18,9 +18,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/andrewn6/fuse/api"
-	"github.com/andrewn6/fuse/firecracker"
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/api"
+	"github.com/folsomintel/fuse/firecracker"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // remoteTarget returns the Firecracker host URL+token to run the e2e against, or

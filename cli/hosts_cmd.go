@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
-	fuse "github.com/andrewn6/fuse/sdks/go"
+	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
 // newHostsCmd implements `fuse hosts list` (and bare `fuse hosts`).

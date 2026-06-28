@@ -78,7 +78,7 @@ archives:
 
   # fused as a raw, directly-downloadable binary asset, so AGENT_DOWNLOAD_URL and
   # the self-host updater can fetch it without unpacking a tarball, e.g.
-  #   https://github.com/andrewn6/fuse/releases/download/<tag>/fused_Linux_x86_64
+  #   https://github.com/folsomintel/fuse/releases/download/<tag>/fused_Linux_x86_64
   - id: fused
     ids:
       - fused
@@ -127,5 +127,5 @@ changelog:
 
 release:
   github:
-    owner: andrewn6
+    owner: folsomintel
     name: fuse

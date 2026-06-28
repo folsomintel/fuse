@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // httpStatusError carries the HTTP status code (and trimmed body) from a

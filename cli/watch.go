@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	fuse "github.com/andrewn6/fuse/sdks/go"
+	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
 // streamEnvironment subscribes to an environment's SSE event stream and renders

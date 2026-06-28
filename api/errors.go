@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/andrewn6/fuse/internal/core"
-	"github.com/andrewn6/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/secrets"
 )
 
 // writeJSON writes v as a JSON body with the given status code. Any

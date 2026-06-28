@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/andrewn6/fuse/internal/core"
-	"github.com/andrewn6/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/secrets"
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )

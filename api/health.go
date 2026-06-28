@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // defaultHealthCheckTimeout bounds each readiness dependency check.

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 )
 
 // TODO: Add test cases for invalid/edge-case inputs: negative CPU counts,

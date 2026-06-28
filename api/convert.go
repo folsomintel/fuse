@@ -1,7 +1,7 @@
 package api
 
 import (
-	"github.com/andrewn6/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/core"
 	"time"
 )
 

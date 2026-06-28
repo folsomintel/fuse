@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andrewn6/fuse/secrets"
+	"github.com/folsomintel/fuse/secrets"
 )
 
 // Sentinel errors exposed by the FleetManager public API. Callers

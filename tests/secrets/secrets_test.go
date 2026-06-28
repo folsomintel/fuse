@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	secpkg "github.com/andrewn6/fuse/secrets"
+	secpkg "github.com/folsomintel/fuse/secrets"
 )
 
 func TestExtractRequiredSecrets_empty(t *testing.T) {
