@@ -37,9 +37,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/folsomintel/fuse/api"
-	"github.com/folsomintel/fuse/firecracker"
+	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/core"
+	"github.com/folsomintel/fuse/internal/firecracker"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/folsomintel/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // RotateToken generates new TLS credentials and an auth token for a

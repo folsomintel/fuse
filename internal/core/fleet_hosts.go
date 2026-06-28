@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/folsomintel/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // ErrHostNotFound is returned when a host operation targets an

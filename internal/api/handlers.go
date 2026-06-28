@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/core"
-	"github.com/folsomintel/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/secrets"
 	"github.com/go-chi/chi/v5"
 	"github.com/prometheus/client_golang/prometheus"
 )

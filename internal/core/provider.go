@@ -8,7 +8,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/folsomintel/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // Provider manages sandboxed environments.

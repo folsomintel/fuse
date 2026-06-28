@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/folsomintel/fuse/secrets"
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // This file is the SINGLE home for all fused-specific knowledge. The core
