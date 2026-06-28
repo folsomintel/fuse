@@ -9,7 +9,7 @@
 
 # --- Firecracker host agent (co-located default: loopback) ---
 FIRECRACKER_BASE_URL=http://127.0.0.1:8090
-# Must equal the agent's FC_AGENT_TOKEN (see tools/.env on the host).
+# Must equal the agent's FC_AGENT_TOKEN (see host-agent/.env on the host).
 FIRECRACKER_TOKEN=
 
 # --- HTTP listener ---

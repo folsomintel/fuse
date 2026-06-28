@@ -1,7 +1,7 @@
 // Command fused is the reference in-guest agent for Fuse.
 //
 // It runs inside each Firecracker microVM, launched by the host fc-agent
-// (tools/fc-agent.py) via a systemd unit. Fuse uploads the manifest, secrets,
+// (host-agent/fc-agent.py) via a systemd unit. Fuse uploads the manifest, secrets,
 // and (optionally) TLS + auth-token files to /fuse/* before starting it; fused
 // reads them and serves a small HTTP API on --listen (default 0.0.0.0:9550),
 // which the control plane reaches through the host's per-VM DNAT.
@@ -9,7 +9,7 @@
 // This is intentionally minimal — a reference implementation of the guest-agent
 // contract Fuse expects (a long-lived process that binds --listen and quiesces
 // on SIGTERM). Bring your own agent by implementing the same flags + a /health
-// endpoint and baking it in as /usr/local/bin/fused (see tools/).
+// endpoint and baking it in as /usr/local/bin/fused (see host-agent/).
 package main
 
 import (

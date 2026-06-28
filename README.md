@@ -26,11 +26,11 @@ command brings up a host with the agent installed and a rootfs baked and ready.
 
 Getting Firecracker production-ready is normally a slog: install the binary, fetch a
 kernel, build a rootfs, customize it, wire up networking, expose a control port. Fuse ships
-that whole toolchain as a set of idempotent scripts in [`tools/`](tools/), so a host goes
+that whole toolchain as a set of idempotent scripts in [`host-agent/`](host-agent/), so a host goes
 from bare to bootable in a few commands:
 
 ```bash
-cd tools
+cd host-agent
 ./fc-install.sh          # firecracker binary + kernel + base rootfs
 ./fc-bake-rootfs.sh      # build your guest rootfs
 ./fc-agent.sh start      # start the host agent — prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN
@@ -100,9 +100,9 @@ transitions and activity as they happen, no polling.
 
 ```bash
 # Build
-go build -o bin/fuse ./server
+go build -o bin/fuse ./cmd/orchestrator
 
-# Run against a Firecracker host (see tools/ to bring one up)
+# Run against a Firecracker host (see host-agent/ to bring one up)
 export FIRECRACKER_BASE_URL=http://<host>:<port>
 export FIRECRACKER_TOKEN=<token>
 export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
@@ -118,7 +118,7 @@ For anything past local dev, run the orchestrator as a service. The simplest top
 co-locates it on a Firecracker host, and the host toolchain installs it next to the agent:
 
 ```bash
-cd tools
+cd host-agent
 ./fc-install.sh                     # firecracker + kernel + rootfs
 ./fc-agent.sh install-service       # host agent (systemd, :8090)
 ./fc-agent.sh install-orchestrator  # orchestrator (systemd, :8080), co-located
@@ -132,7 +132,7 @@ sudo systemctl start orchestrator
 dashboard. Auth is required by default: the orchestrator refuses to boot until
 `ORCH_AUTH_TOKEN` and `DATABASE_URL` are set, and the Postgres schema is created on first
 start. Full walkthrough in
-[`tools/README.md`](tools/README.md#co-locating-the-orchestrator-control-plane).
+[`host-agent/README.md`](host-agent/README.md#co-locating-the-orchestrator-control-plane).
 
 Topology is just one env var. Leave `FIRECRACKER_BASE_URL` on loopback to co-locate, or
 point it at a remote agent (and register more hosts via `/v1/hosts`) to run the orchestrator
@@ -175,7 +175,7 @@ type AgentSpec struct {
 
 `fused` ships as the reference profile (`FusedAgentSpec` in `agent_profile.go`). To run
 your own agent, supply a different `AgentSpec` and bake your binary into the rootfs — see
-[`tools/FUSE.md`](tools/FUSE.md).
+[`host-agent/FUSE.md`](host-agent/FUSE.md).
 
 ## Configuration
 
@@ -195,7 +195,7 @@ your own agent, supply a different `AgentSpec` and bake your binary into the roo
 
 REST on [chi](https://github.com/go-chi/chi). The full surface is in the concept tables
 above; `/metrics` exposes Prometheus metrics (unauthenticated). Spec:
-[`api/openapi.yaml`](api/openapi.yaml).
+[`internal/api/openapi.yaml`](internal/api/openapi.yaml).
 
 ## Use cases
 
@@ -206,11 +206,17 @@ above; `/metrics` exposes Prometheus metrics (unauthenticated). Spec:
 ## Layout
 
 ```
-server/             entrypoint (main)
-internal/core/      Boot, AgentSpec, FleetManager, scheduler, reconcile, snapshots, state
-internal/core/agent_profile.go   fused reference profile (the only fused-aware Go file)
-secrets/            per-VM credential generation + token encryption
-firecracker/        Firecracker provider (talks to fc-agent)
-api/                REST handlers
-tools/              fc-agent host toolchain (bring up a Firecracker host)
+cmd/orchestrator/        orchestrator server entrypoint (main)
+cmd/fused/               reference in-guest agent (main)
+cmd/dbcheck/             database-check utility (main)
+internal/orchestrator/   Boot, AgentSpec, FleetManager, scheduler, reconcile, snapshots, state store
+internal/orchestrator/agent_profile.go   fused reference profile (the only fused-aware Go file)
+internal/api/            REST handlers
+internal/firecracker/    Firecracker provider (talks to fc-agent)
+internal/secrets/        per-VM credential generation + token encryption
+internal/apikeys/        revocable API key store
+internal/metrics/        Prometheus metrics
+cli/                     operator CLI
+sdks/                    client SDKs (go, python, typescript)
+host-agent/              fc-agent host toolchain (bring up a Firecracker host)
 ```

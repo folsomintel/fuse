@@ -3,7 +3,7 @@
 # Idempotent — a no-op when already current.
 #
 # Flow:
-#   1. git pull the checkout (fc-agent.py, tools/ scripts, cmd/fused source)
+#   1. git pull the checkout (fc-agent.py, host-agent/ scripts, cmd/fused source)
 #   2. obtain the `fused` agent binary: download the latest release asset if a
 #      release is published, otherwise BUILD it from the pulled source (needs Go)
 #   3. re-bake the guest rootfs so new microVMs run the new agent
@@ -141,7 +141,7 @@ if [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
     ok "orchestrator updated + restarted ($("$FUSE_ORCH_BIN" --version 2>/dev/null || echo '?'))"
   elif command -v go >/dev/null 2>&1; then
     log "building orchestrator from source -> $FUSE_ORCH_BIN"
-    CGO_ENABLED=0 go -C "$REPO_ROOT" build -ldflags='-s -w' -o "$FC_DIR/.orchestrator.new" ./server
+    CGO_ENABLED=0 go -C "$REPO_ROOT" build -ldflags='-s -w' -o "$FC_DIR/.orchestrator.new" ./cmd/orchestrator
     sudo -n install -m 0755 "$FC_DIR/.orchestrator.new" "$FUSE_ORCH_BIN"; rm -f "$FC_DIR/.orchestrator.new"
     sudo -n systemctl restart "$FUSE_ORCH_SERVICE"
     ok "orchestrator (source) updated + restarted"

@@ -31,7 +31,7 @@ for c in sudo mount umount truncate e2fsck resize2fs curl tar podman; do need "$
 
 [ -f "$BASE" ]  || { echo "$BASE not found — run ./fc-install.sh first" >&2; exit 1; }
 [ -f fused ]   || { echo "fused not found — run ./fc-build-agent.sh (or drop your own agent binary named 'fused' here)" >&2; exit 1; }
-[ -f fused.service ] || { echo "fused.service not found — it ships in tools/; restore it or provide your agent's unit" >&2; exit 1; }
+[ -f fused.service ] || { echo "fused.service not found — it ships in host-agent/; restore it or provide your agent's unit" >&2; exit 1; }
 
 cleanup() {
   sudo -n umount "$MOUNT_POINT" 2>/dev/null || true

@@ -35,7 +35,7 @@ it reads the uploaded `/fuse/manifest.json` + `/fuse/secrets.json`, binds `--lis
 
 - `fused` — the agent binary. Build it with `./fc-build-agent.sh` (static `linux/amd64`),
   or drop your own here to run a different agent.
-- `fused.service` — the systemd unit (committed in `tools/`; the host fc-agent overrides its
+- `fused.service` — the systemd unit (committed in `host-agent/`; the host fc-agent overrides its
   `ExecStart` via a drop-in on start-agent).
 
 **To run your own in-guest agent instead of fused:** replace `fused` (+ `fused.service`) and

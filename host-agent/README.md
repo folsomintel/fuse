@@ -50,12 +50,12 @@ agent-state/        # per-VM metadata, rootfs copies, snapshots
 On a host that meets the requirements above:
 
 ```bash
-git clone <this repo> ~/fc && cd ~/fc/tools
+git clone <this repo> ~/fc && cd ~/fc/host-agent
 
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
 ./fc-install.sh
 
-# 2. Build the reference in-guest agent (produces tools/fused). Needs Go.
+# 2. Build the reference in-guest agent (produces host-agent/fused). Needs Go.
 #    To run your own agent instead, drop your binary here as `fused` and skip this.
 ./fc-build-agent.sh
 
@@ -117,8 +117,8 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 `./fc-bake-rootfs.sh` builds the guest image. **The in-guest agent is baked into the
 image**, so you must (re-)bake before first start and whenever the agent binary changes.
 The reference agent is `fused`, built from this repo's [`cmd/fused`](../cmd/fused) by
-`./fc-build-agent.sh` (output: `tools/fused`); its systemd unit `fused.service` ships in
-`tools/`. To bake your own agent instead, drop your binary here as `fused` (and replace
+`./fc-build-agent.sh` (output: `host-agent/fused`); its systemd unit `fused.service` ships in
+`host-agent/`. To bake your own agent instead, drop your binary here as `fused` (and replace
 `fused.service`) — see [`FUSE.md`](FUSE.md).
 
 Built on top of the Firecracker CI Ubuntu 22.04 rootfs. Contents injected:
@@ -223,7 +223,7 @@ To pick up a new agent binary, re-run `./fc-bake-rootfs.sh` and `./fc-agent.sh r
 
 ## Co-locating the orchestrator (control plane)
 
-The orchestrator (`bin/fuse`, built from [`server/`](../server)) is a plain HTTP client to
+The orchestrator (`bin/fuse`, built from [`cmd/orchestrator/`](../cmd/orchestrator)) is a plain HTTP client to
 this agent, so the simplest production setup runs it on the same host and talks to the agent
 over loopback. One command installs it as a systemd service next to the agent:
 
@@ -280,7 +280,7 @@ repo, downloads the new `fused`, re-bakes the rootfs, and restarts the agent:
 ./fc-agent.sh uninstall-updater
 ```
 
-Public repo — no token needed. Optional `tools/.fc-updater.env` is sourced if present, e.g.
+Public repo — no token needed. Optional `host-agent/.fc-updater.env` is sourced if present, e.g.
 `GH_TOKEN=...` (dodge API rate limits) or `FUSE_ORCH_SERVICE=orchestrator.service FUSE_ORCH_BIN=/usr/local/bin/orchestrator`
 to also update a co-located orchestrator. Override the source repo with `FUSE_REPO=owner/name`.
 
@@ -301,7 +301,7 @@ FUSE_E2E_REMOTE=1 go test ./e2e/ -v
 FUSE_E2E_FIRECRACKER_URL=http://<host>:8090 FUSE_E2E_FIRECRACKER_TOKEN=<tok> go test ./e2e/ -v
 ```
 
-`tools/fc-e2e.sh` is the binary-level equivalent (boots `./bin/fuse` and curls the lifecycle).
+`host-agent/fc-e2e.sh` is the binary-level equivalent (boots `./bin/fuse` and curls the lifecycle).
 
 ## State
 
