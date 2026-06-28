@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/apikeys"
 )
 
 // stubKeyStore is an in-memory APIKeyStore for handler/middleware tests.
@@ -19,7 +19,7 @@ type stubKeyStore struct {
 	keyID   string
 
 	created   []string // labels passed to Create
-	listOut   []orchestrator.APIKeyRecord
+	listOut   []apikeys.APIKeyRecord
 	revokeErr error
 	revoked   []string // ids passed to Revoke
 }
@@ -31,12 +31,12 @@ func (s *stubKeyStore) Authenticate(_ context.Context, rawToken string) (string,
 	return "", false
 }
 
-func (s *stubKeyStore) Create(_ context.Context, label string, now time.Time) (orchestrator.APIKeyRecord, string, error) {
+func (s *stubKeyStore) Create(_ context.Context, label string, now time.Time) (apikeys.APIKeyRecord, string, error) {
 	s.created = append(s.created, label)
-	return orchestrator.APIKeyRecord{ID: "ak_test", Label: label, CreatedAt: now}, "fuse_sk_rawsecret", nil
+	return apikeys.APIKeyRecord{ID: "ak_test", Label: label, CreatedAt: now}, "fuse_sk_rawsecret", nil
 }
 
-func (s *stubKeyStore) List(_ context.Context) ([]orchestrator.APIKeyRecord, error) {
+func (s *stubKeyStore) List(_ context.Context) ([]apikeys.APIKeyRecord, error) {
 	return s.listOut, nil
 }
 
@@ -196,7 +196,7 @@ func TestCreateAPIKey_KeyHolderForbidden(t *testing.T) {
 // JSON has no "key" field (the APIKey type carries no secret).
 func TestListAPIKeys_NeverLeaksSecret(t *testing.T) {
 	now := time.Now().UTC()
-	keys := &stubKeyStore{listOut: []orchestrator.APIKeyRecord{
+	keys := &stubKeyStore{listOut: []apikeys.APIKeyRecord{
 		{ID: "ak_1", Label: "ci", CreatedAt: now},
 	}}
 	h := &Handler{AuthToken: "master", APIKeys: keys}
@@ -224,7 +224,7 @@ func TestListAPIKeys_NeverLeaksSecret(t *testing.T) {
 
 // TestRevokeAPIKey_NotFound verifies an unknown id yields 404.
 func TestRevokeAPIKey_NotFound(t *testing.T) {
-	keys := &stubKeyStore{revokeErr: orchestrator.ErrAPIKeyNotFound}
+	keys := &stubKeyStore{revokeErr: apikeys.ErrAPIKeyNotFound}
 	h := &Handler{AuthToken: "master", APIKeys: keys}
 	router := mustRouter(t, h)
 

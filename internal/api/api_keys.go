@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/apikeys"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -18,8 +18,8 @@ import (
 // wires into BearerAuth.
 type APIKeyStore interface {
 	Authenticate(ctx context.Context, rawToken string) (string, bool)
-	Create(ctx context.Context, label string, now time.Time) (orchestrator.APIKeyRecord, string, error)
-	List(ctx context.Context) ([]orchestrator.APIKeyRecord, error)
+	Create(ctx context.Context, label string, now time.Time) (apikeys.APIKeyRecord, string, error)
+	List(ctx context.Context) ([]apikeys.APIKeyRecord, error)
 	Revoke(ctx context.Context, id string, now time.Time) error
 }
 
@@ -38,7 +38,7 @@ func (h *Handler) requireMaster(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-func toAPIKey(rec orchestrator.APIKeyRecord) APIKey {
+func toAPIKey(rec apikeys.APIKeyRecord) APIKey {
 	return APIKey{
 		ID:         rec.ID,
 		Label:      rec.Label,
@@ -136,7 +136,7 @@ func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	err := h.APIKeys.Revoke(r.Context(), id, time.Now().UTC())
 	switch {
-	case errors.Is(err, orchestrator.ErrAPIKeyNotFound):
+	case errors.Is(err, apikeys.ErrAPIKeyNotFound):
 		writeError(w, http.StatusNotFound, CodeNotFound, "api key not found", nil)
 		return
 	case err != nil:
