@@ -9,8 +9,9 @@ import (
 	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
-// version is the cli version, also sent as the user agent.
-const version = "0.0.1"
+// version is the cli version, also sent as the user agent. stamped at release
+// time via -ldflags "-X main.version=...".
+var version = "dev"
 
 // outputTable and outputJSON are the supported --output modes.
 const (
@@ -47,8 +48,9 @@ func (a *appState) isJSON() bool { return a.output == outputJSON }
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "fuse",
-		Short: "Manage Fuse hosts, environments, snapshots, and API keys",
+		Use:     "fuse",
+		Version: version,
+		Short:   "Manage Fuse hosts, environments, snapshots, and API keys",
 		Long: "fuse is the operator cli for the Fuse orchestrator.\n\n" +
 			"Connect to an orchestrator with `fuse connect`, then select a host with\n" +
 			"`fuse host <id>` to scope environment and snapshot commands to it.",
