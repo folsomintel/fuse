@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from typing import Any, Optional
 
 from pydantic import BaseModel
 
-# sdk version, reported in the default user agent.
-VERSION = "0.0.1"
+# sdk version, read from installed package metadata so it never drifts from
+# pyproject. falls back when running from an uninstalled source tree.
+try:
+    VERSION = _pkg_version("folsom-fuse")
+except PackageNotFoundError:
+    VERSION = "0+unknown"
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_USER_AGENT = f"fuse-python/{VERSION}"
 
