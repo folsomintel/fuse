@@ -97,3 +97,23 @@ jobs:
       - run: npm run build
       # no `npm version` step: package.json was bumped in the merged release PR.
       - run: npm publish
+
+  publish-pypi:
+    name: Publish Python SDK to PyPI
+    needs: [release-please, verify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # oidc: pypi trusted publishing
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      # pyproject version was bumped in the merged release PR (extra-files).
+      - run: uv build
+      - run: uv publish
