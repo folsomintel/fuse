@@ -1,86 +1,99 @@
 name: Release
 
+# release-please watches main. When its release PR merges, it tags vX.Y.Z and
+# creates the GitHub release; the gated jobs below then publish each surface.
 on:
   push:
-    tags:
-      - 'v*'
-      - 'v*.*.*'
+    branches: [main]
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  release:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+      version: ${{ steps.rp.outputs.version }}
+    steps:
+      # a PAT (or the release-please app) is required so the release PR triggers
+      # ci.yml; the default GITHUB_TOKEN would not trigger downstream workflows.
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+  # full gate, re-run on the exact release commit (race detector + all linters).
+  verify:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          # Full history and tags are required by GoReleaser for changelog/versioning.
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-
-      - name: Run tests
-        run: go test ./... -count=1
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v6
+          cache: true
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test ./... -race -count=1
+      - uses: golangci/golangci-lint-action@v7
         with:
-          version: '~> v2'
+          version: v2.12.2
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          args: check
+      - name: TS SDK checks
+        working-directory: sdks/typescript
+        run: |
+          npm ci
+          npm run lint
+          npm run test
+          npm run build
+
+  binaries:
+    needs: [release-please, verify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Publish the TypeScript SDK to npm on the same v* tags as the Go release.
-  # The package version is stamped from the tag at publish time, so the npm
-  # version tracks the repo's release cadence.
-  #
-  # Auth uses npm Trusted Publishing (OIDC) — no NPM_TOKEN. Configure a trusted
-  # publisher for @folsom/fuse on npmjs.com pointing at this repo + workflow
-  # (.github/workflows/release.yml). npm generates provenance automatically.
-  publish-ts:
+  publish-npm:
     name: Publish TS SDK to npm
+    needs: [release-please, verify]
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # OIDC: required for npm Trusted Publishing + provenance
+      id-token: write # oidc: npm trusted publishing + provenance
     defaults:
       run:
         working-directory: sdks/typescript
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-
-      # Trusted Publishing needs npm >= 11.5.1; ensure a new-enough CLI
-      # regardless of what the runner image bundles.
-      - name: Upgrade npm
-        run: npm install -g npm@latest
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Test
-        run: npm run test
-
-      - name: Build
-        run: npm run build
-
-      - name: Set version from tag
-        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
-
-      # OIDC authenticates the publish; provenance is attached automatically.
-      - name: Publish
-        run: npm publish
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+      # no `npm version` step: package.json was bumped in the merged release PR.
+      - run: npm publish
