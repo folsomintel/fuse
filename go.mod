@@ -2,12 +2,20 @@ module github.com/folsomintel/fuse
 
 go 1.26.1
 
+// sdks/go is its own module (github.com/folsomintel/fuse/sdks/go). The in-repo
+// operator CLI (./cli) imports it; this replace resolves it from the local tree
+// so root builds and `go mod tidy` (goreleaser's before-hook) work without a
+// published sdks/go tag. External SDK consumers import the module directly and
+// never see this replace.
+replace github.com/folsomintel/fuse/sdks/go => ./sdks/go
+
 require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/fang v1.0.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/folsomintel/fuse/sdks/go v0.0.0-00010101000000-000000000000
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/jackc/pgx/v5 v5.9.1
 	github.com/mattn/go-isatty v0.0.20
