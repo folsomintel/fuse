@@ -118,3 +118,25 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Python SDK (sdks/python): lint, typecheck, test via uv. Independent of the
+  # Go and TS jobs.
+  sdk-py:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdks/python
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Lint
+        run: uv run ruff check src tests
+      - name: Typecheck
+        run: uv run mypy
+      - name: Test
+        run: uv run pytest
