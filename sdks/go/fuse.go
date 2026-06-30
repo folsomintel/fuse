@@ -4,11 +4,30 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"runtime/debug"
+	"strings"
 	"time"
 )
 
-// Version is the SDK version, reported in the default user agent.
-const Version = "0.0.1"
+// sdkVersion reports the module version of this SDK as recorded in the consuming
+// binary's build info. it is empty/"(devel)" in local builds and tests, where it
+// falls back to "dev". stamped automatically by the go proxy for tagged installs.
+func sdkVersion() string {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	const modPath = "github.com/folsomintel/fuse/sdks/go"
+	if info.Main.Path == modPath && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return strings.TrimPrefix(info.Main.Version, "v")
+	}
+	for _, d := range info.Deps {
+		if d.Path == modPath && d.Version != "" && d.Version != "(devel)" {
+			return strings.TrimPrefix(d.Version, "v")
+		}
+	}
+	return "dev"
+}
 
 const defaultTimeout = 60 * time.Second
 
@@ -67,7 +86,7 @@ func WithBaseURL(baseURL string) Option {
 // do not require auth.
 func New(baseURL, token string, opts ...Option) (*Client, error) {
 	cfg := clientConfig{
-		userAgent: "fuse-go/" + Version,
+		userAgent: "fuse-go/" + sdkVersion(),
 		baseURL:   baseURL,
 	}
 	for _, opt := range opts {
