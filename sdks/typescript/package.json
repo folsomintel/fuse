@@ -45,6 +45,9 @@
     "access": "public"
   },
   "scripts": {
+    "gen:version": "node scripts/gen-version.mjs",
+    "prebuild": "node scripts/gen-version.mjs",
+    "pretest": "node scripts/gen-version.mjs",
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
