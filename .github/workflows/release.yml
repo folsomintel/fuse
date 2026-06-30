@@ -1,10 +1,16 @@
 name: Release
 
-# release-please watches main. When its release PR merges, it tags vX.Y.Z and
-# creates the GitHub release; the gated jobs below then publish each surface.
+# Two halves, split by ref:
+#  - release-please runs on push to main: it maintains the "chore: release main"
+#    PR and, when that PR merges, creates the vX.Y.Z tag + GitHub release.
+#  - the publish jobs run on a pushed v*.*.* tag (whether release-please created
+#    it or you pushed one by hand). the tag is the single source of truth for
+#    "publish this version", so a release-please hiccup can never silently
+#    publish nothing, and you always have a manual escape hatch.
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
 
 permissions:
   contents: write
@@ -12,11 +18,8 @@ permissions:
 
 jobs:
   release-please:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
-      version: ${{ steps.rp.outputs.version }}
     steps:
       # a PAT (or the release-please app) is required so the release PR triggers
       # ci.yml; the default GITHUB_TOKEN would not trigger downstream workflows.
@@ -25,10 +28,9 @@ jobs:
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
-  # full gate, re-run on the exact release commit (race detector + all linters).
+  # full gate, run on the pushed tag (race detector + all linters) before any publish.
   verify:
-    needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,8 +81,8 @@ jobs:
           uv run pytest
 
   binaries:
-    needs: [release-please, verify]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,8 +101,8 @@ jobs:
 
   publish-npm:
     name: Publish TS SDK to npm
-    needs: [release-please, verify]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -119,13 +121,13 @@ jobs:
       - run: npm run lint
       - run: npm run test
       - run: npm run build
-      # no `npm version` step: package.json was bumped in the merged release PR.
+      # the tagged commit already carries the right version in package.json.
       - run: npm publish
 
   publish-pypi:
     name: Publish Python SDK to PyPI
-    needs: [release-please, verify]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -138,14 +140,14 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
-      # pyproject version was bumped in the merged release PR (extra-files).
+      # the tagged commit already carries the right version in pyproject.toml.
       - run: uv build
       - run: uv publish
 
   tag-go-sdk:
     name: Tag Go SDK module
-    needs: [release-please, verify]
-    if: needs.release-please.outputs.release_created == 'true'
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -153,22 +155,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # nested go module needs a path-prefixed tag for the proxy. keep it in
-      # lockstep with the unified version (release-please already pushed vX.Y.Z).
+      # nested go module needs a path-prefixed tag for the proxy, kept in lockstep
+      # with the unified version. derive it from the pushed tag (vX.Y.Z -> X.Y.Z).
       - name: Push lockstep module tag
         env:
-          VERSION: ${{ needs.release-please.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ -z "${VERSION}" ]; then echo "version output is empty; refusing to tag" >&2; exit 1; fi
+          V="${REF_NAME#v}"
+          if [ -z "${V}" ]; then echo "version is empty; refusing to tag" >&2; exit 1; fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "sdks/go/v${VERSION}" "v${VERSION}"
-          git push origin "sdks/go/v${VERSION}"
+          git tag "sdks/go/v${V}"
+          git push origin "sdks/go/v${V}"
       - uses: actions/setup-go@v5
         with:
           go-version-file: sdks/go/go.mod
       - name: Warm the module proxy
         env:
-          VERSION: ${{ needs.release-please.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
           GOPROXY: proxy.golang.org
-        run: go list -m "github.com/folsomintel/fuse/sdks/go@v${VERSION}" || true
+        run: |
+          V="${REF_NAME#v}"
+          go list -m "github.com/folsomintel/fuse/sdks/go@v${V}" || true
