@@ -140,3 +140,22 @@ jobs:
         run: uv run mypy
       - name: Test
         run: uv run pytest
+
+  # Go SDK as a standalone module: builds with GOWORK=off so the workspace does
+  # not mask a missing/extra dependency a real consumer would hit.
+  sdk-go:
+    name: Go SDK
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    defaults:
+      run:
+        working-directory: sdks/go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: sdks/go/go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./... -race -count=1

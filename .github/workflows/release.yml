@@ -54,6 +54,14 @@ jobs:
           npm run lint
           npm run test
           npm run build
+      - name: Go SDK module checks
+        working-directory: sdks/go
+        env:
+          GOWORK: "off"
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./... -race -count=1
 
   binaries:
     needs: [release-please, verify]
