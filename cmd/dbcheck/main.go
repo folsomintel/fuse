@@ -37,14 +37,22 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// version is stamped at release time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	headers := flag.Bool("headers", false, "print column headers as first line")
 	timeout := flag.Duration("timeout", 15*time.Second, "query timeout")
+	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: dbcheck [--headers] [--timeout=15s] <query> [args...]")
 		fmt.Fprintln(os.Stderr, "  reads DATABASE_URL from env; prints one row per line as TSV")
 	}
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	if flag.NArg() < 1 {
 		flag.Usage()
 		os.Exit(2)
