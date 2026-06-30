@@ -47,6 +47,11 @@ jobs:
         with:
           version: "~> v2"
           args: check
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: sdks/typescript/package-lock.json
       - name: TS SDK checks
         working-directory: sdks/typescript
         run: |
@@ -62,6 +67,16 @@ jobs:
           go build ./...
           go vet ./...
           go test ./... -race -count=1
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Python SDK checks
+        working-directory: sdks/python
+        run: |
+          uv sync
+          uv run ruff check src tests
+          uv run mypy
+          uv run pytest
 
   binaries:
     needs: [release-please, verify]
@@ -144,6 +159,7 @@ jobs:
         env:
           VERSION: ${{ needs.release-please.outputs.version }}
         run: |
+          if [ -z "${VERSION}" ]; then echo "version output is empty; refusing to tag" >&2; exit 1; fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag "sdks/go/v${VERSION}" "v${VERSION}"
