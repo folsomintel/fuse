@@ -176,8 +176,8 @@ EOF
         | sed -E 's/.*"([^"]+)"$/\1/')
       [ -n "$TAG" ] || { echo "[orch] no release found; set ORCH_BIN_SRC=/path/to/orchestrator" >&2; exit 1; }
       TGZ=$(mktemp); EXDIR=$(mktemp -d)
-      echo "[orch] downloading orchestrator_Linux_${ASSET_ARCH}.tar.gz ($TAG)"
-      curl -fsSL -o "$TGZ" "https://github.com/$REPO/releases/download/$TAG/orchestrator_Linux_${ASSET_ARCH}.tar.gz" \
+      echo "[orch] downloading fuse_Linux_${ASSET_ARCH}.tar.gz ($TAG)"
+      curl -fsSL -o "$TGZ" "https://github.com/$REPO/releases/download/$TAG/fuse_Linux_${ASSET_ARCH}.tar.gz" \
         || { echo "[orch] download failed" >&2; exit 1; }
       tar -xzf "$TGZ" -C "$EXDIR" orchestrator
       sudo -n install -m0755 "$EXDIR/orchestrator" "$ORCH_BIN"

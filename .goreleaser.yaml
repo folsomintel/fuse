@@ -2,7 +2,7 @@
 # Docs: https://goreleaser.com
 version: 2
 
-project_name: orchestrator
+project_name: fuse
 
 before:
   hooks:
@@ -99,33 +99,12 @@ snapshot:
   version_template: "{{ incpatch .Version }}-SNAPSHOT"
 
 changelog:
-  use: git
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^chore:"
-      - "^ci:"
-      - "^build:"
-      - "^style:"
-      - "^refactor:"
-      - "Merge pull request"
-      - "Merge branch"
-  groups:
-    - title: Features
-      regexp: '^.*?feat(\(.+\))??!?:.+$'
-      order: 0
-    - title: Bug fixes
-      regexp: '^.*?fix(\(.+\))??!?:.+$'
-      order: 1
-    - title: Performance improvements
-      regexp: '^.*?perf(\(.+\))??!?:.+$'
-      order: 2
-    - title: Others
-      order: 999
+  disable: true
 
 release:
   github:
     owner: folsomintel
     name: fuse
+  # release-please already created the release + notes for this tag; attach
+  # artifacts to it instead of creating a second release.
+  mode: keep-existing

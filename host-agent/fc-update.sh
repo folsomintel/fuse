@@ -131,7 +131,7 @@ if [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
   [ -n "${FUSE_ORCH_BIN:-}" ] || die "FUSE_ORCH_SERVICE set but FUSE_ORCH_BIN is not"
   if [ -n "$LATEST" ]; then
     log "updating orchestrator -> $FUSE_ORCH_BIN"
-    TARBALL="orchestrator_Linux_${ASSET_ARCH}.tar.gz"
+    TARBALL="fuse_Linux_${ASSET_ARCH}.tar.gz"
     TGZ="$(mktemp)"; EXDIR="$(mktemp -d)"
     curl_dl -o "$TGZ" "https://github.com/$REPO/releases/download/$LATEST/$TARBALL" || die "orchestrator download failed"
     tar -xzf "$TGZ" -C "$EXDIR" orchestrator
