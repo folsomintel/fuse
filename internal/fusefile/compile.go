@@ -1,10 +1,12 @@
 package fusefile
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,14 +22,43 @@ type ResourceSpec struct {
 	MaxRuntimeSeconds int64
 }
 
-// Compiled is the result of compiling a Fusefile. Spec is populated here;
-// ManifestJSON, StartupScript and RequiredSecrets are populated in a later
-// compile task and are left at their zero values by Compile.
+// Compiled is the result of compiling a Fusefile: the resource spec, the
+// manifest json to upload to the guest, the startup script to run, and the
+// secrets the environment needs at create time.
 type Compiled struct {
 	Spec            ResourceSpec
-	ManifestJSON    []byte   // populated in task 2.2
-	StartupScript   string   // populated in task 2.2
-	RequiredSecrets []string // populated in task 2.2
+	ManifestJSON    []byte
+	StartupScript   string
+	RequiredSecrets []string
+}
+
+// defaultWorkspace is used for manifest.machine.workspace when Fusefile.Workspace
+// is unset.
+const defaultWorkspace = "/workspace"
+
+// manifest is the compiler-local marshal type for the guest-facing manifest
+// json. it mirrors DefaultFusedManifest (internal/orchestrator/agent_profile.go)
+// and the shape internal/secrets.ExtractRequiredSecrets reads; there is no
+// shared Go struct for it since this package must not import either.
+type manifest struct {
+	Version  string                     `json:"version"`
+	Machine  manifestMachine            `json:"machine"`
+	Services map[string]manifestService `json:"services"`
+}
+
+type manifestMachine struct {
+	Workspace string `json:"workspace"`
+}
+
+type manifestService struct {
+	Image string                 `json:"image,omitempty"`
+	Ports []int                  `json:"ports,omitempty"`
+	Env   map[string]manifestEnv `json:"env,omitempty"`
+}
+
+type manifestEnv struct {
+	Value  string `json:"value,omitempty"`
+	Secret string `json:"secret,omitempty"`
 }
 
 // sizePattern matches an integer followed by an MB or GB suffix, e.g. "512MB"
@@ -63,6 +94,11 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		return nil, err
 	}
 
+	manifestJSON, requiredSecrets, err := compileManifest(f)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Compiled{
 		Spec: ResourceSpec{
 			CPUs:  f.Resources.CPUs,
@@ -72,7 +108,82 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			StorageGB:         int32((int64(storageMB) + 1023) / 1024),
 			MaxRuntimeSeconds: maxRuntimeSeconds,
 		},
+		ManifestJSON:    manifestJSON,
+		StartupScript:   compileStartupScript(f),
+		RequiredSecrets: requiredSecrets,
 	}, nil
+}
+
+// compileManifest builds the guest-facing manifest json and the sorted,
+// deduped union of secrets it references (plus f.Secrets).
+func compileManifest(f *Fusefile) ([]byte, []string, error) {
+	workspace := f.Workspace
+	if workspace == "" {
+		workspace = defaultWorkspace
+	}
+
+	secretSet := make(map[string]bool, len(f.Secrets))
+	for _, s := range f.Secrets {
+		secretSet[s] = true
+	}
+
+	m := manifest{
+		Version:  "1",
+		Machine:  manifestMachine{Workspace: workspace},
+		Services: make(map[string]manifestService, len(f.Services)),
+	}
+
+	for name, svc := range f.Services {
+		ms := manifestService{Image: svc.Image}
+		if len(svc.Ports) > 0 {
+			ms.Ports = append([]int(nil), svc.Ports...)
+		}
+		if len(svc.Env) > 0 {
+			ms.Env = make(map[string]manifestEnv, len(svc.Env))
+			for key, ev := range svc.Env {
+				me := manifestEnv{Value: ev.Value, Secret: ev.Secret}
+				if ev.Secret != "" {
+					secretSet[ev.Secret] = true
+				}
+				ms.Env[key] = me
+			}
+		}
+		m.Services[name] = ms
+	}
+
+	manifestJSON, err := json.Marshal(m)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	var requiredSecrets []string
+	for s := range secretSet {
+		requiredSecrets = append(requiredSecrets, s)
+	}
+	sort.Strings(requiredSecrets)
+
+	return manifestJSON, requiredSecrets, nil
+}
+
+// compileStartupScript joins setup lines and the run command into a single
+// shell script with a strict-mode prelude. if there is nothing to run (no
+// setup lines and no run command), it returns "" rather than a bare prelude.
+func compileStartupScript(f *Fusefile) string {
+	if len(f.Setup) == 0 && f.Run == "" {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("set -euo pipefail\n")
+	for _, line := range f.Setup {
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if f.Run != "" {
+		b.WriteString(f.Run)
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 // parseSize parses a size string ("512MB", "2GB") into megabytes, base-1024.

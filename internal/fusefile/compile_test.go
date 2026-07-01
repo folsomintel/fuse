@@ -1,6 +1,8 @@
 package fusefile
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -172,22 +174,212 @@ func TestCompileInvalid(t *testing.T) {
 	}
 }
 
-// task 2.2 populates ManifestJSON, StartupScript and RequiredSecrets; this
-// task must leave them at their zero values.
-func TestCompileLeavesTask22FieldsZero(t *testing.T) {
+// manifestDoc is a local unmarshal target for asserting the ManifestJSON
+// shape without depending on internal/orchestrator or internal/secrets.
+type manifestDoc struct {
+	Version string `json:"version"`
+	Machine struct {
+		Workspace string `json:"workspace"`
+	} `json:"machine"`
+	Services map[string]struct {
+		Image string `json:"image"`
+		Ports []int  `json:"ports"`
+		Env   map[string]struct {
+			Value  string `json:"value"`
+			Secret string `json:"secret"`
+		} `json:"env"`
+	} `json:"services"`
+}
+
+// an empty Fusefile must compile to a manifest byte-for-byte equal to
+// internal/orchestrator/agent_profile.go's DefaultFusedManifest.
+func TestCompileManifestEmptyMatchesDefaultFusedManifest(t *testing.T) {
 	f := &Fusefile{Version: 1}
 	c, err := Compile(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.ManifestJSON != nil {
-		t.Errorf("ManifestJSON: got %v, want nil (populated in task 2.2)", c.ManifestJSON)
+	want := `{"version":"1","machine":{"workspace":"/workspace"},"services":{}}`
+	if string(c.ManifestJSON) != want {
+		t.Fatalf("manifest json = %s, want %s", c.ManifestJSON, want)
 	}
-	if c.StartupScript != "" {
-		t.Errorf("StartupScript: got %q, want empty (populated in task 2.2)", c.StartupScript)
+}
+
+func TestCompileManifestWorkspaceCustom(t *testing.T) {
+	f := &Fusefile{Version: 1, Workspace: "/ws"}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.RequiredSecrets != nil {
-		t.Errorf("RequiredSecrets: got %v, want nil (populated in task 2.2)", c.RequiredSecrets)
+	var m manifestDoc
+	if err := json.Unmarshal(c.ManifestJSON, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Machine.Workspace != "/ws" {
+		t.Fatalf("workspace = %q, want /ws", m.Machine.Workspace)
+	}
+}
+
+func TestCompileManifestServices(t *testing.T) {
+	f := &Fusefile{Version: 1, Workspace: "/ws",
+		Services: map[string]Service{"db": {Image: "postgres:16",
+			Ports: []int{5432},
+			Env:   map[string]EnvValue{"P": {Secret: "pg"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m manifestDoc
+	if err := json.Unmarshal(c.ManifestJSON, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, ok := m.Services["db"]
+	if !ok {
+		t.Fatalf("services.db missing")
+	}
+	if svc.Image != "postgres:16" {
+		t.Fatalf("services.db.image = %q, want postgres:16", svc.Image)
+	}
+	if len(svc.Ports) != 1 || svc.Ports[0] != 5432 {
+		t.Fatalf("services.db.ports = %v, want [5432]", svc.Ports)
+	}
+	env, ok := svc.Env["P"]
+	if !ok {
+		t.Fatalf("services.db.env.P missing")
+	}
+	if env.Secret != "pg" {
+		t.Fatalf("services.db.env.P.secret = %q, want pg", env.Secret)
+	}
+	if env.Value != "" {
+		t.Fatalf("services.db.env.P.value = %q, want empty", env.Value)
+	}
+
+	if !reflect.DeepEqual(c.RequiredSecrets, []string{"pg"}) {
+		t.Fatalf("required secrets = %v, want [pg]", c.RequiredSecrets)
+	}
+}
+
+func TestCompileManifestServiceEnvValue(t *testing.T) {
+	f := &Fusefile{Version: 1,
+		Services: map[string]Service{"api": {Image: "app:latest",
+			Env: map[string]EnvValue{"MODE": {Value: "prod"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var m manifestDoc
+	if err := json.Unmarshal(c.ManifestJSON, &m); err != nil {
+		t.Fatal(err)
+	}
+
+	env := m.Services["api"].Env["MODE"]
+	if env.Value != "prod" {
+		t.Fatalf("services.api.env.MODE.value = %q, want prod", env.Value)
+	}
+	if env.Secret != "" {
+		t.Fatalf("services.api.env.MODE.secret = %q, want empty", env.Secret)
+	}
+}
+
+func TestCompileStartupScript(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup []string
+		run   string
+		want  string
+	}{
+		{"setup and run", []string{"a", "b"}, "./c", "set -euo pipefail\na\nb\n./c\n"},
+		{"run only", nil, "./c", "set -euo pipefail\n./c\n"},
+		{"setup only", []string{"a"}, "", "set -euo pipefail\na\n"},
+		{"neither", nil, "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &Fusefile{Version: 1, Setup: tc.setup, Run: tc.run}
+			c, err := Compile(f)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if c.StartupScript != tc.want {
+				t.Fatalf("startup script = %q, want %q", c.StartupScript, tc.want)
+			}
+		})
+	}
+}
+
+func TestCompileRequiredSecretsUnion(t *testing.T) {
+	f := &Fusefile{Version: 1,
+		Secrets: []string{"pg_password"},
+		Services: map[string]Service{"db": {Image: "postgres:16",
+			Env: map[string]EnvValue{"P": {Secret: "pg"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(c.RequiredSecrets, []string{"pg", "pg_password"}) {
+		t.Fatalf("required secrets = %v, want [pg pg_password]", c.RequiredSecrets)
+	}
+}
+
+func TestCompileRequiredSecretsDedupesOverlap(t *testing.T) {
+	f := &Fusefile{Version: 1,
+		Secrets: []string{"pg"},
+		Services: map[string]Service{"db": {Image: "postgres:16",
+			Env: map[string]EnvValue{"P": {Secret: "pg"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(c.RequiredSecrets, []string{"pg"}) {
+		t.Fatalf("required secrets = %v, want [pg]", c.RequiredSecrets)
+	}
+}
+
+func TestCompileManifestSecretEnvExactBytes(t *testing.T) {
+	f := &Fusefile{Version: 1, Services: map[string]Service{"db": {Image: "postgres:16",
+		Ports: []int{5432}, Env: map[string]EnvValue{"PGPASSWORD": {Secret: "pg"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `{"version":"1","machine":{"workspace":"/workspace"},"services":{"db":{"image":"postgres:16","ports":[5432],"env":{"PGPASSWORD":{"secret":"pg"}}}}}`
+	if string(c.ManifestJSON) != want {
+		t.Fatalf("manifest json =\n%s\nwant\n%s", string(c.ManifestJSON), want)
+	}
+}
+
+func TestCompileManifestValueEnvExactBytes(t *testing.T) {
+	f := &Fusefile{Version: 1, Services: map[string]Service{"x": {Image: "x",
+		Env: map[string]EnvValue{"FOO": {Value: "bar"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := `{"version":"1","machine":{"workspace":"/workspace"},"services":{"x":{"image":"x","env":{"FOO":{"value":"bar"}}}}}`
+	if string(c.ManifestJSON) != want {
+		t.Fatalf("manifest json =\n%s\nwant\n%s", string(c.ManifestJSON), want)
+	}
+}
+
+func TestCompileManifestMultiServiceRequiredSecretsUnion(t *testing.T) {
+	f := &Fusefile{Version: 1, Secrets: []string{"s0", "s1"},
+		Services: map[string]Service{
+			"db":    {Image: "d", Env: map[string]EnvValue{"A": {Secret: "s1"}}},
+			"cache": {Image: "c", Env: map[string]EnvValue{"B": {Secret: "s2"}}}}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"s0", "s1", "s2"}
+	if !reflect.DeepEqual(c.RequiredSecrets, want) {
+		t.Fatalf("required secrets = %v, want %v", c.RequiredSecrets, want)
 	}
 }
 
