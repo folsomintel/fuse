@@ -1,0 +1,169 @@
+package main
+
+import (
+	"encoding/base64"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/folsomintel/fuse/internal/fusefile"
+	fuse "github.com/folsomintel/fuse/sdks/go"
+)
+
+func newUpCmd() *cobra.Command {
+	var (
+		file        string
+		secrets     []string
+		secretsFile string
+		taskID      string
+		noWait      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "up [path]",
+		Short: "Compile a Fusefile and create an environment from it",
+		Long: "up reads a Fusefile, compiles it into a resource spec, manifest, and\n" +
+			"startup script, then creates an environment from the result. it streams\n" +
+			"provisioning events until a terminal state unless --no-wait is set.",
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := resolveFusefilePath(file, args)
+
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read %s: %w", path, err)
+			}
+			f, err := fusefile.Parse(data)
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			c, err := fusefile.Compile(f)
+			if err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+
+			secretMap, err := loadSecretsFile(secretsFile)
+			if err != nil {
+				return err
+			}
+			if secretMap == nil {
+				secretMap = map[string]string{}
+			}
+			flagSecrets, err := parseKeyVals(secrets)
+			if err != nil {
+				return err
+			}
+			// --secret flags override --secrets-file entries on key collision.
+			for k, v := range flagSecrets {
+				secretMap[k] = v
+			}
+			if missing := missingSecrets(c.RequiredSecrets, secretMap); len(missing) > 0 {
+				return fmt.Errorf("missing required secrets: %s", strings.Join(missing, ", "))
+			}
+
+			if taskID == "" {
+				taskID = defaultTaskID(path)
+			}
+
+			manifestInline := base64.StdEncoding.EncodeToString(c.ManifestJSON)
+
+			cl, _, err := app.client()
+			if err != nil {
+				return err
+			}
+			e, err := cl.Environments.Create(cmd.Context(), fuse.CreateRequest{
+				TaskID: taskID,
+				Spec: fuse.Spec{
+					CPUs:              c.Spec.CPUs,
+					RamMB:             c.Spec.RamMB,
+					StorageGB:         c.Spec.StorageGB,
+					Region:            c.Spec.Region,
+					MaxRuntimeSeconds: c.Spec.MaxRuntimeSeconds,
+				},
+				ManifestInline: manifestInline,
+				Secrets:        secretMap,
+				StartupScript:  c.StartupScript,
+			})
+			if err != nil {
+				return friendly(err)
+			}
+			successf("creating environment %s (task %s)", e.ID, e.TaskID)
+			if !noWait {
+				return streamEnvironment(cmd.Context(), cl, e.ID)
+			}
+			if app.isJSON() {
+				return printJSON(e)
+			}
+			renderEnvDetail(e)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&file, "file", "f", "", "path to the Fusefile (default: ./Fusefile, or the positional path)")
+	cmd.Flags().StringArrayVar(&secrets, "secret", nil, "secret as key=value (repeatable, overrides --secrets-file)")
+	cmd.Flags().StringVar(&secretsFile, "secrets-file", "", "path to a file of KEY=VALUE secret lines")
+	cmd.Flags().StringVar(&taskID, "task-id", "", "environment task id (default: the Fusefile's parent directory name)")
+	cmd.Flags().BoolVar(&noWait, "no-wait", false, "create the environment without streaming provisioning events")
+	return cmd
+}
+
+// resolveFusefilePath picks the Fusefile path from -f/--file, a positional
+// argument, or the default "Fusefile", in that priority order.
+func resolveFusefilePath(file string, args []string) string {
+	if file != "" {
+		return file
+	}
+	if len(args) > 0 {
+		return args[0]
+	}
+	return "Fusefile"
+}
+
+// defaultTaskID derives a task id from the resolved Fusefile's parent
+// directory name, falling back to "fuse-env" for degenerate paths (the
+// Fusefile itself has no task id field, so the CLI must pick one).
+func defaultTaskID(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		// filepath.Abs only fails if the cwd is unreadable; fall back to a safe default rather than erroring.
+		return "fuse-env"
+	}
+	base := filepath.Base(filepath.Dir(abs))
+	if base == "" || base == "." || base == "/" {
+		return "fuse-env"
+	}
+	return base
+}
+
+// missingSecrets returns the entries of required absent from have.
+func missingSecrets(required []string, have map[string]string) []string {
+	var missing []string
+	for _, name := range required {
+		if _, ok := have[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+// loadSecretsFile parses KEY=VALUE lines from path, ignoring blank lines and
+// lines starting with '#'. an empty path returns a nil map.
+func loadSecretsFile(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read secrets file: %w", err)
+	}
+	var lines []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return parseKeyVals(lines)
+}

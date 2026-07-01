@@ -75,6 +75,7 @@ func newRootCmd() *cobra.Command {
 		newSnapshotCmd(),
 		newAPIKeysCmd(),
 		newMetricsCmd(),
+		newUpCmd(),
 	)
 	return root
 }
