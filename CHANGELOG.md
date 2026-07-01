@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/folsomintel/fuse/compare/v0.1.0...v0.2.0) (2026-07-01)
+
+
+### Features
+
+* add fuse init scaffolding a fusefile ([45cc11b](https://github.com/folsomintel/fuse/commit/45cc11bdd53fd5edc86f8f6537c4f2bcc4a8c20e))
+* add fuse up command compiling a fusefile ([d0a2b73](https://github.com/folsomintel/fuse/commit/d0a2b73e0a75fa4787bb0ad2e588c3b27c2d1f82))
+* add fusefile parser with strict validation ([3c3c6d4](https://github.com/folsomintel/fuse/commit/3c3c6d4db3209e60c4df4368e1e056582f7d06d2))
+* add fusefile schema types ([c081537](https://github.com/folsomintel/fuse/commit/c081537f449dfc869a1cb76380080c88fcf973a2))
+* compile fusefile resources to resource spec ([c1de2c1](https://github.com/folsomintel/fuse/commit/c1de2c1a11416c8bc9cc633876189e105ecf2c85))
+* compile fusefile to manifest and startup script ([d5d7145](https://github.com/folsomintel/fuse/commit/d5d7145b22b6049fc42d839ace4cbfea36ae3f0b))
+
 ## [0.1.0](https://github.com/folsomintel/fuse/compare/v0.0.1...v0.1.0) (2026-06-30)
 
 
