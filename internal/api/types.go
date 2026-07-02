@@ -66,6 +66,13 @@ type CreateSnapshotRequest struct {
 	ExportStatus     string            `json:"export_status,omitempty"`
 }
 
+// ForkEnvironmentRequest is the optional body for
+// POST /v1/environments/{vmId}?action=fork.
+type ForkEnvironmentRequest struct {
+	ReuseSnapshotID string `json:"reuse_snapshot_id,omitempty"`
+	Comment         string `json:"comment,omitempty"`
+}
+
 // SnapshotExport is the JSON shape of an optional exported snapshot artifact.
 type SnapshotExport struct {
 	Destination string    `json:"destination"`

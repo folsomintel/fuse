@@ -88,6 +88,15 @@ type SnapshotCapable interface {
 	ListCheckpoints(ctx context.Context) ([]Checkpoint, error)
 }
 
+// SnapshotForkable is implemented by providers that can create a brand-new
+// environment seeded from an existing checkpoint of another vm. this is the
+// capability a true fork needs; the firecracker provider does not implement
+// it yet, so ForkEnvironment reports fork as unsupported at runtime until a
+// host wire endpoint exists.
+type SnapshotForkable interface {
+	CreateFromCheckpoint(ctx context.Context, spec Spec, srcVMID, checkpointID string) (Environment, error)
+}
+
 // SnapshotDeleter is implemented by environments that can delete a
 // previously created checkpoint by ID.
 type SnapshotDeleter interface {

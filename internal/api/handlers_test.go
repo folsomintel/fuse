@@ -675,3 +675,65 @@ func TestEnvironmentAction_Drain_ThenDeleteSucceeds(t *testing.T) {
 		t.Fatalf("delete after drain: %d body=%s", rr.Code, rr.Body.String())
 	}
 }
+
+// ── Fork action ───────────────────────────────────────────────────
+
+// CreateFromCheckpoint makes fakeProvider satisfy orchestrator.SnapshotForkable
+// so the fork happy path is exercisable end to end: it seeds a new env from the
+// source env's matching checkpoint.
+func (p *fakeProvider) CreateFromCheckpoint(_ context.Context, spec orchestrator.Spec, srcVMID, checkpointID string) (orchestrator.Environment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	src, ok := p.envs[srcVMID]
+	if !ok {
+		return nil, fmt.Errorf("source env not found: %s", srcVMID)
+	}
+	e := &fakeEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+	src.mu.Lock()
+	for _, cp := range src.checkpoints {
+		if cp.ID == checkpointID {
+			e.checkpoints = append(e.checkpoints, cp)
+		}
+	}
+	src.mu.Unlock()
+	p.envs[spec.Name] = e
+	return e, nil
+}
+
+func TestEnvironmentAction_Fork_HappyPath(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-1",
+		Spec:           ResourceSpec{CPUs: 2, RamMB: 1024},
+		ManifestInline: encodeManifest(t),
+	}); rr.Code != http.StatusCreated {
+		t.Fatalf("create source: code = %d", rr.Code)
+	}
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=fork", ForkEnvironmentRequest{Comment: "clone"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("fork: code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var env Environment
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatalf("decode environment: %v", err)
+	}
+	if env.ID == "" || env.ID == "fuse-task-1" {
+		t.Errorf("fork id = %q, want a new distinct id", env.ID)
+	}
+	if env.State != "running" {
+		t.Errorf("fork state = %q, want running", env.State)
+	}
+}
+
+func TestEnvironmentAction_Fork_NotFound(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-missing?action=fork", ForkEnvironmentRequest{})
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+}

@@ -480,11 +480,12 @@ func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 // environmentAction dispatches an action on an environment via ?action= query param.
 //
 //	@Summary		Environment action
-//	@Description	Perform an action on an environment. Supports: rotate-token, drain.
+//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork.
 //	@Tags			environments
 //	@Param			vmId	path	string	true	"VM identifier"
-//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain)
+//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork)
 //	@Success		200		{object}	Environment	"Drain succeeded; updated VM state returned"
+//	@Success		201		{object}	Environment	"Fork succeeded; new environment returned"
 //	@Success		204		"Action succeeded"
 //	@Failure		400		{object}	Error
 //	@Failure		404		{object}	Error
@@ -498,6 +499,8 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 		h.rotateToken(w, r)
 	case "drain":
 		h.drainEnvironment(w, r)
+	case "fork":
+		h.forkEnvironment(w, r)
 	default:
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
 			"missing or unknown action query parameter", nil)
@@ -538,6 +541,39 @@ func (h *Handler) drainEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIEnvironment(info))
+}
+
+// forkEnvironment creates a new environment seeded from an existing one and
+// returns it with 201. an optional body selects an existing snapshot to fork
+// from (reuse_snapshot_id) and a comment; an empty body snapshots the source
+// first. the new vm id is resolved via GetVM, mirroring drainEnvironment.
+func (h *Handler) forkEnvironment(w http.ResponseWriter, r *http.Request) {
+	vmID := chi.URLParam(r, "vmId")
+
+	var req ForkEnvironmentRequest
+	if r.ContentLength > 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument, "invalid JSON body: "+err.Error(), nil)
+			return
+		}
+	}
+
+	newID, err := h.Fleet.ForkEnvironment(r.Context(), vmID, orchestrator.ForkOptions{
+		ReuseSnapshotID: req.ReuseSnapshotID,
+		Comment:         req.Comment,
+	})
+	if err != nil {
+		writeFleetError(w, err)
+		return
+	}
+	info, ok := h.Fleet.GetVM(newID)
+	if !ok {
+		// fork reported success but the new vm is not readable yet; return
+		// 204 rather than synthesising a stale body.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIEnvironment(info))
 }
 
 // ── Host management handlers ──────────────────────────────────────

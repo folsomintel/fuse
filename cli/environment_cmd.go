@@ -24,6 +24,7 @@ func newEnvironmentCmd() *cobra.Command {
 		newEnvCreateCmd(),
 		newEnvDestroyCmd(),
 		newEnvDrainCmd(),
+		newEnvForkCmd(),
 		newEnvRotateTokenCmd(),
 		newEnvWatchCmd(),
 	)
@@ -286,6 +287,40 @@ func newEnvDrainCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newEnvForkCmd() *cobra.Command {
+	var (
+		reuseSnapshot string
+		comment       string
+	)
+	cmd := &cobra.Command{
+		Use:   "fork <id>",
+		Short: "Fork an environment into a new one",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, _, err := app.client()
+			if err != nil {
+				return err
+			}
+			e, err := cl.Environments.Fork(cmd.Context(), args[0], fuse.ForkOptions{
+				ReuseSnapshotID: reuseSnapshot,
+				Comment:         comment,
+			})
+			if err != nil {
+				return friendly(err)
+			}
+			successf("forked environment %q into %s", args[0], e.ID)
+			if app.isJSON() {
+				return printJSON(e)
+			}
+			renderEnvDetail(e)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&reuseSnapshot, "reuse-snapshot", "", "reuse an existing snapshot id instead of taking a new one")
+	cmd.Flags().StringVar(&comment, "comment", "", "comment to attach to the fork")
+	return cmd
 }
 
 func newEnvRotateTokenCmd() *cobra.Command {
