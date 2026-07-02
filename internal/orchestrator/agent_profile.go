@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/folsomintel/fuse/internal/secrets"
+	"gopkg.in/yaml.v3"
 )
 
 // This file is the SINGLE home for all fused-specific knowledge. The core
@@ -22,6 +23,7 @@ import (
 const (
 	fuseManifestPath  = "/fuse/manifest.json"
 	fuseSecretsPath   = "/fuse/secrets.json"
+	fuseComposePath   = "/fuse/compose.yaml"
 	fuseTLSCertPath   = "/fuse/tls/cert.pem"
 	fuseTLSKeyPath    = "/fuse/tls/key.pem"
 	fuseAuthTokenPath = "/fuse/auth-token"
@@ -101,6 +103,14 @@ func FusedAgentSpec(manifest []byte, secretMap map[string]string, creds *secrets
 		files[path] = data
 	}
 
+	// bring declared services up as a compose project. per decision d1 compose
+	// owns runtime semantics; the guest runs `docker compose up` at boot when
+	// this file is present. secret-backed env values are resolved here, at
+	// upload time, from the same secret map the daemon receives.
+	if compose, ok := composeFromManifest(manifest, secretsMap); ok {
+		files[fuseComposePath] = compose
+	}
+
 	spec := AgentSpec{
 		Files:        files,
 		Command:      buildFusedCommand(creds, opts),
@@ -139,6 +149,65 @@ func buildFusedCommand(creds *secrets.VMCredentials, opts BootOptions) string {
 		fmt.Fprintf(&b, " --gateway-token %s", shellEscape(opts.GatewayToken))
 	}
 	return b.String()
+}
+
+// composeFromManifest renders the manifest's services block to a minimal
+// docker compose project. It returns (nil, false) when the manifest declares
+// no services, so callers skip writing the file for non-service environments.
+// Secret-backed env values are resolved from secretMap; literal values pass
+// through unchanged. Service and env-key order is deterministic (yaml.v3 sorts
+// map keys), so identical inputs produce byte-identical output.
+func composeFromManifest(manifestJSON []byte, secretMap map[string]string) ([]byte, bool) {
+	var m struct {
+		Services map[string]struct {
+			Image string `json:"image"`
+			Ports []int  `json:"ports"`
+			Env   map[string]struct {
+				Value  string `json:"value"`
+				Secret string `json:"secret"`
+			} `json:"env"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(manifestJSON, &m); err != nil || len(m.Services) == 0 {
+		return nil, false
+	}
+
+	type composeService struct {
+		Image       string            `yaml:"image"`
+		Ports       []string          `yaml:"ports,omitempty"`
+		Environment map[string]string `yaml:"environment,omitempty"`
+	}
+	proj := struct {
+		Services map[string]composeService `yaml:"services"`
+	}{Services: make(map[string]composeService, len(m.Services))}
+
+	for name, svc := range m.Services {
+		cs := composeService{Image: svc.Image}
+		for _, p := range svc.Ports {
+			// publish to the vm's loopback so the main task and peer
+			// services reach it at localhost:<port>.
+			cs.Ports = append(cs.Ports, fmt.Sprintf("%d:%d", p, p))
+		}
+		if len(svc.Env) > 0 {
+			cs.Environment = make(map[string]string, len(svc.Env))
+			for key, ev := range svc.Env {
+				if ev.Secret != "" {
+					// required secrets are validated upstream before boot,
+					// so a present value is the expected case.
+					cs.Environment[key] = secretMap[ev.Secret]
+				} else {
+					cs.Environment[key] = ev.Value
+				}
+			}
+		}
+		proj.Services[name] = cs
+	}
+
+	out, err := yaml.Marshal(proj)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // shellEscape produces a single-quoted shell literal safe to embed in a
