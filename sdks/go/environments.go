@@ -198,6 +198,39 @@ func (s *EnvironmentsService) Drain(ctx context.Context, vmID string) (*Environm
 	return s.action(ctx, vmID, "drain")
 }
 
+// Fork creates a new environment seeded from an existing one and returns the
+// new environment. when opts.ReuseSnapshotID is empty the server snapshots the
+// source first; otherwise it reuses the named snapshot. it does not use the
+// shared action helper because fork sends a request body.
+func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions) (*EnvironmentInfo, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("environments service is not configured")
+	}
+	if vmID == "" {
+		return nil, errors.New("vm id is required")
+	}
+	path := "/v1/environments/" + url.PathEscape(vmID)
+	values := url.Values{}
+	values.Set("action", "fork")
+	req, err := s.t.newRequest(ctx, http.MethodPost, path, values, opts)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.t.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckResponse(resp); err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var env EnvironmentInfo
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode environment: %w", err)
+	}
+	return &env, nil
+}
+
 func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) error {
 	if s == nil || s.t == nil {
 		return errors.New("environments service is not configured")

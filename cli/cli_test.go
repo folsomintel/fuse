@@ -171,6 +171,45 @@ func TestEnvListScopedToActiveHost(t *testing.T) {
 	}
 }
 
+func TestEnvForkJSON(t *testing.T) {
+	var (
+		gotPath   string
+		gotAction string
+		gotBody   string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAction = r.URL.Query().Get("action")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"fuse-fork-abc","state":"running","task_id":"fork-abc","url":"http://fuse-fork-abc.test","spec":{}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "fork", "fuse-task-1", "--reuse-snapshot", "cp-1", "--comment", "clone"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotPath != "/v1/environments/fuse-task-1" {
+		t.Errorf("path = %q, want /v1/environments/fuse-task-1", gotPath)
+	}
+	if gotAction != "fork" {
+		t.Errorf("action = %q, want fork", gotAction)
+	}
+	if !strings.Contains(gotBody, `"reuse_snapshot_id":"cp-1"`) || !strings.Contains(gotBody, `"comment":"clone"`) {
+		t.Errorf("request body missing fork options: %s", gotBody)
+	}
+	if !strings.Contains(out, `"fuse-fork-abc"`) {
+		t.Errorf("output missing new env id: %s", out)
+	}
+}
+
 func TestConnectAndContextCurrent(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	root := newRootCmd()
