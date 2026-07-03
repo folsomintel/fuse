@@ -227,6 +227,7 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		StartupScript: req.StartupScript,
 		GatewayURL:    req.GatewayURL,
 		GatewayToken:  req.GatewayToken,
+		Expose:        toOrchestratorExpose(req.Expose),
 	})
 	if err != nil {
 		writeFleetErrorRedacted(w, err, req.Secrets)

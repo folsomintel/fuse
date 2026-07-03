@@ -96,12 +96,20 @@ func (s *PostgresStateStore) ApplyMigrations(ctx context.Context) error {
 
 func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 	maxRuntimeSeconds := int(vm.Spec.MaxRuntime.Seconds())
-	_, err := s.db.ExecContext(ctx, `
+	endpoints := vm.Endpoints
+	if endpoints == nil {
+		endpoints = []Endpoint{}
+	}
+	endpointsJSON, err := json.Marshal(endpoints)
+	if err != nil {
+		return fmt.Errorf("marshal endpoints for vm %s: %w", vm.ID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO orchestrator_vms (
 			vm_id, host_id, network_host, state, url, task_id, tenant_id,
 			cpus, ram_mb, storage_gb, region, max_runtime_seconds,
-			auth_token_encrypted, secrets_encrypted, last_error, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
 		ON CONFLICT (vm_id) DO UPDATE SET
 			host_id=EXCLUDED.host_id,
 			network_host=EXCLUDED.network_host,
@@ -117,6 +125,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			auth_token_encrypted=EXCLUDED.auth_token_encrypted,
 			secrets_encrypted=EXCLUDED.secrets_encrypted,
 			last_error=EXCLUDED.last_error,
+			endpoints_json=EXCLUDED.endpoints_json,
 			created_at=EXCLUDED.created_at,
 			updated_at=EXCLUDED.updated_at
 	`,
@@ -135,6 +144,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		vm.AuthTokenEncrypted,
 		vm.SecretsEncrypted,
 		vm.LastError,
+		string(endpointsJSON),
 		vm.CreatedAt.UTC(),
 		vm.UpdatedAt.UTC(),
 	)
@@ -155,7 +165,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT vm_id, host_id, network_host, state, url, task_id, tenant_id,
 		       cpus, ram_mb, storage_gb, region, max_runtime_seconds,
-		       auth_token_encrypted, secrets_encrypted, last_error, created_at, updated_at
+		       auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at
 		FROM orchestrator_vms
 	`)
 	if err != nil {
@@ -169,6 +179,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			record            VMRecord
 			state             string
 			maxRuntimeSeconds int
+			endpointsJSON     string
 		)
 		if err := rows.Scan(
 			&record.ID,
@@ -186,6 +197,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			&record.AuthTokenEncrypted,
 			&record.SecretsEncrypted,
 			&record.LastError,
+			&endpointsJSON,
 			&record.CreatedAt,
 			&record.UpdatedAt,
 		); err != nil {
@@ -194,6 +206,11 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		record.State = VMState(state)
 		if maxRuntimeSeconds > 0 {
 			record.Spec.MaxRuntime = time.Duration(maxRuntimeSeconds) * time.Second
+		}
+		if endpointsJSON != "" {
+			if err := json.Unmarshal([]byte(endpointsJSON), &record.Endpoints); err != nil {
+				return nil, fmt.Errorf("unmarshal endpoints for vm %s: %w", record.ID, err)
+			}
 		}
 		out = append(out, record)
 	}

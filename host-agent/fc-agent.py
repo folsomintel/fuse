@@ -35,6 +35,11 @@ STATE_DIR = FC_DIR / "agent-state"
 VMS_DIR = STATE_DIR / "vms"
 KERNEL = FC_DIR / "vmlinux.bin"
 BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(FC_DIR / "rootfs-fused.ext4")))
+# Named rootfs images for bring-your-own-image (see internal/fusefile's
+# ResourceSpec.Image): <IMAGES_DIR>/<name>.ext4. There is no OCI pull here —
+# an operator bakes and places a rootfs there (e.g. with fc-bake-rootfs.sh)
+# before a Fusefile can reference it by name.
+IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", str(FC_DIR / "images")))
 SSH_KEY = FC_DIR / "ubuntu.id_rsa"
 TOKEN = os.environ.get("FC_AGENT_TOKEN")
 PORT = int(os.environ.get("FC_AGENT_PORT", "8090"))
@@ -212,6 +217,35 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
+def _free_host_port() -> int:
+    """Picks a free host port by binding to port 0 and reading it back, then
+    closing the socket. There is an inherent (small) race between this and
+    the DNAT rule being installed; acceptable for this host agent's level of
+    simplicity, matching fc-expose.sh's own lack of allocation/conflict
+    detection."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh."""
+    subprocess.run(
+        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip, str(guest_port)],
+        check=True,
+    )
+
+
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+    """Removes a forward previously installed by add_expose_forward. Best
+    effort (mirrors del_agent_forward): a vm being destroyed should not fail
+    to tear down over a stale firewall rule."""
+    subprocess.run(
+        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip, str(guest_port)],
+        check=False,
+    )
+
+
 # -- SSH ----------------------------------------------------------------------
 
 SSH_BASE = [
@@ -339,6 +373,17 @@ def stop_firecracker(meta: dict) -> None:
 def create_vm(req: dict) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name)
+
+    # Resolve the source rootfs before any allocation, so an unknown named
+    # image fails fast with no vm dir/tap/forward left to roll back. Unset
+    # (the common case today) is byte-for-byte the existing BASE_ROOTFS path.
+    image = req.get("image") or ""
+    source_rootfs = BASE_ROOTFS
+    if image:
+        source_rootfs = IMAGES_DIR / f"{image}.ext4"
+        if not source_rootfs.exists():
+            raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
+
     d = vm_dir(vm_id)
     if d.exists():
         raise HTTPError(409, f"vm {vm_id} already exists")
@@ -353,7 +398,7 @@ def create_vm(req: dict) -> dict:
 
     rootfs = d / "rootfs.ext4"
     # Per-VM rootfs copy (so writes don't affect other VMs).
-    shutil.copyfile(BASE_ROOTFS, rootfs)
+    shutil.copyfile(source_rootfs, rootfs)
     sudo(["chmod", "666", str(rootfs)], check=False)
 
     meta = {
@@ -407,6 +452,8 @@ def destroy_vm(vm_id: str) -> None:
     stop_firecracker(meta)
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
+    for endpoint in meta.get("expose_endpoints", []):
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
     teardown_tap(meta["tap"])
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
 
@@ -507,7 +554,8 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                    tls_cert_path: str | None = None, tls_key_path: str | None = None,
                    auth_token: str | None = None, download_url: str | None = None,
                    binary_path: str = "/usr/local/bin/fused",
-                   listen: str = "0.0.0.0:9550") -> None:
+                   listen: str = "0.0.0.0:9550",
+                   expose: list[dict] | None = None) -> list[dict]:
     meta = load_meta(vm_id)
     if not meta:
         raise HTTPError(404, "vm not found")
@@ -592,6 +640,22 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
         if stdout:
             detail = f"{detail} | stdout: {stdout}" if detail else stdout
         raise HTTPError(500, f"agent start failed: {detail or 'unknown error (rc={rc})'}")
+
+    # Publish any declared ingress ports now that the agent (and any compose
+    # services) are up. Guarded on `expose` being non-empty, so callers with
+    # no ports to publish (including the FROZEN /start-surfd path, which
+    # never passes expose) see no change at all. Persisted onto meta so
+    # destroy_vm can remove the same rules on teardown.
+    endpoints: list[dict] = []
+    if expose:
+        for entry in expose:
+            guest_port = int(entry["port"])
+            host_port = _free_host_port()
+            add_expose_forward(host_port, meta["guest_ip"], guest_port)
+            endpoints.append({"as": entry.get("as", ""), "url": f"{PUBLIC_HOST}:{host_port}", "port": guest_port, "host_port": host_port})
+        meta["expose_endpoints"] = endpoints
+        save_meta(meta)
+    return endpoints
 
 
 def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
@@ -715,7 +779,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(200, {"ok": True})
                     if action == "start-agent" and method == "POST":
                         body = self._read_json()
-                        do_start_agent(
+                        endpoints = do_start_agent(
                             vm_id,
                             body["manifest_path"],
                             body["secrets_path"],
@@ -727,8 +791,9 @@ class Handler(BaseHTTPRequestHandler):
                             download_url=body.get("download_url"),
                             binary_path=body.get("binary_path") or "/usr/local/bin/fused",
                             listen=body.get("listen") or "0.0.0.0:9550",
+                            expose=body.get("expose"),
                         )
-                        return self._json(200, {"ok": True})
+                        return self._json(200, {"ok": True, "endpoints": endpoints})
                     if action == "snapshot" and method == "POST":
                         body = self._read_json()
                         rec = snapshot_create(vm_id, body.get("comment", ""))

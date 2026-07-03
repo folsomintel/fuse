@@ -78,8 +78,9 @@ type VMRecord struct {
 	TenantID           string
 	Spec               Spec
 	LastError          string
-	AuthTokenEncrypted []byte // AES-GCM encrypted per-VM auth token (nil for legacy VMs)
-	SecretsEncrypted   []byte // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
+	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token (nil for legacy VMs)
+	SecretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
+	Endpoints          []Endpoint // published endpoints (e.g. ingress), if any
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }

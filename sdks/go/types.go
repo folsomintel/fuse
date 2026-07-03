@@ -9,6 +9,20 @@ type Spec struct {
 	StorageGB         int32  `json:"storage_gb,omitempty"`
 	Region            string `json:"region,omitempty"`
 	MaxRuntimeSeconds int64  `json:"max_runtime_seconds,omitempty"`
+	Image             string `json:"image,omitempty"`
+}
+
+// ExposeSpec requests that a guest port be published as a reachable endpoint.
+type ExposeSpec struct {
+	Port int    `json:"port"`
+	As   string `json:"as,omitempty"`
+}
+
+// Endpoint is a published network endpoint for an environment.
+type Endpoint struct {
+	As   string `json:"as,omitempty"`
+	URL  string `json:"url"`
+	Port int    `json:"port"`
 }
 
 // CreateRequest is the body for client.Create.
@@ -20,19 +34,21 @@ type CreateRequest struct {
 	StartupScript  string            `json:"startup_script,omitempty"`
 	GatewayURL     string            `json:"gateway_url,omitempty"`
 	GatewayToken   string            `json:"gateway_token,omitempty"`
+	Expose         []ExposeSpec      `json:"expose,omitempty"`
 }
 
 // EnvironmentInfo is the server's view of a single microVM.
 type EnvironmentInfo struct {
-	ID        string    `json:"id"`
-	State     string    `json:"state"`
-	TaskID    string    `json:"task_id"`
-	HostID    string    `json:"host_id,omitempty"`
-	URL       string    `json:"url"`
-	Spec      Spec      `json:"spec"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Error     string    `json:"error,omitempty"`
+	ID        string     `json:"id"`
+	State     string     `json:"state"`
+	TaskID    string     `json:"task_id"`
+	HostID    string     `json:"host_id,omitempty"`
+	URL       string     `json:"url"`
+	Spec      Spec       `json:"spec"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	Error     string     `json:"error,omitempty"`
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
 }
 
 type environmentList struct {

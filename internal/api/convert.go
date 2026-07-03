@@ -17,6 +17,7 @@ func toAPIEnvironment(v orchestrator.VMInfo) Environment {
 		CreatedAt: v.CreatedAt,
 		UpdatedAt: v.UpdatedAt,
 		Error:     v.Error,
+		Endpoints: toAPIEndpoints(v.Endpoints),
 	}
 }
 
@@ -30,6 +31,7 @@ func toAPIResourceSpec(s orchestrator.Spec) ResourceSpec {
 		StorageGB:         int32(s.StorageGB),
 		Region:            s.Region,
 		MaxRuntimeSeconds: int64(s.MaxRuntime.Seconds()),
+		Image:             s.Image,
 	}
 }
 
@@ -41,7 +43,32 @@ func toOrchestratorSpec(s ResourceSpec) orchestrator.Spec {
 		StorageGB:  int(s.StorageGB),
 		Region:     s.Region,
 		MaxRuntime: time.Duration(s.MaxRuntimeSeconds) * time.Second,
+		Image:      s.Image,
 	}
+}
+
+// toOrchestratorExpose converts wire expose entries into the orchestrator type.
+func toOrchestratorExpose(in []ExposeSpec) []orchestrator.ExposeSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.ExposeSpec, len(in))
+	for i, e := range in {
+		out[i] = orchestrator.ExposeSpec{Port: e.Port, As: e.As}
+	}
+	return out
+}
+
+// toAPIEndpoints converts orchestrator endpoints into the wire shape.
+func toAPIEndpoints(in []orchestrator.Endpoint) []Endpoint {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Endpoint, len(in))
+	for i, e := range in {
+		out[i] = Endpoint{As: e.As, URL: e.URL, Port: e.Port}
+	}
+	return out
 }
 
 // toAPIHost converts an orchestrator.Host into the wire shape.

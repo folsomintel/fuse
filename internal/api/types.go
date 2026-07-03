@@ -14,12 +14,31 @@ import "time"
 
 // ResourceSpec is the JSON shape of the hardware spec attached to an
 // environment create request or response body.
+//
+// Image names a base rootfs for the provider to boot the VM from (a name
+// the firecracker host agent resolves against its own named-rootfs
+// directory). Empty means the provider's default base.
 type ResourceSpec struct {
 	CPUs              int32  `json:"cpus,omitempty"`
 	RamMB             int32  `json:"ram_mb,omitempty"`
 	StorageGB         int32  `json:"storage_gb,omitempty"`
 	Region            string `json:"region,omitempty"`
 	MaxRuntimeSeconds int64  `json:"max_runtime_seconds,omitempty"`
+	Image             string `json:"image,omitempty"`
+}
+
+// ExposeSpec requests that a guest port be published as a reachable
+// endpoint.
+type ExposeSpec struct {
+	Port int    `json:"port"`
+	As   string `json:"as,omitempty"`
+}
+
+// Endpoint is a published network endpoint for an environment.
+type Endpoint struct {
+	As   string `json:"as,omitempty"`
+	URL  string `json:"url"`
+	Port int    `json:"port"`
 }
 
 // CreateEnvironmentRequest is the JSON body accepted by
@@ -35,6 +54,7 @@ type CreateEnvironmentRequest struct {
 	StartupScript  string            `json:"startup_script,omitempty"`
 	GatewayURL     string            `json:"gateway_url,omitempty"`
 	GatewayToken   string            `json:"gateway_token,omitempty"`
+	Expose         []ExposeSpec      `json:"expose,omitempty"`
 }
 
 // Environment is the JSON shape returned for a single VM.
@@ -48,6 +68,7 @@ type Environment struct {
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
 	Error     string       `json:"error,omitempty"`
+	Endpoints []Endpoint   `json:"endpoints,omitempty"`
 }
 
 // EnvironmentList is the response body for GET /v1/environments.

@@ -103,6 +103,7 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		MemoryMB:  spec.RamMB,
 		StorageGB: spec.StorageGB,
 		Region:    spec.Region,
+		Image:     spec.Image,
 	}
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
@@ -182,12 +183,28 @@ type remoteEnv struct {
 	// rotation). Empty until then.
 	tokenMu   sync.RWMutex
 	authToken string
+
+	// endpoints is populated by StartAgent from the host agent's response
+	// when it publishes ingress ports. Nil when no ports were requested, or
+	// when the host agent only supports the FROZEN /start-surfd wire (which
+	// carries no endpoint data).
+	endpointsMu sync.RWMutex
+	endpoints   []orchestrator.Endpoint
 }
 
 var (
-	_ orchestrator.Environment = (*remoteEnv)(nil)
-	_ orchestrator.TokenSetter = (*remoteEnv)(nil)
+	_ orchestrator.Environment      = (*remoteEnv)(nil)
+	_ orchestrator.TokenSetter      = (*remoteEnv)(nil)
+	_ orchestrator.EndpointReporter = (*remoteEnv)(nil)
 )
+
+// Endpoints returns the ingress endpoints published by the last StartAgent
+// call, satisfying orchestrator.EndpointReporter.
+func (e *remoteEnv) Endpoints() []orchestrator.Endpoint {
+	e.endpointsMu.RLock()
+	defer e.endpointsMu.RUnlock()
+	return e.endpoints
+}
 
 func (e *remoteEnv) Name() string { return e.id }
 func (e *remoteEnv) URL() string  { return e.url }
@@ -270,9 +287,12 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		Gateway:      spec.Gateway,
 		GatewayToken: spec.GatewayToken,
 		DownloadURL:  downloadURL,
+		Expose:       toWireExpose(spec.Expose),
 	}
-	err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, nil)
+	var resp startAgentResponse
+	err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp)
 	if err == nil {
+		e.setEndpoints(resp.Endpoints)
 		return nil
 	}
 	var statusErr *httpStatusError
@@ -280,7 +300,9 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		return err
 	}
 
-	// Fall back to the FROZEN /start-surfd wire (unchanged payload).
+	// Fall back to the FROZEN /start-surfd wire (unchanged payload, no
+	// endpoint data — older host agents that only expose this wire don't
+	// support ingress).
 	req := startSurfdRequest{
 		ManifestPath: fusedManifestGuestPath,
 		SecretsPath:  fusedSecretsGuestPath,
@@ -291,6 +313,29 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		GatewayToken: spec.GatewayToken,
 	}
 	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-surfd", e.id), req, nil)
+}
+
+// setEndpoints records the endpoints reported by the last StartAgent call.
+func (e *remoteEnv) setEndpoints(in []endpointWire) {
+	out := make([]orchestrator.Endpoint, len(in))
+	for i, ep := range in {
+		out[i] = orchestrator.Endpoint{As: ep.As, URL: ep.URL, Port: ep.Port}
+	}
+	e.endpointsMu.Lock()
+	e.endpoints = out
+	e.endpointsMu.Unlock()
+}
+
+// toWireExpose converts orchestrator expose entries into the host-agent wire shape.
+func toWireExpose(in []orchestrator.ExposeSpec) []exposeWire {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]exposeWire, len(in))
+	for i, ex := range in {
+		out[i] = exposeWire{Port: ex.Port, As: ex.As}
+	}
+	return out
 }
 
 func (e *remoteEnv) Checkpoint(ctx context.Context, comment string) (string, error) {
@@ -336,6 +381,7 @@ type createVMRequest struct {
 	MemoryMB  int    `json:"memory_mb"`
 	StorageGB int    `json:"storage_gb"`
 	Region    string `json:"region"`
+	Image     string `json:"image,omitempty"`
 }
 
 type createVMResponse struct {
@@ -384,16 +430,38 @@ type startSurfdRequest struct {
 // as startSurfdRequest plus optional download_url/binary_path/listen so OSS
 // users can fetch the agent binary and/or run a custom in-guest daemon.
 type startAgentRequest struct {
-	ManifestPath string `json:"manifest_path"`
-	SecretsPath  string `json:"secrets_path"`
-	TLSCertPath  string `json:"tls_cert_path,omitempty"`
-	TLSKeyPath   string `json:"tls_key_path,omitempty"`
-	AuthToken    string `json:"auth_token,omitempty"`
-	Gateway      string `json:"gateway,omitempty"`
-	GatewayToken string `json:"gateway_token,omitempty"`
-	DownloadURL  string `json:"download_url,omitempty"`
-	BinaryPath   string `json:"binary_path,omitempty"`
-	Listen       string `json:"listen,omitempty"`
+	ManifestPath string       `json:"manifest_path"`
+	SecretsPath  string       `json:"secrets_path"`
+	TLSCertPath  string       `json:"tls_cert_path,omitempty"`
+	TLSKeyPath   string       `json:"tls_key_path,omitempty"`
+	AuthToken    string       `json:"auth_token,omitempty"`
+	Gateway      string       `json:"gateway,omitempty"`
+	GatewayToken string       `json:"gateway_token,omitempty"`
+	DownloadURL  string       `json:"download_url,omitempty"`
+	BinaryPath   string       `json:"binary_path,omitempty"`
+	Listen       string       `json:"listen,omitempty"`
+	Expose       []exposeWire `json:"expose,omitempty"`
+}
+
+// exposeWire/endpointWire are the host-agent wire shapes for ingress,
+// carried only on the generalized /start-agent request (never on the
+// FROZEN /start-surfd wire).
+type exposeWire struct {
+	Port int    `json:"port"`
+	As   string `json:"as,omitempty"`
+}
+
+type endpointWire struct {
+	As   string `json:"as,omitempty"`
+	URL  string `json:"url"`
+	Port int    `json:"port"`
+}
+
+// startAgentResponse is the /start-agent response body. Endpoints is
+// populated only when the request declared Expose entries and the host
+// agent published them.
+type startAgentResponse struct {
+	Endpoints []endpointWire `json:"endpoints,omitempty"`
 }
 
 type snapshotRequest struct {
@@ -475,7 +543,7 @@ func (p *stubProvider) Create(_ context.Context, spec orchestrator.Spec) (orches
 	if _, exists := p.envs[spec.Name]; exists {
 		return nil, fmt.Errorf("env %s already exists", spec.Name)
 	}
-	env := &stubEnv{name: spec.Name, url: fmt.Sprintf("fc://%s", spec.Name)}
+	env := &stubEnv{name: spec.Name, url: fmt.Sprintf("fc://%s", spec.Name), image: spec.Image}
 	p.envs[spec.Name] = env
 	return env, nil
 }
@@ -513,19 +581,33 @@ func (p *stubProvider) Close() error { return nil }
 
 // stubEnv simulates a VM in memory.
 type stubEnv struct {
-	name string
-	url  string
+	name  string
+	url   string
+	image string // spec.Image at Create time, kept for test inspection only
 
 	mu          sync.Mutex
 	files       map[string][]byte
 	checkpoints []orchestrator.Checkpoint
 	authToken   string
+	endpoints   []orchestrator.Endpoint
 }
 
 var (
-	_ orchestrator.Environment = (*stubEnv)(nil)
-	_ orchestrator.TokenSetter = (*stubEnv)(nil)
+	_ orchestrator.Environment      = (*stubEnv)(nil)
+	_ orchestrator.TokenSetter      = (*stubEnv)(nil)
+	_ orchestrator.EndpointReporter = (*stubEnv)(nil)
 )
+
+// Endpoints returns endpoints synthesized by the last StartAgent call,
+// satisfying orchestrator.EndpointReporter. The stub has no real guest or
+// host firewall, so it fabricates a plausible fc://<name>:<port> URL per
+// requested expose entry — enough to prove the wiring flows end to end in
+// hermetic tests without claiming the port is actually reachable.
+func (e *stubEnv) Endpoints() []orchestrator.Endpoint {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.endpoints
+}
 
 func (e *stubEnv) Name() string { return e.name }
 func (e *stubEnv) URL() string  { return e.url }
@@ -571,7 +653,23 @@ func (e *stubEnv) Upload(_ context.Context, data []byte, path string) error {
 	return nil
 }
 
-func (e *stubEnv) StartAgent(_ context.Context, _ orchestrator.AgentSpec) error { return nil }
+func (e *stubEnv) StartAgent(_ context.Context, spec orchestrator.AgentSpec) error {
+	if len(spec.Expose) == 0 {
+		return nil
+	}
+	endpoints := make([]orchestrator.Endpoint, len(spec.Expose))
+	for i, ex := range spec.Expose {
+		endpoints[i] = orchestrator.Endpoint{
+			As:   ex.As,
+			URL:  fmt.Sprintf("fc://%s:%d", e.name, ex.Port),
+			Port: ex.Port,
+		}
+	}
+	e.mu.Lock()
+	e.endpoints = endpoints
+	e.mu.Unlock()
+	return nil
+}
 
 func (e *stubEnv) Checkpoint(_ context.Context, comment string) (string, error) {
 	e.mu.Lock()
