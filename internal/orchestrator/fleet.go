@@ -91,9 +91,10 @@ type vm struct {
 	env                Environment
 	url                string // last-known reachable URL (cached for recovery before env is rehydrated)
 	spec               Spec
-	authTokenEncrypted []byte // AES-GCM encrypted per-VM auth token
-	secretsEncrypted   []byte // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
-	drainCommand       string // graceful-shutdown command run in the guest on Drain ('' => skip)
+	authTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token
+	secretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
+	drainCommand       string     // graceful-shutdown command run in the guest on Drain ('' => skip)
+	endpoints          []Endpoint // published endpoints (e.g. ingress), if the provider reported any
 	createdAt          time.Time
 	updatedAt          time.Time
 	err                string
@@ -110,6 +111,7 @@ func (v *vm) toInfo() VMInfo {
 		CreatedAt: v.createdAt,
 		UpdatedAt: v.updatedAt,
 		Error:     v.err,
+		Endpoints: v.endpoints,
 	}
 	if v.env != nil {
 		info.URL = v.env.URL()
@@ -128,6 +130,7 @@ type VMInfo struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Error     string
+	Endpoints []Endpoint
 }
 
 // ReconcileMetrics is an optional callback invoked at the end of every
@@ -586,6 +589,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	v.authTokenEncrypted = result.AuthTokenEncrypted
 	v.secretsEncrypted = secretsEncrypted
 	v.drainCommand = result.DrainCommand
+	v.endpoints = result.Endpoints
 	v.updatedAt = time.Now()
 	if v.hostID != "" {
 		fm.allocateOnHost(v.hostID, spec)
@@ -1079,6 +1083,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			// command is reconstructed from the single profile rather than
 			// persisted as a DB column.
 			drainCommand: DefaultFusedDrainCommand,
+			endpoints:    record.Endpoints,
 			createdAt:    record.CreatedAt,
 			updatedAt:    record.UpdatedAt,
 			err:          record.LastError,
@@ -1335,6 +1340,7 @@ func (fm *FleetManager) vmRecordFromVM(v *vm) VMRecord {
 		AuthTokenEncrypted: v.authTokenEncrypted,
 		SecretsEncrypted:   v.secretsEncrypted,
 		LastError:          v.err,
+		Endpoints:          v.endpoints,
 		CreatedAt:          v.createdAt,
 		UpdatedAt:          v.updatedAt,
 	}

@@ -14,22 +14,37 @@ import (
 
 // ResourceSpec mirrors internal/api.ResourceSpec field-for-field so the CLI can
 // copy Compiled.Spec into the sdk/api spec without importing the api package.
+//
+// Image selects the VM's base rootfs at create time (a name resolved by the
+// firecracker host agent to a pre-baked rootfs file; see FUSEFILE_PLAN.md
+// Phase 7). It lives here, not in the manifest json, because rootfs selection
+// happens at Provider.Create — before the guest boots and long before the
+// manifest is ever uploaded to it.
 type ResourceSpec struct {
 	CPUs              int32
 	RamMB             int32
 	StorageGB         int32
 	Region            string
 	MaxRuntimeSeconds int64
+	Image             string
+}
+
+// ExposeSpec requests that a guest port be published as a reachable
+// endpoint. Mirrors Fusefile's Expose entries one-for-one.
+type ExposeSpec struct {
+	Port int
+	As   string
 }
 
 // Compiled is the result of compiling a Fusefile: the resource spec, the
-// manifest json to upload to the guest, the startup script to run, and the
-// secrets the environment needs at create time.
+// manifest json to upload to the guest, the startup script to run, the
+// secrets the environment needs at create time, and any ports to expose.
 type Compiled struct {
 	Spec            ResourceSpec
 	ManifestJSON    []byte
 	StartupScript   string
 	RequiredSecrets []string
+	Expose          []ExposeSpec
 }
 
 // defaultWorkspace is used for manifest.machine.workspace when Fusefile.Workspace
@@ -107,11 +122,25 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			// (e.g. "512MB" must provision 1GB, not floor to 0).
 			StorageGB:         int32((int64(storageMB) + 1023) / 1024),
 			MaxRuntimeSeconds: maxRuntimeSeconds,
+			Image:             f.Image,
 		},
 		ManifestJSON:    manifestJSON,
 		StartupScript:   compileStartupScript(f),
 		RequiredSecrets: requiredSecrets,
+		Expose:          compileExpose(f),
 	}, nil
+}
+
+// compileExpose carries Fusefile.Expose through unchanged, one-for-one.
+func compileExpose(f *Fusefile) []ExposeSpec {
+	if len(f.Expose) == 0 {
+		return nil
+	}
+	out := make([]ExposeSpec, len(f.Expose))
+	for i, e := range f.Expose {
+		out[i] = ExposeSpec{Port: e.Port, As: e.As}
+	}
+	return out
 }
 
 // compileManifest builds the guest-facing manifest json and the sorted,

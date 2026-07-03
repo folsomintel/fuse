@@ -41,6 +41,26 @@ type Spec struct {
 	// Zero means "use the fleet default". This is a leak-detection ceiling,
 	// not a liveness check — set it higher than any plausible healthy runtime.
 	MaxRuntime time.Duration
+
+	// Image names a base rootfs for the provider to boot from, resolved by
+	// the provider (e.g. the firecracker host agent looks it up in its own
+	// named-rootfs directory). Empty means the provider's default base.
+	Image string
+}
+
+// ExposeSpec requests that a guest port be published as a reachable
+// endpoint by the provider during StartAgent.
+type ExposeSpec struct {
+	Port int
+	As   string
+}
+
+// Endpoint is a published network endpoint for an environment (e.g. an
+// ingress port exposed via the Fusefile's `expose` list).
+type Endpoint struct {
+	As   string // caller-chosen label, e.g. "http"
+	URL  string // reachable address, e.g. "http://203.0.113.5:41231"
+	Port int    // the guest-side port this endpoint publishes
 }
 
 // Environment is a running sandbox.
@@ -115,12 +135,23 @@ type AgentSpec struct {
 	Gateway      string            // pass-through gateway websocket URL
 	GatewayToken string            // pass-through gateway token
 	DrainCommand string            // command run inside the guest for graceful shutdown ('' => skip)
+	Expose       []ExposeSpec      // guest ports to publish as reachable endpoints, if any
 }
 
 type BootOptions struct {
 	StartupScript string
 	GatewayURL    string
 	GatewayToken  string
+	Expose        []ExposeSpec
+}
+
+// EndpointReporter is implemented by environments that can report additional
+// network endpoints published during StartAgent (e.g. via ingress/expose).
+// Providers that don't support ingress simply omit it, in which case Boot
+// reports no endpoints — consistent with how SnapshotCapable/SnapshotForkable
+// are optional per-provider capabilities.
+type EndpointReporter interface {
+	Endpoints() []Endpoint
 }
 
 // Checkpoint is a snapshot of a sandbox.
@@ -135,9 +166,21 @@ type Checkpoint struct {
 type BootResult struct {
 	Env                Environment
 	BootTime           time.Duration
-	FromCache          bool   // true if restored from checkpoint
-	AuthTokenEncrypted []byte // AES-GCM encrypted per-VM auth token for persistence
-	DrainCommand       string // graceful-shutdown command for the configured agent ('' => skip)
+	FromCache          bool       // true if restored from checkpoint
+	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token for persistence
+	DrainCommand       string     // graceful-shutdown command for the configured agent ('' => skip)
+	Endpoints          []Endpoint // published endpoints, if the provider reported any
+}
+
+// reportedEndpoints returns env.Endpoints() when env implements
+// EndpointReporter, or nil otherwise. Shared by bootFresh/bootRestore so a
+// provider without ingress support (the common case today) contributes no
+// endpoints rather than requiring every Environment to implement the method.
+func reportedEndpoints(env Environment) []Endpoint {
+	if er, ok := env.(EndpointReporter); ok {
+		return er.Endpoints()
+	}
+	return nil
 }
 
 // bootInputs bundles the inputs needed by bootFresh and bootRestore.
@@ -224,6 +267,7 @@ func bootRestore(ctx context.Context, existing Environment, in bootInputs, start
 		FromCache:          true,
 		AuthTokenEncrypted: encToken,
 		DrainCommand:       in.agentSpec.DrainCommand,
+		Endpoints:          reportedEndpoints(existing),
 	}, nil
 }
 
@@ -260,6 +304,7 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 		BootTime:           time.Since(start),
 		AuthTokenEncrypted: encToken,
 		DrainCommand:       in.agentSpec.DrainCommand,
+		Endpoints:          reportedEndpoints(env),
 	}, nil
 }
 

@@ -81,10 +81,12 @@ func newUpCmd() *cobra.Command {
 					StorageGB:         c.Spec.StorageGB,
 					Region:            c.Spec.Region,
 					MaxRuntimeSeconds: c.Spec.MaxRuntimeSeconds,
+					Image:             c.Spec.Image,
 				},
 				ManifestInline: manifestInline,
 				Secrets:        secretMap,
 				StartupScript:  c.StartupScript,
+				Expose:         toSDKExpose(c.Expose),
 			})
 			if err != nil {
 				return friendly(err)
@@ -134,6 +136,18 @@ func defaultTaskID(path string) string {
 		return "fuse-env"
 	}
 	return base
+}
+
+// toSDKExpose converts the compiler's expose entries into the SDK wire type.
+func toSDKExpose(in []fusefile.ExposeSpec) []fuse.ExposeSpec {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]fuse.ExposeSpec, len(in))
+	for i, e := range in {
+		out[i] = fuse.ExposeSpec{Port: e.Port, As: e.As}
+	}
+	return out
 }
 
 // missingSecrets returns the entries of required absent from have.

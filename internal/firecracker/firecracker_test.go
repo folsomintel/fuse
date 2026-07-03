@@ -313,6 +313,7 @@ func TestStartAgent_start_agent_happy_path(t *testing.T) {
 			gotBinaryPath = req.BinaryPath
 			gotListen = req.Listen
 			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
 		case "/v1/vm/vm-1/start-surfd":
 			gotStartSurfd = true
 			w.WriteHeader(http.StatusOK)
@@ -354,6 +355,7 @@ func TestStartAgent_spec_download_url_overrides_provider(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		gotDownloadURL = req.DownloadURL
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
 	defer srv.Close()
 

@@ -117,6 +117,7 @@ func FusedAgentSpec(manifest []byte, secretMap map[string]string, creds *secrets
 		Gateway:      opts.GatewayURL,
 		GatewayToken: opts.GatewayToken,
 		DrainCommand: DefaultFusedDrainCommand,
+		Expose:       opts.Expose,
 	}
 	if creds != nil {
 		spec.AuthToken = creds.AuthToken
