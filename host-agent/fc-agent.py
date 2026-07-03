@@ -35,6 +35,11 @@ STATE_DIR = FC_DIR / "agent-state"
 VMS_DIR = STATE_DIR / "vms"
 KERNEL = FC_DIR / "vmlinux.bin"
 BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(FC_DIR / "rootfs-fused.ext4")))
+# Named rootfs images for bring-your-own-image (see internal/fusefile's
+# ResourceSpec.Image): <IMAGES_DIR>/<name>.ext4. There is no OCI pull here —
+# an operator bakes and places a rootfs there (e.g. with fc-bake-rootfs.sh)
+# before a Fusefile can reference it by name.
+IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", str(FC_DIR / "images")))
 SSH_KEY = FC_DIR / "ubuntu.id_rsa"
 TOKEN = os.environ.get("FC_AGENT_TOKEN")
 PORT = int(os.environ.get("FC_AGENT_PORT", "8090"))
@@ -368,6 +373,17 @@ def stop_firecracker(meta: dict) -> None:
 def create_vm(req: dict) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name)
+
+    # Resolve the source rootfs before any allocation, so an unknown named
+    # image fails fast with no vm dir/tap/forward left to roll back. Unset
+    # (the common case today) is byte-for-byte the existing BASE_ROOTFS path.
+    image = req.get("image") or ""
+    source_rootfs = BASE_ROOTFS
+    if image:
+        source_rootfs = IMAGES_DIR / f"{image}.ext4"
+        if not source_rootfs.exists():
+            raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
+
     d = vm_dir(vm_id)
     if d.exists():
         raise HTTPError(409, f"vm {vm_id} already exists")
@@ -382,7 +398,7 @@ def create_vm(req: dict) -> dict:
 
     rootfs = d / "rootfs.ext4"
     # Per-VM rootfs copy (so writes don't affect other VMs).
-    shutil.copyfile(BASE_ROOTFS, rootfs)
+    shutil.copyfile(source_rootfs, rootfs)
     sudo(["chmod", "666", str(rootfs)], check=False)
 
     meta = {
