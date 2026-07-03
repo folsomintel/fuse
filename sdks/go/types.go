@@ -68,6 +68,12 @@ type Event struct {
 	Err       error     `json:"-"`
 }
 
+// ForkOptions is the optional body for env.Fork.
+type ForkOptions struct {
+	ReuseSnapshotID string `json:"reuse_snapshot_id,omitempty"`
+	Comment         string `json:"comment,omitempty"`
+}
+
 // SnapshotRequest is the optional body for env.Snapshot.
 type SnapshotRequest struct {
 	Comment          string            `json:"comment,omitempty"`
