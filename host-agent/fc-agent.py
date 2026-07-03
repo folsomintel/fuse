@@ -560,12 +560,24 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
         "[Install]\n"
         "WantedBy=multi-user.target\n"
     )
+    # Bring up any declared services before starting the main task. Guarded on
+    # the compose file's presence, so environments with no `services` in their
+    # Fusefile (including every existing caller of this function, and the
+    # FROZEN /start-surfd path which never passes one) see no change at all.
+    # `docker-compose` here is the baked podman compose provider (see
+    # fc-bake-rootfs.sh) — the guest has no docker CLI.
+    compose_up = (
+        "if [ -f /fuse/compose.yaml ]; then "
+        "/usr/local/bin/docker-compose -f /fuse/compose.yaml up -d; "
+        "fi; "
+    )
     remote = (
         "export LC_ALL=C; set -e; "
         # Check the absolute binary path, not `command -v fused`: a
         # non-interactive SSH shell's PATH may exclude /usr/local/bin even when
         # the binary is baked in, which would wrongly report it missing.
         f"test -x {shlex.quote(binary_path)} || {{ echo 'agent binary not found at {binary_path}' >&2; exit 127; }}; "
+        f"{compose_up}"
         f"printf '%s\\n' 'FUSED_EXTRA_ARGS={extras_str}' > /etc/default/fused; "
         f"cat > /etc/systemd/system/fused.service <<'EOF'\n{unit}EOF\n"
         "systemctl daemon-reload; "
@@ -573,7 +585,7 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
         "systemctl restart fused; "
         "sleep 0.3; systemctl is-active fused"
     )
-    rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=20.0)
+    rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=60.0)
     if rc != 0:
         detail = err.decode(errors="replace").strip()
         stdout = out.decode(errors="replace").strip()
