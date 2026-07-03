@@ -212,6 +212,35 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
+def _free_host_port() -> int:
+    """Picks a free host port by binding to port 0 and reading it back, then
+    closing the socket. There is an inherent (small) race between this and
+    the DNAT rule being installed; acceptable for this host agent's level of
+    simplicity, matching fc-expose.sh's own lack of allocation/conflict
+    detection."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
+
+
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh."""
+    subprocess.run(
+        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip, str(guest_port)],
+        check=True,
+    )
+
+
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+    """Removes a forward previously installed by add_expose_forward. Best
+    effort (mirrors del_agent_forward): a vm being destroyed should not fail
+    to tear down over a stale firewall rule."""
+    subprocess.run(
+        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip, str(guest_port)],
+        check=False,
+    )
+
+
 # -- SSH ----------------------------------------------------------------------
 
 SSH_BASE = [
@@ -407,6 +436,8 @@ def destroy_vm(vm_id: str) -> None:
     stop_firecracker(meta)
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
+    for endpoint in meta.get("expose_endpoints", []):
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
     teardown_tap(meta["tap"])
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
 
@@ -507,7 +538,8 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                    tls_cert_path: str | None = None, tls_key_path: str | None = None,
                    auth_token: str | None = None, download_url: str | None = None,
                    binary_path: str = "/usr/local/bin/fused",
-                   listen: str = "0.0.0.0:9550") -> None:
+                   listen: str = "0.0.0.0:9550",
+                   expose: list[dict] | None = None) -> list[dict]:
     meta = load_meta(vm_id)
     if not meta:
         raise HTTPError(404, "vm not found")
@@ -592,6 +624,22 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
         if stdout:
             detail = f"{detail} | stdout: {stdout}" if detail else stdout
         raise HTTPError(500, f"agent start failed: {detail or 'unknown error (rc={rc})'}")
+
+    # Publish any declared ingress ports now that the agent (and any compose
+    # services) are up. Guarded on `expose` being non-empty, so callers with
+    # no ports to publish (including the FROZEN /start-surfd path, which
+    # never passes expose) see no change at all. Persisted onto meta so
+    # destroy_vm can remove the same rules on teardown.
+    endpoints: list[dict] = []
+    if expose:
+        for entry in expose:
+            guest_port = int(entry["port"])
+            host_port = _free_host_port()
+            add_expose_forward(host_port, meta["guest_ip"], guest_port)
+            endpoints.append({"as": entry.get("as", ""), "url": f"{PUBLIC_HOST}:{host_port}", "port": guest_port, "host_port": host_port})
+        meta["expose_endpoints"] = endpoints
+        save_meta(meta)
+    return endpoints
 
 
 def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
@@ -715,7 +763,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(200, {"ok": True})
                     if action == "start-agent" and method == "POST":
                         body = self._read_json()
-                        do_start_agent(
+                        endpoints = do_start_agent(
                             vm_id,
                             body["manifest_path"],
                             body["secrets_path"],
@@ -727,8 +775,9 @@ class Handler(BaseHTTPRequestHandler):
                             download_url=body.get("download_url"),
                             binary_path=body.get("binary_path") or "/usr/local/bin/fused",
                             listen=body.get("listen") or "0.0.0.0:9550",
+                            expose=body.get("expose"),
                         )
-                        return self._json(200, {"ok": True})
+                        return self._json(200, {"ok": True, "endpoints": endpoints})
                     if action == "snapshot" and method == "POST":
                         body = self._read_json()
                         rec = snapshot_create(vm_id, body.get("comment", ""))
