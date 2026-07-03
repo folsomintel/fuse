@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/firecracker"
+	"github.com/folsomintel/fuse/internal/fusefile"
 	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -295,6 +297,57 @@ func TestE2E_FullDeployLifecycle(t *testing.T) {
 	if code != http.StatusNotFound {
 		t.Fatalf("get after destroy = %d (want 404): %s", code, body)
 	}
+}
+
+// TestE2E_ServiceExecution deploys an environment from a Fusefile-compiled
+// manifest declaring a service and asserts it boots through the real
+// orchestrator/API/firecracker stack. Against the in-memory stub (the default
+// here) this proves the pipeline wires a Fusefile's services all the way to
+// AgentSpec.Files (see internal/orchestrator's TestFusedAgentSpecWritesCompose*
+// for the unit-level guarantee); it does not prove the service is actually
+// reachable, since the stub has no real guest. That requires a real host
+// (FUSE_E2E_REMOTE=1) plus a guest-level check, which is tracked separately.
+func TestE2E_ServiceExecution(t *testing.T) {
+	srv := setupServer(t)
+	c := srv.Client()
+	base := srv.URL
+
+	src := `
+version: 1
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - 6379
+`
+	f, err := fusefile.Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("parse fusefile: %v", err)
+	}
+	compiled, err := fusefile.Compile(f)
+	if err != nil {
+		t.Fatalf("compile fusefile: %v", err)
+	}
+	manifestInline := base64.StdEncoding.EncodeToString(compiled.ManifestJSON)
+
+	task := "e2e-svc-" + runID()
+	code, body := req(t, c, "POST", base+"/v1/environments", map[string]any{
+		"task_id":         task,
+		"spec":            map[string]any{"cpus": 1, "ram_mb": 512, "storage_gb": 1, "region": "local"},
+		"manifest_inline": manifestInline,
+	})
+	if code != http.StatusCreated {
+		t.Fatalf("create = %d (want 201): %s", code, body)
+	}
+	var env api.Environment
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode create: %v (%s)", err, body)
+	}
+	if env.State != "running" {
+		t.Fatalf("created state = %q, want running", env.State)
+	}
+	cleanupEnv(t, c, base, env.ID)
+	t.Logf("deployed %s with a declared redis service, state=%s", env.ID, env.State)
 }
 
 // hostTarget returns the URL+token to register as a host. Remote: the real
