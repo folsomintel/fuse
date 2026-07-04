@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.0](https://github.com/folsomintel/fuse/compare/v0.1.0...v0.2.0) (2026-07-04)
+
+
+### Features
+
+* add fuse init scaffolding a fusefile ([45cc11b](https://github.com/folsomintel/fuse/commit/45cc11bdd53fd5edc86f8f6537c4f2bcc4a8c20e))
+* add fuse up command compiling a fusefile ([d0a2b73](https://github.com/folsomintel/fuse/commit/d0a2b73e0a75fa4787bb0ad2e588c3b27c2d1f82))
+* add fusefile parser with strict validation ([3c3c6d4](https://github.com/folsomintel/fuse/commit/3c3c6d4db3209e60c4df4368e1e056582f7d06d2))
+* add fusefile schema types ([c081537](https://github.com/folsomintel/fuse/commit/c081537f449dfc869a1cb76380080c88fcf973a2))
+* add ingress and image selection fields to create wire, compiler, and orchestrator ([1e96695](https://github.com/folsomintel/fuse/commit/1e966958ba25b76cd94eb8f59db28d5b6cbdced8))
+* **api:** add fork environment action and test ([349510c](https://github.com/folsomintel/fuse/commit/349510c4fedf18141c025fad37b539a617bba710))
+* bring up declared services via compose at guest boot ([69fba95](https://github.com/folsomintel/fuse/commit/69fba955288e47a887e976067b313e31f209bdd4))
+* **cli:** add environment fork command and test ([62c3e00](https://github.com/folsomintel/fuse/commit/62c3e008fe0f960946dedf99441dd935030c463a))
+* compile fusefile resources to resource spec ([c1de2c1](https://github.com/folsomintel/fuse/commit/c1de2c1a11416c8bc9cc633876189e105ecf2c85))
+* compile fusefile to manifest and startup script ([d5d7145](https://github.com/folsomintel/fuse/commit/d5d7145b22b6049fc42d839ace4cbfea36ae3f0b))
+* **orchestrator:** add support for generating Docker Compose files from Fused manifests and implement ForkEnvironment with snapshotting capabilities ([5d67add](https://github.com/folsomintel/fuse/commit/5d67add219e091bc92a2384de8ec06d0eab7fd1f))
+* publish exposed ports via fc-expose at boot ([c2955bd](https://github.com/folsomintel/fuse/commit/c2955bd6b17d17ea5eb2e9f90e9991286761b964))
+* **sdk-python:** add image, expose, endpoints, and fork to match go sdk ([031d6c6](https://github.com/folsomintel/fuse/commit/031d6c622991670c57650c0c787445887eed7671))
+* **sdk-ts:** add image, expose, endpoints, and fork to match go sdk ([410d6bc](https://github.com/folsomintel/fuse/commit/410d6bc16ec9b49260792e614dc356b199947402))
+* **sdks:** bring python and ts sdks to fusefile parity with go ([f663c66](https://github.com/folsomintel/fuse/commit/f663c66cfda208a9a2889fc335ad74dfe187f24f))
+* support bring-your-own base image via fusefile ([ad8a989](https://github.com/folsomintel/fuse/commit/ad8a989129eeb01926f4aa700bc978746df5b214))
+
+
+### Bug Fixes
+
+* resolve golangci-lint staticcheck issues (ST1005, S1016) ([60bc1f2](https://github.com/folsomintel/fuse/commit/60bc1f2c6769e9cb466eba468b16c37dec9853b4))
+* resolve golangci-lint staticcheck issues (ST1005, S1016) ([61df731](https://github.com/folsomintel/fuse/commit/61df731d78f4dfe04ea2a56f1b06d41ed7c2a0c6))
+
 ## [0.1.0](https://github.com/folsomintel/fuse/compare/v0.0.1...v0.1.0) (2026-06-30)
 
 
