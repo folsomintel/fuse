@@ -108,8 +108,9 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		INSERT INTO orchestrator_vms (
 			vm_id, host_id, network_host, state, url, task_id, tenant_id,
 			cpus, ram_mb, storage_gb, region, max_runtime_seconds,
-			auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+			auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
+			gpus, gpu_kind
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (vm_id) DO UPDATE SET
 			host_id=EXCLUDED.host_id,
 			network_host=EXCLUDED.network_host,
@@ -127,7 +128,9 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			last_error=EXCLUDED.last_error,
 			endpoints_json=EXCLUDED.endpoints_json,
 			created_at=EXCLUDED.created_at,
-			updated_at=EXCLUDED.updated_at
+			updated_at=EXCLUDED.updated_at,
+			gpus=EXCLUDED.gpus,
+			gpu_kind=EXCLUDED.gpu_kind
 	`,
 		vm.ID,
 		vm.HostID,
@@ -147,6 +150,8 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		string(endpointsJSON),
 		vm.CreatedAt.UTC(),
 		vm.UpdatedAt.UTC(),
+		vm.Spec.GPUs,
+		vm.Spec.GPUKind,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert vm %s: %w", vm.ID, err)
@@ -165,7 +170,8 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT vm_id, host_id, network_host, state, url, task_id, tenant_id,
 		       cpus, ram_mb, storage_gb, region, max_runtime_seconds,
-		       auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at
+		       auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
+		       gpus, gpu_kind
 		FROM orchestrator_vms
 	`)
 	if err != nil {
@@ -200,6 +206,8 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			&endpointsJSON,
 			&record.CreatedAt,
 			&record.UpdatedAt,
+			&record.Spec.GPUs,
+			&record.Spec.GPUKind,
 		); err != nil {
 			return nil, fmt.Errorf("scan vm row: %w", err)
 		}
@@ -519,8 +527,9 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 			host_id, url, token_encrypted, region, state, tenant_id,
 			cpus_total, ram_mb_total, storage_gb_total, vm_count_max,
 			cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
-			last_seen_at, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+			last_seen_at, created_at, updated_at,
+			backend, gpus_total, gpu_kind, gpus_allocated
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (host_id) DO UPDATE SET
 			url=EXCLUDED.url,
 			token_encrypted=EXCLUDED.token_encrypted,
@@ -536,7 +545,11 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 			storage_gb_allocated=EXCLUDED.storage_gb_allocated,
 			vm_count_allocated=EXCLUDED.vm_count_allocated,
 			last_seen_at=EXCLUDED.last_seen_at,
-			updated_at=EXCLUDED.updated_at
+			updated_at=EXCLUDED.updated_at,
+			backend=EXCLUDED.backend,
+			gpus_total=EXCLUDED.gpus_total,
+			gpu_kind=EXCLUDED.gpu_kind,
+			gpus_allocated=EXCLUDED.gpus_allocated
 	`,
 		h.ID,
 		h.URL,
@@ -555,6 +568,10 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 		h.LastSeen.UTC(),
 		h.CreatedAt.UTC(),
 		h.UpdatedAt.UTC(),
+		string(h.Backend),
+		h.Capacity.GPUs,
+		h.Capacity.GPUKind,
+		h.Allocated.GPUs,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert host %s: %w", h.ID, err)
@@ -574,7 +591,8 @@ const hostsSelect = `
 	SELECT host_id, url, token_encrypted, region, state, tenant_id,
 	       cpus_total, ram_mb_total, storage_gb_total, vm_count_max,
 	       cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
-	       last_seen_at, created_at, updated_at
+	       last_seen_at, created_at, updated_at,
+	       backend, gpus_total, gpu_kind, gpus_allocated
 	FROM orchestrator_hosts`
 
 // scanHost maps a row from hostsSelect onto a HostRecord. Both
@@ -582,8 +600,9 @@ const hostsSelect = `
 // in one place if the schema ever changes.
 func scanHost(scan func(...any) error) (HostRecord, error) {
 	var (
-		record HostRecord
-		state  string
+		record  HostRecord
+		state   string
+		backend string
 	)
 	if err := scan(
 		&record.ID,
@@ -603,10 +622,15 @@ func scanHost(scan func(...any) error) (HostRecord, error) {
 		&record.LastSeen,
 		&record.CreatedAt,
 		&record.UpdatedAt,
+		&backend,
+		&record.Capacity.GPUs,
+		&record.Capacity.GPUKind,
+		&record.Allocated.GPUs,
 	); err != nil {
 		return HostRecord{}, err
 	}
 	record.State = HostState(state)
+	record.Backend = HostBackend(backend)
 	return record, nil
 }
 
