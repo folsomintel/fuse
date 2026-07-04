@@ -11,6 +11,20 @@ export interface Spec {
   storage_gb?: number;
   region?: string;
   max_runtime_seconds?: number;
+  image?: string;
+}
+
+/** ExposeSpec requests that a guest port be published at boot. */
+export interface ExposeSpec {
+  port: number;
+  as?: string;
+}
+
+/** Endpoint is a published port with its externally reachable URL. */
+export interface Endpoint {
+  as?: string;
+  url: string;
+  port: number;
 }
 
 /** CreateRequest is the body for environments.create. */
@@ -22,6 +36,7 @@ export interface CreateRequest {
   startup_script?: string;
   gateway_url?: string;
   gateway_token?: string;
+  expose?: ExposeSpec[];
 }
 
 /** EnvironmentInfo is the server's view of a single microVM. */
@@ -35,6 +50,13 @@ export interface EnvironmentInfo {
   created_at: string;
   updated_at: string;
   error?: string;
+  endpoints?: Endpoint[];
+}
+
+/** ForkOptions is the optional body for environments.fork. */
+export interface ForkOptions {
+  reuse_snapshot_id?: string;
+  comment?: string;
 }
 
 /**

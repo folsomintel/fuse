@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -35,6 +37,75 @@ def test_environments_create() -> None:
     assert route.calls.last.request.url.path == "/v1/environments"
     assert env.id == "vm-1"
     assert env.state == "running"
+
+
+@respx.mock
+def test_environments_create_with_image_and_expose() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="task-1",
+                spec=fuse.Spec(image="my/image:latest"),
+                expose=[fuse.ExposeSpec(port=8080, as_="web")],
+            )
+        )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["spec"]["image"] == "my/image:latest"
+    assert body["expose"] == [{"port": 8080, "as": "web"}]
+    # keyword alias must serialize to the wire key "as", not "as_".
+    assert "as_" not in body["expose"][0]
+
+
+@respx.mock
+def test_environments_fork() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-2", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        env = client.environments.fork(
+            "vm-1", fuse.ForkOptions(reuse_snapshot_id="snap-1", comment="c")
+        )
+
+    request = route.calls.last.request
+    assert request.method == "POST"
+    assert request.url.path == "/v1/environments/vm-1"
+    assert request.url.params.get("action") == "fork"
+    body = json.loads(request.content)
+    assert body == {"reuse_snapshot_id": "snap-1", "comment": "c"}
+    assert env.id == "vm-2"
+
+
+@respx.mock
+def test_environments_get_with_endpoints() -> None:
+    respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "vm-1",
+                "state": "running",
+                "task_id": "task-1",
+                "url": "u",
+                "endpoints": [{"as": "web", "url": "https://web", "port": 8080}],
+            },
+        )
+    )
+    with new_client() as client:
+        env = client.environments.get("vm-1")
+
+    assert len(env.endpoints) == 1
+    assert env.endpoints[0].as_ == "web"
+    assert env.endpoints[0].url == "https://web"
+    assert env.endpoints[0].port == 8080
 
 
 @respx.mock

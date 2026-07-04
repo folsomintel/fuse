@@ -18,8 +18,11 @@ export type { CallOptions, FetchLike } from "./transport.js";
 // Wire types, state constants, and the terminal-state helper.
 export type {
   Spec,
+  ExposeSpec,
+  Endpoint,
   CreateRequest,
   EnvironmentInfo,
+  ForkOptions,
   Event,
   SnapshotRequest,
   SnapshotExport,

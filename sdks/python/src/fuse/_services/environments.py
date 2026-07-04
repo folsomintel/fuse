@@ -4,7 +4,7 @@ from collections.abc import Iterator
 from urllib.parse import quote
 
 from .._transport import Transport
-from ..types import CreateRequest, EnvironmentInfo, Event
+from ..types import CreateRequest, EnvironmentInfo, Event, ForkOptions
 from .events import stream_events
 
 
@@ -38,6 +38,17 @@ class EnvironmentsService:
 
     def drain(self, vm_id: str) -> EnvironmentInfo:
         return self._action(vm_id, "drain")
+
+    def fork(
+        self, vm_id: str, options: ForkOptions | None = None
+    ) -> EnvironmentInfo:
+        if not vm_id:
+            raise ValueError("vm id is required")
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request(
+            "POST", path, params={"action": "fork"}, body=options or ForkOptions()
+        )
+        return EnvironmentInfo.model_validate(resp.json())
 
     def rotate_token(self, vm_id: str) -> None:
         if not vm_id:

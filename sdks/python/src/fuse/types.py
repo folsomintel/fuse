@@ -32,6 +32,22 @@ class Spec(_Model):
     storage_gb: Optional[int] = None
     region: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
+    image: Optional[str] = None
+
+
+class ExposeSpec(_Model):
+    # a port to publish from the microvm. as_ maps to the wire key "as"
+    # because as is a reserved python keyword.
+    port: int
+    as_: Optional[str] = Field(default=None, alias="as")
+
+
+class Endpoint(_Model):
+    # a published endpoint reported by the server. as_ maps to the wire
+    # key "as" because as is a reserved python keyword.
+    as_: Optional[str] = Field(default=None, alias="as")
+    url: str = ""
+    port: int = 0
 
 
 class CreateRequest(_Model):
@@ -43,6 +59,7 @@ class CreateRequest(_Model):
     startup_script: Optional[str] = None
     gateway_url: Optional[str] = None
     gateway_token: Optional[str] = None
+    expose: Optional[list[ExposeSpec]] = None
 
 
 class EnvironmentInfo(_Model):
@@ -56,6 +73,13 @@ class EnvironmentInfo(_Model):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     error: str = ""
+    endpoints: list[Endpoint] = Field(default_factory=list)
+
+
+class ForkOptions(_Model):
+    # optional body for environments.fork.
+    reuse_snapshot_id: Optional[str] = None
+    comment: Optional[str] = None
 
 
 class Event(BaseModel):

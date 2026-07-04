@@ -32,6 +32,74 @@ describe("environments", () => {
     expect(env.state).toBe("running");
   });
 
+  it("create serializes spec.image and expose to snake_case JSON", async () => {
+    let body = "";
+    current = await serve(async (req, res) => {
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-1","state":"running","task_id":"task-1","url":"https://x"}`);
+    });
+
+    await current.client.environments.create({
+      task_id: "task-1",
+      spec: { cpus: 2, image: "ghcr.io/acme/app:latest" },
+      expose: [{ port: 8080, as: "web" }, { port: 5432 }],
+    });
+
+    expect(JSON.parse(body)).toEqual({
+      task_id: "task-1",
+      spec: { cpus: 2, image: "ghcr.io/acme/app:latest" },
+      expose: [{ port: 8080, as: "web" }, { port: 5432 }],
+    });
+  });
+
+  it("get decodes an endpoints array on EnvironmentInfo", async () => {
+    current = await serve((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        `{"id":"vm-1","state":"running","task_id":"task-1","url":"u",` +
+          `"endpoints":[{"as":"web","url":"https://web.x","port":8080},` +
+          `{"url":"https://db.x","port":5432}]}`,
+      );
+    });
+
+    const env = await current.client.environments.get("vm-1");
+
+    expect(env.endpoints).toEqual([
+      { as: "web", url: "https://web.x", port: 8080 },
+      { url: "https://db.x", port: 5432 },
+    ]);
+  });
+
+  it("fork posts action=fork with a ForkOptions body and decodes the result", async () => {
+    let method: string | undefined;
+    let path: string | undefined;
+    let query: string | undefined;
+    let body = "";
+    current = await serve(async (req, res) => {
+      method = req.method;
+      path = pathOf(req);
+      query = queryOf(req);
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-2","state":"running","task_id":"task-1","url":"u"}`);
+    });
+
+    const env = await current.client.environments.fork("vm-1", {
+      reuse_snapshot_id: "snap-1",
+      comment: "forked",
+    });
+
+    expect(method).toBe("POST");
+    expect(path).toBe("/v1/environments/vm-1");
+    expect(query).toBe("action=fork");
+    expect(JSON.parse(body)).toEqual({
+      reuse_snapshot_id: "snap-1",
+      comment: "forked",
+    });
+    expect(env.id).toBe("vm-2");
+  });
+
   it("list sends snake_case query and unwraps the envelope", async () => {
     let method: string | undefined;
     let path: string | undefined;
