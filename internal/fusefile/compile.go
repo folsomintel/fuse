@@ -138,7 +138,7 @@ func compileExpose(f *Fusefile) []ExposeSpec {
 	}
 	out := make([]ExposeSpec, len(f.Expose))
 	for i, e := range f.Expose {
-		out[i] = ExposeSpec{Port: e.Port, As: e.As}
+		out[i] = ExposeSpec(e)
 	}
 	return out
 }
@@ -170,7 +170,7 @@ func compileManifest(f *Fusefile) ([]byte, []string, error) {
 		if len(svc.Env) > 0 {
 			ms.Env = make(map[string]manifestEnv, len(svc.Env))
 			for key, ev := range svc.Env {
-				me := manifestEnv{Value: ev.Value, Secret: ev.Secret}
+				me := manifestEnv(ev)
 				if ev.Secret != "" {
 					secretSet[ev.Secret] = true
 				}
