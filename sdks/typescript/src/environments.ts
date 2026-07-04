@@ -1,5 +1,5 @@
 import type { CallOptions, Transport } from "./transport.js";
-import type { CreateRequest, EnvironmentInfo, Event } from "./types.js";
+import type { CreateRequest, EnvironmentInfo, Event, ForkOptions } from "./types.js";
 import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
 
@@ -46,6 +46,20 @@ export class EnvironmentsService {
       body,
       signal: opts.signal,
     });
+  }
+
+  /** Fork an environment into a new one; returns the new environment. */
+  async fork(
+    vmId: string,
+    body: ForkOptions = {},
+    opts: CallOptions = {},
+  ): Promise<EnvironmentInfo> {
+    requireArg(vmId, "vm id");
+    return this.t.json<EnvironmentInfo>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      { query: { action: "fork" }, body, signal: opts.signal },
+    );
   }
 
   /** Gracefully drain an environment; returns the updated environment. */
