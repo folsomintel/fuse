@@ -69,7 +69,7 @@ func newInitCmd() *cobra.Command {
 
 			if !force {
 				if _, err := os.Stat(path); err == nil {
-					return fmt.Errorf("Fusefile already exists at %s (use --force to overwrite)", path)
+					return fmt.Errorf("a Fusefile already exists at %s (use --force to overwrite)", path)
 				} else if !os.IsNotExist(err) {
 					return fmt.Errorf("stat %s: %w", path, err)
 				}
