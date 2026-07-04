@@ -27,6 +27,8 @@ type ResourceSpec struct {
 	Region            string
 	MaxRuntimeSeconds int64
 	Image             string
+	GPUs              int32
+	GPUKind           string
 }
 
 // ExposeSpec requests that a guest port be published as a reachable

@@ -32,6 +32,8 @@ func toAPIResourceSpec(s orchestrator.Spec) ResourceSpec {
 		Region:            s.Region,
 		MaxRuntimeSeconds: int64(s.MaxRuntime.Seconds()),
 		Image:             s.Image,
+		GPUs:              s.GPUs,
+		GPUKind:           s.GPUKind,
 	}
 }
 
@@ -44,6 +46,8 @@ func toOrchestratorSpec(s ResourceSpec) orchestrator.Spec {
 		Region:     s.Region,
 		MaxRuntime: time.Duration(s.MaxRuntimeSeconds) * time.Second,
 		Image:      s.Image,
+		GPUs:       s.GPUs,
+		GPUKind:    s.GPUKind,
 	}
 }
 
@@ -74,21 +78,26 @@ func toAPIEndpoints(in []orchestrator.Endpoint) []Endpoint {
 // toAPIHost converts an orchestrator.Host into the wire shape.
 func toAPIHost(h orchestrator.Host) HostInfo {
 	return HostInfo{
-		ID:     h.ID,
-		URL:    h.URL,
-		Region: h.Region,
-		State:  string(h.State),
+		ID:      h.ID,
+		URL:     h.URL,
+		Region:  h.Region,
+		Backend: string(h.Backend),
+		State:   string(h.State),
 		Capacity: HostCapacity{
 			CPUs:      h.Capacity.CPUs,
 			RamMB:     h.Capacity.RamMB,
 			StorageGB: h.Capacity.StorageGB,
 			VMCount:   h.Capacity.VMCount,
+			GPUs:      h.Capacity.GPUs,
+			GPUKind:   h.Capacity.GPUKind,
 		},
 		Allocated: HostCapacity{
 			CPUs:      h.Allocated.CPUs,
 			RamMB:     h.Allocated.RamMB,
 			StorageGB: h.Allocated.StorageGB,
 			VMCount:   h.Allocated.VMCount,
+			GPUs:      h.Allocated.GPUs,
+			GPUKind:   h.Allocated.GPUKind,
 		},
 		LastSeen:  h.LastSeen,
 		CreatedAt: h.CreatedAt,

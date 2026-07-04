@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -187,4 +189,69 @@ func TestFits_variousCombinations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestHostCapacity_GPUFieldsRoundTripJSON(t *testing.T) {
+	in := HostCapacity{CPUs: 4, RamMB: 1024, StorageGB: 50, VMCount: 2, GPUs: 2, GPUKind: "a100"}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !containsJSONField(data, `"gpus":2`) || !containsJSONField(data, `"gpu_kind":"a100"`) {
+		t.Fatalf("marshaled json missing gpu fields: %s", data)
+	}
+
+	var out HostCapacity
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out != in {
+		t.Errorf("round trip = %+v, want %+v", out, in)
+	}
+}
+
+func TestHostCapacity_GPUFieldsOmittedWhenZero(t *testing.T) {
+	in := HostCapacity{CPUs: 4, RamMB: 1024, StorageGB: 50, VMCount: 2}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if containsJSONField(data, `"gpus"`) || containsJSONField(data, `"gpu_kind"`) {
+		t.Fatalf("expected gpu fields to be omitted, got: %s", data)
+	}
+
+	var out HostCapacity
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.GPUs != 0 || out.GPUKind != "" {
+		t.Errorf("defaults = %+v, want zero values", out)
+	}
+}
+
+func TestHostBackend_DefaultsToFirecracker(t *testing.T) {
+	// A Host built without an explicit Backend (e.g. legacy record) must
+	// behave as firecracker — this is asserted at the registration
+	// boundary in internal/api, but the zero value itself must be the
+	// empty string so callers can detect "unset" and apply the default.
+	var h Host
+	if h.Backend != "" {
+		t.Errorf("zero-value Backend = %q, want empty string", h.Backend)
+	}
+}
+
+func TestHostBackend_Constants(t *testing.T) {
+	if BackendFirecracker != "firecracker" {
+		t.Errorf("BackendFirecracker = %q, want firecracker", BackendFirecracker)
+	}
+	if BackendQEMU != "qemu" {
+		t.Errorf("BackendQEMU = %q, want qemu", BackendQEMU)
+	}
+}
+
+// containsJSONField is a small substring helper so the round-trip tests
+// can assert on exact key:value presence without decoding into a map
+// (which would hide omitempty behavior behind Go's zero-value defaults).
+func containsJSONField(data []byte, field string) bool {
+	return bytes.Contains(data, []byte(field))
 }

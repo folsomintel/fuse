@@ -25,6 +25,8 @@ type ResourceSpec struct {
 	Region            string `json:"region,omitempty"`
 	MaxRuntimeSeconds int64  `json:"max_runtime_seconds,omitempty"`
 	Image             string `json:"image,omitempty"`
+	GPUs              int32  `json:"gpus,omitempty"`
+	GPUKind           string `json:"gpu_kind,omitempty"`
 }
 
 // ExposeSpec requests that a guest port be published as a reachable
@@ -186,18 +188,25 @@ type APIKeyList struct {
 
 // HostCapacity is the wire shape of a host's resource envelope.
 type HostCapacity struct {
-	CPUs      int `json:"cpus"`
-	RamMB     int `json:"ram_mb"`
-	StorageGB int `json:"storage_gb"`
-	VMCount   int `json:"vm_count"`
+	CPUs      int    `json:"cpus"`
+	RamMB     int    `json:"ram_mb"`
+	StorageGB int    `json:"storage_gb"`
+	VMCount   int    `json:"vm_count"`
+	GPUs      int    `json:"gpus,omitempty"`
+	GPUKind   string `json:"gpu_kind,omitempty"`
 }
 
 // RegisterHostRequest is the JSON body accepted by POST /v1/hosts.
+//
+// Backend selects the host's virtualization backend ("firecracker" or
+// "qemu"). Omitted or empty defaults to "firecracker". Only "qemu" hosts
+// may register with Capacity.GPUs > 0.
 type RegisterHostRequest struct {
 	ID       string       `json:"id"`
 	URL      string       `json:"url"`
 	Token    string       `json:"token,omitempty"`
 	Region   string       `json:"region,omitempty"`
+	Backend  string       `json:"backend,omitempty"`
 	Capacity HostCapacity `json:"capacity"`
 }
 
@@ -206,6 +215,7 @@ type HostInfo struct {
 	ID        string       `json:"id"`
 	URL       string       `json:"url"`
 	Region    string       `json:"region,omitempty"`
+	Backend   string       `json:"backend,omitempty"`
 	State     string       `json:"state"`
 	Capacity  HostCapacity `json:"capacity"`
 	Allocated HostCapacity `json:"allocated"`

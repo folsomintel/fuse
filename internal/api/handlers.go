@@ -636,16 +636,29 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 	// VMCount). Currently accepts zero/negative values which would cause the
 	// scheduler to make bad placement decisions.
 
+	backend := orchestrator.HostBackend(req.Backend)
+	if backend == "" {
+		backend = orchestrator.BackendFirecracker
+	}
+	if req.Capacity.GPUs > 0 && backend != orchestrator.BackendQEMU {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"gpus > 0 requires backend \"qemu\"", nil)
+		return
+	}
+
 	host := orchestrator.Host{
-		ID:     req.ID,
-		URL:    req.URL,
-		Token:  req.Token,
-		Region: req.Region,
+		ID:      req.ID,
+		URL:     req.URL,
+		Token:   req.Token,
+		Region:  req.Region,
+		Backend: backend,
 		Capacity: orchestrator.HostCapacity{
 			CPUs:      req.Capacity.CPUs,
 			RamMB:     req.Capacity.RamMB,
 			StorageGB: req.Capacity.StorageGB,
 			VMCount:   req.Capacity.VMCount,
+			GPUs:      req.Capacity.GPUs,
+			GPUKind:   req.Capacity.GPUKind,
 		},
 	}
 

@@ -37,6 +37,13 @@ type Spec struct {
 	StorageGB int
 	Region    string
 
+	// GPUs is the count of whole GPU devices requested. Zero means no GPU.
+	GPUs int32
+
+	// GPUKind identifies the requested GPU model (e.g. "a100"). Empty when
+	// GPUs is 0.
+	GPUKind string
+
 	// MaxRuntime overrides FleetConfig.TaskStuckTimeout for this task.
 	// Zero means "use the fleet default". This is a leak-detection ceiling,
 	// not a liveness check — set it higher than any plausible healthy runtime.

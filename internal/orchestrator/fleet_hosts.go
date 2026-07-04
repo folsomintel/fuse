@@ -32,6 +32,9 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 	if h.State == "" {
 		h.State = HostActive
 	}
+	if h.Backend == "" {
+		h.Backend = BackendFirecracker
+	}
 
 	fm.mu.Lock()
 	fm.hosts[h.ID] = &h
