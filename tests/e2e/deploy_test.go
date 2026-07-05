@@ -96,7 +96,7 @@ func setupServer(t *testing.T) *httptest.Server {
 		t.Fatalf("gen encryption key: %v", err)
 	}
 
-	hostFactory := func(u, tok string) orchestrator.Provider {
+	hostFactory := func(u, tok string, _ orchestrator.HostBackend) orchestrator.Provider {
 		return firecracker.New(firecracker.Config{BaseURL: u, Token: tok})
 	}
 

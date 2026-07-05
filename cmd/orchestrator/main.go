@@ -226,10 +226,21 @@ func run() error {
 
 	promMetrics := metrics.NewPrometheusMetrics(prometheus.DefaultRegisterer)
 
-	// Single shared factory for per-host providers. Used both at the
-	// API layer (POST /v1/hosts) and during recovery to rehydrate
-	// hosts loaded from the state store after a restart.
-	hostProviderFactory := func(url, token string) orchestrator.Provider {
+	// Single shared factory for per-host providers, routed by the host's
+	// virtualization backend. Used both at the API layer (POST /v1/hosts)
+	// and during recovery to rehydrate hosts loaded from the state store
+	// after a restart.
+	//
+	// The qemu backend gets a firecracker provider in stub mode as a
+	// placeholder: PR 1 wires the routing end-to-end so registration is
+	// testable, and PR 3 replaces this branch with the real qemu.New.
+	hostProviderFactory := func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
+		if backend == orchestrator.BackendQEMU {
+			return firecracker.New(firecracker.Config{
+				Token:   token,
+				UseStub: true,
+			})
+		}
 		return firecracker.New(firecracker.Config{
 			BaseURL:     url,
 			Token:       token,

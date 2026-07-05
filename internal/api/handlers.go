@@ -13,11 +13,12 @@ import (
 )
 
 // ProviderFactory constructs a Provider for a registered host given
-// its URL and auth token. The REST handler calls this during
-// POST /v1/hosts to avoid importing provider-specific packages.
-// In production this returns a firecracker.Provider; tests pass a
-// stub.
-type ProviderFactory func(url, token string) orchestrator.Provider
+// its URL, auth token, and virtualization backend. The REST handler
+// calls this during POST /v1/hosts to avoid importing provider-specific
+// packages. In production a firecracker backend returns a
+// firecracker.Provider and a qemu backend returns a qemu.Provider;
+// tests pass a stub.
+type ProviderFactory func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider
 
 // Handler is the HTTP dependency graph for the orchestrator REST API.
 type Handler struct {
@@ -662,7 +663,7 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	provider := h.NewProvider(req.URL, req.Token)
+	provider := h.NewProvider(req.URL, req.Token, backend)
 	if err := h.Fleet.RegisterHost(r.Context(), host, provider); err != nil {
 		writeFleetError(w, err)
 		return

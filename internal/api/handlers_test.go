@@ -752,7 +752,7 @@ func newTestHandlerWithProvider(t *testing.T) (*Handler, *orchestrator.FleetMana
 	})
 	h := &Handler{
 		Fleet: fm,
-		NewProvider: func(url, token string) orchestrator.Provider {
+		NewProvider: func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
 			return newFakeProvider()
 		},
 	}
@@ -868,6 +868,43 @@ func TestRegisterHost_GPUsWithDefaultBackendReturns400(t *testing.T) {
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegisterHost_ProviderFactoryReceivesBackend(t *testing.T) {
+	p := newFakeProvider()
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider: p,
+		Prefix:   "fuse-",
+	})
+	var gotBackend orchestrator.HostBackend
+	h := &Handler{
+		Fleet: fm,
+		NewProvider: func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
+			gotBackend = backend
+			return newFakeProvider()
+		},
+	}
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-qemu",
+		URL:     "http://host-qemu.test",
+		Backend: "qemu",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+			GPUs:      1,
+			GPUKind:   "a100",
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	if gotBackend != orchestrator.BackendQEMU {
+		t.Errorf("factory backend = %q, want qemu", gotBackend)
 	}
 }
 
