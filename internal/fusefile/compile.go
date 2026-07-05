@@ -205,7 +205,10 @@ func compileStartupScript(f *Fusefile) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("set -euo pipefail\n")
+	// posix prelude: the orchestrator runs this via `sh -lc`, and dash
+	// (ubuntu's /bin/sh) has no pipefail. enable it only when supported.
+	b.WriteString("set -eu\n")
+	b.WriteString("if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n")
 	for _, line := range f.Setup {
 		b.WriteString(line)
 		b.WriteString("\n")

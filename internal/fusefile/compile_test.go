@@ -285,15 +285,16 @@ func TestCompileManifestServiceEnvValue(t *testing.T) {
 }
 
 func TestCompileStartupScript(t *testing.T) {
+	const prelude = "set -eu\nif (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n"
 	cases := []struct {
 		name  string
 		setup []string
 		run   string
 		want  string
 	}{
-		{"setup and run", []string{"a", "b"}, "./c", "set -euo pipefail\na\nb\n./c\n"},
-		{"run only", nil, "./c", "set -euo pipefail\n./c\n"},
-		{"setup only", []string{"a"}, "", "set -euo pipefail\na\n"},
+		{"setup and run", []string{"a", "b"}, "./c", prelude + "a\nb\n./c\n"},
+		{"run only", nil, "./c", prelude + "./c\n"},
+		{"setup only", []string{"a"}, "", prelude + "a\n"},
 		{"neither", nil, "", ""},
 	}
 
