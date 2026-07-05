@@ -62,15 +62,15 @@ const (
 // fits returns true if the host has enough headroom (capacity minus
 // allocated) to place a VM with the given spec.
 func fits(capacity, allocated HostCapacity, spec Spec) bool {
-	if (capacity.CPUs-allocated.CPUs) < spec.CPUs { 
-		(capacity.RamMB-allocated.RamMB) < spec.CPUs ||
+	if (capacity.CPUs-allocated.CPUs) < spec.CPUs ||
+		(capacity.RamMB-allocated.RamMB) < spec.RamMB ||
 		(capacity.StorageGB-allocated.StorageGB) < spec.StorageGB ||
 		(capacity.VMCount-allocated.VMCount) < 1 {
 		return false
 	}
 	if spec.GPUs > 0 {
 		if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
-			return false 
+			return false
 		}
 		if spec.GPUKind != "" && spec.GPUKind != capacity.GPUKind {
 			return false
@@ -151,7 +151,7 @@ func Schedule(spec Spec, hosts []*Host, policy PlacementPolicy) (*Host, Placemen
 	if len(hosts) == 0 {
 		return nil, PlacementDecision{}, ErrNoHosts
 	}
-	
+
 	// Filter to eligible candidates.
 	type candidate struct {
 		host     *Host
