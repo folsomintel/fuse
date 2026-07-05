@@ -179,6 +179,7 @@ func (fm *FleetManager) allocateOnHost(hostID string, spec Spec) {
 	h.Allocated.CPUs += spec.CPUs
 	h.Allocated.RamMB += spec.RamMB
 	h.Allocated.StorageGB += spec.StorageGB
+	h.Allocated.GPUs += int(spec.GPUs)
 	h.Allocated.VMCount++
 	h.UpdatedAt = time.Now()
 	fm.persistHostRecordBackground(fm.hostToRecord(*h))
@@ -203,6 +204,10 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	h.Allocated.StorageGB -= spec.StorageGB
 	if h.Allocated.StorageGB < 0 {
 		h.Allocated.StorageGB = 0
+	}
+	h.Allocated.GPUs -= int(spec.GPUs)
+	if h.Allocated.GPUs < 0 {
+		h.Allocated.GPUs = 0
 	}
 	h.Allocated.VMCount--
 	if h.Allocated.VMCount < 0 {
