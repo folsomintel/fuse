@@ -45,7 +45,7 @@ paths:
         for kubelet livenessProbe — failing this triggers a pod restart.
       security: []
       responses:
-        '200':
+        "200":
           description: Process is alive.
           content:
             application/json:
@@ -71,7 +71,7 @@ paths:
         does not carry credentials.
       security: []
       responses:
-        '200':
+        "200":
           description: All checks pass.
           content:
             application/json:
@@ -89,7 +89,7 @@ paths:
                     example:
                       state_store: ok
                       fleet: ok
-        '503':
+        "503":
           description: One or more dependencies are unhealthy.
           content:
             application/json:
@@ -105,7 +105,7 @@ paths:
                     additionalProperties:
                       type: string
                     example:
-                      state_store: 'connection refused'
+                      state_store: "connection refused"
                       fleet: ok
 
   /v1/environments:
@@ -131,12 +131,12 @@ paths:
             type: string
           description: Return only environments assigned to this host.
       responses:
-        '200':
+        "200":
           description: Environment list.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/EnvironmentList'
+                $ref: "#/components/schemas/EnvironmentList"
     post:
       tags: [environments]
       operationId: createEnvironment
@@ -151,39 +151,39 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateEnvironmentRequest'
+              $ref: "#/components/schemas/CreateEnvironmentRequest"
       responses:
-        '201':
+        "201":
           description: Environment created.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Environment'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
-        '503':
-          $ref: '#/components/responses/Unavailable'
+                $ref: "#/components/schemas/Environment"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /v1/environments/{vmId}:
     parameters:
-      - $ref: '#/components/parameters/VMID'
+      - $ref: "#/components/parameters/VMID"
     get:
       tags: [environments]
       operationId: getEnvironment
       summary: Fetch a VM by ID.
       responses:
-        '200':
+        "200":
           description: Environment.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Environment'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: "#/components/schemas/Environment"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [environments]
       operationId: environmentAction
@@ -210,24 +210,24 @@ paths:
             enum: [rotate-token, drain]
           description: The action to perform.
       responses:
-        '200':
+        "200":
           description: |
             Drain succeeded. Body is the updated Environment with
             `state == "draining"`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Environment'
-        '204':
+                $ref: "#/components/schemas/Environment"
+        "204":
           description: Action succeeded (rotate-token).
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [environments]
       operationId: destroyEnvironment
@@ -237,16 +237,16 @@ paths:
         in the sense that a second call on an already-gone VM returns
         404, not an error.
       responses:
-        '204':
+        "204":
           description: VM destroyed.
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/environments/{vmId}/events:
     parameters:
-      - $ref: '#/components/parameters/VMID'
+      - $ref: "#/components/parameters/VMID"
       - name: last_event_id
         in: query
         required: false
@@ -296,20 +296,20 @@ paths:
         acceptable; cross-replica fanout would require a Redis or
         NATS backplane.
       responses:
-        '200':
+        "200":
           description: SSE stream of EnvironmentEvent objects.
           content:
             text/event-stream:
               schema:
-                $ref: '#/components/schemas/EnvironmentEvent'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: "#/components/schemas/EnvironmentEvent"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/environments/{vmId}/snapshots:
     parameters:
-      - $ref: '#/components/parameters/VMID'
+      - $ref: "#/components/parameters/VMID"
     post:
       tags: [snapshots]
       operationId: createSnapshot
@@ -319,20 +319,20 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateSnapshotRequest'
+              $ref: "#/components/schemas/CreateSnapshotRequest"
       responses:
-        '201':
+        "201":
           description: Snapshot created.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Snapshot'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: "#/components/schemas/Snapshot"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/snapshots:
     get:
@@ -362,29 +362,29 @@ paths:
             enum: [creating, ready, restoring, deleting, error]
           description: Return only snapshots in this lifecycle state.
       responses:
-        '200':
+        "200":
           description: Snapshot list.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SnapshotList'
+                $ref: "#/components/schemas/SnapshotList"
 
   /v1/snapshots/{snapshotId}:
     parameters:
-      - $ref: '#/components/parameters/SnapshotID'
+      - $ref: "#/components/parameters/SnapshotID"
     get:
       tags: [snapshots]
       operationId: getSnapshot
       summary: Get one snapshot resource by ID.
       responses:
-        '200':
+        "200":
           description: Snapshot metadata.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Snapshot'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: "#/components/schemas/Snapshot"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [snapshots]
       operationId: snapshotAction
@@ -398,29 +398,29 @@ paths:
             enum: [restore]
           description: The action to perform. Currently only "restore" is supported.
       responses:
-        '204':
+        "204":
           description: Action succeeded.
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [snapshots]
       operationId: deleteSnapshot
       summary: Delete a leaf snapshot.
       responses:
-        '204':
+        "204":
           description: Snapshot deleted.
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/hosts:
     get:
@@ -428,12 +428,12 @@ paths:
       operationId: listHosts
       summary: List registered hosts.
       responses:
-        '200':
+        "200":
           description: Host list.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HostList'
+                $ref: "#/components/schemas/HostList"
     post:
       tags: [hosts]
       operationId: registerHost
@@ -443,35 +443,35 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterHostRequest'
+              $ref: "#/components/schemas/RegisterHostRequest"
       responses:
-        '201':
+        "201":
           description: Host registered.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HostInfo'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                $ref: "#/components/schemas/HostInfo"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/hosts/{hostId}:
     parameters:
-      - $ref: '#/components/parameters/HostID'
+      - $ref: "#/components/parameters/HostID"
     get:
       tags: [hosts]
       operationId: getHost
       summary: Fetch a host by ID.
       responses:
-        '200':
+        "200":
           description: Host.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HostInfo'
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: "#/components/schemas/HostInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
     post:
       tags: [hosts]
       operationId: hostAction
@@ -488,27 +488,27 @@ paths:
             - cordon: Mark the host unschedulable for new environments.
             - uncordon: Return the host to active scheduling.
       responses:
-        '204':
+        "204":
           description: Action succeeded.
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
     delete:
       tags: [hosts]
       operationId: removeHost
       summary: Remove a host from the scheduler.
       responses:
-        '204':
+        "204":
           description: Host removed.
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalError'
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
 components:
   parameters:
@@ -540,31 +540,31 @@ components:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
     NotFound:
       description: Resource does not exist.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
     Conflict:
       description: Conflicts with current state (e.g. duplicate task assignment).
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
     InternalError:
       description: Unexpected server error.
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
     Unavailable:
       description: The orchestrator is rejecting work (e.g. shutting down).
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/Error'
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -607,6 +607,19 @@ components:
           type: integer
           format: int32
           minimum: 0
+        gpus:
+          type: integer
+          format: int32
+          minimum: 0
+          description: |
+            Count of whole GPU devices requested. Zero means no GPU.
+            A non-zero value routes the environment to a qemu-backed
+            host with matching free GPU inventory.
+        gpu_kind:
+          type: string
+          description: |
+            Optional GPU model to match (e.g. "a100"). Empty matches any
+            kind on a host that has GPUs.
         region:
           type: string
         max_runtime_seconds:
@@ -625,7 +638,7 @@ components:
           type: string
           description: Caller-assigned task identifier. Must be unique.
         spec:
-          $ref: '#/components/schemas/ResourceSpec'
+          $ref: "#/components/schemas/ResourceSpec"
         manifest_inline:
           type: string
           description: |
@@ -657,7 +670,7 @@ components:
           type: string
           description: Reachable URL for surfd's gRPC surface.
         spec:
-          $ref: '#/components/schemas/ResourceSpec'
+          $ref: "#/components/schemas/ResourceSpec"
         created_at:
           type: string
           format: date-time
@@ -675,7 +688,7 @@ components:
         environments:
           type: array
           items:
-            $ref: '#/components/schemas/Environment'
+            $ref: "#/components/schemas/Environment"
 
     EnvironmentEvent:
       type: object
@@ -797,7 +810,7 @@ components:
         exports:
           type: array
           items:
-            $ref: '#/components/schemas/SnapshotExport'
+            $ref: "#/components/schemas/SnapshotExport"
 
     SnapshotList:
       type: object
@@ -806,7 +819,7 @@ components:
         snapshots:
           type: array
           items:
-            $ref: '#/components/schemas/Snapshot'
+            $ref: "#/components/schemas/Snapshot"
 
     HostCapacity:
       type: object
@@ -820,6 +833,14 @@ components:
           type: integer
         vm_count:
           type: integer
+        gpus:
+          type: integer
+          description: |
+            Count of whole GPU devices. Only qemu-backed hosts may
+            report a non-zero value.
+        gpu_kind:
+          type: string
+          description: GPU model (e.g. "a100"). Empty when gpus is 0.
 
     RegisterHostRequest:
       type: object
@@ -833,12 +854,19 @@ components:
           type: string
         region:
           type: string
+        backend:
+          type: string
+          enum: [firecracker, qemu]
+          description: |
+            Virtualization backend. Defaults to "firecracker". Only
+            "qemu" hosts may register with capacity.gpus > 0.
         capacity:
-          $ref: '#/components/schemas/HostCapacity'
+          $ref: "#/components/schemas/HostCapacity"
 
     HostInfo:
       type: object
-      required: [id, url, state, capacity, allocated, last_seen, created_at, updated_at]
+      required:
+        [id, url, state, capacity, allocated, last_seen, created_at, updated_at]
       properties:
         id:
           type: string
@@ -849,10 +877,14 @@ components:
         state:
           type: string
           enum: [active, cordoned, draining]
+        backend:
+          type: string
+          enum: [firecracker, qemu]
+          description: Virtualization backend the host runs.
         capacity:
-          $ref: '#/components/schemas/HostCapacity'
+          $ref: "#/components/schemas/HostCapacity"
         allocated:
-          $ref: '#/components/schemas/HostCapacity'
+          $ref: "#/components/schemas/HostCapacity"
         last_seen:
           type: string
           format: date-time
@@ -870,4 +902,4 @@ components:
         hosts:
           type: array
           items:
-            $ref: '#/components/schemas/HostInfo'
+            $ref: "#/components/schemas/HostInfo"

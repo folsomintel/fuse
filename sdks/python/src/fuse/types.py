@@ -30,6 +30,8 @@ class Spec(_Model):
     cpus: Optional[int] = None
     ram_mb: Optional[int] = None
     storage_gb: Optional[int] = None
+    gpus: Optional[int] = None
+    gpu_kind: Optional[str] = None
     region: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     image: Optional[str] = None
@@ -143,6 +145,8 @@ class HostCapacity(_Model):
     ram_mb: int = 0
     storage_gb: int = 0
     vm_count: int = 0
+    gpus: int = 0
+    gpu_kind: str = ""
 
 
 class RegisterHostRequest(_Model):
@@ -151,6 +155,7 @@ class RegisterHostRequest(_Model):
     url: str
     token: Optional[str] = None
     region: Optional[str] = None
+    backend: Optional[str] = None
     capacity: HostCapacity = Field(default_factory=HostCapacity)
 
 
@@ -160,6 +165,7 @@ class Host(_Model):
     url: str = ""
     region: str = ""
     state: str = ""
+    backend: str = ""
     capacity: HostCapacity = Field(default_factory=HostCapacity)
     allocated: HostCapacity = Field(default_factory=HostCapacity)
     last_seen: Optional[datetime] = None

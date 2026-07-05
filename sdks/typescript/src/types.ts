@@ -9,6 +9,8 @@ export interface Spec {
   cpus?: number;
   ram_mb?: number;
   storage_gb?: number;
+  gpus?: number;
+  gpu_kind?: string;
   region?: string;
   max_runtime_seconds?: number;
   image?: string;
@@ -119,6 +121,8 @@ export interface HostCapacity {
   ram_mb: number;
   storage_gb: number;
   vm_count: number;
+  gpus?: number;
+  gpu_kind?: string;
 }
 
 /** RegisterHostRequest is the body for hosts.register. */
@@ -127,6 +131,7 @@ export interface RegisterHostRequest {
   url: string;
   token?: string;
   region?: string;
+  backend?: string;
   capacity?: HostCapacity;
 }
 
@@ -136,6 +141,7 @@ export interface Host {
   url: string;
   region?: string;
   state: string;
+  backend?: string;
   capacity: HostCapacity;
   allocated: HostCapacity;
   last_seen: string;

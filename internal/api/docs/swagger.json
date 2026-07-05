@@ -9,6 +9,173 @@
     "host": "localhost:8080",
     "basePath": "/",
     "paths": {
+        "/login": {
+            "post": {
+                "description": "Exchanges the shared access token for an HttpOnly session cookie.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Log in",
+                "parameters": [
+                    {
+                        "description": "Access token",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.loginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/logout": {
+            "post": {
+                "description": "Clears the session cookie.",
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Log out",
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/v1/api-keys": {
+            "get": {
+                "description": "Lists API key metadata (never the keys themselves).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "List API keys",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.APIKeyList"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "Mints a new revocable API key. The raw key is returned once and cannot be recovered.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "Create API key",
+                "parameters": [
+                    {
+                        "description": "Optional label",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateAPIKeyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/api.CreateAPIKeyResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/api-keys/{id}": {
+            "delete": {
+                "description": "Revokes an API key by id. Idempotent.",
+                "tags": [
+                    "api-keys"
+                ],
+                "summary": "Revoke API key",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "API key id",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/v1/environments": {
             "get": {
                 "security": [
@@ -63,7 +230,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a VM, uploads the manifest, starts the agent, and assigns the task.",
+                "description": "Creates a VM, uploads the manifest, starts the guest agent, and assigns the task.",
                 "consumes": [
                     "application/json"
                 ],
@@ -163,7 +330,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Perform an action on an environment. Currently supports: rotate-token.",
+                "description": "Perform an action on an environment. Supports: rotate-token, drain, fork.",
                 "tags": [
                     "environments"
                 ],
@@ -178,7 +345,9 @@
                     },
                     {
                         "enum": [
-                            "rotate-token"
+                            "rotate-token",
+                            "drain",
+                            "fork"
                         ],
                         "type": "string",
                         "description": "Action to perform",
@@ -188,6 +357,18 @@
                     }
                 ],
                 "responses": {
+                    "200": {
+                        "description": "Drain succeeded; updated VM state returned",
+                        "schema": {
+                            "$ref": "#/definitions/api.Environment"
+                        }
+                    },
+                    "201": {
+                        "description": "Fork succeeded; new environment returned",
+                        "schema": {
+                            "$ref": "#/definitions/api.Environment"
+                        }
+                    },
                     "204": {
                         "description": "Action succeeded"
                     },
@@ -199,6 +380,12 @@
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/api.Error"
                         }
@@ -243,6 +430,49 @@
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/environments/{vmId}/events": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Server-Sent Events stream of state-change events for a VM. Replaces polling GET /v1/environments/{vmId}.",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "environments"
+                ],
+                "summary": "Stream environment state events",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "VM identifier",
+                        "name": "vmId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Resume cursor from a previous event id (ignored in v1 — included for forward compatibility)",
+                        "name": "last_event_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "SSE stream"
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/api.Error"
                         }
@@ -722,9 +952,83 @@
         }
     },
     "definitions": {
+        "api.APIKey": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "revoked_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.APIKeyList": {
+            "type": "object",
+            "properties": {
+                "api_keys": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.APIKey"
+                    }
+                }
+            }
+        },
+        "api.CreateAPIKeyRequest": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.CreateAPIKeyResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "last_used_at": {
+                    "type": "string"
+                },
+                "revoked_at": {
+                    "type": "string"
+                }
+            }
+        },
         "api.CreateEnvironmentRequest": {
             "type": "object",
             "properties": {
+                "expose": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.ExposeSpec"
+                    }
+                },
+                "gateway_token": {
+                    "type": "string"
+                },
+                "gateway_url": {
+                    "type": "string"
+                },
                 "manifest_inline": {
                     "type": "string"
                 },
@@ -736,6 +1040,9 @@
                 },
                 "spec": {
                     "$ref": "#/definitions/api.ResourceSpec"
+                },
+                "startup_script": {
+                    "type": "string"
                 },
                 "task_id": {
                     "type": "string"
@@ -768,17 +1075,34 @@
                 }
             }
         },
+        "api.Endpoint": {
+            "type": "object",
+            "properties": {
+                "as": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "api.Environment": {
             "type": "object",
             "properties": {
                 "created_at": {
                     "type": "string"
                 },
+                "endpoints": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/api.Endpoint"
+                    }
+                },
                 "error": {
                     "type": "string"
-                },
-                "gateway": {
-                    "$ref": "#/definitions/api.GatewayBackend"
                 },
                 "host_id": {
                     "type": "string"
@@ -839,32 +1163,14 @@
                 }
             }
         },
-        "api.GatewayBackend": {
+        "api.ExposeSpec": {
             "type": "object",
             "properties": {
-                "desired_state": {
+                "as": {
                     "type": "string"
                 },
-                "id": {
-                    "type": "string"
-                },
-                "last_error": {
-                    "type": "string"
-                },
-                "operation_active": {
-                    "type": "boolean"
-                },
-                "retry_count": {
+                "port": {
                     "type": "integer"
-                },
-                "state": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "string"
-                },
-                "url": {
-                    "type": "string"
                 }
             }
         },
@@ -872,6 +1178,12 @@
             "type": "object",
             "properties": {
                 "cpus": {
+                    "type": "integer"
+                },
+                "gpu_kind": {
+                    "type": "string"
+                },
+                "gpus": {
                     "type": "integer"
                 },
                 "ram_mb": {
@@ -890,6 +1202,9 @@
             "properties": {
                 "allocated": {
                     "$ref": "#/definitions/api.HostCapacity"
+                },
+                "backend": {
+                    "type": "string"
                 },
                 "capacity": {
                     "$ref": "#/definitions/api.HostCapacity"
@@ -931,6 +1246,9 @@
         "api.RegisterHostRequest": {
             "type": "object",
             "properties": {
+                "backend": {
+                    "type": "string"
+                },
                 "capacity": {
                     "$ref": "#/definitions/api.HostCapacity"
                 },
@@ -953,6 +1271,15 @@
             "properties": {
                 "cpus": {
                     "type": "integer"
+                },
+                "gpu_kind": {
+                    "type": "string"
+                },
+                "gpus": {
+                    "type": "integer"
+                },
+                "image": {
+                    "type": "string"
                 },
                 "max_runtime_seconds": {
                     "type": "integer"
@@ -1049,6 +1376,14 @@
                     "items": {
                         "$ref": "#/definitions/api.Snapshot"
                     }
+                }
+            }
+        },
+        "api.loginRequest": {
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string"
                 }
             }
         }

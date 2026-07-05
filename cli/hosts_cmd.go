@@ -140,19 +140,30 @@ func newHostGetCmd() *cobra.Command {
 }
 
 func renderHostDetail(h *fuse.Host) {
-	renderDetail([][2]string{
+	rows := [][2]string{
 		{"id", h.ID},
 		{"url", h.URL},
 		{"region", dash(h.Region)},
+		{"backend", dash(h.Backend)},
 		{"state", stateStyle(h.State)},
 		{"cpus", fmt.Sprintf("%d / %d", h.Allocated.CPUs, h.Capacity.CPUs)},
 		{"ram mb", fmt.Sprintf("%d / %d", h.Allocated.RamMB, h.Capacity.RamMB)},
 		{"storage gb", fmt.Sprintf("%d / %d", h.Allocated.StorageGB, h.Capacity.StorageGB)},
 		{"vms", fmt.Sprintf("%d / %d", h.Allocated.VMCount, h.Capacity.VMCount)},
-		{"last seen", fmt.Sprintf("%s (%s)", shortTime(h.LastSeen), ago(h.LastSeen))},
-		{"created", shortTime(h.CreatedAt)},
-		{"updated", shortTime(h.UpdatedAt)},
-	})
+	}
+	if h.Capacity.GPUs > 0 {
+		gpuLine := fmt.Sprintf("%d / %d", h.Allocated.GPUs, h.Capacity.GPUs)
+		if h.Capacity.GPUKind != "" {
+			gpuLine += " (" + h.Capacity.GPUKind + ")"
+		}
+		rows = append(rows, [2]string{"gpus", gpuLine})
+	}
+	rows = append(rows,
+		[2]string{"last seen", fmt.Sprintf("%s (%s)", shortTime(h.LastSeen), ago(h.LastSeen))},
+		[2]string{"created", shortTime(h.CreatedAt)},
+		[2]string{"updated", shortTime(h.UpdatedAt)},
+	)
+	renderDetail(rows)
 	warnf("note: last_seen is set at registration and not refreshed; it is not a liveness signal")
 }
 
@@ -262,10 +273,13 @@ func newHostRegisterCmd() *cobra.Command {
 		hostURL   string
 		region    string
 		token     string
+		backend   string
 		cpus      int
 		ramMB     int
 		storageGB int
 		maxVMs    int
+		gpus      int
+		gpuKind   string
 	)
 	cmd := &cobra.Command{
 		Use:   "register <id>",
@@ -306,15 +320,18 @@ func newHostRegisterCmd() *cobra.Command {
 				return err
 			}
 			h, err := cl.Hosts.Register(cmd.Context(), fuse.RegisterHostRequest{
-				ID:     id,
-				URL:    hostURL,
-				Token:  token,
-				Region: region,
+				ID:      id,
+				URL:     hostURL,
+				Token:   token,
+				Region:  region,
+				Backend: backend,
 				Capacity: fuse.HostCapacity{
 					CPUs:      cpus,
 					RamMB:     ramMB,
 					StorageGB: storageGB,
 					VMCount:   maxVMs,
+					GPUs:      gpus,
+					GPUKind:   gpuKind,
 				},
 			})
 			if err != nil {
@@ -331,10 +348,13 @@ func newHostRegisterCmd() *cobra.Command {
 	cmd.Flags().StringVar(&hostURL, "url", "", "host agent base url (required)")
 	cmd.Flags().StringVar(&region, "region", "", "region label")
 	cmd.Flags().StringVar(&token, "token", "", "token the orchestrator uses to call the host")
+	cmd.Flags().StringVar(&backend, "backend", "", "virtualization backend: firecracker (default) or qemu")
 	cmd.Flags().IntVar(&cpus, "cpus", 0, "cpu capacity")
 	cmd.Flags().IntVar(&ramMB, "ram-mb", 0, "ram capacity in MB")
 	cmd.Flags().IntVar(&storageGB, "storage-gb", 0, "storage capacity in GB")
 	cmd.Flags().IntVar(&maxVMs, "max-vms", 0, "max vm count")
+	cmd.Flags().IntVar(&gpus, "gpus", 0, "gpu device count (requires --backend qemu)")
+	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label (e.g. a100)")
 	return cmd
 }
 
