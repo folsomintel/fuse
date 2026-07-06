@@ -13,11 +13,12 @@ import (
 )
 
 // ProviderFactory constructs a Provider for a registered host given
-// its URL and auth token. The REST handler calls this during
-// POST /v1/hosts to avoid importing provider-specific packages.
-// In production this returns a firecracker.Provider; tests pass a
-// stub.
-type ProviderFactory func(url, token string) orchestrator.Provider
+// its URL, auth token, and virtualization backend. The REST handler
+// calls this during POST /v1/hosts to avoid importing provider-specific
+// packages. In production a firecracker backend returns a
+// firecracker.Provider and a qemu backend returns a qemu.Provider;
+// tests pass a stub.
+type ProviderFactory func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider
 
 // Handler is the HTTP dependency graph for the orchestrator REST API.
 type Handler struct {
@@ -636,20 +637,33 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 	// VMCount). Currently accepts zero/negative values which would cause the
 	// scheduler to make bad placement decisions.
 
+	backend := orchestrator.HostBackend(req.Backend)
+	if backend == "" {
+		backend = orchestrator.BackendFirecracker
+	}
+	if req.Capacity.GPUs > 0 && backend != orchestrator.BackendQEMU {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"gpus > 0 requires backend \"qemu\"", nil)
+		return
+	}
+
 	host := orchestrator.Host{
-		ID:     req.ID,
-		URL:    req.URL,
-		Token:  req.Token,
-		Region: req.Region,
+		ID:      req.ID,
+		URL:     req.URL,
+		Token:   req.Token,
+		Region:  req.Region,
+		Backend: backend,
 		Capacity: orchestrator.HostCapacity{
 			CPUs:      req.Capacity.CPUs,
 			RamMB:     req.Capacity.RamMB,
 			StorageGB: req.Capacity.StorageGB,
 			VMCount:   req.Capacity.VMCount,
+			GPUs:      req.Capacity.GPUs,
+			GPUKind:   req.Capacity.GPUKind,
 		},
 	}
 
-	provider := h.NewProvider(req.URL, req.Token)
+	provider := h.NewProvider(req.URL, req.Token, backend)
 	if err := h.Fleet.RegisterHost(r.Context(), host, provider); err != nil {
 		writeFleetError(w, err)
 		return

@@ -1,7 +1,55 @@
 basePath: /
 definitions:
+  api.APIKey:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      label:
+        type: string
+      last_used_at:
+        type: string
+      revoked_at:
+        type: string
+    type: object
+  api.APIKeyList:
+    properties:
+      api_keys:
+        items:
+          $ref: '#/definitions/api.APIKey'
+        type: array
+    type: object
+  api.CreateAPIKeyRequest:
+    properties:
+      label:
+        type: string
+    type: object
+  api.CreateAPIKeyResponse:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      key:
+        type: string
+      label:
+        type: string
+      last_used_at:
+        type: string
+      revoked_at:
+        type: string
+    type: object
   api.CreateEnvironmentRequest:
     properties:
+      expose:
+        items:
+          $ref: '#/definitions/api.ExposeSpec'
+        type: array
+      gateway_token:
+        type: string
+      gateway_url:
+        type: string
       manifest_inline:
         type: string
       secrets:
@@ -10,6 +58,8 @@ definitions:
         type: object
       spec:
         $ref: '#/definitions/api.ResourceSpec'
+      startup_script:
+        type: string
       task_id:
         type: string
     type: object
@@ -30,14 +80,25 @@ definitions:
       retention_seconds:
         type: integer
     type: object
+  api.Endpoint:
+    properties:
+      as:
+        type: string
+      port:
+        type: integer
+      url:
+        type: string
+    type: object
   api.Environment:
     properties:
       created_at:
         type: string
+      endpoints:
+        items:
+          $ref: '#/definitions/api.Endpoint'
+        type: array
       error:
         type: string
-      gateway:
-        $ref: '#/definitions/api.GatewayBackend'
       host_id:
         type: string
       id:
@@ -76,28 +137,20 @@ definitions:
       message:
         type: string
     type: object
-  api.GatewayBackend:
+  api.ExposeSpec:
     properties:
-      desired_state:
+      as:
         type: string
-      id:
-        type: string
-      last_error:
-        type: string
-      operation_active:
-        type: boolean
-      retry_count:
+      port:
         type: integer
-      state:
-        type: string
-      updated_at:
-        type: string
-      url:
-        type: string
     type: object
   api.HostCapacity:
     properties:
       cpus:
+        type: integer
+      gpu_kind:
+        type: string
+      gpus:
         type: integer
       ram_mb:
         type: integer
@@ -110,6 +163,8 @@ definitions:
     properties:
       allocated:
         $ref: '#/definitions/api.HostCapacity'
+      backend:
+        type: string
       capacity:
         $ref: '#/definitions/api.HostCapacity'
       created_at:
@@ -136,6 +191,8 @@ definitions:
     type: object
   api.RegisterHostRequest:
     properties:
+      backend:
+        type: string
       capacity:
         $ref: '#/definitions/api.HostCapacity'
       id:
@@ -151,6 +208,12 @@ definitions:
     properties:
       cpus:
         type: integer
+      gpu_kind:
+        type: string
+      gpus:
+        type: integer
+      image:
+        type: string
       max_runtime_seconds:
         type: integer
       ram_mb:
@@ -215,6 +278,11 @@ definitions:
           $ref: '#/definitions/api.Snapshot'
         type: array
     type: object
+  api.loginRequest:
+    properties:
+      token:
+        type: string
+    type: object
 host: localhost:8080
 info:
   contact: {}
@@ -223,6 +291,116 @@ info:
   title: Fuse Orchestrator API
   version: 0.1.0
 paths:
+  /login:
+    post:
+      consumes:
+      - application/json
+      description: Exchanges the shared access token for an HttpOnly session cookie.
+      parameters:
+      - description: Access token
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/api.loginRequest'
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.Error'
+      summary: Log in
+      tags:
+      - auth
+  /logout:
+    post:
+      description: Clears the session cookie.
+      responses:
+        "204":
+          description: No Content
+      summary: Log out
+      tags:
+      - auth
+  /v1/api-keys:
+    get:
+      description: Lists API key metadata (never the keys themselves).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.APIKeyList'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.Error'
+      summary: List API keys
+      tags:
+      - api-keys
+    post:
+      consumes:
+      - application/json
+      description: Mints a new revocable API key. The raw key is returned once and
+        cannot be recovered.
+      parameters:
+      - description: Optional label
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/api.CreateAPIKeyRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/api.CreateAPIKeyResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.Error'
+      summary: Create API key
+      tags:
+      - api-keys
+  /v1/api-keys/{id}:
+    delete:
+      description: Revokes an API key by id. Idempotent.
+      parameters:
+      - description: API key id
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/api.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+      summary: Revoke API key
+      tags:
+      - api-keys
   /v1/environments:
     get:
       parameters:
@@ -257,8 +435,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a VM, uploads the manifest, starts the agent, and assigns the
-        task.
+      description: Creates a VM, uploads the manifest, starts the guest agent, and
+        assigns the task.
       parameters:
       - description: Environment spec
         in: body
@@ -343,7 +521,8 @@ paths:
       tags:
       - environments
     post:
-      description: 'Perform an action on an environment. Currently supports: rotate-token.'
+      description: 'Perform an action on an environment. Supports: rotate-token, drain,
+        fork.'
       parameters:
       - description: VM identifier
         in: path
@@ -353,11 +532,21 @@ paths:
       - description: Action to perform
         enum:
         - rotate-token
+        - drain
+        - fork
         in: query
         name: action
         required: true
         type: string
       responses:
+        "200":
+          description: Drain succeeded; updated VM state returned
+          schema:
+            $ref: '#/definitions/api.Environment'
+        "201":
+          description: Fork succeeded; new environment returned
+          schema:
+            $ref: '#/definitions/api.Environment'
         "204":
           description: Action succeeded
         "400":
@@ -368,6 +557,10 @@ paths:
           description: Not Found
           schema:
             $ref: '#/definitions/api.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.Error'
         "500":
           description: Internal Server Error
           schema:
@@ -375,6 +568,35 @@ paths:
       security:
       - BearerAuth: []
       summary: Environment action
+      tags:
+      - environments
+  /v1/environments/{vmId}/events:
+    get:
+      description: Server-Sent Events stream of state-change events for a VM. Replaces
+        polling GET /v1/environments/{vmId}.
+      parameters:
+      - description: VM identifier
+        in: path
+        name: vmId
+        required: true
+        type: string
+      - description: Resume cursor from a previous event id (ignored in v1 — included
+          for forward compatibility)
+        in: query
+        name: last_event_id
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.Error'
+      security:
+      - BearerAuth: []
+      summary: Stream environment state events
       tags:
       - environments
   /v1/environments/{vmId}/snapshots:

@@ -35,15 +35,48 @@ type HostCapacity struct {
 	RamMB     int `json:"ram_mb"`
 	StorageGB int `json:"storage_gb"`
 	VMCount   int `json:"vm_count"` // max concurrent VMs
+
+	// GPUs is the count of whole GPU devices available on the host.
+	// Zero means no GPUs. Only qemu-backed hosts may report GPUs > 0
+	// (enforced at registration, see internal/api registerHost).
+	GPUs int `json:"gpus,omitempty"`
+
+	// GPUKind identifies the GPU model (e.g. "a100"). Empty when GPUs is 0.
+	GPUKind string `json:"gpu_kind,omitempty"`
 }
+
+// HostBackend identifies the virtualization backend a host agent runs.
+// It determines which capabilities the host can offer the scheduler
+// (e.g. only qemu hosts may advertise GPUs).
+type HostBackend string
+
+const (
+	// BackendFirecracker is the default backend: microVMs with no GPU
+	// passthrough support.
+	BackendFirecracker HostBackend = "firecracker"
+
+	// BackendQEMU is a full-VM backend that supports GPU passthrough.
+	BackendQEMU HostBackend = "qemu"
+)
 
 // fits returns true if the host has enough headroom (capacity minus
 // allocated) to place a VM with the given spec.
 func fits(capacity, allocated HostCapacity, spec Spec) bool {
-	return (capacity.CPUs-allocated.CPUs) >= spec.CPUs &&
-		(capacity.RamMB-allocated.RamMB) >= spec.RamMB &&
-		(capacity.StorageGB-allocated.StorageGB) >= spec.StorageGB &&
-		(capacity.VMCount-allocated.VMCount) >= 1
+	if (capacity.CPUs-allocated.CPUs) < spec.CPUs ||
+		(capacity.RamMB-allocated.RamMB) < spec.RamMB ||
+		(capacity.StorageGB-allocated.StorageGB) < spec.StorageGB ||
+		(capacity.VMCount-allocated.VMCount) < 1 {
+		return false
+	}
+	if spec.GPUs > 0 {
+		if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
+			return false
+		}
+		if spec.GPUKind != "" && spec.GPUKind != capacity.GPUKind {
+			return false
+		}
+	}
+	return true
 }
 
 // Host is a registered compute host in the fleet. It represents a
@@ -53,6 +86,7 @@ type Host struct {
 	URL       string // base URL of the host agent (e.g. https://agent-1.local)
 	Token     string // bearer token for this host's agent
 	Region    string
+	Backend   HostBackend // "firecracker" or "qemu"; empty means firecracker (default)
 	Capacity  HostCapacity
 	Allocated HostCapacity
 	State     HostState
@@ -130,6 +164,12 @@ func Schedule(spec Spec, hosts []*Host, policy PlacementPolicy) (*Host, Placemen
 			continue
 		}
 		if spec.Region != "" && h.Region != spec.Region {
+			continue
+		}
+		// gpu envs may only land on qemu hosts (D3). registration rejects
+		// gpus > 0 on firecracker hosts, but the scheduler stays defensive
+		// against a stale or hand-edited host record.
+		if spec.GPUs > 0 && h.Backend != BackendQEMU {
 			continue
 		}
 		if !fits(h.Capacity, h.Allocated, spec) {

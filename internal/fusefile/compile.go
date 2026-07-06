@@ -27,6 +27,8 @@ type ResourceSpec struct {
 	Region            string
 	MaxRuntimeSeconds int64
 	Image             string
+	GPUs              int32
+	GPUKind           string
 }
 
 // ExposeSpec requests that a guest port be published as a reachable
@@ -105,6 +107,10 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		}
 	}
 
+	if f.Resources.GPU < 0 {
+		errs = append(errs, fmt.Errorf("resources.gpu: must not be negative"))
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
@@ -123,6 +129,8 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			StorageGB:         int32((int64(storageMB) + 1023) / 1024),
 			MaxRuntimeSeconds: maxRuntimeSeconds,
 			Image:             f.Image,
+			GPUs:              int32(f.Resources.GPU),
+			GPUKind:           f.Resources.GPUKind,
 		},
 		ManifestJSON:    manifestJSON,
 		StartupScript:   compileStartupScript(f),
@@ -203,7 +211,10 @@ func compileStartupScript(f *Fusefile) string {
 	}
 
 	var b strings.Builder
-	b.WriteString("set -euo pipefail\n")
+	// posix prelude: the orchestrator runs this via `sh -lc`, and dash
+	// (ubuntu's /bin/sh) has no pipefail. enable it only when supported.
+	b.WriteString("set -eu\n")
+	b.WriteString("if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n")
 	for _, line := range f.Setup {
 		b.WriteString(line)
 		b.WriteString("\n")

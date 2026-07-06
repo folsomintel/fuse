@@ -7,6 +7,8 @@ type Spec struct {
 	CPUs              int32  `json:"cpus,omitempty"`
 	RamMB             int32  `json:"ram_mb,omitempty"`
 	StorageGB         int32  `json:"storage_gb,omitempty"`
+	GPUs              int32  `json:"gpus,omitempty"`
+	GPUKind           string `json:"gpu_kind,omitempty"`
 	Region            string `json:"region,omitempty"`
 	MaxRuntimeSeconds int64  `json:"max_runtime_seconds,omitempty"`
 	Image             string `json:"image,omitempty"`
@@ -134,10 +136,12 @@ type snapshotList struct {
 
 // HostCapacity is a host's resource envelope.
 type HostCapacity struct {
-	CPUs      int `json:"cpus"`
-	RamMB     int `json:"ram_mb"`
-	StorageGB int `json:"storage_gb"`
-	VMCount   int `json:"vm_count"`
+	CPUs      int    `json:"cpus"`
+	RamMB     int    `json:"ram_mb"`
+	StorageGB int    `json:"storage_gb"`
+	VMCount   int    `json:"vm_count"`
+	GPUs      int    `json:"gpus,omitempty"`
+	GPUKind   string `json:"gpu_kind,omitempty"`
 }
 
 // RegisterHostRequest is the body for client.RegisterHost.
@@ -146,6 +150,7 @@ type RegisterHostRequest struct {
 	URL      string       `json:"url"`
 	Token    string       `json:"token,omitempty"`
 	Region   string       `json:"region,omitempty"`
+	Backend  string       `json:"backend,omitempty"`
 	Capacity HostCapacity `json:"capacity"`
 }
 
@@ -155,6 +160,7 @@ type Host struct {
 	URL       string       `json:"url"`
 	Region    string       `json:"region,omitempty"`
 	State     string       `json:"state"`
+	Backend   string       `json:"backend,omitempty"`
 	Capacity  HostCapacity `json:"capacity"`
 	Allocated HostCapacity `json:"allocated"`
 	LastSeen  time.Time    `json:"last_seen"`

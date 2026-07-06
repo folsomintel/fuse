@@ -32,6 +32,9 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 	if h.State == "" {
 		h.State = HostActive
 	}
+	if h.Backend == "" {
+		h.Backend = BackendFirecracker
+	}
 
 	fm.mu.Lock()
 	fm.hosts[h.ID] = &h
@@ -176,6 +179,7 @@ func (fm *FleetManager) allocateOnHost(hostID string, spec Spec) {
 	h.Allocated.CPUs += spec.CPUs
 	h.Allocated.RamMB += spec.RamMB
 	h.Allocated.StorageGB += spec.StorageGB
+	h.Allocated.GPUs += int(spec.GPUs)
 	h.Allocated.VMCount++
 	h.UpdatedAt = time.Now()
 	fm.persistHostRecordBackground(fm.hostToRecord(*h))
@@ -200,6 +204,10 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	h.Allocated.StorageGB -= spec.StorageGB
 	if h.Allocated.StorageGB < 0 {
 		h.Allocated.StorageGB = 0
+	}
+	h.Allocated.GPUs -= int(spec.GPUs)
+	if h.Allocated.GPUs < 0 {
+		h.Allocated.GPUs = 0
 	}
 	h.Allocated.VMCount--
 	if h.Allocated.VMCount < 0 {
@@ -269,6 +277,7 @@ func (fm *FleetManager) hostToRecord(h Host) HostRecord {
 		URL:       h.URL,
 		Region:    h.Region,
 		State:     h.State,
+		Backend:   h.Backend,
 		Capacity:  h.Capacity,
 		Allocated: h.Allocated,
 		LastSeen:  h.LastSeen,
@@ -302,6 +311,7 @@ func (fm *FleetManager) hostFromRecord(r HostRecord) Host {
 		URL:       r.URL,
 		Region:    r.Region,
 		State:     r.State,
+		Backend:   r.Backend,
 		Capacity:  r.Capacity,
 		Allocated: r.Allocated,
 		LastSeen:  r.LastSeen,

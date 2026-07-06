@@ -167,6 +167,7 @@ type HostRecord struct {
 	Region         string
 	State          HostState
 	TenantID       string
+	Backend        HostBackend
 	Capacity       HostCapacity
 	Allocated      HostCapacity
 	LastSeen       time.Time

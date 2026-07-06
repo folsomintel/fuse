@@ -19,6 +19,8 @@ type Fusefile struct {
 // Resources is the human-friendly hardware spec; compiled to ResourceSpec.
 type Resources struct {
 	CPUs       int32  `yaml:"cpus,omitempty"`
+	GPU        int    `yaml:"gpu,omitempty"`         // whole-device count
+	GPUKind    string `yaml:"gpu_kind,omitempty"`    // optional match, e.g. "a100"
 	Memory     string `yaml:"memory,omitempty"`      // e.g. "2GB"
 	Storage    string `yaml:"storage,omitempty"`     // e.g. "10GB"
 	MaxRuntime string `yaml:"max_runtime,omitempty"` // go duration

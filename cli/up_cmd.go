@@ -82,6 +82,8 @@ func newUpCmd() *cobra.Command {
 					Region:            c.Spec.Region,
 					MaxRuntimeSeconds: c.Spec.MaxRuntimeSeconds,
 					Image:             c.Spec.Image,
+					GPUs:              c.Spec.GPUs,
+					GPUKind:           c.Spec.GPUKind,
 				},
 				ManifestInline: manifestInline,
 				Secrets:        secretMap,

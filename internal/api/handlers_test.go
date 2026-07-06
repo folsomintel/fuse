@@ -737,3 +737,219 @@ func TestEnvironmentAction_Fork_NotFound(t *testing.T) {
 		t.Fatalf("code = %d, want 404; body = %s", rr.Code, rr.Body.String())
 	}
 }
+
+// ── Host registration ─────────────────────────────────────────────
+
+// newTestHandlerWithProvider is like newTestHandler but also wires
+// NewProvider so registerHost (which requires a provider factory) is
+// reachable.
+func newTestHandlerWithProvider(t *testing.T) (*Handler, *orchestrator.FleetManager) {
+	t.Helper()
+	p := newFakeProvider()
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider: p,
+		Prefix:   "fuse-",
+	})
+	h := &Handler{
+		Fleet: fm,
+		NewProvider: func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
+			return newFakeProvider()
+		},
+	}
+	return h, fm
+}
+
+func TestRegisterHost_GPUAndBackendRoundTrip(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-1",
+		URL:     "http://host-1.test",
+		Backend: "qemu",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+			GPUs:      2,
+			GPUKind:   "a100",
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if info.Backend != "qemu" {
+		t.Errorf("backend = %q, want qemu", info.Backend)
+	}
+	if info.Capacity.GPUs != 2 {
+		t.Errorf("capacity.gpus = %d, want 2", info.Capacity.GPUs)
+	}
+	if info.Capacity.GPUKind != "a100" {
+		t.Errorf("capacity.gpu_kind = %q, want a100", info.Capacity.GPUKind)
+	}
+}
+
+func TestRegisterHost_AbsentFieldsDefaultToFirecrackerAndZeroGPUs(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-2",
+		URL: "http://host-2.test",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if info.Backend != "firecracker" {
+		t.Errorf("backend = %q, want firecracker (default)", info.Backend)
+	}
+	if info.Capacity.GPUs != 0 || info.Capacity.GPUKind != "" {
+		t.Errorf("capacity gpu fields = %+v, want zero values", info.Capacity)
+	}
+}
+
+func TestRegisterHost_GPUsWithoutQEMUBackendReturns400(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-3",
+		URL:     "http://host-3.test",
+		Backend: "firecracker",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+			GPUs:      1,
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+	env := decodeError(t, rr.Body)
+	if env.Error.Code != CodeInvalidArgument {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeInvalidArgument)
+	}
+}
+
+func TestRegisterHost_GPUsWithDefaultBackendReturns400(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	// Backend omitted (defaults to firecracker) but gpus > 0 requested.
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-4",
+		URL: "http://host-4.test",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+			GPUs:      1,
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegisterHost_ProviderFactoryReceivesBackend(t *testing.T) {
+	p := newFakeProvider()
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider: p,
+		Prefix:   "fuse-",
+	})
+	var gotBackend orchestrator.HostBackend
+	h := &Handler{
+		Fleet: fm,
+		NewProvider: func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
+			gotBackend = backend
+			return newFakeProvider()
+		},
+	}
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-qemu",
+		URL:     "http://host-qemu.test",
+		Backend: "qemu",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			VMCount:   10,
+			GPUs:      1,
+			GPUKind:   "a100",
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	if gotBackend != orchestrator.BackendQEMU {
+		t.Errorf("factory backend = %q, want qemu", gotBackend)
+	}
+}
+
+// ── Environment create: GPU fields ─────────────────────────────────
+
+func TestCreateEnvironment_GPUFieldsRoundTrip(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-gpu",
+		Spec:           ResourceSpec{CPUs: 2, RamMB: 1024, GPUs: 1, GPUKind: "a100"},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var env Environment
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if env.Spec.GPUs != 1 {
+		t.Errorf("spec.gpus = %d, want 1", env.Spec.GPUs)
+	}
+	if env.Spec.GPUKind != "a100" {
+		t.Errorf("spec.gpu_kind = %q, want a100", env.Spec.GPUKind)
+	}
+}
+
+func TestCreateEnvironment_GPUFieldsAbsentDefaultToZero(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-no-gpu",
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var env Environment
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if env.Spec.GPUs != 0 || env.Spec.GPUKind != "" {
+		t.Errorf("spec gpu fields = %+v, want zero values", env.Spec)
+	}
+}

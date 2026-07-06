@@ -194,13 +194,13 @@ type FleetConfig struct {
 	// When nil, VM credential generation is skipped (insecure mode).
 	TokenEncryptionKey []byte
 
-	// HostProviderFactory builds a Provider for a given (url, token)
-	// pair. The fleet uses it during recoverState to rehydrate the
-	// per-host providers that RegisterHost would have created during
-	// normal operation. Without it, an orchestrator restart loses the
-	// scheduler's host registry and falls back to single-provider mode
-	// for all subsequent placements.
-	HostProviderFactory func(url, token string) Provider
+	// HostProviderFactory builds a Provider for a given (url, token,
+	// backend) triple. The fleet uses it during recoverState to
+	// rehydrate the per-host providers that RegisterHost would have
+	// created during normal operation. Without it, an orchestrator
+	// restart loses the scheduler's host registry and falls back to
+	// single-provider mode for all subsequent placements.
+	HostProviderFactory func(url, token string, backend HostBackend) Provider
 
 	Metrics ReconcileMetrics
 	Logger  *slog.Logger
@@ -256,7 +256,7 @@ type FleetManager struct {
 	// from the state store at startup. Nil disables host registry
 	// recovery; in that case, recovered VMs fall through to the
 	// single fm.provider path until an operator re-registers the host.
-	hostProviderFactory func(url, token string) Provider
+	hostProviderFactory func(url, token string, backend HostBackend) Provider
 
 	// placementPolicy is the default scheduling strategy (binpack or
 	// spread). Defaults to spread when empty.
@@ -1053,7 +1053,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		host := fm.hostFromRecord(hr)
 		var p Provider
 		if fm.hostProviderFactory != nil {
-			p = fm.hostProviderFactory(host.URL, host.Token)
+			p = fm.hostProviderFactory(host.URL, host.Token, host.Backend)
 		}
 		fm.mu.Lock()
 		fm.hosts[host.ID] = &host

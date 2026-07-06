@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -178,6 +180,214 @@ func TestFits_variousCombinations(t *testing.T) {
 		{"RAM overcommit", HostCapacity{RamMB: 4096}, Spec{RamMB: 1}, false},
 		{"storage overcommit", HostCapacity{StorageGB: 100}, Spec{StorageGB: 1}, false},
 		{"VM count full", HostCapacity{VMCount: 5}, Spec{CPUs: 1, RamMB: 1, StorageGB: 1}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fits(cap, tc.allocated, tc.spec)
+			if got != tc.want {
+				t.Errorf("fits = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHostCapacity_GPUFieldsRoundTripJSON(t *testing.T) {
+	in := HostCapacity{CPUs: 4, RamMB: 1024, StorageGB: 50, VMCount: 2, GPUs: 2, GPUKind: "a100"}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !containsJSONField(data, `"gpus":2`) || !containsJSONField(data, `"gpu_kind":"a100"`) {
+		t.Fatalf("marshaled json missing gpu fields: %s", data)
+	}
+
+	var out HostCapacity
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out != in {
+		t.Errorf("round trip = %+v, want %+v", out, in)
+	}
+}
+
+func TestHostCapacity_GPUFieldsOmittedWhenZero(t *testing.T) {
+	in := HostCapacity{CPUs: 4, RamMB: 1024, StorageGB: 50, VMCount: 2}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if containsJSONField(data, `"gpus"`) || containsJSONField(data, `"gpu_kind"`) {
+		t.Fatalf("expected gpu fields to be omitted, got: %s", data)
+	}
+
+	var out HostCapacity
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.GPUs != 0 || out.GPUKind != "" {
+		t.Errorf("defaults = %+v, want zero values", out)
+	}
+}
+
+func TestHostBackend_DefaultsToFirecracker(t *testing.T) {
+	// A Host built without an explicit Backend (e.g. legacy record) must
+	// behave as firecracker — this is asserted at the registration
+	// boundary in internal/api, but the zero value itself must be the
+	// empty string so callers can detect "unset" and apply the default.
+	var h Host
+	if h.Backend != "" {
+		t.Errorf("zero-value Backend = %q, want empty string", h.Backend)
+	}
+}
+
+func TestHostBackend_Constants(t *testing.T) {
+	if BackendFirecracker != "firecracker" {
+		t.Errorf("BackendFirecracker = %q, want firecracker", BackendFirecracker)
+	}
+	if BackendQEMU != "qemu" {
+		t.Errorf("BackendQEMU = %q, want qemu", BackendQEMU)
+	}
+}
+
+// containsJSONField is a small substring helper so the round-trip tests
+// can assert on exact key:value presence without decoding into a map
+// (which would hide omitempty behavior behind Go's zero-value defaults).
+func containsJSONField(data []byte, field string) bool {
+	return bytes.Contains(data, []byte(field))
+}
+
+func gpuHost(id string, backend HostBackend, gpus int, kind string) *Host {
+	h := host(id, 8, 4096, 100, 10, HostActive)
+	h.Backend = backend
+	h.Capacity.GPUs = gpus
+	h.Capacity.GPUKind = kind
+	return h
+}
+
+func gpuSpec(gpus int32, kind string) Spec {
+	s := spec(1, 256, 10)
+	s.GPUs = gpus
+	s.GPUKind = kind
+	return s
+}
+
+func TestSchedule_gpuRequiresGPUHost(t *testing.T) {
+	// host with GPUs:0 must be rejected for a GPUs:1 request, even if cpu/ram fit
+	h := gpuHost("h1", BackendQEMU, 0, "")
+	_, _, err := Schedule(gpuSpec(1, ""), []*Host{h}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity", err)
+	}
+}
+
+func TestSchedule_gpuNeverLandsOnFirecrackerHost(t *testing.T) {
+	// registration rejects gpus>0 on firecracker hosts, but the scheduler
+	// stays defensive against a stale or hand-edited host record
+	h := gpuHost("h1", BackendFirecracker, 2, "a100")
+	_, _, err := Schedule(gpuSpec(1, ""), []*Host{h}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (firecracker host)", err)
+	}
+}
+
+func TestSchedule_gpuPlacedOnQEMUHostWithFreeGPUs(t *testing.T) {
+	hosts := []*Host{
+		gpuHost("fc-1", BackendFirecracker, 0, ""),
+		gpuHost("gpu-1", BackendQEMU, 2, "a100"),
+	}
+	picked, _, err := Schedule(gpuSpec(1, ""), hosts, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "gpu-1" {
+		t.Errorf("picked %s, want gpu-1", picked.ID)
+	}
+}
+
+func TestSchedule_gpuKindMustMatch(t *testing.T) {
+	h100 := gpuHost("h100-1", BackendQEMU, 2, "h100")
+	_, _, err := Schedule(gpuSpec(1, "a100"), []*Host{h100}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (kind mismatch)", err)
+	}
+
+	a100 := gpuHost("a100-1", BackendQEMU, 2, "a100")
+	picked, _, err := Schedule(gpuSpec(1, "a100"), []*Host{h100, a100}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "a100-1" {
+		t.Errorf("picked %s, want a100-1", picked.ID)
+	}
+}
+
+func TestSchedule_gpuEmptyKindMatchesAnyKind(t *testing.T) {
+	h := gpuHost("h1", BackendQEMU, 1, "h100")
+	picked, _, err := Schedule(gpuSpec(1, ""), []*Host{h}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "h1" {
+		t.Errorf("picked %s, want h1", picked.ID)
+	}
+}
+
+func TestSchedule_gpuAllocatedDevicesAreNotReused(t *testing.T) {
+	// single-gpu host with its device already allocated cannot take another
+	h := gpuHost("h1", BackendQEMU, 1, "a100")
+	h.Allocated.GPUs = 1
+	_, _, err := Schedule(gpuSpec(1, ""), []*Host{h}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (gpu already allocated)", err)
+	}
+}
+
+func TestSchedule_gpuRequestExceedingFreeInventoryFails(t *testing.T) {
+	h := gpuHost("h1", BackendQEMU, 2, "a100")
+	_, _, err := Schedule(gpuSpec(4, ""), []*Host{h}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (not enough free gpus)", err)
+	}
+}
+
+func TestSchedule_zeroGPUSpecSchedulesOnFirecrackerUnchanged(t *testing.T) {
+	// regression: non-gpu envs keep scheduling on firecracker hosts
+	h := host("h1", 8, 4096, 100, 10, HostActive)
+	picked, _, err := Schedule(spec(1, 256, 10), []*Host{h}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "h1" {
+		t.Errorf("picked %s, want h1", picked.ID)
+	}
+}
+
+func TestSchedule_zeroGPUSpecMayUseQEMUGPUHost(t *testing.T) {
+	// d3: non-gpu workloads may run on qemu gpu hosts
+	h := gpuHost("gpu-1", BackendQEMU, 2, "a100")
+	picked, _, err := Schedule(spec(1, 256, 10), []*Host{h}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "gpu-1" {
+		t.Errorf("picked %s, want gpu-1", picked.ID)
+	}
+}
+
+func TestFits_gpuCombinations(t *testing.T) {
+	cap := HostCapacity{CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5, GPUs: 2, GPUKind: "a100"}
+	tests := []struct {
+		name      string
+		allocated HostCapacity
+		spec      Spec
+		want      bool
+	}{
+		{"gpu fits", HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, true},
+		{"gpu exact fit", HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 2}, true},
+		{"gpu overcommit", HostCapacity{GPUs: 2}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, false},
+		{"kind match", HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUKind: "a100"}, true},
+		{"kind mismatch", HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUKind: "h100"}, false},
+		{"kind ignored when no gpu requested", HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUKind: "h100"}, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
