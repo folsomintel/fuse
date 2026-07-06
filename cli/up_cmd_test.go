@@ -116,6 +116,70 @@ func TestUpCreatesEnvironmentFromFusefile(t *testing.T) {
 	}
 }
 
+// writeGPUFusefile writes a minimal Fusefile requesting a gpu (no secrets) and
+// returns its path.
+func writeGPUFusefile(t *testing.T, dir string) string {
+	t.Helper()
+	src := `version: 1
+resources:
+  memory: 2GB
+  gpu: 1
+  gpu_kind: a100
+run: ./start.sh
+`
+	path := filepath.Join(dir, "Fusefile")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestUpSendsGPUSpec(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/environments" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		fmt.Fprint(w, `{"id":"vm1","state":"pending","task_id":"t","url":"","spec":{}}`)
+	}))
+	defer srv.Close()
+
+	fusefilePath := writeGPUFusefile(t, t.TempDir())
+	cfg := writeConfig(t, srv.URL)
+
+	_, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{
+			"--config", cfg, "-o", "json",
+			"up", "-f", fusefilePath,
+			"--task-id", "t",
+			"--no-wait",
+		})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotBody == nil {
+		t.Fatalf("server was never called")
+	}
+
+	spec, ok := gotBody["spec"].(map[string]any)
+	if !ok {
+		t.Fatalf("spec missing or wrong type: %v", gotBody["spec"])
+	}
+	if gpus, _ := spec["gpus"].(float64); gpus != 1 {
+		t.Errorf("spec.gpus = %v, want 1", spec["gpus"])
+	}
+	if spec["gpu_kind"] != "a100" {
+		t.Errorf("spec.gpu_kind = %v, want a100", spec["gpu_kind"])
+	}
+}
+
 func TestUpMissingRequiredSecretFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("server should not have been called: %s %s", r.Method, r.URL.Path)

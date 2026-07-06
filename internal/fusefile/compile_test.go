@@ -103,13 +103,41 @@ func TestCompileCPUsPassthrough(t *testing.T) {
 	}
 }
 
+func TestCompileGPU(t *testing.T) {
+	f := &Fusefile{Version: 1, Resources: Resources{GPU: 1, GPUKind: "a100"}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Spec.GPUs != 1 {
+		t.Fatalf("gpus = %d, want 1", c.Spec.GPUs)
+	}
+	if c.Spec.GPUKind != "a100" {
+		t.Fatalf("gpu_kind = %q, want a100", c.Spec.GPUKind)
+	}
+}
+
+func TestCompileGPUAbsentIsZero(t *testing.T) {
+	f := &Fusefile{Version: 1, Resources: Resources{CPUs: 2}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Spec.GPUs != 0 {
+		t.Fatalf("gpus = %d, want 0", c.Spec.GPUs)
+	}
+	if c.Spec.GPUKind != "" {
+		t.Fatalf("gpu_kind = %q, want empty", c.Spec.GPUKind)
+	}
+}
+
 func TestCompileEmptyResources(t *testing.T) {
 	f := &Fusefile{Version: 1}
 	c, err := Compile(f)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if c.Spec.CPUs != 0 || c.Spec.RamMB != 0 || c.Spec.StorageGB != 0 || c.Spec.MaxRuntimeSeconds != 0 || c.Spec.Region != "" {
+	if c.Spec.CPUs != 0 || c.Spec.RamMB != 0 || c.Spec.StorageGB != 0 || c.Spec.MaxRuntimeSeconds != 0 || c.Spec.Region != "" || c.Spec.GPUs != 0 || c.Spec.GPUKind != "" {
 		t.Fatalf("expected zero spec, got %+v", c.Spec)
 	}
 }
@@ -157,6 +185,11 @@ func TestCompileInvalid(t *testing.T) {
 			name:        "invalid duration",
 			resources:   Resources{MaxRuntime: "1 hour"},
 			wantContain: `resources.max_runtime: `,
+		},
+		{
+			name:        "negative gpu count",
+			resources:   Resources{GPU: -1},
+			wantContain: `resources.gpu: must not be negative`,
 		},
 	}
 

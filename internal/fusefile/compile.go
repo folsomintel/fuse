@@ -107,6 +107,10 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		}
 	}
 
+	if f.Resources.GPU < 0 {
+		errs = append(errs, fmt.Errorf("resources.gpu: must not be negative"))
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
@@ -125,6 +129,8 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			StorageGB:         int32((int64(storageMB) + 1023) / 1024),
 			MaxRuntimeSeconds: maxRuntimeSeconds,
 			Image:             f.Image,
+			GPUs:              int32(f.Resources.GPU),
+			GPUKind:           f.Resources.GPUKind,
 		},
 		ManifestJSON:    manifestJSON,
 		StartupScript:   compileStartupScript(f),
