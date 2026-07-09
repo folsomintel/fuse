@@ -38,23 +38,23 @@ if command -v apt-get >/dev/null 2>&1; then
   $SUDO apt-get update -y
   $SUDO apt-get install -y --no-install-recommends \
     podman python3 curl ca-certificates tar \
-    iptables iproute2 e2fsprogs util-linux coreutils \
+    iptables nftables iproute2 e2fsprogs util-linux coreutils \
     openssh-client procps openssl
 elif command -v dnf >/dev/null 2>&1; then
   log "dnf: installing host dependencies"
   $SUDO dnf install -y \
     podman python3 curl ca-certificates tar \
-    iptables iproute e2fsprogs util-linux coreutils \
+    iptables nftables iproute e2fsprogs util-linux coreutils \
     openssh-clients procps-ng openssl
 else
-  die "unsupported package manager (need apt-get or dnf); install manually: podman python3 curl tar iptables iproute2 e2fsprogs util-linux openssh-client procps openssl"
+  die "unsupported package manager (need apt-get or dnf); install manually: podman python3 curl tar iptables nftables iproute2 e2fsprogs util-linux openssh-client procps openssl"
 fi
 ok "packages installed"
 
 # --- verify the tools the scripts actually shell out to ----------------------
 log "verifying required tools"
 missing=0
-for t in podman python3 curl tar iptables ip e2fsck resize2fs truncate mount umount setsid ssh pgrep openssl awk; do
+for t in podman python3 curl tar iptables nft ip e2fsck resize2fs truncate mount umount setsid ssh pgrep openssl awk; do
   if command -v "$t" >/dev/null 2>&1; then
     ok "$t"
   else

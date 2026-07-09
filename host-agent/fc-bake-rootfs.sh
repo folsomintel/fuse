@@ -108,7 +108,8 @@ sudo -n ln -sf /usr/libexec/docker/cli-plugins/docker-compose \
 
 if [ ! -f "$WORK/iptables-full.tar" ]; then
   log "build iptables bundle from ubuntu:22.04"
-  sudo -n podman run --rm -v "$WORK":/out docker.io/library/ubuntu:22.04 bash -c '
+  # host network: skips netavark firewall setup, which needs nft/iptables on the host
+  sudo -n podman run --rm --network=host -v "$WORK":/out docker.io/library/ubuntu:22.04 bash -c '
     set -e
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq >/dev/null
