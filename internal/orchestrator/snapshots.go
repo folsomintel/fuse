@@ -54,6 +54,7 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 	state := v.state
 	taskID := v.taskID
 	hostID := v.hostID
+	gpus := v.spec.GPUs
 	fm.mu.RUnlock()
 
 	if state != VMStateRunning {
@@ -91,6 +92,12 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 
 	sc, ok := env.(SnapshotCapable)
 	if !ok {
+		// gpu environments run under a backend that passes the device through
+		// via vfio, which cannot be checkpointed (d4). the env deliberately
+		// omits SnapshotCapable; surface that reason rather than a generic one.
+		if gpus > 0 {
+			return SnapshotRecord{}, fmt.Errorf("vm %s has a gpu passthrough device: snapshots are not supported for gpu environments", vmID)
+		}
 		return SnapshotRecord{}, fmt.Errorf("provider does not support snapshots for vm %s", vmID)
 	}
 	snapshotID, err := sc.Checkpoint(ctx, opts.Comment)

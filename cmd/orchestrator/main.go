@@ -42,6 +42,7 @@ import (
 	"github.com/folsomintel/fuse/internal/firecracker"
 	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/qemu"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".
@@ -231,14 +232,15 @@ func run() error {
 	// and during recovery to rehydrate hosts loaded from the state store
 	// after a restart.
 	//
-	// The qemu backend gets a firecracker provider in stub mode as a
-	// placeholder: PR 1 wires the routing end-to-end so registration is
-	// testable, and PR 3 replaces this branch with the real qemu.New.
+	// The qemu backend routes to the qemu provider (gpu passthrough hosts);
+	// every other backend uses firecracker. An empty host url makes either
+	// provider fall back to its in-memory stub, matching the dev/test path.
 	hostProviderFactory := func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
 		if backend == orchestrator.BackendQEMU {
-			return firecracker.New(firecracker.Config{
-				Token:   token,
-				UseStub: true,
+			return qemu.New(qemu.Config{
+				BaseURL:     url,
+				Token:       token,
+				DownloadURL: env("AGENT_DOWNLOAD_URL", ""),
 			})
 		}
 		return firecracker.New(firecracker.Config{
