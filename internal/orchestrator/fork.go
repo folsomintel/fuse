@@ -82,9 +82,14 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 
 	// a true fork needs a provider that can seed a new environment from a
 	// checkpoint. the firecracker provider does not implement this yet, so
-	// fork is reported unsupported here.
+	// fork is reported unsupported here. gpu environments (whose seed snapshot
+	// step above already fails when reuse_snapshot_id is empty) also cannot be
+	// forked, since vfio passthrough cannot be checkpointed (d4).
 	forkable, ok := provider.(SnapshotForkable)
 	if !ok {
+		if srcSpec.GPUs > 0 {
+			return "", fmt.Errorf("vm %s has a gpu passthrough device: fork is not supported for gpu environments", srcVMID)
+		}
 		return "", fmt.Errorf("provider does not support fork for vm %s", srcVMID)
 	}
 
