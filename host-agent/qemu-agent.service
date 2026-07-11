@@ -1,0 +1,20 @@
+[Unit]
+Description=Fuse QEMU host agent (GPU passthrough)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/ubuntu/qemu
+EnvironmentFile=/home/ubuntu/qemu/.env
+Environment=QEMU_DIR=/home/ubuntu/qemu
+Environment=QEMU_AGENT_PORT=8091
+ExecStart=/usr/bin/python3 /home/ubuntu/qemu/qemu-agent.py
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/home/ubuntu/qemu/qemu-agent.log
+StandardError=append:/home/ubuntu/qemu/qemu-agent.log
+
+[Install]
+WantedBy=multi-user.target
