@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -104,10 +105,11 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 }
 
 func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
-	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	defaultProvider := newMockProvider()
+	hostProvider := newMockProvider()
+	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 	ctx := context.Background()
-	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), stub); err != nil {
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,11 +121,65 @@ func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
 	if got := findHost(t, fm, "h1").Allocated.GPUs; got != 1 {
 		t.Errorf("Allocated.GPUs after boot = %d, want 1", got)
 	}
+	if defaultProvider.count() != 0 || hostProvider.count() != 1 {
+		t.Fatalf("provider counts after boot = default %d, host %d; want 0, 1", defaultProvider.count(), hostProvider.count())
+	}
 
 	if err := fm.DestroyVM(ctx, info.ID); err != nil {
 		t.Fatal(err)
 	}
 	if got := findHost(t, fm, "h1").Allocated.GPUs; got != 0 {
 		t.Errorf("Allocated.GPUs after destroy = %d, want 0", got)
+	}
+	if hostProvider.count() != 0 {
+		t.Fatalf("host provider count after destroy = %d, want 0", hostProvider.count())
+	}
+}
+
+func TestProvisionGPUWithoutRegisteredHostReturnsNoCapacity(t *testing.T) {
+	defaultProvider := newMockProvider()
+	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+
+	_, err := fm.ProvisionAndAssign(context.Background(), "gpu-task", Spec{GPUs: 1}, []byte(`{}`), nil, BootOptions{})
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("err = %v, want ErrNoCapacity", err)
+	}
+	if defaultProvider.count() != 0 {
+		t.Fatalf("default provider count = %d, want 0", defaultProvider.count())
+	}
+}
+
+func TestConcurrentGPUProvisionReservesBeforeBoot(t *testing.T) {
+	defaultProvider := newMockProvider()
+	hostProvider := newMockProvider()
+	createStarted := make(chan struct{})
+	releaseCreate := make(chan struct{})
+	var once sync.Once
+	hostProvider.createFn = func(_ context.Context, spec Spec) (Environment, error) {
+		once.Do(func() { close(createStarted) })
+		<-releaseCreate
+		env := &mockEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+		hostProvider.envs[spec.Name] = env
+		return env, nil
+	}
+	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
+		t.Fatal(err)
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := fm.ProvisionAndAssign(context.Background(), "first", Spec{GPUs: 1}, []byte(`{}`), nil, BootOptions{})
+		firstDone <- err
+	}()
+	<-createStarted
+
+	_, secondErr := fm.ProvisionAndAssign(context.Background(), "second", Spec{GPUs: 1}, []byte(`{}`), nil, BootOptions{})
+	if !errors.Is(secondErr, ErrNoCapacity) {
+		t.Fatalf("second provision err = %v, want ErrNoCapacity", secondErr)
+	}
+	close(releaseCreate)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first provision: %v", err)
 	}
 }

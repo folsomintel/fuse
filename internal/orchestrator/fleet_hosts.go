@@ -147,18 +147,22 @@ func (fm *FleetManager) ListHosts() []Host {
 	return out
 }
 
-// activeHosts returns a point-in-time SNAPSHOT of all hosts eligible for
+// activeHosts returns a point-in-time snapshot of all hosts eligible for
 // scheduling. Called under NO lock — takes its own read lock. It returns
 // independent *copies* (not the live map pointers) so the pure Schedule()
 // function can read host capacity/allocation without a lock while another
 // goroutine mutates the real hosts under fm.mu in allocateOnHost. Returning
 // the live pointers here is a data race (Schedule read vs allocateOnHost
 // write); the copies make each scheduling decision operate on a consistent
-// snapshot. The authoritative reservation still happens under fm.mu via
-// allocateOnHost after Boot.
+// snapshot.
 func (fm *FleetManager) activeHosts() []*Host {
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
+	return fm.activeHostsLocked()
+}
+
+// activeHostsLocked returns host copies while the caller holds fm.mu.
+func (fm *FleetManager) activeHostsLocked() []*Host {
 	out := make([]*Host, 0, len(fm.hosts))
 	for _, h := range fm.hosts {
 		hc := *h // copy the Host (Capacity/Allocated are value structs)
@@ -222,6 +226,21 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 func (fm *FleetManager) providerForHost(hostID string) (Provider, bool) {
 	p, ok := fm.hostProviders[hostID]
 	return p, ok
+}
+
+// providerForVM returns the provider that owns a vm. Hosted vms must never
+// fall back to the default provider because that can leak the real vm.
+func (fm *FleetManager) providerForVM(hostID string) (Provider, error) {
+	if hostID == "" {
+		return fm.provider, nil
+	}
+	fm.mu.RLock()
+	p, ok := fm.providerForHost(hostID)
+	fm.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("provider for host %s not found", hostID)
+	}
+	return p, nil
 }
 
 // listAllHostVMs collects VMs from all registered host providers.

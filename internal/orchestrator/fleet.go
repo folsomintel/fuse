@@ -484,31 +484,39 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 
 	fm.logger.Info("provisioning vm", "vm", vmID, "task", taskID)
 
-	// Select provider: if hosts are registered, use the scheduler to
-	// pick a host; otherwise fall through to the single fm.provider.
+	// Select and reserve a host before boot so concurrent provisions cannot
+	// claim the same capacity. CPU-only legacy deployments may still use the
+	// default provider when no hosts are registered.
 	bootProvider := fm.provider
-	hosts := fm.activeHosts()
+	reservedHost := false
+	fm.mu.Lock()
+	hosts := fm.activeHostsLocked()
+	if len(hosts) == 0 && spec.GPUs > 0 {
+		delete(fm.vms, vmID)
+		fm.mu.Unlock()
+		_ = fm.store.DeleteVM(ctx, vmID)
+		return nil, fmt.Errorf("%w: gpu workloads require a registered gpu host", ErrNoCapacity)
+	}
 	if len(hosts) > 0 {
 		selectedHost, decision, schedErr := Schedule(spec, hosts, fm.placementPolicy)
 		if schedErr != nil {
-			fm.mu.Lock()
 			delete(fm.vms, vmID)
 			fm.mu.Unlock()
 			_ = fm.store.DeleteVM(ctx, vmID)
 			return nil, schedErr
 		}
-		fm.mu.Lock()
 		v.hostID = selectedHost.ID
 		hp, hpOK := fm.providerForHost(selectedHost.ID)
-		fm.mu.Unlock()
 		if !hpOK {
-			fm.mu.Lock()
 			delete(fm.vms, vmID)
 			fm.mu.Unlock()
 			_ = fm.store.DeleteVM(ctx, vmID)
 			return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
 		}
 		bootProvider = hp
+		fm.allocateOnHost(selectedHost.ID, spec)
+		reservedHost = true
+		fm.mu.Unlock()
 		fm.logger.Info("scheduled vm",
 			"vm", vmID, "host", selectedHost.ID,
 			"policy", decision.Policy,
@@ -520,10 +528,22 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 			"policy":     string(decision.Policy),
 			"candidates": decision.Candidates,
 		})
+	} else {
+		fm.mu.Unlock()
+	}
+	releaseReservation := func() {
+		if !reservedHost {
+			return
+		}
+		fm.mu.Lock()
+		fm.deallocateOnHost(v.hostID, spec)
+		fm.mu.Unlock()
+		reservedHost = false
 	}
 
 	result, err := Boot(ctx, bootProvider, spec, manifest, secretMap, opts, fm.tokenEncryptionKey)
 	if err != nil {
+		releaseReservation()
 		redactedErr := secrets.RedactSecretValues(err.Error(), secretMap)
 		fm.logger.Error("provision failed", "vm", vmID, "task", taskID, "err", redactedErr)
 
@@ -553,7 +573,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		// TODO: Track this goroutine so Stop() can wait for it to finish
 		// instead of leaking on shutdown.
 		go func() {
-			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
 				fm.logger.Error("cleanup destroy failed", "vm", vmID, "err", destroyErr)
 			}
 		}()
@@ -591,14 +611,12 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	v.drainCommand = result.DrainCommand
 	v.endpoints = result.Endpoints
 	v.updatedAt = time.Now()
-	if v.hostID != "" {
-		fm.allocateOnHost(v.hostID, spec)
-	}
 	fm.mu.Unlock()
 	fm.publishStateChange(vmID, "")
 
 	fm.logger.Info("vm running", "vm", vmID, "task", taskID, "boot_time", result.BootTime, "from_cache", result.FromCache, "host", v.hostID)
 	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		releaseReservation()
 		fm.logger.Error("persist running state failed, rolling back", "vm", vmID, "task", taskID, "err", err)
 
 		fm.mu.Lock()
@@ -618,7 +636,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
 		go func() {
-			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
 				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
 			}
 		}()
@@ -634,6 +652,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		AssignedAt: now,
 		UpdatedAt:  time.Now(),
 	}); err != nil {
+		releaseReservation()
 		fm.logger.Error("persist task running state failed, rolling back", "vm", vmID, "task", taskID, "err", err)
 
 		fm.mu.Lock()
@@ -653,7 +672,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
 		go func() {
-			if destroyErr := fm.provider.Destroy(context.Background(), vmID); destroyErr != nil {
+			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
 				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
 			}
 		}()
@@ -753,6 +772,15 @@ func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 	priorTaskID := v.taskID
 	assignedAt := v.createdAt
 	prevUpdatedAt := v.updatedAt
+	provider, providerOK := fm.providerForHost(v.hostID)
+	if v.hostID == "" {
+		provider = fm.provider
+		providerOK = true
+	}
+	if !providerOK {
+		fm.mu.Unlock()
+		return fmt.Errorf("provider for host %s not found", v.hostID)
+	}
 	v.state = VMStateDestroying
 	v.taskID = ""
 	v.updatedAt = time.Now()
@@ -798,7 +826,7 @@ func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 
 	fm.logger.Info("destroying vm", "vm", vmID)
 
-	if err := fm.provider.Destroy(ctx, vmID); err != nil {
+	if err := provider.Destroy(ctx, vmID); err != nil {
 		fm.logger.Error("destroy failed", "vm", vmID, "err", err)
 		return fmt.Errorf("destroy vm %s: %w", vmID, err)
 	}
@@ -989,12 +1017,25 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := fm.provider.Destroy(ctx, vmID); err != nil {
+	fm.mu.RLock()
+	v, ok := fm.vms[vmID]
+	hostID := ""
+	if ok {
+		hostID = v.hostID
+	}
+	fm.mu.RUnlock()
+	provider, err := fm.providerForVM(hostID)
+	if err != nil {
+		fm.logger.Error("async destroy provider lookup failed", "vm", vmID, "err", err)
+		return
+	}
+	if err := provider.Destroy(ctx, vmID); err != nil {
 		fm.logger.Error("async destroy failed", "vm", vmID, "err", err)
+		return
 	}
 
 	fm.mu.Lock()
-	v, ok := fm.vms[vmID]
+	v, ok = fm.vms[vmID]
 	if ok {
 		if v.hostID != "" {
 			fm.deallocateOnHost(v.hostID, v.spec)

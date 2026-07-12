@@ -911,7 +911,16 @@ func TestRegisterHost_ProviderFactoryReceivesBackend(t *testing.T) {
 // ── Environment create: GPU fields ─────────────────────────────────
 
 func TestCreateEnvironment_GPUFieldsRoundTrip(t *testing.T) {
-	h, _, _ := newTestHandler(t)
+	h, fm, provider := newTestHandler(t)
+	if err := fm.RegisterHost(context.Background(), orchestrator.Host{
+		ID:      "gpu-host",
+		Backend: orchestrator.BackendQEMU,
+		Capacity: orchestrator.HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10, GPUs: 1, GPUKind: "a100",
+		},
+	}, provider); err != nil {
+		t.Fatal(err)
+	}
 	r := mustRouter(t, h)
 
 	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
@@ -931,6 +940,20 @@ func TestCreateEnvironment_GPUFieldsRoundTrip(t *testing.T) {
 	}
 	if env.Spec.GPUKind != "a100" {
 		t.Errorf("spec.gpu_kind = %q, want a100", env.Spec.GPUKind)
+	}
+}
+
+func TestCreateEnvironment_GPUWithoutHostReturnsUnavailable(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-gpu",
+		Spec:           ResourceSpec{GPUs: 1},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503. body: %s", rr.Code, rr.Body.String())
 	}
 }
 
