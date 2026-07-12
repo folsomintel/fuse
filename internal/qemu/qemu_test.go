@@ -120,3 +120,33 @@ func TestStubCreateAndGet(t *testing.T) {
 		t.Errorf("stub captured gpus=%d kind=%q, want 1/a100", se.gpus, se.gpuKind)
 	}
 }
+
+func TestStartAgentForwardsExposeAndReportsEndpoints(t *testing.T) {
+	var got startAgentRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vm/fuse-t1/start-agent" {
+			http.NotFound(w, r)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(startAgentResponse{Endpoints: []endpointWire{{As: "web", URL: "gpu.test:20000", Port: 8080}}})
+	}))
+	defer srv.Close()
+
+	provider := New(Config{BaseURL: srv.URL})
+	env := &remoteEnv{id: "fuse-t1", client: provider}
+	if err := env.StartAgent(context.Background(), orchestrator.AgentSpec{
+		Expose: []orchestrator.ExposeSpec{{Port: 8080, As: "web"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Expose) != 1 || got.Expose[0].Port != 8080 || got.Expose[0].As != "web" {
+		t.Fatalf("expose payload = %#v", got.Expose)
+	}
+	endpoints := env.Endpoints()
+	if len(endpoints) != 1 || endpoints[0].URL != "gpu.test:20000" {
+		t.Fatalf("endpoints = %#v", endpoints)
+	}
+}

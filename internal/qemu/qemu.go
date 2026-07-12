@@ -176,12 +176,22 @@ type remoteEnv struct {
 
 	tokenMu   sync.RWMutex
 	authToken string
+
+	endpointsMu sync.RWMutex
+	endpoints   []orchestrator.Endpoint
 }
 
 var (
-	_ orchestrator.Environment = (*remoteEnv)(nil)
-	_ orchestrator.TokenSetter = (*remoteEnv)(nil)
+	_ orchestrator.Environment      = (*remoteEnv)(nil)
+	_ orchestrator.TokenSetter      = (*remoteEnv)(nil)
+	_ orchestrator.EndpointReporter = (*remoteEnv)(nil)
 )
+
+func (e *remoteEnv) Endpoints() []orchestrator.Endpoint {
+	e.endpointsMu.RLock()
+	defer e.endpointsMu.RUnlock()
+	return append([]orchestrator.Endpoint(nil), e.endpoints...)
+}
 
 func (e *remoteEnv) Name() string { return e.id }
 func (e *remoteEnv) URL() string  { return e.url }
@@ -254,8 +264,20 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		Gateway:      spec.Gateway,
 		GatewayToken: spec.GatewayToken,
 		DownloadURL:  downloadURL,
+		Expose:       toWireExpose(spec.Expose),
 	}
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, nil)
+	var resp startAgentResponse
+	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp); err != nil {
+		return err
+	}
+	endpoints := make([]orchestrator.Endpoint, len(resp.Endpoints))
+	for i, endpoint := range resp.Endpoints {
+		endpoints[i] = orchestrator.Endpoint{As: endpoint.As, URL: endpoint.URL, Port: endpoint.Port}
+	}
+	e.endpointsMu.Lock()
+	e.endpoints = endpoints
+	e.endpointsMu.Unlock()
+	return nil
 }
 
 // HTTP helpers and request/response shapes.
@@ -304,14 +326,41 @@ type execResponse struct {
 }
 
 type startAgentRequest struct {
-	ManifestPath string `json:"manifest_path"`
-	SecretsPath  string `json:"secrets_path"`
-	TLSCertPath  string `json:"tls_cert_path,omitempty"`
-	TLSKeyPath   string `json:"tls_key_path,omitempty"`
-	AuthToken    string `json:"auth_token,omitempty"`
-	Gateway      string `json:"gateway,omitempty"`
-	GatewayToken string `json:"gateway_token,omitempty"`
-	DownloadURL  string `json:"download_url,omitempty"`
+	ManifestPath string       `json:"manifest_path"`
+	SecretsPath  string       `json:"secrets_path"`
+	TLSCertPath  string       `json:"tls_cert_path,omitempty"`
+	TLSKeyPath   string       `json:"tls_key_path,omitempty"`
+	AuthToken    string       `json:"auth_token,omitempty"`
+	Gateway      string       `json:"gateway,omitempty"`
+	GatewayToken string       `json:"gateway_token,omitempty"`
+	DownloadURL  string       `json:"download_url,omitempty"`
+	Expose       []exposeWire `json:"expose,omitempty"`
+}
+
+type exposeWire struct {
+	Port int    `json:"port"`
+	As   string `json:"as,omitempty"`
+}
+
+type endpointWire struct {
+	As   string `json:"as,omitempty"`
+	URL  string `json:"url"`
+	Port int    `json:"port"`
+}
+
+type startAgentResponse struct {
+	Endpoints []endpointWire `json:"endpoints,omitempty"`
+}
+
+func toWireExpose(in []orchestrator.ExposeSpec) []exposeWire {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]exposeWire, len(in))
+	for i, expose := range in {
+		out[i] = exposeWire{Port: expose.Port, As: expose.As}
+	}
+	return out
 }
 
 func (p *Provider) doJSON(ctx context.Context, method, path string, reqBody any, respBody any) error {
@@ -420,12 +469,20 @@ type stubEnv struct {
 	mu        sync.Mutex
 	files     map[string][]byte
 	authToken string
+	endpoints []orchestrator.Endpoint
 }
 
 var (
-	_ orchestrator.Environment = (*stubEnv)(nil)
-	_ orchestrator.TokenSetter = (*stubEnv)(nil)
+	_ orchestrator.Environment      = (*stubEnv)(nil)
+	_ orchestrator.TokenSetter      = (*stubEnv)(nil)
+	_ orchestrator.EndpointReporter = (*stubEnv)(nil)
 )
+
+func (e *stubEnv) Endpoints() []orchestrator.Endpoint {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]orchestrator.Endpoint(nil), e.endpoints...)
+}
 
 func (e *stubEnv) Name() string { return e.name }
 func (e *stubEnv) URL() string  { return e.url }
@@ -464,6 +521,12 @@ func (e *stubEnv) Upload(_ context.Context, data []byte, path string) error {
 	return nil
 }
 
-func (e *stubEnv) StartAgent(_ context.Context, _ orchestrator.AgentSpec) error {
+func (e *stubEnv) StartAgent(_ context.Context, spec orchestrator.AgentSpec) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.endpoints = make([]orchestrator.Endpoint, len(spec.Expose))
+	for i, expose := range spec.Expose {
+		e.endpoints[i] = orchestrator.Endpoint{As: expose.As, URL: e.url, Port: expose.Port}
+	}
 	return nil
 }

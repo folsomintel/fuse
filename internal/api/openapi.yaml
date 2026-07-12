@@ -613,8 +613,8 @@ components:
           minimum: 0
           description: |
             Count of whole GPU devices requested. Zero means no GPU.
-            A non-zero value routes the environment to a qemu-backed
-            host with matching free GPU inventory.
+            A non-zero value routes the environment to a host with
+            matching free GPU inventory.
         gpu_kind:
           type: string
           description: |

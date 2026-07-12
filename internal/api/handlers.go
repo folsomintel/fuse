@@ -641,6 +641,11 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 	if backend == "" {
 		backend = orchestrator.BackendFirecracker
 	}
+	if backend != orchestrator.BackendFirecracker && backend != orchestrator.BackendQEMU {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"backend must be \"firecracker\" or \"qemu\"", nil)
+		return
+	}
 	if req.Capacity.GPUs > 0 && backend != orchestrator.BackendQEMU {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
 			"gpus > 0 requires backend \"qemu\"", nil)

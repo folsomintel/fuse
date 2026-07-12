@@ -908,6 +908,20 @@ func TestRegisterHost_ProviderFactoryReceivesBackend(t *testing.T) {
 	}
 }
 
+func TestRegisterHost_RejectsUnknownBackend(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-invalid",
+		URL:     "http://host-invalid.test",
+		Backend: "unknown",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // ── Environment create: GPU fields ─────────────────────────────────
 
 func TestCreateEnvironment_GPUFieldsRoundTrip(t *testing.T) {
