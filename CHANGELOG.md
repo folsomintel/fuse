@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.3.0](https://github.com/folsomintel/fuse/compare/v0.2.0...v0.3.0) (2026-07-12)
+
+
+### Features
+
+* add GPU allocation and deallocation tests for fleet hosts ([ecda396](https://github.com/folsomintel/fuse/commit/ecda396c27d912b2dc3cbd4a40092ff7de1e75eb))
+* add gpu and backend fields to host and resource spec ([812a7d2](https://github.com/folsomintel/fuse/commit/812a7d26ca46da63408b6e86d350296ba0e9b783))
+* add GPU support in Fusefile and CLI commands ([245de35](https://github.com/folsomintel/fuse/commit/245de359d961d01ecf0d982a072f22098cf1355b))
+* construct provider from host backend at registration ([c6ee941](https://github.com/folsomintel/fuse/commit/c6ee9416e49f65b73e619c68e0a0d795e840501d))
+* enhance GPU scheduling logic and startup script handling ([537b890](https://github.com/folsomintel/fuse/commit/537b890fc902e90317e49bba7a17edbf5358ec7f))
+* expose gpu and backend fields in api sdks and cli ([1a6b99c](https://github.com/folsomintel/fuse/commit/1a6b99cce674c17edef08fc1820b19f1e5a60dfe))
+* **host-agent:** add e2e tests and service for QEMU host agent ([4794638](https://github.com/folsomintel/fuse/commit/47946381ae3f26477b89478bbc0da2002761c6c0))
+* **host-agent:** add QEMU host agent (GPU passthrough) ([9567e8a](https://github.com/folsomintel/fuse/commit/9567e8ab38623cebf9935fa2abea7c4bdac96108))
+* **orchestrator:** add tests and guardrails for qemu provider's gpu passthrough ([14d29ac](https://github.com/folsomintel/fuse/commit/14d29acb37adaa4949f54f253231dddc690a714d))
+* persist gpu and backend fields in postgres state store ([8c37491](https://github.com/folsomintel/fuse/commit/8c37491ad8ecad992fbe69f1fe1d2de1aba062d1))
+* **qemu:** add QEMU provider implementation ([629f73c](https://github.com/folsomintel/fuse/commit/629f73c874c9b808f90086c06a03eceaf323c601))
+* **qemu:** add QEMU provider implementation ([81bad92](https://github.com/folsomintel/fuse/commit/81bad92d64508ebf96b17d66321bdcaee8d7428d))
+* **qemu:** host agent for gpu passthru ([079028a](https://github.com/folsomintel/fuse/commit/079028a7d54daa15c10026b5d5703db2570b2238))
+* schedule gpu envs only onto matching qemu hosts ([9c9b3ee](https://github.com/folsomintel/fuse/commit/9c9b3eedf943800ecb4b11cf10e1330e4027889a))
+* **sdk:** update ts verison path ([1e0afaf](https://github.com/folsomintel/fuse/commit/1e0afaf6f0cd128817ed63fbd4672bd25c315ddf))
+
+
+### Bug Fixes
+
+* enforce gpu host capacity and provider ownership ([3100f9d](https://github.com/folsomintel/fuse/commit/3100f9d8093937ea557c315901341a7caa848f24))
+* make qemu gpu host setup locally testable ([8dbc5cc](https://github.com/folsomintel/fuse/commit/8dbc5cc50116fecb6b36b23654d59da3086e7360))
+* reconcile vms through their host providers ([8521de4](https://github.com/folsomintel/fuse/commit/8521de4a29f6e921fbd708ad374ea11adb7cb232))
+* run bake iptables bundle with host network and add nftables to host deps ([6f9911c](https://github.com/folsomintel/fuse/commit/6f9911c85207cec4a5a54b4024c96178e0c8ff9b))
+* validate gpu backends and preserve qemu endpoints ([1db3ba2](https://github.com/folsomintel/fuse/commit/1db3ba28432d01c164eb6dcb686d5d99137be1e9))
+
 ## [0.2.0](https://github.com/folsomintel/fuse/compare/v0.1.0...v0.2.0) (2026-07-04)
 
 
