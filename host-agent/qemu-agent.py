@@ -43,7 +43,7 @@ from pathlib import Path
 QEMU_DIR = Path(os.environ.get("QEMU_DIR", "/home/ubuntu/qemu"))
 STATE_DIR = QEMU_DIR / "agent-state"
 VMS_DIR = STATE_DIR / "vms"
-KERNEL = QEMU_DIR / "vmlinux.bin"
+KERNEL = QEMU_DIR / "vmlinuz.bin"
 BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(QEMU_DIR / "rootfs-cuda.qcow2")))
 # Named rootfs images for bring-your-own-image (see internal/fusefile's
 # ResourceSpec.Image): <IMAGES_DIR>/<name>.qcow2. An operator bakes and places a
@@ -134,10 +134,9 @@ def read_vfio_inventory() -> list[dict]:
             count = int(count_s)
         except ValueError:
             raise HTTPError(500, f"bad gpu count at {VFIO_INVENTORY}:{lineno}: {count_s!r}")
-        if count != len(slots):
+        if count <= 0 or len(slots) < count:
             raise HTTPError(500,
-                f"vfio inventory count {count} != {len(slots)} slots at "
-                f"{VFIO_INVENTORY}:{lineno}: {raw!r}")
+                f"bad vfio inventory group at {VFIO_INVENTORY}:{lineno}: {raw!r}")
         groups.append({"count": count, "kind": kind.lower(), "slots": slots})
     return groups
 
@@ -154,7 +153,7 @@ def allocated_pci_slots() -> set[str]:
     return used
 
 def pick_gpu_slots(count: int, kind: str | None) -> list[str]:
-    """Choose `count` free pci slots from the inventory matching `kind`.
+    """Choose complete free iommu groups representing `count` gpus.
 
     Empty/None kind matches any group. Raises HTTPError(409) when fewer than
     `count` matching devices are free. Whole-device allocation only (no MIG).
@@ -165,21 +164,29 @@ def pick_gpu_slots(count: int, kind: str | None) -> list[str]:
     want = (kind or "").lower()
     used = allocated_pci_slots() 
 
-    free: list[str] = []
+    selected: list[str] = []
+    selected_count = 0
+    available_count = 0
     for group in read_vfio_inventory():
         if want and group["kind"] != want:
             continue 
-        for slot in group["slots"]:
-            if slot not in used:
-                free.append(slot)
+        if any(slot in used for slot in group["slots"]):
+            continue
+        available_count += group["count"]
+        if selected_count + group["count"] > count:
+            continue
+        selected.extend(group["slots"])
+        selected_count += group["count"]
+        if selected_count == count:
+            return selected
 
-    if len(free) < count:
+    if selected_count != count:
         kind_desc = f"kind {want!r}" if want else "any kind"
         raise HTTPError(409, 
             f"insufficient free gpus: requested {count} of {kind_desc}, "
-            f"{len(free)} available")
-    
-    return free[:count]
+            f"{available_count} available in complete iommu groups")
+
+    return selected
 
 
 # -- Networking ---------------------------------------------------------------
@@ -481,70 +488,72 @@ def create_vm(req: dict) -> dict:
     source_rootfs = BASE_ROOTFS 
     if image:
         source_rootfs = IMAGES_DIR / f"{image}.qcow2"
-        if not source_rootfs.exists():
-            raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
-        
-        d = vm_dir(vm_id)
-        if d.exists():
-            raise HTTPError(409, f"vm {vm_id} already exists")
-        d.mkdir(parents=True)
 
-        gpu_count = int(req.get("gpus", "0"))
-        gpu_kind = req.get("gpu_kind") or ""
-        gpu_slots = pick_gpu_slots(gpu_count, gpu_kind or None)
+    if not source_rootfs.exists():
+        raise HTTPError(400, f"base image {image or 'default'!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
-        idx = pick_index()
-        tap, host_ip, guest_ip = setup_tap(idx)
-        mac =  f"06:00:AC:10:{idx:02x}:02"
-        host_port = HOST_PORT_BASE + idx 
-        add_agent_forward(host_port, guest_ip)
+    gpu_count = int(req.get("gpus", "0"))
+    gpu_kind = req.get("gpu_kind") or ""
+    gpu_slots = pick_gpu_slots(gpu_count, gpu_kind or None)
 
-        rootfs = d / "rootfs.qcow2"
-        shutil.copyfile(source_rootfs, rootfs)
-        sudo(["chmod", "666", str(rootfs)], check=False)
+    d = vm_dir(vm_id)
+    if d.exists():
+        raise HTTPError(409, f"vm {vm_id} already exists")
+    d.mkdir(parents=True)
 
-        meta = {
-            "vm_id": vm_id,
-            "name": name,
-            "index": idx,
-            "cpus": int(req.get("cpus", 1)),
-            "memory_mb": int(req.get("memory_mb", 1024)),
-            "storage_gb": int(req.get("storage_gb", 0)),
-            "region": req.get("region", ""),
-            "image": image,
-            "tap": tap,
-            "host_ip": host_ip,
-            "guest_ip": guest_ip,
-            "mac": mac,
-            "rootfs": str(rootfs),
-            "host_port": host_port,
-            "gpus": gpu_count,
-            "gpu_kind": gpu_kind,
-            "gpu_slots": gpu_slots,
-            "url": f"{PUBLIC_HOST}:{host_port}",
-            "created_at": now_iso(),
-        }
+    idx = pick_index()
+    tap, host_ip, guest_ip = setup_tap(idx)
+    mac = f"06:00:AC:10:{idx:02x}:02"
+    host_port = HOST_PORT_BASE + idx
+    add_agent_forward(host_port, guest_ip)
+
+    rootfs = d / "rootfs.qcow2"
+    shutil.copyfile(source_rootfs, rootfs)
+    sudo(["chmod", "666", str(rootfs)], check=False)
+
+    meta = {
+        "vm_id": vm_id,
+        "name": name,
+        "index": idx,
+        "cpus": int(req.get("cpus", 1)),
+        "memory_mb": int(req.get("memory_mb", 1024)),
+        "storage_gb": int(req.get("storage_gb", 0)),
+        "region": req.get("region", ""),
+        "image": image,
+        "tap": tap,
+        "host_ip": host_ip,
+        "guest_ip": guest_ip,
+        "mac": mac,
+        "rootfs": str(rootfs),
+        "host_port": host_port,
+        "gpus": gpu_count,
+        "gpu_kind": gpu_kind,
+        "gpu_slots": gpu_slots,
+        "url": f"{PUBLIC_HOST}:{host_port}",
+        "created_at": now_iso(),
+    }
+    save_meta(meta)
+    try:
+        start_qemu(meta)
         save_meta(meta)
-        try:
-            start_qemu(meta)
-            save_meta(meta)
-            if not wait_for_ssh(guest_ip, timeout=60.0):
-                meta["ssh_ready"] = False 
-            else:
-                meta["ssh_ready"] = True 
-                ssh_exec(guest_ip, (
+        if not wait_for_ssh(guest_ip, timeout=60.0):
+            meta["ssh_ready"] = False
+        else:
+            meta["ssh_ready"] = True
+            ssh_exec(
+                guest_ip,
                 "ip route show default | grep -q . || ip route add default via "
                 f"{host_ip}; grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || "
-                "echo nameserver 1.1.1.1 > /etc/resolv.conf"
-                ))
+                "echo nameserver 1.1.1.1 > /etc/resolv.conf",
+            )
             save_meta(meta)
-        except Exception:
-            stop_qemu(meta)
-            del_agent_forward(host_port, guest_ip)
-            teardown_tap(tap) 
-            shutil.rmtree(d, ignore_errors=True)
-            raise 
-        return meta 
+    except Exception:
+        stop_qemu(meta)
+        del_agent_forward(host_port, guest_ip)
+        teardown_tap(tap)
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return meta
 
 def destroy_vm(vm_id: str) -> None:
     """Stop a vm, release its GPU/tap/DNAT allocations, and delete its state dir."""

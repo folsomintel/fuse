@@ -25,6 +25,11 @@ if [ ! -f ubuntu.id_rsa ]; then
   log "generate SSH keypair"
   ssh-keygen -t rsa -b 2048 -N "" -f ubuntu.id_rsa
 fi
+chmod 600 ubuntu.id_rsa
+if [ ! -f ubuntu.id_rsa.pub ]; then
+  log "derive missing SSH public key"
+  ssh-keygen -y -f ubuntu.id_rsa > ubuntu.id_rsa.pub
+fi
 
 # 3. base rootfs (Ubuntu 22.04 cloud image, qcow2)
 if [ ! -f rootfs.qcow2 ]; then

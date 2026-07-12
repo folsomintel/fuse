@@ -17,6 +17,8 @@
 # when homogeneous. qemu-agent.py reads this file (VFIO_INVENTORY) to pick
 # free devices at VM create time.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VFIO_INVENTORY="${VFIO_INVENTORY:-$SCRIPT_DIR/vfio-inventory.txt}"
 
 log()  { printf '\033[1;36m[vfio] %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[vfio] %s\033[0m\n' "$*" >&2; }
@@ -84,7 +86,12 @@ do_list() {
     for s in $(slots_in_group "$group"); do
       group_slots+=("$s")
     done
-    count=${#group_slots[@]}
+    count=0
+    for s in "${group_slots[@]}"; do
+      if lspci -D -s "$s" | grep -qi 'NVIDIA' && lspci -D -s "$s" | grep -qiE 'VGA|3D|Display'; then
+        count=$((count + 1))
+      fi
+    done
     printf '%s %s %s\n' "$count" "$kind" "${group_slots[*]}"
   done
 }
@@ -93,34 +100,36 @@ do_bind() {
   iommu_enabled || die "IOMMU not enabled. Add intel_iommu=on or amd_iommu=on to kernel cmdline and reboot."
   modprobe vfio-pci 2>/dev/null || sudo modprobe vfio-pci
 
-  local slots slot driver ven dev
+  local slots slot group group_slot driver inventory_tmp
   slots=$(nvidia_gpu_slots)
   [ -n "$slots" ] || die "no NVIDIA GPUs detected by lspci"
 
+  declare -A seen
   for slot in $slots; do
-    driver=$(current_driver "$slot")
-    if [ "$driver" = "vfio-pci" ]; then
-      log "$slot already bound to vfio-pci, skip"
-      continue
-    fi
-
-    ven=$(cat "/sys/bus/pci/devices/$slot/vendor")   # 0x10de
-    dev=$(cat "/sys/bus/pci/devices/$slot/device")
-    ven_dev="${ven#0x}:${dev#0x}"
-
-    log "bind $slot ($ven_dev) from ${driver:-unbound}"
-    # unbind from current driver
-    if [ -n "$driver" ]; then
-      echo "$slot" | sudo tee "/sys/bus/pci/devices/$slot/driver/unbind" >/dev/null
-    fi
-    # register vendor:device with vfio-pci (idempotent: -EEXIST is fine)
-    echo "$ven_dev" | sudo tee "/sys/bus/pci/drivers/vfio-pci/new_id" 2>/dev/null || true
-    # also override so vfio-pci claims it even if the probe raced
-    echo "$ven_dev" | sudo tee "/sys/bus/pci/drivers/vfio-pci/add_id" 2>/dev/null || true
+    group=$(iommu_group_of "$slot")
+    [ -z "${seen[$group]:-}" ] || continue
+    seen[$group]=1
+    for group_slot in $(slots_in_group "$group"); do
+      driver=$(current_driver "$group_slot")
+      if [ "$driver" = "vfio-pci" ]; then
+        log "$group_slot already bound to vfio-pci, skip"
+        continue
+      fi
+      log "bind $group_slot from ${driver:-unbound}"
+      printf 'vfio-pci' | sudo tee "/sys/bus/pci/devices/$group_slot/driver_override" >/dev/null
+      if [ -n "$driver" ]; then
+        printf '%s' "$group_slot" | sudo tee "/sys/bus/pci/devices/$group_slot/driver/unbind" >/dev/null
+      fi
+      printf '%s' "$group_slot" | sudo tee /sys/bus/pci/drivers_probe >/dev/null
+      [ "$(current_driver "$group_slot")" = "vfio-pci" ] || die "$group_slot failed to bind to vfio-pci"
+    done
   done
 
-  log "done. Inventory:"
-  do_list
+  inventory_tmp=$(mktemp "${VFIO_INVENTORY}.XXXXXX")
+  do_list > "$inventory_tmp"
+  mv "$inventory_tmp" "$VFIO_INVENTORY"
+  log "done. Inventory written to $VFIO_INVENTORY:"
+  cat "$VFIO_INVENTORY"
 }
 
 do_unbind() {

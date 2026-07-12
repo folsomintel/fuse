@@ -50,8 +50,12 @@ for c in sudo qemu-nbd curl resize2fs parted; do need "$c"; done
 [ -f "$BASE" ] || { echo "$BASE not found -- run ./qemu-install.sh first" >&2; exit 1; }
 [ -f fused ]   || { echo "fused not found -- run ./fc-build-agent.sh (or drop your own agent binary named 'fused' here)" >&2; exit 1; }
 [ -f fused.service ] || { echo "fused.service not found -- it ships in host-agent/" >&2; exit 1; }
+[ -f ubuntu.id_rsa.pub ] || { echo "ubuntu.id_rsa.pub not found -- run ./qemu-install.sh first" >&2; exit 1; }
 
 cleanup() {
+  sudo -n umount "$MOUNT_POINT/sys" 2>/dev/null || true
+  sudo -n umount "$MOUNT_POINT/proc" 2>/dev/null || true
+  sudo -n umount "$MOUNT_POINT/dev" 2>/dev/null || true
   sudo -n umount "$MOUNT_POINT" 2>/dev/null || true
   sudo -n qemu-nbd --disconnect "$NBD_DEV" 2>/dev/null || true
 }
@@ -136,9 +140,12 @@ sudo -n mkdir -p \
   "$MOUNT_POINT/var/lib/containers" \
   "$MOUNT_POINT/run/containers" \
   "$MOUNT_POINT/etc/ssl/certs" \
+  "$MOUNT_POINT/root/.ssh" \
   "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants" \
   "$MOUNT_POINT/etc/containers"
 sudo -n chmod 1777 "$MOUNT_POINT/var/tmp"
+sudo -n chmod 0700 "$MOUNT_POINT/root/.ssh"
+sudo -n install -m 0600 ubuntu.id_rsa.pub "$MOUNT_POINT/root/.ssh/authorized_keys"
 sudo -n install -m 0755 fused "$MOUNT_POINT/usr/local/bin/fused"
 sudo -n install -m 0644 fused.service "$MOUNT_POINT/etc/systemd/system/fused.service"
 sudo -n ln -sf /etc/systemd/system/fused.service \
