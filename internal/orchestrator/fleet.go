@@ -925,14 +925,18 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// Multi-host mode: list VMs from all registered host providers.
 	// Single-provider fallback: list from fm.provider (legacy path).
 	var envs []Environment
+	envProviders := make(map[string]Provider)
 	var listErr error
 	fm.mu.RLock()
 	multiHost := len(fm.hosts) > 0
 	fm.mu.RUnlock()
 	if multiHost {
-		envs, listErr = fm.listAllHostVMs(ctx)
+		envs, envProviders, listErr = fm.listAllHostVMs(ctx)
 	} else {
 		envs, listErr = fm.provider.List(ctx, fm.prefix)
+		for _, env := range envs {
+			envProviders[env.Name()] = fm.provider
+		}
 	}
 	if listErr != nil {
 		fm.logger.Error("reconcile list failed", "err", listErr)
@@ -999,7 +1003,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 
 	// Handle orphans and stuck tasks in their own pass. These helpers live
 	// in reconcile.go so that fleet.go stays focused on the lifecycle API.
-	fm.reconcileOrphans(ctx, envs, tracked, &summary)
+	fm.reconcileOrphans(ctx, envs, envProviders, tracked, &summary)
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
 
@@ -1131,16 +1135,14 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		}
 
 		if recoveredVM.state == VMStateRunning {
-			// Prefer the per-host provider when the VM was scheduled
-			// onto a known host; fall back to the single fm.provider
-			// (single-provider mode or hosts not yet recovered).
-			lookupProvider := fm.provider
-			if recoveredVM.hostID != "" {
-				if hp, ok := fm.providerForHost(recoveredVM.hostID); ok {
-					lookupProvider = hp
-				}
+			lookupProvider, providerErr := fm.providerForVM(recoveredVM.hostID)
+			var env Environment
+			var getErr error
+			if providerErr != nil {
+				getErr = providerErr
+			} else {
+				env, getErr = lookupProvider.Get(ctx, recoveredVM.id)
 			}
-			env, getErr := lookupProvider.Get(ctx, recoveredVM.id)
 			if getErr != nil {
 				recoveredVM.state = VMStateDestroying
 				recoveredVM.taskID = ""

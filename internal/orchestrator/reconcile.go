@@ -11,7 +11,7 @@ import (
 // Repeated destroy failures are counted per-VM in fm.orphanRetries; once
 // the count exceeds orphanDestroyMaxRetries the entry is dead-lettered and
 // skipped on subsequent cycles until it disappears from the provider.
-func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment, tracked map[string]bool, summary *ReconcileSummary) {
+func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment, providers map[string]Provider, tracked map[string]bool, summary *ReconcileSummary) {
 	// Collect the current orphan set so we can clear stale retry counters.
 	currentOrphans := make(map[string]bool, len(envs))
 
@@ -33,7 +33,13 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 		}
 
 		fm.logger.Warn("orphan vm detected, destroying", "vm", name, "attempt", retries+1)
-		if err := fm.provider.Destroy(ctx, name); err != nil {
+		provider, ok := providers[name]
+		if !ok {
+			fm.logger.Error("orphan provider not found", "vm", name)
+			summary.OrphansFailed++
+			continue
+		}
+		if err := provider.Destroy(ctx, name); err != nil {
 			fm.logger.Error("orphan destroy failed", "vm", name, "err", err, "attempt", retries+1)
 			summary.OrphansFailed++
 

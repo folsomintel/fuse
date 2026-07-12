@@ -245,7 +245,7 @@ func (fm *FleetManager) providerForVM(hostID string) (Provider, error) {
 
 // listAllHostVMs collects VMs from all registered host providers.
 // Used by reconcile when the fleet is in multi-host mode.
-func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, error) {
+func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, map[string]Provider, error) {
 	fm.mu.RLock()
 	providers := make(map[string]Provider, len(fm.hostProviders))
 	for id, p := range fm.hostProviders {
@@ -254,9 +254,10 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, erro
 	fm.mu.RUnlock()
 
 	var (
-		mu   sync.Mutex
-		all  []Environment
-		errs []error
+		mu     sync.Mutex
+		all    []Environment
+		owners = make(map[string]Provider)
+		errs   []error
 	)
 
 	var wg sync.WaitGroup
@@ -270,6 +271,9 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, erro
 				errs = append(errs, err)
 			} else {
 				all = append(all, envs...)
+				for _, env := range envs {
+					owners[env.Name()] = p
+				}
 			}
 			mu.Unlock()
 		}(p)
@@ -277,9 +281,9 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, erro
 	wg.Wait()
 
 	if len(errs) > 0 {
-		return all, fmt.Errorf("list vms from %d hosts: %d errors (first: %w)", len(providers), len(errs), errs[0])
+		return all, owners, fmt.Errorf("list vms from %d hosts: %d errors (first: %w)", len(providers), len(errs), errs[0])
 	}
-	return all, nil
+	return all, owners, nil
 }
 
 // ── Conversion helpers ────────────────────────────────────────────

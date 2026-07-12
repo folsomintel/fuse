@@ -105,6 +105,27 @@ func TestReconcileOrphan_successClearsRetries(t *testing.T) {
 	fm.mu.RUnlock()
 }
 
+func TestReconcileOrphanUsesHostProvider(t *testing.T) {
+	defaultProvider := newMockProvider()
+	hostProvider := newMockProvider()
+	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "fuse-"})
+	if err := fm.RegisterHost(context.Background(), gpuFleetHost("gpu-host", 1, "a100"), hostProvider); err != nil {
+		t.Fatal(err)
+	}
+	hostProvider.mu.Lock()
+	hostProvider.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan"}
+	hostProvider.mu.Unlock()
+
+	fm.reconcile(context.Background())
+
+	if hostProvider.count() != 0 {
+		t.Fatalf("host provider still has %d environments", hostProvider.count())
+	}
+	if defaultProvider.count() != 0 {
+		t.Fatalf("default provider changed: %d environments", defaultProvider.count())
+	}
+}
+
 func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
 	p := newFailingDestroyProvider("fuse-orphan")
 	store := NewMemoryStateStore()
