@@ -77,6 +77,83 @@ FIRECRACKER_BASE_URL=http://<host>:8090
 FIRECRACKER_TOKEN=<generated>
 ```
 
+## QEMU GPU host setup
+
+GPU environments use QEMU/KVM with whole IOMMU groups passed through via VFIO.
+This requires bare-metal Linux, enabled IOMMU, `/dev/kvm`, and a GPU that can be
+detached from its host driver. GPU environments do not support snapshots or forks.
+
+```bash
+cd host-agent
+
+# install qemu, ovmf, a base cloud image, and the ssh keypair
+./qemu-install.sh
+
+# build the in-guest agent and bake a cuda image with an explicit driver branch
+./fc-build-agent.sh
+./qemu-bake-cuda-rootfs.sh 550
+
+# inspect groups, then bind every member of each gpu group to vfio-pci
+./qemu-vfio-bind.sh --list
+sudo ./qemu-vfio-bind.sh
+
+# install and start the host agent
+sudo cp qemu-agent.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now qemu-agent
+```
+
+The bind step writes `vfio-inventory.txt`, which `qemu-agent.py` consumes. Each
+line represents an indivisible IOMMU group:
+
+```text
+<gpu_count> <gpu_kind> <pci_slot> [<pci_slot> ...]
+1 a100 0000:17:00.0 0000:17:00.1
+```
+
+The count includes GPU display functions only. The PCI list includes every
+function in the group, such as a GPU's companion audio function, because QEMU
+must attach the complete group.
+
+Set `QEMU_AGENT_TOKEN` in the service environment, then register the host using
+the inventory's count and exact kind:
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --gpus 1 \
+  --gpu-kind a100 \
+  --cpus 16 \
+  --ram-mb 65536 \
+  --storage-gb 500 \
+  --max-vms 4
+```
+
+Request the device without naming a virtualization backend in the Fusefile:
+
+```yaml
+resources:
+  gpu: 1
+  gpu_kind: a100
+```
+
+The normal image path is a CUDA-capable qcow2 supplied by the operator. The
+reference bake creates `rootfs-cuda.qcow2`, installs the generated SSH public
+key as root's `authorized_keys`, and extracts `vmlinuz.bin` for QEMU.
+
+Hardware validation is explicit:
+
+```bash
+./qemu-agent-test.sh
+FUSE_GPU_E2E=1 FUSE_GPU_KIND=a100 ./qemu-e2e.sh
+```
+
+The e2e registers a QEMU host, creates a GPU environment, runs `nvidia-smi` in
+the guest, verifies snapshots are refused, and confirms destroy removes the
+QEMU VM. Without `FUSE_GPU_E2E=1` and a reachable GPU agent, it reports `SKIP`.
+
 Open these at your cloud / external firewall:
 
 - `8090/tcp` — the agent's HTTP API

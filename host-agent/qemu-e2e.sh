@@ -36,6 +36,15 @@ http() {
     curl -sS -m 60 -X "$method" "$url" -w $'\n%{http_code}'
   fi
 }
+qemu_http() {
+  local method="$1" url="$2" body="${3:-}"
+  local auth=(-H "Authorization: Bearer ${QEMU_TOKEN}")
+  if [ -n "$body" ]; then
+    curl -sS -m 60 -X "$method" "$url" "${auth[@]}" -H 'Content-Type: application/json' -d "$body" -w $'\n%{http_code}'
+  else
+    curl -sS -m 60 -X "$method" "$url" "${auth[@]}" -w $'\n%{http_code}'
+  fi
+}
 code_of() { printf '%s' "$1" | tail -n1; }
 body_of() { printf '%s' "$1" | sed '$d'; }
 # crude JSON string field extractor (no jq dependency)
@@ -48,6 +57,7 @@ step "gate"
 # shellcheck disable=SC1091
 set -a; source "$REPO_ROOT/.env"; set +a
 [ -n "${QEMU_BASE_URL:-}" ] || skip "QEMU_BASE_URL unset in .env (no qemu gpu host to target)"
+[ -n "${QEMU_TOKEN:-}" ] || skip "QEMU_TOKEN unset in .env"
 # Confirm the qemu host agent is reachable before we bother booting fuse.
 if ! curl -sS -m 5 "${QEMU_BASE_URL%/}/healthz" >/dev/null 2>&1; then
   skip "qemu host agent at $QEMU_BASE_URL not reachable"
@@ -109,7 +119,7 @@ HOST=$(field "$(body_of "$R")" host_id)
 pass "env is on $HOST_ID"
 
 step "nvidia-smi in guest"
-R=$(http POST "$BASE/v1/environments/$ID/exec" '{"cmd":["nvidia-smi","-L"]}')
+R=$(qemu_http POST "${QEMU_BASE_URL%/}/v1/vm/$ID/exec" '{"cmd":["nvidia-smi","-L"]}')
 [ "$(code_of "$R")" = "200" ] || { echo "$(body_of "$R")"; die "exec nvidia-smi != 200"; }
 # do_exec returns base64 stdout; decode and confirm a GPU is listed.
 OUT_B64=$(field "$(body_of "$R")" stdout)
@@ -125,7 +135,9 @@ pass "snapshot refused for gpu env (got $CODE)"
 
 step "destroy"
 R=$(http DELETE "$BASE/v1/environments/$ID"); [ "$(code_of "$R")" = "204" ] || die "destroy != 204 (got $(code_of "$R"))"
+R=$(qemu_http GET "${QEMU_BASE_URL%/}/v1/vm/$ID")
+[ "$(code_of "$R")" = "404" ] || die "qemu vm still exists after orchestrator destroy"
 ID=""  # clear so cleanup doesn't double-delete
-pass "destroy 204"
+pass "destroy 204 and qemu vm removed"
 
 printf '\n\033[1;32m✓ FUSE GPU DEPLOY TEST PASSED (qemu host %s)\033[0m\n' "$QEMU_BASE_URL"

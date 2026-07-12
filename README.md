@@ -15,6 +15,7 @@ command brings up a host with the agent installed and a rootfs baked and ready.
 
 - **One-script Firecracker setup** — host, agent, and a baked rootfs, ready to boot.
 - **Scheduling across hosts** — register hosts, and Fuse places microVMs for you.
+- **Optional whole-GPU environments** — route GPU requests to QEMU/VFIO hosts.
 - **Full VM lifecycle** — provision → running → drain → destroy, tracked and reconciled.
 - **Snapshots** — capture a running microVM and restore from it.
 - **Live event streams** — tail a microVM's events over SSE.
@@ -40,6 +41,10 @@ Copy those two printed values into Fuse's config and you're scheduling microVMs.
 script is idempotent and safe to re-run. By default the rootfs ships with `fused`, our
 reference in-guest agent — but the rootfs is yours to customize (more on the agent
 [below](#the-in-guest-agent)).
+
+GPU hosts use the optional QEMU/VFIO backend while CPU workloads remain on the
+default Firecracker path. See [`host-agent/README.md`](host-agent/README.md#qemu-gpu-host-setup)
+for IOMMU setup, CUDA image baking, host registration, and hardware validation.
 
 ## Concepts
 
