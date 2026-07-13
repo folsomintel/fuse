@@ -1,0 +1,11 @@
+{
+  "title": "Cloud",
+  "root": true,
+  "pages": [
+    "index",
+    "orchestrator-deploy",
+    "firecracker-host-setup",
+    "gpu-host-setup",
+    "troubleshooting"
+  ]
+}
