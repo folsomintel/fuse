@@ -1,0 +1,61 @@
+---
+title: Environments
+description: fuse environment, fuse up, fuse init
+---
+
+## fuse up / fuse init
+
+The [Fusefile](/docs/learn/concepts/fusefile) path:
+
+```bash
+fuse init [path] [-f file] [--force]
+fuse up [path] [flags]
+```
+
+`up` flags:
+
+| Flag | Purpose |
+| --- | --- |
+| `-f, --file` | Path to the Fusefile (default: `./Fusefile`, or a positional path). |
+| `--secret key=value` | Secret, repeatable. Overrides `--secrets-file` on key collision. |
+| `--secrets-file` | Path to a file of `KEY=VALUE` secret lines (`#`-prefixed lines and blanks ignored). |
+| `--task-id` | Environment task ID (default: the Fusefile's parent directory name). |
+| `--no-wait` | Create the environment without streaming provisioning events. |
+
+## fuse environment
+
+```bash
+fuse environment list [flags]      # aliases: environments, env, envs
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--task-id` | Filter by task ID. |
+| `--state` | Filter by state: `provisioning`\|`running`\|`draining`\|`destroying`\|`destroyed`\|`failed`. |
+| `--host-id` | Filter by host ID (default: the active host). |
+| `--all` | List across all hosts, ignoring the active host. |
+
+```bash
+fuse environment get <id>
+fuse environment create [flags]
+```
+
+`create` flags: `--task-id` (required), `--cpus`, `--ram-mb`, `--storage-gb`,
+`--region`, `--max-runtime` (seconds), `--manifest` (inline or `@path`),
+`--startup-script` (inline or `@path`), `--gateway-url`, `--gateway-token`,
+`--secret key=value` (repeatable), `--follow` (stream provisioning events). With no
+`--task-id` in an interactive terminal, required fields are collected via a form.
+
+Note: `create` schedules orchestrator-wide, the active host selection does not pin
+placement; use `--region` to influence it.
+
+```bash
+fuse environment destroy <id> [--yes]   # aliases: rm, delete
+fuse environment drain <id>
+fuse environment fork <id> [--reuse-snapshot <id>] [--comment "..."]
+fuse environment rotate-token <id>      # alias: rotate
+fuse environment watch <id>             # alias: follow
+```
+
+`drain` is phase-1 only, it does not auto-destroy; follow up with `destroy` to
+remove the environment.

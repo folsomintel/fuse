@@ -1,0 +1,48 @@
+---
+title: CLI overview
+description: Install and configure the fuse operator CLI
+---
+
+`fuse` is the operator CLI for the Fuse orchestrator, built with Cobra. It lives in
+the repo's `cli/` package.
+
+## Install
+
+```bash
+go build -o bin/fuse ./cli
+```
+
+## Global flags
+
+These apply to every command:
+
+| Flag | Purpose |
+| --- | --- |
+| `-o, --output` | Output format: `table` (default) or `json`. |
+| `--context` | Context to use for this invocation, overriding the active context. |
+| `--config` | Path to the config file (default: `$XDG_CONFIG_HOME/fuse/config.yaml`, or `~/.config/fuse/config.yaml`). |
+
+## Config file
+
+CLI state, orchestrator contexts (base URL + token) and each context's active host
+selection, persists to a YAML file:
+
+```
+$XDG_CONFIG_HOME/fuse/config.yaml     # or ~/.config/fuse/config.yaml
+```
+
+The file is written with `0600` permissions (it holds bearer tokens) inside a `0700`
+directory, created automatically on first `fuse connect`.
+
+## Command groups
+
+| Command | Purpose |
+| --- | --- |
+| `fuse connect` / `fuse context` | Add and switch between orchestrator contexts. See [Connecting and contexts](/docs/reference/cli/contexts). |
+| `fuse hosts` / `fuse host` | Manage compute hosts. See [Hosts](/docs/reference/cli/hosts). |
+| `fuse environment` / `fuse up` / `fuse init` | Manage environments (VMs). See [Environments](/docs/reference/cli/environments). |
+| `fuse snapshot` | Manage VM snapshots. See [Snapshots](/docs/reference/cli/snapshots). |
+| `fuse apikeys` / `fuse metrics` | Manage API keys and view fleet metrics. See [API keys and metrics](/docs/reference/cli/apikeys-metrics). |
+
+Most commands print human-readable tables by default; pass `-o json` for
+machine-readable output, which is the same shape returned by the [HTTP API](/docs/reference/api).

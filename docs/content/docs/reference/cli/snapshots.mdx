@@ -1,0 +1,31 @@
+---
+title: Snapshots
+description: fuse snapshot
+---
+
+```bash
+fuse snapshot create <vm-id> [flags]   # aliases: snapshots, snap, snaps
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--comment` | Snapshot comment. |
+| `--mode` | `manual` or `auto`. |
+| `--retention` | Retention in seconds (`0` = keep forever). |
+| `--export-ref` | Export reference. |
+| `--metadata key=value` | Metadata, repeatable. |
+
+The VM must be `running`. With no flags set in an interactive terminal,
+comment/mode/retention are collected via a form.
+
+```bash
+fuse snapshot list [flags]   # alias: ls
+```
+
+Filters: `--vm-id`, `--task-id`, `--tenant-id`, `--state` (`creating`\|`ready`\|`restoring`\|`deleting`\|`error`).
+
+```bash
+fuse snapshot get <id>
+fuse snapshot delete <id> [--yes]    # alias: rm; leaf-only, also deletes the provider artifact
+fuse snapshot restore <id> [--yes]   # in-place only, onto the original running VM
+```

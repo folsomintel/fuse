@@ -1,0 +1,11 @@
+{
+  "title": "CLI",
+  "pages": [
+    "index",
+    "contexts",
+    "hosts",
+    "environments",
+    "snapshots",
+    "apikeys-metrics"
+  ]
+}
