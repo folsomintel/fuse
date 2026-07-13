@@ -1,0 +1,49 @@
+---
+title: Python SDK
+description: folsom-fuse on PyPI
+---
+
+Python client for the Fuse microVM control plane. Mirrors the Go SDK's shape.
+
+## Install
+
+```bash
+uv add folsom-fuse
+```
+
+## Usage
+
+```python
+import fuse
+
+with fuse.Client("https://orchestrator.example.com", token="...") as client:
+    env = client.environments.create(
+        fuse.CreateRequest(task_id="t-1", spec=fuse.Spec(cpus=2, ram_mb=2048))
+    )
+
+    for event in client.environments.events(env.id):
+        if event.err:
+            raise event.err
+        print(event.state)
+        if fuse.is_terminal_state(event.state):
+            break
+```
+
+`Client` is used as a context manager. Services hang off it:
+`client.environments`, `client.snapshots`, `client.hosts`, `client.api_keys`.
+
+## Errors
+
+Errors raise `fuse.ApiError`. Use predicates to branch on the server's structured
+error code rather than comparing strings, e.g. `fuse.is_not_found(err)`.
+
+## Development
+
+If you're contributing to the SDK itself:
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check .
+uv run mypy
+```
