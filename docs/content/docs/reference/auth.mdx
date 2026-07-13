@@ -1,0 +1,79 @@
+---
+title: Authentication
+description: How the orchestrator authenticates callers, across the CLI, SDKs, and browser
+---
+
+Fuse's orchestrator uses a **single shared bearer token** model. Self-hosted,
+single operator. There are no users, roles, or JWTs; whoever holds the token is the
+operator.
+
+## The master token
+
+Set via `ORCH_AUTH_TOKEN` (env) or `--auth-token` (flag) on the orchestrator. Every
+API request sends it as a standard bearer header:
+
+```
+Authorization: Bearer <token>
+```
+
+The server compares it with a constant-time comparison (no timing leak). An empty
+token is a deliberate no-op pass-through (insecure/dev mode, useful for local
+exploration only). This is what the [Quickstart](/docs/learn/quickstart) relies on.
+
+## Revocable API keys
+
+For anything beyond a single shared secret, the orchestrator also accepts revocable
+API keys, issued and managed by the master token holder:
+
+```bash
+fuse apikeys create --label "ci-runner"
+fuse apikeys list
+fuse apikeys revoke <id>
+```
+
+`apikeys` commands themselves require the **master token**. Connect with `--master`
+to mark a context's token as the master token:
+
+```bash
+fuse connect http://orchestrator:8080 --token <master-token> --master
+```
+
+Keys are shown once at creation (`fuse apikeys create` prints the raw secret) and
+are unrecoverable afterward; they're stored hashed. Both the master token and any
+API key are accepted interchangeably as a bearer token on every `/v1/*` route.
+
+## Browser / session auth
+
+For a browser-based frontend (Fuse's optional dashboard), the token is exchanged for
+an HttpOnly session cookie so the browser's JS never holds the secret after login:
+
+- `POST /login` with `{"token": "..."}`: on success, sets an HttpOnly `fuse_session`
+  cookie (`SameSite=Lax`, `Secure` when serving TLS, 7-day max-age).
+- `POST /logout`: clears the cookie.
+- `BearerAuth` accepts either the `Authorization` header or (if absent) the
+  `fuse_session` cookie. The header always wins if both are present.
+
+**Deployment constraint:** this only works for a same-origin deployment (SPA served
+through the same reverse proxy as the API). Genuine cross-origin (SPA on a different
+origin than the API) isn't supported yet. It would need credentialed CORS plus
+`SameSite=None; Secure` (neither of which is implemented). Front the SPA same-origin.
+
+## Host agent tokens (separate concern)
+
+The tokens above authenticate *callers of the orchestrator*. A completely separate
+token pair authenticates the *orchestrator to each host agent*:
+
+- `FIRECRACKER_TOKEN`: bearer token the orchestrator uses to call `fc-agent`.
+- `QEMU_AGENT_TOKEN`: same, for `qemu-agent` on GPU hosts.
+
+These never reach the CLI, SDKs, or browser. They're purely orchestrator-to-host.
+See [Firecracker host setup](/docs/cloud/firecracker-host-setup) and
+[GPU host setup](/docs/cloud/gpu-host-setup).
+
+## Per-VM secrets (a third, unrelated concern)
+
+Secrets you pass to `fuse up --secret key=value` or `fuse environment create --secret
+...` are yet another layer: per-VM credentials, generated and encrypted at rest
+(`TOKEN_ENCRYPTION_KEY`), scoped to a single environment. Not an auth mechanism for
+the API itself. See [Fusefile](/docs/learn/concepts/fusefile#field-notes) for how
+they're declared and resolved.

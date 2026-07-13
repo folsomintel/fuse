@@ -1,0 +1,33 @@
+---
+title: Overview
+description: SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator
+---
+
+This section is the reference for driving a running Fuse orchestrator: the three
+client SDKs, the operator CLI, and the raw HTTP API underneath both. If you're new
+to Fuse's concepts, start with [Learn](/docs/learn) first. This section assumes you
+already know what an environment, host, and snapshot are.
+
+## Picking a surface
+
+- **CLI**: the fastest way to operate Fuse by hand. Register hosts, bring up
+  environments from a Fusefile, inspect and tear things down. See [CLI overview](/docs/reference/cli).
+- **SDKs**: for driving Fuse programmatically from your own service or agent
+  harness. Available for [Go](/docs/reference/sdks/go), [Python](/docs/reference/sdks/python),
+  and [TypeScript](/docs/reference/sdks/typescript), all mirroring the same shape.
+- **HTTP API**: the raw REST surface every SDK and the CLI itself are built on. See
+  [HTTP API overview](/docs/reference/api).
+
+All three authenticate the same way. See [Authentication](/docs/reference/auth)
+before you start.
+
+## Resource coverage
+
+Every surface exposes the same four resources:
+
+| Resource | What it manages |
+| --- | --- |
+| Environments | Create, list, inspect, drain, fork, destroy microVMs. |
+| Hosts | Register, list, cordon/uncordon, remove compute hosts. |
+| Snapshots | Create, list, restore, delete VM snapshots. |
+| API keys | Issue and revoke orchestrator-global API keys (master-token only). |
