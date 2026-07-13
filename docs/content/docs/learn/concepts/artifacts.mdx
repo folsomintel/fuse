@@ -9,9 +9,12 @@ easily-confused "agent" processes. This page disambiguates them.
 ## Two agents, not one
 
 - **`fc-agent`**: runs on the **host**, outside any microVM. A Python process that
-  drives one Firecracker (or, for GPU hosts, QEMU) process per VM, over an HTTP
-  contract the orchestrator's Firecracker provider speaks. It's the thing you start
-  with `fc-agent.sh start` on a host you're bringing up.
+  drives one Firecracker process per VM, over an HTTP contract the orchestrator's
+  Firecracker provider speaks. It's the thing you start with `fc-agent.sh start` on
+  a host you're bringing up. GPU hosts run a separate process, `qemu-agent`, which
+  mirrors the same contract for QEMU/VFIO instead of Firecracker; see
+  [Providers](/docs/learn/concepts/providers) and
+  [GPU host setup](/docs/cloud/gpu-host-setup).
 - **`fused`**: runs **inside the guest**, as the reference in-guest agent. A small
   Go daemon (built from `cmd/fused`) that reads the manifest and secrets Fuse
   uploads, serves a small HTTP API (`--listen`, default `:9550`, including
