@@ -1,0 +1,48 @@
+---
+title: Overview
+description: What Fuse is and how its pieces fit together
+---
+
+Fuse is a control plane for agents: it deploys Firecracker microVMs onto your own
+hosts and drives their full lifecycle — provision, running, drain, destroy — through
+a REST API. It's the orchestration layer sandboxed compute needs: scheduling across
+hosts, snapshots, host management, and live event streams, built on Firecracker and
+entirely open source.
+
+The hard part of Firecracker has always been getting it running: host setup, the
+in-guest agent, building a rootfs. Fuse collapses all of that into a single script —
+one command brings up a host with the agent installed and a rootfs baked and ready.
+
+## What you get
+
+- **One-script Firecracker setup** — host, agent, and a baked rootfs, ready to boot.
+- **Scheduling across hosts** — register hosts, and Fuse places microVMs for you.
+- **Optional whole-GPU environments** — route GPU requests to QEMU/VFIO hosts.
+- **Full VM lifecycle** — provision, running, drain, destroy, tracked and reconciled.
+- **Snapshots** — capture a running microVM and restore from it.
+- **Live event streams** — tail a microVM's events over SSE.
+- **Durable state** — backed by Postgres, or in-memory for local runs.
+- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at rest.
+- **REST API and Prometheus metrics** — drive everything over HTTP, observe it out of the box.
+
+## How the pieces fit together
+
+- **The orchestrator** is the control plane: one HTTP API, a scheduler, and the
+  source of truth for every environment, host, and snapshot.
+- **A host** is a machine running a host agent (fc-agent for Firecracker, or
+  qemu-agent for GPU hosts). You register hosts with the orchestrator; it schedules
+  microVMs onto them.
+- **An environment** is one microVM and the task running inside it. You describe
+  what you want with a Fusefile or a raw resource spec, and the orchestrator picks a
+  host, boots the VM, and tracks it through its lifecycle.
+- **A snapshot** captures a running microVM so you can restore it later.
+
+Read [Foundations](/docs/learn/concepts/fusefile) for the full mental model, or jump
+straight to the [Quickstart](/docs/learn/quickstart) to get a microVM running.
+
+## Where to go next
+
+- New to Fuse? Start with the [Quickstart](/docs/learn/quickstart).
+- Want the concepts first? Start with the [Fusefile](/docs/learn/concepts/fusefile).
+- Ready to install the CLI or an SDK? See [Docs](/docs/reference).
+- Bringing up a real Firecracker or GPU host? See [Cloud](/docs/cloud).

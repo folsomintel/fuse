@@ -1,0 +1,71 @@
+---
+title: Quickstart
+description: Get a microVM running in a few commands, no real host required
+---
+
+This walks through the fastest path to a running environment. It uses the
+orchestrator's built-in in-memory stub provider, so you don't need a real
+Firecracker host yet — that's covered in [Cloud](/docs/cloud/firecracker-host-setup)
+once you're ready to run real workloads.
+
+## 1. Build and run the orchestrator
+
+```bash
+go build -o bin/fuse ./cmd/orchestrator
+./bin/fuse
+```
+
+With no `FIRECRACKER_BASE_URL` set, the orchestrator runs against an in-memory stub
+provider — handy for trying things out locally. It listens on `:8080` by default.
+
+## 2. Install the CLI
+
+The CLI binary is `fuse`, built from the repo's `cli/` package:
+
+```bash
+go build -o bin/fuse-cli ./cli
+```
+
+See [CLI overview](/docs/reference/cli) for other install paths.
+
+## 3. Connect to the orchestrator
+
+```bash
+fuse-cli connect http://localhost:8080
+```
+
+Since this local orchestrator has no `ORCH_AUTH_TOKEN` set, no `--token` is needed —
+that's insecure/dev mode, fine for local exploration only.
+
+## 4. Scaffold a Fusefile
+
+```bash
+fuse-cli init
+```
+
+This writes a fully commented example `Fusefile` to the current directory. Open it
+and adjust `resources`, `run`, and any `services` you need. See
+[Fusefile](/docs/learn/concepts/fusefile) for the full field reference.
+
+## 5. Bring it up
+
+```bash
+fuse-cli up
+```
+
+`up` compiles the Fusefile and creates an environment from it, then streams
+provisioning events until the environment reaches a terminal state (or pass
+`--no-wait` to return immediately).
+
+## 6. Check on it
+
+```bash
+fuse-cli environment list
+fuse-cli environment get <id>
+```
+
+## Next steps
+
+- Learn what each Fusefile field does: [Fusefile](/docs/learn/concepts/fusefile)
+- Understand the VM lifecycle: [Environments](/docs/learn/concepts/environments)
+- Bring up a real Firecracker host: [Firecracker host setup](/docs/cloud/firecracker-host-setup)
