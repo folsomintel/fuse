@@ -1,0 +1,57 @@
+---
+title: HTTP API overview
+description: REST surface, auth, and error format
+---
+
+The orchestrator exposes a REST API on [chi](https://github.com/go-chi/chi). Every
+SDK and the CLI itself are built on this surface. The full OpenAPI spec ships in the
+repo at `internal/api/openapi.yaml`. This page and the two that follow summarize it;
+treat the spec file as the source of truth for exact schemas.
+
+## Base URL and path prefix
+
+All resource routes are under `/v1`. A backward-incompatible change would bump this
+prefix.
+
+## Auth
+
+Every `/v1/*` route requires a bearer token (or, for browser callers, the session
+cookie); see [Authentication](/docs/reference/auth). `/health`, `/ready`, and
+`/metrics` are mounted outside auth entirely, for load balancer / Kubernetes probes
+and Prometheus scraping.
+
+## Request correlation
+
+Every response carries an `X-Request-ID` header: either the value the client
+supplied (if it matches `[A-Za-z0-9_-]{1,128}`) or a freshly generated
+`req_<32hex>` identifier. The same value threads through audit events and server
+logs.
+
+## Error envelope
+
+All non-2xx responses share one shape:
+
+```json
+{
+  "error": {
+    "code": "not_found",
+    "message": "environment not found",
+    "details": {}
+  }
+}
+```
+
+`code` is a stable, machine-readable string: `not_found`, `conflict`,
+`invalid_argument`, `unavailable`, or `internal`. `details` is optional and
+free-form.
+
+## Probe endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness. Always `200 {"status":"ok"}`. Unauthenticated. |
+| `GET` | `/ready` | Readiness. `200` when the state store and fleet manager are healthy, `503` with a per-check breakdown otherwise. Unauthenticated. |
+| `GET` | `/metrics` | Prometheus exposition. Unauthenticated. |
+
+See [Environments and snapshots](/docs/reference/api/environments) and
+[Hosts and API keys](/docs/reference/api/hosts-and-keys) for the resource routes.

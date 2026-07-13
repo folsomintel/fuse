@@ -1,0 +1,85 @@
+---
+title: Environments and snapshots
+description: /v1/environments and /v1/snapshots
+---
+
+## Environments
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/environments` | List environments. Optional exact-match filters: `task_id`, `state`, `host_id`. |
+| `POST` | `/v1/environments` | Create an environment. Blocks until running or failed. |
+| `GET` | `/v1/environments/{vmId}` | Fetch one environment. |
+| `POST` | `/v1/environments/{vmId}?action=rotate-token` | Re-issue guest credentials. Returns `204`. |
+| `POST` | `/v1/environments/{vmId}?action=drain` | Graceful phase-1 teardown (running only). Returns `200` with the updated environment (`state: draining`). |
+| `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
+| `GET` | `/v1/environments/{vmId}/events` | Server-Sent Events stream of state transitions. |
+
+### Create request
+
+```json
+{
+  "task_id": "t-1",
+  "spec": {
+    "cpus": 2,
+    "ram_mb": 2048,
+    "storage_gb": 10,
+    "gpus": 0,
+    "gpu_kind": "",
+    "region": "us-east",
+    "max_runtime_seconds": 3600
+  },
+  "manifest_inline": "<base64>",
+  "secrets": { "key": "value" }
+}
+```
+
+`gpus` is a whole-device count; a non-zero value routes the environment to a host
+with matching free GPU inventory (necessarily QEMU-backed, see
+[Providers](/docs/learn/concepts/providers)). `max_runtime_seconds` is a
+leak-detection ceiling; `0` uses the fleet default, and the orchestrator tears down
+tasks that exceed it with no state transitions.
+
+### Environment states
+
+`provisioning`, `running`, `draining`, `destroying` are the stored states.
+`destroyed` and `failed` are synthesized terminal states on the event stream only:
+they signal the record has been removed, not a stored state on the VM.
+
+### Event stream semantics
+
+`GET /v1/environments/{vmId}/events` replaces polling for state transitions:
+
+- The first event is always a snapshot of the current state, emitted immediately on
+  connect; no need to `GET` first.
+- Subsequent events fire on every transition.
+- The stream closes cleanly after a terminal event (`destroyed`/`failed`), or on
+  client disconnect.
+- A `: keepalive` comment line is emitted every 15 seconds so proxies don't idle the
+  connection out.
+- This is single-process pub/sub: a subscriber connected to a different
+  orchestrator replica than the publishing one will not see events. Acceptable
+  today since the orchestrator runs as a single process.
+
+Wire format is standard SSE:
+
+```
+id: <128-bit hex>
+data: {"event":"state","vm_id":"...","state":"running","url":"...","updated_at":"..."}
+
+```
+
+## Snapshots
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/environments/{vmId}/snapshots` | Snapshot a running VM. |
+| `GET` | `/v1/snapshots` | List, with optional filters. |
+| `GET` | `/v1/snapshots/{snapshotId}` | Fetch one. |
+| `POST` | `/v1/snapshots/{snapshotId}?action=restore` | Restore in place onto the original VM. |
+| `DELETE` | `/v1/snapshots/{snapshotId}` | Delete (also removes the provider artifact). |
+
+See [Snapshots](/docs/learn/concepts/snapshots) for the concept-level model,
+including the QEMU/GPU exception (no snapshot support at all) and the known
+restore-corruption caveat covered in
+[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes).
