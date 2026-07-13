@@ -1,0 +1,165 @@
+---
+title: Firecracker host setup
+description: Bringing up a bare-metal or nested-virt host to run Firecracker microVMs
+---
+
+## Requirements
+
+Firecracker needs hardware virtualization (KVM). The host must expose `/dev/kvm`:
+
+- **Bare-metal Linux**, or a cloud instance type with **nested virtualization**
+  enabled (e.g. GCP `*-metal`/nested-virt images, AWS `*.metal`, bare-metal
+  providers like Equinix or Hetzner dedicated). It will not run inside an ordinary
+  container or a VM without nested virt.
+- Confirm before you start:
+  ```bash
+  ls -l /dev/kvm
+  [ -r /dev/kvm ] && [ -w /dev/kvm ] && echo ok
+  ```
+  If `/dev/kvm` is missing, the host can't run Firecracker.
+- Linux only, `x86_64` today (the baked rootfs pulls `amd64` podman/iptables). The
+  agent shells out to `ip`, `iptables`, `firecracker`, and SSH.
+- Needs `sudo` (TAP devices, iptables, mounting the rootfs to bake), plus `curl`,
+  `tar`, `ssh`, and `iptables` on the host.
+
+## One-command bootstrap
+
+On a host that meets the requirements above, `bootstrap` does everything: host
+dependencies, Firecracker, the agent service, a local Postgres, the orchestrator, the
+weekly auto-update timer, the guest agent and rootfs bake, and it self-registers the
+host. It then prints the token and the exact `fuse connect` line to run from your
+laptop.
+
+```bash
+git clone <this repo> ~/fc && cd ~/fc/host-agent
+sudo ./fc-agent.sh bootstrap
+```
+
+It's idempotent, safe to re-run. Flags: `--no-updater` (skip the auto-update
+timer), `--no-register` (don't self-register). Everything below is the manual,
+step-by-step equivalent, use it when you want to run or skip individual stages.
+
+## Manual, step-by-step setup
+
+```bash
+git clone <this repo> ~/fc && cd ~/fc/host-agent
+
+# 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
+./fc-install.sh
+
+# 2. Build the reference in-guest agent (produces host-agent/fused). Needs Go.
+#    To run your own agent instead, drop your binary here as `fused` and skip this.
+./fc-build-agent.sh
+
+# 3. Bake the guest rootfs (rootfs-fused.ext4). Bakes in `fused` + fused.service.
+#    Re-run whenever the agent binary changes -- the agent is baked into the image.
+./fc-bake-rootfs.sh
+
+# 4. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
+./fc-agent.sh start
+
+# 5. Smoke-test the contract end to end.
+./fc-agent-test.sh
+```
+
+Point Fuse at the printed values:
+
+```
+FIRECRACKER_BASE_URL=http://<host>:8090
+FIRECRACKER_TOKEN=<generated>
+```
+
+See [Deploying the orchestrator](/docs/cloud/orchestrator-deploy) to wire these into
+an orchestrator instance.
+
+## What gets baked into the rootfs
+
+See [Artifacts](/docs/learn/concepts/artifacts) for the conceptual explanation.
+Concretely, `fc-bake-rootfs.sh` builds `rootfs-fused.ext4` on top of the Firecracker
+CI Ubuntu 22.04 rootfs, injecting `/usr/local/bin/fused`, podman-static and its
+runtime dependencies, iptables (symlinked to `xtables-legacy-multi`, the CI kernel
+has no nftables), the host's CA bundle, and a `fused.service` systemd unit. Re-run it
+whenever the agent binary changes.
+
+**Known limitations of this rootfs:** `apt` is unusable (the CI rootfs ships an
+empty `/var/lib/dpkg/status`, customize via the mounted ext4 from the host
+instead). `podman run` without `--network=host` falls back to host netns anyway
+(bridged per-container networking isn't supported). The kernel lacks fuse and
+nftables support.
+
+## The host agent's HTTP contract
+
+All routes are under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON
+in/out:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/v1/vm` | Create a microVM. Body: `{name,cpus,memory_mb,storage_gb,region}`. Returns `{vm_id,url}`. |
+| `GET` | `/v1/vm/{id}` | `{vm_id,url}` |
+| `GET` | `/v1/vm?prefix=` | `{vms:[{vm_id,url}]}`, prefix match on name. |
+| `DELETE` | `/v1/vm/{id}` | Tear down, free TAP + DNAT. |
+| `POST` | `/v1/vm/{id}/upload` | `{path, content_b64}`, writes into the guest. |
+| `POST` | `/v1/vm/{id}/exec` | `{cmd:[...]}`, returns `{exit_code, stdout, stderr}` (base64). |
+| `POST` | `/v1/vm/{id}/start-agent` | Preferred. Optionally fetches the agent binary via `download_url`, writes a systemd drop-in, starts it. |
+| `POST` | `/v1/vm/{id}/start-surfd` | Frozen legacy wire, same as `start-agent` with `fused` defaults. Fuse falls back to this on a 404 from `start-agent`. |
+| `POST` | `/v1/vm/{id}/snapshot` | `{comment, include_ram}`, disk-only (`include_ram` currently ignored). |
+| `GET` | `/v1/vm/{id}/snapshots` | `{snapshots:[...]}` |
+| `POST` | `/v1/vm/{id}/restore` | `{snapshot_id, include_ram}`, stops fc, swaps rootfs, reboots the VM. |
+
+`url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port is
+`19550 + vm_index`. Public host is auto-detected; override with `PUBLIC_HOST=...` in
+the agent's environment.
+
+## Networking model
+
+- One TAP per VM (`fcv<N>`), a `/30` subnet `10.200.<N>.0/30`, host `.1`, guest `.2`.
+- Host iptables: `MASQUERADE` for egress, `FORWARD` accept for the TAP, and a per-VM
+  `PREROUTING` DNAT rule `<public_host>:<port> -> <guest>:9550`.
+- Open at your cloud / external firewall: `8090/tcp` (the agent's HTTP API) and
+  `19551–19799/tcp` (the per-VM guest-agent DNAT range).
+
+## Operating
+
+```bash
+./fc-agent.sh start               # launch agent on :8090, print env
+./fc-agent.sh stop                 # stop
+./fc-agent.sh restart              # stop+start; re-attaches to running VMs
+./fc-agent.sh log                  # tail agent log
+./fc-agent.sh env                  # print env keys for an already-running agent
+./fc-agent-test.sh                 # contract smoke test
+
+# systemd integration (optional, for long-lived hosts)
+./fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
+./fc-agent.sh uninstall-service
+```
+
+To pick up a new agent binary: re-run `./fc-bake-rootfs.sh` then `./fc-agent.sh restart`.
+
+On startup, the agent walks its state directory and for each VM either reuses it (if
+the process and socket are alive) or transparently recreates the TAP/DNAT and
+relaunches Firecracker with the same config. That means `systemctl restart fc-agent`
+and host reboots don't lose VMs, as long as the systemd unit is installed.
+
+## Auto-update
+
+`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It compares the
+baked `fused --version` to the newest tag and, if newer, pulls the repo, downloads
+the new `fused`, re-bakes the rootfs, and restarts the agent:
+
+```bash
+./fc-update.sh                 # one-shot: update now if a newer release exists
+./fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
+./fc-agent.sh uninstall-updater
+```
+
+No token needed (public repo). Optional `host-agent/.fc-updater.env` can set
+`GH_TOKEN=...` to dodge API rate limits, or `FUSE_ORCH_SERVICE`/`FUSE_ORCH_BIN` to
+also update a co-located orchestrator. Override the source repo with
+`FUSE_REPO=owner/name`.
+
+## State
+
+State lives under `agent-state/vms/<vm_id>/`, safe to `rm -rf` if the agent is
+stopped and you want a clean slate.
+
+Hit an issue baking or booting? See [Troubleshooting](/docs/cloud/troubleshooting).
