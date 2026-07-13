@@ -1,0 +1,106 @@
+---
+title: Fusefile
+description: The declarative spec format for a Fuse environment
+---
+
+A **Fusefile** is the canonical, human-authored way to describe a Fuse environment:
+what image or rootfs to use, how much CPU/memory/storage/GPU it needs, what setup
+and run commands to execute, what services to bring up alongside it, and what ports
+to expose.
+
+A Fusefile is parsed and compiled entirely client-side (by the CLI) into the
+orchestrator's wire format. The orchestrator itself never sees a Fusefile, only the
+compiled `CreateEnvironmentRequest`.
+
+## Full field reference
+
+```yaml
+version: 1
+
+# base environment. an oci image ref, or omitted to use the baked base rootfs.
+image: ghcr.io/acme/worker:latest
+
+resources:
+  cpus: 2
+  gpu: 1              # whole-device count; omit or 0 for no GPU
+  gpu_kind: a100      # optional match, e.g. "a100"; empty matches any kind
+  memory: 2GB         # accepts MB/GB suffixes, compiles to ram_mb
+  storage: 10GB       # compiles to storage_gb
+  max_runtime: 1h     # accepts go duration, compiles to max_runtime_seconds
+
+# convenience layer run once at boot, before run. compiles into startup_script.
+setup:
+  - apt-get update -qq
+  - apt-get install -y --no-install-recommends ripgrep
+
+# services brought up inside the vm. compiles to manifest.services then a compose project.
+services:
+  postgres:
+    image: postgres:16
+    ports: [5432]
+    env:
+      POSTGRES_PASSWORD: { secret: pg_password }
+  redis:
+    image: redis:7
+    ports: [6379]
+
+# the main task entrypoint. compiles into startup_script (after setup).
+run: ./start.sh
+
+workspace: /workspace
+
+# ports published to the outside world (ingress).
+expose:
+  - port: 8080
+    as: http
+
+# secret names this environment requires. values are supplied out-of-band
+# (cli flag / env / secret store), never written in the Fusefile.
+secrets:
+  - pg_password
+```
+
+## Field notes
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `version` | int | Currently always `1`. |
+| `image` | string | OCI image ref. Omit to use the baked base rootfs. |
+| `resources.cpus` | int | vCPU count. |
+| `resources.gpu` | int | Whole GPU device count. Requires a host registered with the `qemu` backend. |
+| `resources.gpu_kind` | string | Optional GPU model match, e.g. `a100`. See [Providers](/docs/learn/concepts/providers). |
+| `resources.memory` | string | Accepts `MB`/`GB` suffixes; compiles to `ram_mb`. |
+| `resources.storage` | string | Accepts `MB`/`GB` suffixes; compiles to `storage_gb`. |
+| `resources.max_runtime` | string | Go duration (`1h`, `30m`); compiles to `max_runtime_seconds`. |
+| `setup` | list of strings | Commands run once at boot, before `run`. Compiled into `startup_script`. |
+| `services` | map | In-VM services, each with `image`, `ports`, and `env`. Compiles to `manifest.services` plus a compose project. |
+| `services.*.env.*` | literal or secret ref | Exactly one of `value` or `secret` must be set per entry. `{ secret: name }` resolves from the `secrets` you supply at `up` time. |
+| `run` | string | The main entrypoint, compiled into `startup_script` after `setup`. |
+| `workspace` | string | Working directory inside the guest. |
+| `expose` | list of `{port, as}` | Guest ports published externally. |
+| `secrets` | list of strings | Secret *names* this environment requires. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
+
+## Scaffolding one
+
+```bash
+fuse init
+```
+
+writes exactly the annotated example above to `./Fusefile` (or a path passed via
+`-f`/`--file`). Pass `--force` to overwrite an existing file.
+
+## Bringing it up
+
+```bash
+fuse up
+```
+
+reads a Fusefile (default `./Fusefile`, or a positional path, or `-f/--file`),
+compiles it, resolves required secrets from `--secret key=value` flags and/or a
+`--secrets-file`, and creates an environment from the result, streaming
+provisioning events until a terminal state, unless `--no-wait` is passed. If any
+secret named in `secrets` is missing from the resolved set, `up` fails fast with the
+list of missing names rather than creating a broken environment.
+
+See [`fuse up` and `fuse init`](/docs/reference/cli/environments) for the full flag
+reference.

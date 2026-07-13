@@ -1,0 +1,65 @@
+---
+title: "Artifacts: rootfs bake, fc-agent, and fused"
+description: What gets built and baked to run a microVM, and the two agents involved
+---
+
+Getting a Firecracker microVM running involves a few build artifacts and two
+easily-confused "agent" processes. This page disambiguates them.
+
+## Two agents, not one
+
+- **`fc-agent`**: runs on the **host**, outside any microVM. A Python process that
+  drives one Firecracker (or, for GPU hosts, QEMU) process per VM, over an HTTP
+  contract the orchestrator's Firecracker provider speaks. It's the thing you start
+  with `fc-agent.sh start` on a host you're bringing up.
+- **`fused`**: runs **inside the guest**, as the reference in-guest agent. A small
+  Go daemon (built from `cmd/fused`) that reads the manifest and secrets Fuse
+  uploads, serves a small HTTP API (`--listen`, default `:9550`, including
+  `/health`), and quiesces cleanly on SIGTERM, that's what backs the drain phase of
+  an environment's lifecycle.
+
+Put simply: `fc-agent` is the host-side worker that boots VMs; `fused` is the
+guest-side daemon that runs inside them.
+
+## The rootfs bake
+
+Fuse doesn't hardcode a specific in-guest daemon. Boot drives a pluggable
+`AgentSpec`: files to upload, an optional download URL for the agent binary, and
+the commands to launch and gracefully drain it. The **default model is bake-every-time**:
+`fused` (and its systemd unit) are baked directly into the guest rootfs image, rather
+than fetched at boot.
+
+`fc-bake-rootfs.sh` builds this image on top of the Firecracker CI Ubuntu 22.04
+rootfs, injecting:
+
+- `/usr/local/bin/fused`: the static Go agent binary.
+- Podman-static plus crun/runc/conmon/netavark/pasta/fuse-overlayfs, so the guest can
+  run the `services` from your Fusefile.
+- iptables, symlinked to `xtables-legacy-multi` (the CI kernel has no nftables).
+- The host's CA bundle.
+- `fused.service`, a systemd unit with a drop-in slot the host agent uses to pass
+  `--manifest`/`--secrets`/`--gateway`/`--vm-id` at start time.
+- Required directories the base CI rootfs is missing (`/var/tmp`, `/var/lib/containers`,
+  `/run/containers`).
+
+Because the agent is baked in, **you must re-bake whenever the agent binary
+changes**: `fc-bake-rootfs.sh` is idempotent and safe to re-run; new VMs pick up the
+new image on their next create, while existing VMs keep their per-VM copy until
+recreated.
+
+GPU hosts have an equivalent bake producing a CUDA-capable qcow2 image instead of an
+ext4 file; see [GPU host setup](/docs/cloud/gpu-host-setup).
+
+## Bringing your own agent
+
+You're not required to use `fused`. Supply a different `AgentSpec` and bake your own
+binary into the rootfs as `/usr/local/bin/fused` (matching the same start/stop
+contract), or use `AgentSpec.DownloadURL` to fetch a binary at boot instead of baking
+it in. See the walkthrough in the repo's `host-agent/FUSE.md`.
+
+## Where this is set up
+
+All of this lives under `host-agent/` in the repo; see
+[Firecracker host setup](/docs/cloud/firecracker-host-setup) for the full bring-up
+walkthrough, and [Troubleshooting](/docs/cloud/troubleshooting) for known bake
+issues.

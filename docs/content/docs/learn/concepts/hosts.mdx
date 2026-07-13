@@ -1,0 +1,65 @@
+---
+title: Hosts
+description: The machines Fuse schedules microVMs onto
+---
+
+A **host** is a machine running a host agent (`fc-agent` for Firecracker, or
+`qemu-agent` for GPU/QEMU), registered with the orchestrator. Register your hosts
+and Fuse's scheduler places microVMs across them based on declared capacity and
+current allocation.
+
+## Registering a host
+
+```bash
+fuse host register <id> \
+  --url http://10.0.0.5:9000 \
+  --region us-east \
+  --backend firecracker \
+  --cpus 16 --ram-mb 65536 --storage-gb 500 --max-vms 20
+```
+
+The `<id>` is a free-form, operator-supplied string and is the host's primary key;
+use something readable, like `prod-east-1`. GPU hosts additionally pass `--gpus` and
+`--gpu-kind`, and require `--backend qemu`. See [Providers](/docs/learn/concepts/providers)
+for the backend distinction.
+
+## Capacity and allocation
+
+Every host tracks both a declared **capacity** (what you registered it with) and a
+live **allocated** figure (what's currently in use by scheduled environments) across
+CPUs, RAM, storage, VM count, and (for GPU hosts) GPU devices. `fuse host get <id>`
+and `fuse host metrics <id>` both show capacity vs. allocated.
+
+## Cordon and uncordon
+
+Cordoning a host marks it unschedulable. The scheduler stops placing new
+environments there, without touching what's already running. This is the standard
+move before maintenance:
+
+```bash
+fuse host cordon <id>     # stop new placements
+fuse host uncordon <id>   # resume scheduling
+```
+
+## Removing a host
+
+```bash
+fuse host remove <id>
+```
+
+Deregistering a host is refused if any environments are still assigned to it; drain
+or destroy them first.
+
+## Selecting an active host in the CLI
+
+Many CLI commands (like `fuse environment list`) scope themselves to an **active
+host** for convenience:
+
+```bash
+fuse host <id>       # select
+fuse host            # show current selection
+```
+
+This is a CLI-local convenience, not an API concept: `fuse environment create`
+schedules orchestrator-wide regardless of the active host selection (use
+`--region` on create to influence placement instead).

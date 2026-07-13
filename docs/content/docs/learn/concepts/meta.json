@@ -1,0 +1,11 @@
+{
+  "title": "Foundations",
+  "pages": [
+    "fusefile",
+    "providers",
+    "hosts",
+    "environments",
+    "snapshots",
+    "artifacts"
+  ]
+}
