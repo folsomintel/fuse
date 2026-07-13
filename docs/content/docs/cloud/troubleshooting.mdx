@@ -1,0 +1,115 @@
+---
+title: Troubleshooting and known issues
+description: Common install/setup problems and known limitations, with workarounds
+---
+
+## KVM not available
+
+Firecracker and QEMU both need hardware virtualization. If a host can't run
+microVMs at all, this is almost always why.
+
+```bash
+ls -l /dev/kvm
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && echo ok
+```
+
+If `/dev/kvm` is missing: the host is either an ordinary container or a VM without
+nested virtualization enabled. You need bare-metal Linux, or a cloud instance type
+with nested virt explicitly enabled (e.g. GCP `*-metal`/nested-virt images, AWS
+`*.metal`, or a bare-metal provider). There is no software workaround: this is a
+hardware/hypervisor requirement.
+
+## Orchestrator silently runs in stub mode
+
+Symptom: `fuse up` or `fuse environment create` succeeds, but nothing real ever
+boots, or environments behave oddly.
+
+Cause: the orchestrator falls back to an in-memory stub provider whenever
+`FIRECRACKER_BASE_URL` is unset. This is intentional (it's what the
+[Quickstart](/docs/learn/quickstart) relies on), but it's easy to leave unset by
+accident when moving from local dev to a real host. Check the orchestrator's startup
+logs; it logs which mode it's running in, and confirm `FIRECRACKER_BASE_URL` and
+`FIRECRACKER_TOKEN` are set to the values `fc-agent.sh start` printed. See
+[Deploying the orchestrator](/docs/cloud/orchestrator-deploy).
+
+## Rootfs bake fails or produces an incomplete guest
+
+Symptom: environments get stuck in `provisioning`, or the guest boots but `fused`
+(or podman) isn't present.
+
+The most common cause is a bake that didn't fully complete: `fc-bake-rootfs.sh`
+mounts the rootfs, injects several components (the `fused` binary, podman-static,
+iptables, the CA bundle, the systemd unit), and unmounts. If any step in that
+sequence is interrupted, the resulting `rootfs-fused.ext4` can be missing pieces
+silently; new VMs will boot but the agent won't be reachable.
+
+Fix: re-run `./fc-bake-rootfs.sh` from a clean `rootfs.ext4` (re-run `./fc-install.sh`
+first if you're unsure the base rootfs itself is intact), and check its output for
+every step completing rather than assuming success. See
+[Firecracker host setup](/docs/cloud/firecracker-host-setup#what-gets-baked-into-the-rootfs)
+for exactly what should be present afterward.
+
+## netavark / nftables errors during the bake
+
+Symptom: the bake or an in-guest `podman run` fails with a netavark error
+referencing nftables or `-m comment`.
+
+Cause: the Firecracker CI kernel (`vmlinux-5.10.223`) ships without
+`CONFIG_NETFILTER_XT_MATCH_COMMENT`, `CONFIG_FUSE_FS`, or `CONFIG_NF_TABLES`.
+Netavark unconditionally emits `-m comment` rules and fails without them.
+
+Fix: this is why the baked rootfs's `containers.conf` forces new containers into the
+host's network namespace (`netns = "host"`, `firewall_driver = "none"`); it
+sidesteps netavark's netfilter dependency entirely. Isolation is still provided by
+the microVM boundary itself. If you need per-container network isolation *inside*
+one VM, you'd need a custom kernel enabling the missing netfilter modules; this is
+not supported by the reference bake.
+
+## `apt` doesn't work inside the guest
+
+The Firecracker CI base rootfs ships with an empty `/var/lib/dpkg/status`, so `apt`
+is unusable from inside a running guest. This is expected, not a bug; customize the
+rootfs by mounting the ext4 file from the host and modifying it there (the same way
+`fc-bake-rootfs.sh` itself does), not by running `apt` inside a live guest.
+
+## Snapshot restore can corrupt unsynced writes
+
+<Callout type="warn" title="Known limitation">
+Restoring a snapshot while the guest has unsynced writes can corrupt the restored
+data. This is a known, unfixed issue as of this writing.
+</Callout>
+
+**Symptom:** a clean snapshot-then-restore cycle (no writes in between) round-trips
+correctly. But if the guest has written data that hasn't been flushed to disk at the
+moment you call restore, the affected file reads back as NUL bytes after the
+restore completes, instead of the snapshot's actual content.
+
+**Root cause:** restore stops the Firecracker process and copies the snapshot file
+over the live `rootfs.ext4` without discarding the (now-dead) VM's dirty host page
+cache first. Stale or torn data from that dead cache can leak into the restored
+image.
+
+**Who's affected:** anyone using the normal "snapshot, do something risky, roll
+back" pattern where the guest was actively writing right before the restore call.
+
+**Workaround:** run `sync` inside the guest immediately before triggering a
+snapshot, and again before triggering a restore, to force pending writes to disk
+first. This avoids the corruption in practice, though it doesn't fix the underlying
+race.
+
+**Proper fix (not yet implemented):** flush or invalidate the rootfs page cache as
+part of the restore path itself, e.g. `blockdev --flushbufs`, opening the backing
+file with `O_DIRECT`, or `posix_fadvise(..., DONTNEED)`, or switch to Firecracker's
+native snapshot/restore mechanism instead of copying the backing file directly.
+
+This only affects [Firecracker-backed](/docs/learn/concepts/providers) snapshots:
+QEMU/GPU environments don't support snapshots at all, so the question doesn't arise
+there.
+
+## Where to look next
+
+- [Firecracker host setup](/docs/cloud/firecracker-host-setup): full bring-up
+  walkthrough and the host agent's HTTP contract.
+- [Artifacts](/docs/learn/concepts/artifacts): what the rootfs bake actually builds
+  and why.
+- [Snapshots](/docs/learn/concepts/snapshots): the snapshot/restore model.
