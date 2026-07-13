@@ -22,6 +22,10 @@ EOF
 fi
 
 echo "[build-agent] building reference agent -> $OUT (linux/amd64, static)"
+# go build -o refuses to overwrite an existing file it did not produce ("already
+# exists and is not an object file"), which wedges every rebuild once a stale or
+# hand-dropped fused is sitting here. clear it first.
+rm -f "$OUT"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go -C "$REPO_ROOT" build \
   -ldflags='-s -w' -o "$OUT" ./cmd/fused
 

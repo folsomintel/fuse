@@ -38,6 +38,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# under `set -e` a failing command aborts with no output, which historically made
+# this script look like it exited cleanly mid-bake. always say where it died.
+trap 'rc=$?; [ $rc -ne 0 ] && echo "[bake] FAILED at line $LINENO (exit $rc); image is incomplete" >&2' ERR
+
+# e2fsck exits 1 when it corrected errors and 2 when it corrected errors and
+# wants a reboot. both are success for our purposes; only >=4 is a real failure.
+# without this, `set -e` kills the bake right after the grow, silently.
+fsck_ok() {
+  local rc=0
+  sudo -n e2fsck -f -y "$1" >/dev/null || rc=$?
+  [ "$rc" -le 2 ] || { echo "[bake] e2fsck failed on $1 (exit $rc)" >&2; return 1; }
+}
+
 mkdir -p "$WORK"
 
 log "copy base -> $OUT"
@@ -45,7 +58,7 @@ cp -f "$BASE" "$OUT"
 
 log "grow $OUT to $SIZE"
 sudo -n truncate -s "$SIZE" "$OUT"
-sudo -n e2fsck -f -y "$OUT" >/dev/null
+fsck_ok "$OUT"
 sudo -n resize2fs "$OUT" >/dev/null
 
 log "mount loopback at $MOUNT_POINT"
@@ -172,11 +185,18 @@ CONF
 # --- 5. sanity ---------------------------------------------------------------
 
 log "sanity check"
-sudo -n test -x "$MOUNT_POINT/usr/local/bin/fused"
-sudo -n test -x "$MOUNT_POINT/usr/local/bin/podman"
-sudo -n test -x "$MOUNT_POINT/usr/libexec/docker/cli-plugins/docker-compose"
-sudo -n test -L "$MOUNT_POINT/usr/sbin/iptables"
-sudo -n test -f "$MOUNT_POINT/usr/lib/x86_64-linux-gnu/xtables/libxt_comment.so"
+# name the missing artefact. a bare `test` under `set -e` aborts with no output,
+# which is how a half-baked image previously reached a boot attempt and only
+# failed later with "agent binary not found at /usr/local/bin/fused".
+check() {
+  sudo -n test "$1" "$MOUNT_POINT$2" \
+    || { echo "[bake] sanity check FAILED: $2 missing or wrong type ($1)" >&2; exit 1; }
+}
+check -x /usr/local/bin/fused
+check -x /usr/local/bin/podman
+check -x /usr/libexec/docker/cli-plugins/docker-compose
+check -L /usr/sbin/iptables
+check -f /usr/lib/x86_64-linux-gnu/xtables/libxt_comment.so
 
 sudo -n umount "$MOUNT_POINT"
 trap - EXIT
