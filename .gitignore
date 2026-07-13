@@ -21,3 +21,8 @@ coverage/
 dist/
 
 .claude
+
+# docs site build/dep output (docs/ itself is tracked)
+docs/node_modules/
+docs/.next/
+docs/.source/
