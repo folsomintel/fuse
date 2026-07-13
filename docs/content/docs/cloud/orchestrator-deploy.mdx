@@ -1,0 +1,79 @@
+---
+title: Deploying the orchestrator
+description: Running the control plane as a long-lived service
+---
+
+For anything past local dev, run the orchestrator as a service rather than a
+foreground process.
+
+## Configuration
+
+| Env var | Flag | Default | Purpose |
+| --- | --- | --- | --- |
+| `ORCH_LISTEN` | `--listen` | `:8080` | API listen address. |
+| `FIRECRACKER_BASE_URL` | `--firecracker-url` | empty → stub | Firecracker host agent URL. |
+| `FIRECRACKER_TOKEN` | | | Bearer token for the host agent. |
+| `DATABASE_URL` | `--database-url` | empty → in-memory | Postgres state store connection string. |
+| `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption at rest. |
+| `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot (alternative to baking it in). |
+| `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS. |
+| `ORCH_REQUIRE_AUTH` | | `false` | Fail-closed strict mode: refuses to boot unless `ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are all set. |
+| `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/docs/reference/auth). |
+| `ORCH_ALLOWED_CIDRS` | `--allowed-cidrs` | empty → open | Comma-separated CIDR allowlist. |
+| `ORCH_SHUTDOWN_TIMEOUT_SECONDS` | `--shutdown-timeout` | `30` | Graceful shutdown ceiling. |
+| `ORCH_VM_PREFIX` | `--vm-prefix` | `fuse-` | Prefix applied to generated VM names. |
+
+With `FIRECRACKER_BASE_URL` unset, the orchestrator runs the in-memory stub provider
+(fine for local dev, not for production). With `DATABASE_URL` unset, state is
+in-memory and does not survive a restart.
+
+## Quickest path: co-locate with a Firecracker host
+
+The simplest topology co-locates the orchestrator on a Firecracker host and talks to
+`fc-agent` over loopback. The host toolchain installs both as systemd services:
+
+```bash
+cd host-agent
+./fc-install.sh                     # firecracker + kernel + rootfs
+./fc-agent.sh install-service       # host agent (systemd, :8090)
+./fc-agent.sh install-orchestrator  # orchestrator (systemd, :8080), co-located
+sudoedit /etc/default/orchestrator  # set DATABASE_URL (postgres)
+sudo systemctl start orchestrator
+```
+
+`install-orchestrator` resolves the `orchestrator` binary (from `ORCH_BIN_SRC=/path`,
+a local `./orchestrator`, an existing `/usr/local/bin/orchestrator`, or the latest
+GitHub release), writes `/etc/default/orchestrator` prefilled with
+`FIRECRACKER_BASE_URL=http://127.0.0.1:8090`, this host's `FIRECRACKER_TOKEN`, and
+freshly generated `ORCH_AUTH_TOKEN` + `TOKEN_ENCRYPTION_KEY` (never overwriting an
+existing file), then installs `orchestrator.service` ordered after
+`fc-agent.service`.
+
+Auth is on by default: the orchestrator refuses to boot until you supply a Postgres
+`DATABASE_URL`. The installer leaves that as a placeholder and does not start the
+service until you fill it in; the schema is created automatically on first boot.
+
+It then prints the `FUSE_BASE_URL` and `FUSE_TOKEN` values for connecting a
+dashboard, if you're running one. `FUSE_TOKEN` must match the orchestrator's
+`ORCH_AUTH_TOKEN`. Open `8080/tcp` (or terminate TLS at a reverse proxy and point
+clients there). Remove the service with `./fc-agent.sh uninstall-orchestrator`.
+
+## Running the orchestrator standalone
+
+To run one control plane scheduling across many hosts instead of co-locating, skip
+`install-orchestrator` and point `FIRECRACKER_BASE_URL` at each host's agent URL,
+then register the rest via `fuse host register` (see
+[Hosts](/docs/reference/cli/hosts)). Topology is just one env var: loopback
+co-locates, a remote URL doesn't.
+
+## Build and run directly
+
+```bash
+go build -o bin/fuse ./cmd/orchestrator
+export FIRECRACKER_BASE_URL=http://<host>:<port>
+export FIRECRACKER_TOKEN=<token>
+export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
+export ORCH_AUTH_TOKEN=<token>
+export DATABASE_URL=postgres://...
+./bin/fuse
+```

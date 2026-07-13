@@ -1,0 +1,25 @@
+---
+title: Overview
+description: "Deploying Fuse for real workloads: orchestrator, hosts, and GPU hosts"
+---
+
+Fuse is self-hosted: you run the orchestrator (the control plane) and one or more
+hosts (each running a host agent) yourself. This section covers bringing all of that
+up for real workloads, beyond the in-memory stub used in the [Quickstart](/docs/learn/quickstart).
+
+## What runs where
+
+- **The orchestrator**: one HTTP API process, the scheduler, and the source of
+  truth (Postgres, or in-memory for small/local deployments). See
+  [Deploying the orchestrator](/docs/cloud/orchestrator-deploy).
+- **Firecracker hosts**: each runs `fc-agent`, which drives Firecracker microVMs.
+  See [Firecracker host setup](/docs/cloud/firecracker-host-setup).
+- **GPU hosts** (optional): each runs `qemu-agent`, driving QEMU/VFIO
+  whole-GPU-passthrough environments. See [GPU host setup](/docs/cloud/gpu-host-setup).
+
+The simplest production topology co-locates the orchestrator on a Firecracker host
+and talks to `fc-agent` over loopback: a single command installs both as systemd
+services. Scaling out from there is just registering more hosts; the orchestrator
+itself doesn't change.
+
+Hit a snag installing or baking? See [Troubleshooting](/docs/cloud/troubleshooting).
