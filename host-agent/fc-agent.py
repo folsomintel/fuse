@@ -79,24 +79,13 @@ def sanitize_name(name: str) -> str:
     return s or "vm"
 
 
-def check_path_component(value: str, what: str) -> None:
-    """Reject a request-supplied string that could escape its directory.
-
-    Image names and snapshot ids get interpolated into filesystem paths, so a
-    value like "../../etc/shadow" would otherwise reach a file outside the
-    directory we meant to read from -- and, since the resolved file is copied
-    into the caller's guest, hand it out. Callers must run this on the raw
-    value before using it in a path.
-    """
-    if (
-        not value
-        or ".." in value
-        or "/" in value
-        or "\\" in value
-        or "\x00" in value
-        or not re.fullmatch(r"[A-Za-z0-9._-]+", value)
-    ):
-        raise HTTPError(400, f"invalid {what}: {value!r}")
+# Request fields that get interpolated into filesystem paths (image names,
+# snapshot ids) must match this before use: no separators, no parent refs, no
+# NUL. The guard is inlined at each call site (not factored into a helper) so
+# it sits in the same function as the path it protects. A value like
+# "../../etc/shadow" would otherwise reach a file outside the intended
+# directory and, since that file is copied into the caller's guest, leak it.
+_SAFE_PATH_COMPONENT = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def run(cmd: list[str], check: bool = True, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
@@ -403,7 +392,9 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         image = req.get("image") or ""
         source_rootfs = BASE_ROOTFS
         if image:
-            check_path_component(image, "base image name")
+            if ".." in image or "/" in image or "\\" in image or "\x00" in image \
+                    or not _SAFE_PATH_COMPONENT.fullmatch(image):
+                raise HTTPError(400, f"invalid base image name: {image!r}")
             source_rootfs = IMAGES_DIR / f"{image}.ext4"
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
@@ -564,7 +555,9 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     snapshot_id = req.get("snapshot_id") or ""
     if not snapshot_id:
         raise HTTPError(400, "snapshot_id required")
-    check_path_component(snapshot_id, "snapshot id")
+    if ".." in snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or "\x00" in snapshot_id \
+            or not _SAFE_PATH_COMPONENT.fullmatch(snapshot_id):
+        raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
     snap_rootfs = vm_dir(src_vm_id) / "snapshots" / snapshot_id / "rootfs.ext4"
     if not snap_rootfs.exists():
         raise HTTPError(404, "snapshot not found")
