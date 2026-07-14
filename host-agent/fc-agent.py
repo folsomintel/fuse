@@ -80,18 +80,28 @@ def sanitize_name(name: str) -> str:
 
 
 def safe_child(parent: Path, *parts: str) -> Path:
-    """Resolve parent/<parts...>, refusing anything that escapes parent.
+    """Join parent/<parts...>, rejecting any component that could escape parent.
 
     Request fields (image names, snapshot ids) get interpolated into
     filesystem paths, so a value like "../../etc/shadow" would otherwise
     reach a file outside the directory we meant to read from -- and, since
     the resolved file is copied into the caller's guest, hand it out.
+
+    Each component is validated against a strict allowlist before it is used
+    in any path operation: no separators, no parent refs, no absolute paths.
     """
-    root = parent.resolve()
-    candidate = (root / Path(*parts)).resolve()
-    if candidate != root and root not in candidate.parents:
-        raise HTTPError(400, f"invalid path component in {'/'.join(parts)!r}")
-    return candidate
+    for part in parts:
+        if (
+            not part
+            or part in (".", "..")
+            or "/" in part
+            or "\\" in part
+            or "\x00" in part
+        ):
+            raise HTTPError(400, f"invalid path component {part!r}")
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", part):
+            raise HTTPError(400, f"invalid path component {part!r}")
+    return parent.joinpath(*parts)
 
 
 def run(cmd: list[str], check: bool = True, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
