@@ -1,0 +1,65 @@
+---
+title: Quickstart
+description: Provision a microVM, tail its lifecycle, and tear it down
+icon: Rocket
+---
+
+This walks through the full lifecycle of an environment using the TypeScript SDK:
+create one, wait for it to come up, and destroy it.
+
+## Full example
+
+```ts
+import { FuseClient } from "@folsom/fuse";
+
+const client = new FuseClient({
+  baseUrl: "https://orchestrator.example.com",
+  token: process.env.FUSE_TOKEN,
+});
+
+const env = await client.environments.create({
+  task_id: "task-1",
+  spec: { cpus: 1, ram_mb: 512 },
+});
+console.log("created:", env.id, env.state);
+
+for await (const event of await client.environments.events(env.id)) {
+  console.log("state:", event.state);
+}
+
+await client.environments.destroy(env.id);
+console.log("destroyed:", env.id);
+```
+
+## What each step does
+
+**`create`** provisions a microVM from a `spec` (CPUs, RAM, storage, and
+optionally GPU). It blocks server-side until the environment is running or
+provisioning fails; the returned `EnvironmentInfo` reflects whatever state the
+environment reached. Note the wire field names: `task_id` and `ram_mb`, not
+`taskId`/`ramMb`, request and response bodies are snake_case throughout.
+
+**`events`** returns a promise that resolves to an `AsyncIterable<Event>`. It
+rejects immediately on a connect-time error (for example `not_found`); once
+connected, the stream yields the current state first, then each transition, and
+ends on its own after a terminal-state event (`destroyed`/`failed`). There is no
+built-in timeout on the stream itself, pass `{ signal }` to cancel it early:
+
+```ts
+const ac = new AbortController();
+const stream = await client.environments.events(env.id, { signal: ac.signal });
+for await (const event of stream) {
+  if (event.state === "running") ac.abort();
+}
+```
+
+**`destroy`** tears the environment down. It is idempotent: destroying an
+already-gone environment throws a `FuseApiError` with `code === "not_found"`, not
+an unrelated exception.
+
+## Next steps
+
+- [Environments](/docs/reference/sdks/typescript/environments) covers every
+  method on the environments service, including drain, fork, and rotate-token.
+- [Errors](/docs/reference/sdks/typescript/errors) covers how to branch on the
+  server's error codes with the `is*` helpers instead of comparing strings.

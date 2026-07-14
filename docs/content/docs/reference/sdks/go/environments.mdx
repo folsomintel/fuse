@@ -1,0 +1,197 @@
+---
+title: Environments
+description: EnvironmentsService, full method reference
+icon: Boxes
+---
+
+`client.Environments` is an `*EnvironmentsService`. It provisions, inspects, and
+tears down microVMs.
+
+## List
+
+```go
+func (s *EnvironmentsService) List(ctx context.Context, opt ListEnvironmentsOptions) ([]EnvironmentInfo, error)
+```
+
+```go
+type ListEnvironmentsOptions struct {
+	TaskID string
+	State  string
+	HostID string
+}
+```
+
+All three filters are optional exact matches; a zero-value `ListEnvironmentsOptions{}`
+lists everything.
+
+```go
+envs, err := client.Environments.List(ctx, fuse.ListEnvironmentsOptions{
+	State: fuse.StateRunning,
+})
+```
+
+## Get
+
+```go
+func (s *EnvironmentsService) Get(ctx context.Context, vmID string) (*EnvironmentInfo, error)
+```
+
+Fetches one environment by its assigned ID. Returns a `not_found` `*APIError` if it
+doesn't exist.
+
+## Create
+
+```go
+func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest) (*EnvironmentInfo, error)
+```
+
+```go
+type CreateRequest struct {
+	TaskID         string
+	Spec           Spec
+	ManifestInline string
+	Secrets        map[string]string
+	StartupScript  string
+	GatewayURL     string
+	GatewayToken   string
+	Expose         []ExposeSpec
+}
+
+type Spec struct {
+	CPUs              int32
+	RamMB              int32
+	StorageGB          int32
+	GPUs               int32
+	GPUKind            string
+	Region             string
+	MaxRuntimeSeconds  int64
+	Image              string
+}
+```
+
+`TaskID` must be unique; the orchestrator uses it as part of the generated VM
+name. `GPUs` is a whole-device count; a non-zero value routes the environment to a
+host registered with matching free GPU capacity (necessarily a QEMU-backed host).
+`Create` blocks server-side until the environment reaches `running` or fails, so
+the returned value already reflects the outcome.
+
+```go
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID: "task-1",
+	Spec: fuse.Spec{
+		CPUs:      2,
+		RamMB:     2048,
+		StorageGB: 10,
+	},
+	Secrets: map[string]string{"pg_password": "..."},
+})
+```
+
+## Drain
+
+```go
+func (s *EnvironmentsService) Drain(ctx context.Context, vmID string) (*EnvironmentInfo, error)
+```
+
+Phase one of a two-phase teardown: signals the guest agent to stop gracefully. The
+environment moves to `draining` but is not destroyed; call `Destroy` afterward to
+remove it. Only `running` environments can be drained; any other state returns a
+`conflict` `*APIError`.
+
+## Fork
+
+```go
+func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions) (*EnvironmentInfo, error)
+```
+
+```go
+type ForkOptions struct {
+	ReuseSnapshotID string
+	Comment         string
+}
+```
+
+Creates a new environment seeded from an existing one's state. With
+`ReuseSnapshotID` empty, the server takes a fresh snapshot of `vmID` first;
+otherwise it reuses the named snapshot instead of taking a new one. Unlike most
+methods here, `Fork` sends a request body rather than dispatching a bare action, so
+it isn't built on the same internal helper as `Drain`/`RotateToken`. Fork is
+unavailable wherever snapshotting is, GPU/QEMU-backed environments cannot be
+forked.
+
+## RotateToken
+
+```go
+func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) error
+```
+
+Re-issues the guest agent's credentials without recreating the VM. Returns no
+value on success (the server responds `204`), useful if a token may have leaked.
+
+## Destroy
+
+```go
+func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error
+```
+
+Forcefully tears the environment down from any state. Idempotent: a second call
+against an already-destroyed environment returns a `not_found` `*APIError`, not a
+different failure mode.
+
+## Events
+
+```go
+func (s *EnvironmentsService) Events(ctx context.Context, vmID string) (<-chan Event, error)
+```
+
+```go
+type Event struct {
+	ID        string
+	Kind      string
+	VMID      string
+	State     string
+	URL       string
+	Error     string
+	UpdatedAt time.Time
+	Err       error
+}
+```
+
+Opens the SSE event stream and returns a channel of `Event` values. The first
+event is a snapshot of the current state, delivered immediately on connect;
+subsequent events fire on every transition. The channel closes cleanly on EOF, or
+after a final `Event` with `Err` set if the underlying stream failed. `Err` is the
+only field populated on that final event, everything else is the zero value.
+
+`Events` uses a dedicated no-timeout HTTP client internally, since the default
+60-second client would otherwise kill a long-lived stream. Cancel `ctx` to stop
+consuming early:
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+events, _ := client.Environments.Events(ctx, env.ID)
+for ev := range events {
+	if ev.State == fuse.StateRunning {
+		cancel()
+		break
+	}
+}
+```
+
+## Lifecycle states
+
+```go
+const (
+	StateProvisioning = "provisioning"
+	StateRunning      = "running"
+	StateDraining     = "draining"
+	StateDestroying   = "destroying"
+	StateDestroyed    = "destroyed"
+	StateFailed       = "failed"
+)
+
+func IsTerminalState(state string) bool
+```
+
+`IsTerminalState` reports whether `state` is `destroyed` or `failed`, the two
+states after which an event stream closes.

@@ -1,0 +1,53 @@
+---
+title: API keys
+description: APIKeysService, full method reference
+icon: KeySquare
+---
+
+`client.api_keys` is an `APIKeysService`. All three methods require the master
+token, the server enforces this regardless of what token the client was
+constructed with.
+
+## create
+
+```python
+def create(self, label: str = "") -> CreatedAPIKey: ...
+```
+
+```python
+class APIKey(BaseModel):
+    id: str = ""
+    label: str = ""
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+    revoked_at: datetime | None = None
+
+class CreatedAPIKey(APIKey):
+    key: str = ""
+```
+
+`label` is an optional human-readable name. `CreatedAPIKey.key` holds the raw
+secret and is returned exactly once, it cannot be recovered afterward. Store it
+immediately.
+
+```python
+key = client.api_keys.create("ci-runner")
+print("save this now:", key.key)
+```
+
+## list
+
+```python
+def list(self) -> list[APIKey]: ...
+```
+
+Returns metadata only, `APIKey` has no `key` field. `last_used_at` and
+`revoked_at` are `None` until they happen.
+
+## revoke
+
+```python
+def revoke(self, key_id: str) -> None: ...
+```
+
+Revokes the key with the given `key_id` (the `APIKey.id`, not the secret itself).

@@ -1,0 +1,13 @@
+{
+  "title": "Python",
+  "icon": "Braces",
+  "pages": [
+    "index",
+    "quickstart",
+    "environments",
+    "hosts",
+    "snapshots",
+    "api-keys",
+    "errors"
+  ]
+}

@@ -1,0 +1,103 @@
+---
+title: Snapshots
+description: SnapshotsService, full method reference
+icon: Camera
+---
+
+`client.snapshots` is a `SnapshotsService`. It captures and restores the state of
+a running microVM.
+
+## create
+
+```python
+def create(self, vm_id: str, request: SnapshotRequest | None = None) -> Snapshot: ...
+```
+
+```python
+class SnapshotRequest(BaseModel):
+    comment: str | None = None
+    mode: str | None = None
+    retention_seconds: int | None = None
+    metadata: dict[str, str] | None = None
+    export_ref: str | None = None
+    export_status: str | None = None
+```
+
+`vm_id` must be a `running` environment. `mode` is `"manual"` or `"auto"`.
+`retention_seconds` of `0` keeps the snapshot forever. `request` is optional; omit
+it for a plain snapshot with no metadata.
+
+```python
+snap = client.snapshots.create(
+    env.id, fuse.SnapshotRequest(comment="before risky migration", mode="manual")
+)
+```
+
+## list
+
+```python
+def list(
+    self, *, vm_id: str = "", task_id: str = "", tenant_id: str = "", state: str = ""
+) -> list[Snapshot]: ...
+```
+
+All four filters are optional exact matches.
+
+## get
+
+```python
+def get(self, snapshot_id: str) -> Snapshot: ...
+```
+
+```python
+class Snapshot(BaseModel):
+    id: str = ""
+    vm_id: str = ""
+    task_id: str = ""
+    tenant_id: str = ""
+    parent_snapshot_id: str = ""
+    mode: str = ""
+    state: str = ""
+    comment: str = ""
+    size_bytes: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    retention_until: datetime | None = None
+    last_error: str = ""
+    export_ref: str = ""
+    exports: list[SnapshotExport] = []
+```
+
+`state` is one of `creating`, `ready`, `restoring`, `deleting`, or `error`.
+`retention_until` is `None` when the snapshot is kept forever.
+
+## delete
+
+```python
+def delete(self, snapshot_id: str) -> None: ...
+```
+
+Leaf-only: also deletes the underlying provider artifact. There is no soft-delete.
+
+## restore
+
+```python
+def restore(self, snapshot_id: str) -> None: ...
+```
+
+Restores the snapshot in place, onto its original VM, which must still be running.
+There is no cross-host restore, clone, or standalone restore into a new VM, use
+`fork` on the environments service for that instead.
+
+<Callout type="warn" title="Known limitation">
+Restoring while the guest has unsynced writes can corrupt the restored data. See
+[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
+for the workaround.
+</Callout>
+
+## The QEMU/GPU exception
+
+Environments running on the QEMU backend (whole-GPU passthrough) cannot be
+snapshotted or forked at all, `create` and `restore` against a GPU environment
+raise `fuse.ApiError` with `code == "conflict"` rather than silently no-op-ing. See
+[Providers](/docs/learn/concepts/providers).

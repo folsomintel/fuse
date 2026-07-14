@@ -1,0 +1,104 @@
+---
+title: Errors
+description: ApiError, error codes, and the is_* predicates
+icon: TriangleAlert
+---
+
+Every SDK method that talks to the orchestrator can raise. Non-2xx responses
+raise `fuse.ApiError`, built from the server's structured error envelope;
+anything else (a network failure, a body that fails to validate against a
+`pydantic` model) raises the underlying `httpx` or `pydantic` exception directly.
+
+## ApiError
+
+```python
+class ApiError(Exception):
+    def __init__(
+        self,
+        status: int,
+        *,
+        code: str = "",
+        message: str = "",
+        details: dict[str, str] | None = None,
+        request_id: str = "",
+        body: bytes = b"",
+    ) -> None: ...
+
+    status: int
+    code: str
+    message: str
+    details: dict[str, str]
+    request_id: str
+    body: bytes
+```
+
+`status` is the HTTP status code. `code` is the server's stable, machine-readable
+error code. `request_id` echoes the `X-Request-ID` response header, useful for
+correlating a failure with server-side logs. `body` is the raw response body,
+kept around for debugging. `str(err)` renders a one-line summary combining all of
+the above.
+
+## Error codes
+
+```python
+CODE_NOT_FOUND = "not_found"
+CODE_CONFLICT = "conflict"
+CODE_INVALID_ARGUMENT = "invalid_argument"
+CODE_UNAVAILABLE = "unavailable"
+CODE_INTERNAL = "internal"
+CODE_UNAUTHORIZED = "unauthorized"
+```
+
+## Extracting an ApiError
+
+```python
+def as_api_error(err: object) -> ApiError | None: ...
+```
+
+Walks the exception's `__cause__`/`__context__` chain looking for an `ApiError`.
+Use this when you need the full object (status, request ID, and all) rather than
+just a yes/no code check, and when the `ApiError` might be wrapped by another
+exception raised further up your own call stack.
+
+```python
+api_err = fuse.as_api_error(exc)
+if api_err:
+    print(f"status={api_err.status} code={api_err.code} request_id={api_err.request_id}")
+```
+
+## Code-checking predicates
+
+```python
+def is_not_found(err: object) -> bool: ...
+def is_conflict(err: object) -> bool: ...
+def is_unauthorized(err: object) -> bool: ...
+def is_invalid_argument(err: object) -> bool: ...
+def is_unavailable(err: object) -> bool: ...
+```
+
+Each reports whether `err` is (or wraps) an `ApiError` with the matching code.
+Prefer these over comparing `.code` strings directly, and definitely over parsing
+`str(err)`, which is meant for logs, not branching logic.
+
+```python
+try:
+    client.environments.get("missing")
+except Exception as exc:
+    if fuse.is_not_found(exc):
+        ...  # handle the 404 case
+    else:
+        raise
+```
+
+## check_response and parse_api_error
+
+```python
+def check_response(response: httpx.Response) -> None: ...
+def parse_api_error(status: int, headers: httpx.Headers, body: bytes) -> ApiError: ...
+```
+
+The lower-level functions every service method calls internally: `check_response`
+raises nothing for a 2xx response and an `ApiError` otherwise, built by
+`parse_api_error` from the `{"error":{code,message,details}}` envelope (falling
+back to the HTTP status phrase if the body doesn't parse as that shape). You won't
+normally call these directly.

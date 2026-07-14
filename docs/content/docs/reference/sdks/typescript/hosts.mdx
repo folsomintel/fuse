@@ -1,0 +1,103 @@
+---
+title: Hosts
+description: HostsService, full method reference
+icon: HardDrive
+---
+
+`client.hosts` is a `HostsService`. It registers and manages the compute hosts the
+scheduler places microVMs onto.
+
+## register
+
+```ts
+register(body: RegisterHostRequest, opts?: CallOptions): Promise<Host>
+```
+
+```ts
+interface RegisterHostRequest {
+  id: string;
+  url: string;
+  token?: string;
+  region?: string;
+  backend?: string;
+  capacity: HostCapacity;
+}
+
+interface HostCapacity {
+  cpus: number;
+  ram_mb: number;
+  storage_gb: number;
+  vm_count: number;
+  gpus?: number;
+  gpu_kind?: string;
+}
+```
+
+`id` is a free-form, operator-supplied string and doubles as the host's primary
+key. `backend` defaults to `"firecracker"` server-side if omitted; only `"qemu"`
+hosts may register with `capacity.gpus > 0`.
+
+```ts
+const host = await client.hosts.register({
+  id: "prod-east-1",
+  url: "http://10.0.0.5:9000",
+  token: agentToken,
+  region: "us-east",
+  backend: "firecracker",
+  capacity: { cpus: 16, ram_mb: 65536, storage_gb: 500, vm_count: 20 },
+});
+```
+
+## list
+
+```ts
+list(opts?: CallOptions): Promise<Host[]>
+```
+
+Returns every registered host, each showing its declared `capacity` and live
+`allocated` figures.
+
+## get
+
+```ts
+get(hostId: string, opts?: CallOptions): Promise<Host>
+```
+
+```ts
+interface Host {
+  id: string;
+  url: string;
+  region?: string;
+  state: string;
+  backend?: string;
+  capacity: HostCapacity;
+  allocated: HostCapacity;
+  last_seen: string;
+  created_at: string;
+  updated_at: string;
+}
+```
+
+`state` is one of `active`, `cordoned`, or `draining`. `last_seen` is set at
+registration and is not refreshed afterward, it is not a liveness signal.
+
+## cordon and uncordon
+
+```ts
+cordon(hostId: string, opts?: CallOptions): Promise<void>
+uncordon(hostId: string, opts?: CallOptions): Promise<void>
+```
+
+Cordoning marks a host unschedulable: the scheduler stops placing new
+environments there without touching what's already running. Uncordoning reverses
+it.
+
+## deregister
+
+```ts
+deregister(hostId: string, opts?: CallOptions): Promise<void>
+```
+
+Removes a host from the scheduler. Throws a `FuseApiError` with
+`code === "conflict"` if any environments are still assigned to it, drain or
+destroy them first.

@@ -1,0 +1,96 @@
+---
+title: Errors
+description: APIError, error codes, and the Is* helpers
+icon: TriangleAlert
+---
+
+Every SDK method that talks to the orchestrator returns a Go `error`. Non-2xx
+responses come back as a `*APIError`, decoded from the server's structured error
+envelope; anything else (a network failure, a body that fails to decode) is a
+plain wrapped error.
+
+## APIError
+
+```go
+type APIError struct {
+	Status    int
+	Code      string
+	Message   string
+	Details   map[string]string
+	RequestID string
+	Body      []byte
+}
+
+func (e *APIError) Error() string
+```
+
+`Status` is the HTTP status code. `Code` is the server's stable, machine-readable
+error code. `RequestID` echoes the `X-Request-ID` response header, useful for
+correlating a failure with server-side logs. `Body` is the raw response body, kept
+around for debugging.
+
+## Error codes
+
+```go
+const (
+	CodeNotFound        = "not_found"
+	CodeConflict        = "conflict"
+	CodeInvalidArgument = "invalid_argument"
+	CodeUnavailable     = "unavailable"
+	CodeInternal        = "internal"
+	CodeUnauthorized    = "unauthorized"
+)
+```
+
+## Extracting an APIError
+
+```go
+func AsAPIError(err error) (*APIError, bool)
+```
+
+Walks the error chain (via `errors.As`) looking for an `*APIError`. Use this when
+you need the full struct, status code, request ID, and all, rather than just a
+yes/no code check.
+
+```go
+if apiErr, ok := fuse.AsAPIError(err); ok {
+	log.Printf("status=%d code=%s request_id=%s", apiErr.Status, apiErr.Code, apiErr.RequestID)
+}
+```
+
+## Code-checking helpers
+
+```go
+func IsNotFound(err error) bool
+func IsConflict(err error) bool
+func IsUnauthorized(err error) bool
+func IsInvalidArgument(err error) bool
+func IsUnavailable(err error) bool
+```
+
+Each reports whether `err` is an `*APIError` with the matching code. Prefer these
+over comparing `Code` strings directly, and definitely over comparing `Error()`'s
+formatted message, which is meant for logs, not branching logic.
+
+```go
+env, err := client.Environments.Get(ctx, id)
+if fuse.IsNotFound(err) {
+	// handle the 404 case
+} else if err != nil {
+	log.Fatal(err)
+}
+```
+
+## CheckResponse
+
+```go
+func CheckResponse(resp *http.Response) error
+```
+
+The lower-level function every service method calls internally: returns `nil` for
+a 2xx response, or a populated `*APIError` otherwise, parsed from the
+`{"error":{code,message,details}}` envelope (falling back to the HTTP status text
+if the body doesn't parse as that shape). You won't normally call this directly,
+it's exported because `fuse.metrics`-style raw HTTP callers (like the CLI's
+`fuse metrics` command) reuse it to get the same error mapping as every other SDK
+call.

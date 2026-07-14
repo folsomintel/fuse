@@ -1,0 +1,162 @@
+---
+title: Environments
+description: EnvironmentsService, full method reference
+icon: Boxes
+---
+
+`client.environments` is an `EnvironmentsService`. It provisions, inspects, and
+tears down microVMs. Every method accepts a trailing `{ signal }` for
+cancellation.
+
+## list
+
+```ts
+list(options?: ListEnvironmentsOptions, opts?: CallOptions): Promise<EnvironmentInfo[]>
+```
+
+```ts
+interface ListEnvironmentsOptions {
+  taskId?: string;
+  state?: string;
+  hostId?: string;
+}
+```
+
+All three filters are optional exact matches; call with no arguments to list
+everything.
+
+```ts
+const envs = await client.environments.list({ state: "running" });
+```
+
+## get
+
+```ts
+get(vmId: string, opts?: CallOptions): Promise<EnvironmentInfo>
+```
+
+Fetches one environment by its assigned ID. Throws a `FuseApiError` with
+`code === "not_found"` if it doesn't exist.
+
+## create
+
+```ts
+create(body: CreateRequest, opts?: CallOptions): Promise<EnvironmentInfo>
+```
+
+```ts
+interface CreateRequest {
+  task_id: string;
+  spec?: Spec;
+  manifest_inline?: string;
+  secrets?: Record<string, string>;
+  startup_script?: string;
+  gateway_url?: string;
+  gateway_token?: string;
+  expose?: ExposeSpec[];
+}
+
+interface Spec {
+  cpus?: number;
+  ram_mb?: number;
+  storage_gb?: number;
+  gpus?: number;
+  gpu_kind?: string;
+  region?: string;
+  max_runtime_seconds?: number;
+  image?: string;
+}
+```
+
+`task_id` must be unique. `gpus` is a whole-device count; a non-zero value routes
+the environment to a host registered with matching free GPU capacity (necessarily
+a QEMU-backed host). `create` blocks server-side until the environment reaches
+`running` or fails, so the returned value already reflects the outcome.
+
+```ts
+const env = await client.environments.create({
+  task_id: "task-1",
+  spec: { cpus: 2, ram_mb: 2048, storage_gb: 10 },
+  secrets: { pg_password: "..." },
+});
+```
+
+## drain
+
+```ts
+drain(vmId: string, opts?: CallOptions): Promise<EnvironmentInfo>
+```
+
+Phase one of a two-phase teardown: signals the guest agent to stop gracefully. The
+environment moves to `draining` but is not destroyed; call `destroy` afterward to
+remove it. Only `running` environments can be drained; any other state throws a
+`FuseApiError` with `code === "conflict"`.
+
+## fork
+
+```ts
+fork(vmId: string, body?: ForkOptions, opts?: CallOptions): Promise<EnvironmentInfo>
+```
+
+```ts
+interface ForkOptions {
+  reuse_snapshot_id?: string;
+  comment?: string;
+}
+```
+
+Creates a new environment seeded from an existing one's state. With
+`reuse_snapshot_id` omitted, the server takes a fresh snapshot of `vmId` first;
+otherwise it reuses the named snapshot. Fork is unavailable wherever snapshotting
+is, GPU/QEMU-backed environments cannot be forked.
+
+## rotateToken
+
+```ts
+rotateToken(vmId: string, opts?: CallOptions): Promise<void>
+```
+
+Re-issues the guest agent's credentials without recreating the VM. Resolves with
+no value on success (the server responds `204`).
+
+## destroy
+
+```ts
+destroy(vmId: string, opts?: CallOptions): Promise<void>
+```
+
+Forcefully tears the environment down from any state. Idempotent: a second call
+against an already-destroyed environment throws a `FuseApiError` with
+`code === "not_found"`, not a different failure mode.
+
+## events
+
+```ts
+events(vmId: string, opts?: CallOptions): Promise<AsyncIterable<Event>>
+```
+
+```ts
+interface Event {
+  id: string;
+  event: string;
+  vm_id: string;
+  state: string;
+  url?: string;
+  error?: string;
+  updated_at: string;
+}
+```
+
+Returns a promise that resolves to an `AsyncIterable<Event>`, or rejects on a
+connect-time error (for example `not_found`). Once connected, the stream yields
+the current state first, then each transition, and ends on its own after a
+terminal-state event (`destroyed`/`failed`). There is no built-in timeout, pass
+`{ signal }` to cancel early:
+
+```ts
+const ac = new AbortController();
+const stream = await client.environments.events(vmId, { signal: ac.signal });
+for await (const event of stream) {
+  if (event.state === "running") ac.abort();
+}
+```

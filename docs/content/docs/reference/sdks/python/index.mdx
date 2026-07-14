@@ -1,0 +1,82 @@
+---
+title: Overview
+description: Install the Python SDK and construct a client
+icon: BookOpen
+---
+
+`folsom-fuse` on PyPI is the Python client for the Fuse control plane. It mirrors
+the Go SDK's shape: one `Client` grouping four resource services, all sharing a
+transport built on `httpx`.
+
+## Install
+
+```bash
+uv add folsom-fuse
+```
+
+The package name on PyPI is `folsom-fuse`; the importable module is `fuse`.
+
+```python
+import fuse
+```
+
+## Constructing a client
+
+```python
+class Client:
+    def __init__(
+        self,
+        base_url: str,
+        token: str = "",
+        *,
+        http_client: httpx.Client | None = None,
+        user_agent: str = DEFAULT_USER_AGENT,
+        request_id: Callable[[], str] | None = None,
+        timeout: float = 60.0,
+    ) -> None: ...
+```
+
+`base_url` must be a non-empty, parseable URL (checked for a scheme and host at
+construction time). `token` is sent as a bearer token and may be empty for an
+orchestrator running without auth.
+
+`Client` is a context manager. Use it with `with` so the underlying `httpx`
+clients are closed automatically:
+
+```python
+with fuse.Client("https://orchestrator.example.com", token="...") as client:
+    ...
+```
+
+Without the `with` block, call `client.close()` yourself when you're done.
+
+## Constructor options
+
+| Parameter | Type | Purpose |
+| --- | --- | --- |
+| `http_client` | `httpx.Client \| None` | Supply your own `httpx.Client` (for connection pooling, custom TLS config, and so on). If set, you own its `base_url`. |
+| `user_agent` | `str` | Override the `User-Agent` header. Default: `fuse-python/<version>`. |
+| `request_id` | `Callable[[], str] \| None` | Generator called once per request for `X-Request-ID`. An empty return value omits the header. |
+| `timeout` | `float` | Default per-request timeout in seconds. Default: `60.0`. Not applied to the SSE event stream, which uses a separate no-timeout client internally. |
+
+## The version string
+
+`fuse.VERSION` is read from the installed package's metadata via
+`importlib.metadata`, so it never drifts from what's in `pyproject.toml`. Running
+from an uninstalled source checkout falls back to `"0+unknown"`.
+
+## Services
+
+Four services hang off the client, matching the Go SDK's shape:
+
+| Attribute | Page |
+| --- | --- |
+| `client.environments` | [Environments](/docs/reference/sdks/python/environments) |
+| `client.hosts` | [Hosts](/docs/reference/sdks/python/hosts) |
+| `client.snapshots` | [Snapshots](/docs/reference/sdks/python/snapshots) |
+| `client.api_keys` | [API keys](/docs/reference/sdks/python/api-keys) |
+
+Request and response models are `pydantic` `BaseModel` subclasses (`extra="ignore"`,
+so unknown server fields are tolerated rather than raising). See
+[Quickstart](/docs/reference/sdks/python/quickstart) for a complete working
+example, and [Errors](/docs/reference/sdks/python/errors) for how failures surface.

@@ -1,0 +1,113 @@
+---
+title: Snapshots
+description: SnapshotsService, full method reference
+icon: Camera
+---
+
+`client.snapshots` is a `SnapshotsService`. It captures and restores the state of
+a running microVM.
+
+## create
+
+```ts
+create(vmId: string, body?: SnapshotRequest, opts?: CallOptions): Promise<Snapshot>
+```
+
+```ts
+interface SnapshotRequest {
+  comment?: string;
+  mode?: string;
+  retention_seconds?: number;
+  metadata?: Record<string, string>;
+  export_ref?: string;
+  export_status?: string;
+}
+```
+
+`vmId` must be a `running` environment. `mode` is `"manual"` or `"auto"`.
+`retention_seconds` of `0` keeps the snapshot forever. `body` is optional, omit it
+for a plain snapshot with no metadata.
+
+```ts
+const snap = await client.snapshots.create(env.id, {
+  comment: "before risky migration",
+  mode: "manual",
+});
+```
+
+## list
+
+```ts
+list(options?: ListSnapshotsOptions, opts?: CallOptions): Promise<Snapshot[]>
+```
+
+```ts
+interface ListSnapshotsOptions {
+  vmId?: string;
+  taskId?: string;
+  tenantId?: string;
+  state?: string;
+}
+```
+
+All four filters are optional exact matches.
+
+## get
+
+```ts
+get(snapshotId: string, opts?: CallOptions): Promise<Snapshot>
+```
+
+```ts
+interface Snapshot {
+  id: string;
+  vm_id: string;
+  task_id?: string;
+  tenant_id?: string;
+  parent_snapshot_id?: string;
+  mode?: string;
+  state?: string;
+  comment?: string;
+  size_bytes?: number;
+  created_at: string;
+  updated_at?: string;
+  retention_until?: string;
+  last_error?: string;
+  export_ref?: string;
+  exports?: SnapshotExport[];
+}
+```
+
+`state` is one of `creating`, `ready`, `restoring`, `deleting`, or `error`.
+`retention_until` is absent when the snapshot is kept forever.
+
+## delete
+
+```ts
+delete(snapshotId: string, opts?: CallOptions): Promise<void>
+```
+
+Leaf-only: also deletes the underlying provider artifact. There is no soft-delete.
+
+## restore
+
+```ts
+restore(snapshotId: string, opts?: CallOptions): Promise<void>
+```
+
+Restores the snapshot in place, onto its original VM, which must still be running.
+There is no cross-host restore, clone, or standalone restore into a new VM, use
+`fork` on the environments service for that instead.
+
+<Callout type="warn" title="Known limitation">
+Restoring while the guest has unsynced writes can corrupt the restored data. See
+[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
+for the workaround.
+</Callout>
+
+## The QEMU/GPU exception
+
+Environments running on the QEMU backend (whole-GPU passthrough) cannot be
+snapshotted or forked at all, `create` and `restore` against a GPU environment
+throw a `FuseApiError` with `code === "conflict"` rather than silently no-op-ing.
+See [Providers](/docs/learn/concepts/providers).

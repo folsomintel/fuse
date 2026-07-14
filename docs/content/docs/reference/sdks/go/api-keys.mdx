@@ -1,0 +1,59 @@
+---
+title: API keys
+description: APIKeysService, full method reference
+icon: KeySquare
+---
+
+`client.APIKeys` is an `*APIKeysService`. All three methods require the master
+token, the server enforces this regardless of what token the client was
+constructed with.
+
+## Create
+
+```go
+func (s *APIKeysService) Create(ctx context.Context, label string) (*CreatedAPIKey, error)
+```
+
+```go
+type CreatedAPIKey struct {
+	APIKey
+	Key string
+}
+
+type APIKey struct {
+	ID         string
+	Label      string
+	CreatedAt  time.Time
+	LastUsedAt *time.Time
+	RevokedAt  *time.Time
+}
+```
+
+`label` is an optional human-readable name. `CreatedAPIKey.Key` holds the raw
+secret and is returned exactly once, it cannot be recovered afterward. Store it
+immediately.
+
+```go
+key, err := client.APIKeys.Create(ctx, "ci-runner")
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Println("save this now:", key.Key)
+```
+
+## List
+
+```go
+func (s *APIKeysService) List(ctx context.Context) ([]APIKey, error)
+```
+
+Returns metadata only, `APIKey` has no `Key` field. `LastUsedAt` and `RevokedAt`
+are `nil` until they happen.
+
+## Revoke
+
+```go
+func (s *APIKeysService) Revoke(ctx context.Context, id string) error
+```
+
+Revokes the key with the given `id` (the `APIKey.ID`, not the secret itself).

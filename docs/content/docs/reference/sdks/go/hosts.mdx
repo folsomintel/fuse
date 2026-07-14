@@ -1,0 +1,107 @@
+---
+title: Hosts
+description: HostsService, full method reference
+icon: HardDrive
+---
+
+`client.Hosts` is a `*HostsService`. It registers and manages the compute hosts the
+scheduler places microVMs onto.
+
+## Register
+
+```go
+func (s *HostsService) Register(ctx context.Context, req RegisterHostRequest) (*Host, error)
+```
+
+```go
+type RegisterHostRequest struct {
+	ID       string
+	URL      string
+	Token    string
+	Region   string
+	Backend  string
+	Capacity HostCapacity
+}
+
+type HostCapacity struct {
+	CPUs      int
+	RamMB     int
+	StorageGB int
+	VMCount   int
+	GPUs      int
+	GPUKind   string
+}
+```
+
+`ID` is a free-form, operator-supplied string and doubles as the host's primary
+key. `Backend` defaults to `"firecracker"` server-side if left empty; only
+`"qemu"` hosts may register with `Capacity.GPUs > 0`.
+
+```go
+host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
+	ID:      "prod-east-1",
+	URL:     "http://10.0.0.5:9000",
+	Token:   agentToken,
+	Region:  "us-east",
+	Backend: "firecracker",
+	Capacity: fuse.HostCapacity{
+		CPUs:      16,
+		RamMB:     65536,
+		StorageGB: 500,
+		VMCount:   20,
+	},
+})
+```
+
+## List
+
+```go
+func (s *HostsService) List(ctx context.Context) ([]Host, error)
+```
+
+Returns every registered host, each showing its declared `Capacity` and live
+`Allocated` figures.
+
+## Get
+
+```go
+func (s *HostsService) Get(ctx context.Context, hostID string) (*Host, error)
+```
+
+```go
+type Host struct {
+	ID        string
+	URL       string
+	Region    string
+	State     string
+	Backend   string
+	Capacity  HostCapacity
+	Allocated HostCapacity
+	LastSeen  time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+```
+
+`State` is one of `active`, `cordoned`, or `draining`. `LastSeen` is set at
+registration and is not refreshed afterward, it is not a liveness signal.
+
+## Cordon and Uncordon
+
+```go
+func (s *HostsService) Cordon(ctx context.Context, hostID string) error
+func (s *HostsService) Uncordon(ctx context.Context, hostID string) error
+```
+
+Cordoning marks a host unschedulable: the scheduler stops placing new
+environments there without touching what's already running. Uncordoning reverses
+it.
+
+## Deregister
+
+```go
+func (s *HostsService) Deregister(ctx context.Context, hostID string) error
+```
+
+Removes a host from the scheduler. Fails with a `conflict` `*APIError` if any
+environments are still assigned to it, drain or destroy them first.

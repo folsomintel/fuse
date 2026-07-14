@@ -1,0 +1,55 @@
+---
+title: Quickstart
+description: Provision a microVM, tail its lifecycle, and tear it down
+icon: Rocket
+---
+
+This walks through the full lifecycle of an environment using the Python SDK:
+create one, wait for it to come up, and destroy it.
+
+## Full example
+
+```python
+import fuse
+
+with fuse.Client("https://orchestrator.example.com", token="...") as client:
+    env = client.environments.create(
+        fuse.CreateRequest(task_id="task-1", spec=fuse.Spec(cpus=1, ram_mb=512))
+    )
+    print("created:", env.id, env.state)
+
+    for event in client.environments.events(env.id):
+        if event.err:
+            raise event.err
+        print("state:", event.state)
+        if fuse.is_terminal_state(event.state):
+            break
+
+    client.environments.destroy(env.id)
+    print("destroyed:", env.id)
+```
+
+## What each step does
+
+**`create`** provisions a microVM from a `Spec` (CPUs, RAM, storage, and
+optionally GPU). It blocks server-side until the environment is running or
+provisioning fails; the returned `EnvironmentInfo` reflects whatever state the
+environment reached.
+
+**`events`** opens the SSE event stream for that environment and returns an
+iterator of `Event`. The stream yields the current state immediately on connect,
+then one event per transition. Iteration ends on its own after a terminal state
+(`destroyed` or `failed`), or after a final `Event` with `.err` set if the stream
+itself failed, check `event.err` on every iteration and re-raise it, as shown
+above.
+
+**`destroy`** tears the environment down. It is idempotent: destroying an
+already-gone environment raises `fuse.ApiError` with `code == "not_found"`, not an
+unrelated exception.
+
+## Next steps
+
+- [Environments](/docs/reference/sdks/python/environments) covers every method on
+  the environments service, including drain, fork, and rotate-token.
+- [Errors](/docs/reference/sdks/python/errors) covers how to branch on the
+  server's error codes with the `is_*` predicates instead of comparing strings.
