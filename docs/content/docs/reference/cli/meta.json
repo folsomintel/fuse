@@ -1,5 +1,6 @@
 {
   "title": "CLI",
+  "icon": "Terminal",
   "pages": [
     "index",
     "contexts",

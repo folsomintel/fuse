@@ -1,5 +1,6 @@
 {
   "title": "Cloud",
+  "icon": "Cloud",
   "root": true,
   "pages": [
     "index",

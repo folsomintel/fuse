@@ -1,7 +1,10 @@
 ---
 title: Overview
 description: What Fuse is and how its pieces fit together
+icon: BookOpen
 ---
+
+import { Rocket, Layers, FileCode, Cloud } from 'lucide-react';
 
 Fuse is a control plane for agents: it deploys Firecracker microVMs onto your own
 hosts and drives their full lifecycle — provision, running, drain, destroy — through
@@ -42,7 +45,29 @@ straight to the [Quickstart](/docs/learn/quickstart) to get a microVM running.
 
 ## Where to go next
 
-- New to Fuse? Start with the [Quickstart](/docs/learn/quickstart).
-- Want the concepts first? Start with the [Fusefile](/docs/learn/concepts/fusefile).
-- Ready to install the CLI or an SDK? See [Docs](/docs/reference).
-- Bringing up a real Firecracker or GPU host? See [Cloud](/docs/cloud).
+<Cards>
+  <Card
+    icon={<Rocket />}
+    title="Quickstart"
+    description="Get a microVM running in a few commands, no real host required."
+    href="/docs/learn/quickstart"
+  />
+  <Card
+    icon={<Layers />}
+    title="Foundations"
+    description="The full mental model: Fusefile, providers, hosts, environments, snapshots, artifacts."
+    href="/docs/learn/concepts/fusefile"
+  />
+  <Card
+    icon={<FileCode />}
+    title="Docs"
+    description="SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator."
+    href="/docs/reference"
+  />
+  <Card
+    icon={<Cloud />}
+    title="Cloud"
+    description="Bring up a real Firecracker or GPU host and deploy the orchestrator."
+    href="/docs/cloud"
+  />
+</Cards>

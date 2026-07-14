@@ -1,7 +1,10 @@
 ---
 title: Overview
 description: SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator
+icon: BookOpen
 ---
+
+import { Terminal, Braces, Webhook, KeySquare } from 'lucide-react';
 
 This section is the reference for driving a running Fuse orchestrator: the three
 client SDKs, the operator CLI, and the raw HTTP API underneath both. If you're new
@@ -10,16 +13,32 @@ already know what an environment, host, and snapshot are.
 
 ## Picking a surface
 
-- **CLI**: the fastest way to operate Fuse by hand. Register hosts, bring up
-  environments from a Fusefile, inspect and tear things down. See [CLI overview](/docs/reference/cli).
-- **SDKs**: for driving Fuse programmatically from your own service or agent
-  harness. Available for [Go](/docs/reference/sdks/go), [Python](/docs/reference/sdks/python),
-  and [TypeScript](/docs/reference/sdks/typescript), all mirroring the same shape.
-- **HTTP API**: the raw REST surface every SDK and the CLI itself are built on. See
-  [HTTP API overview](/docs/reference/api).
-
-All three authenticate the same way. See [Authentication](/docs/reference/auth)
-before you start.
+<Cards>
+  <Card
+    icon={<Terminal />}
+    title="CLI"
+    description="The fastest way to operate Fuse by hand: register hosts, bring up environments, inspect and tear things down."
+    href="/docs/reference/cli"
+  />
+  <Card
+    icon={<Braces />}
+    title="SDKs"
+    description="Drive Fuse programmatically from your own service or agent harness. Go, Python, and TypeScript, all mirroring the same shape."
+    href="/docs/reference/sdks/go"
+  />
+  <Card
+    icon={<Webhook />}
+    title="HTTP API"
+    description="The raw REST surface every SDK and the CLI itself are built on."
+    href="/docs/reference/api"
+  />
+  <Card
+    icon={<KeySquare />}
+    title="Authentication"
+    description="How the orchestrator authenticates callers, across the CLI, SDKs, and browser."
+    href="/docs/reference/auth"
+  />
+</Cards>
 
 ## Resource coverage
 

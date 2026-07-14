@@ -1,4 +1,5 @@
 {
   "title": "HTTP API",
+  "icon": "Webhook",
   "pages": ["index", "environments", "hosts-and-keys"]
 }
