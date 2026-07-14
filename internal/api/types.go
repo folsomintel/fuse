@@ -222,6 +222,11 @@ type HostInfo struct {
 	LastSeen  time.Time    `json:"last_seen"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
+
+	// Warnings carries non-fatal notices from registration (e.g. a
+	// declared capacity value that exceeds what was probed from the host
+	// agent). Only ever populated on the POST /v1/hosts response.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // HostList is the response body for GET /v1/hosts.

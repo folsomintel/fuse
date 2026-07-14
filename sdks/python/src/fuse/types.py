@@ -171,6 +171,9 @@ class Host(_Model):
     last_seen: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    # non-fatal registration notices (e.g. declared capacity exceeding the
+    # probed value). only ever populated on the response to hosts.register.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class APIKey(_Model):

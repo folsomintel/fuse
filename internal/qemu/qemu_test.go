@@ -43,6 +43,38 @@ func TestProviderImplementsInterface(t *testing.T) {
 	var _ orchestrator.Provider = New(Config{})
 }
 
+// TestCapacityQueriesHostAgent asserts Capacity() calls GET /v1/capacity and
+// maps the response onto orchestrator.HostCapacity.
+func TestCapacityQueriesHostAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/capacity" || r.Method != http.MethodGet {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(capacityResponse{CPUs: 16, RamMB: 65536, StorageGB: 500})
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL})
+	got, err := p.Capacity(context.Background())
+	if err != nil {
+		t.Fatalf("capacity: %v", err)
+	}
+	want := orchestrator.HostCapacity{CPUs: 16, RamMB: 65536, StorageGB: 500}
+	if got != want {
+		t.Errorf("capacity = %+v, want %+v", got, want)
+	}
+}
+
+// TestCapacityStubModeErrors asserts the in-memory stub (no real host agent)
+// refuses to probe rather than fabricating hardware numbers.
+func TestCapacityStubModeErrors(t *testing.T) {
+	p := New(Config{}) // empty BaseURL -> stub
+	if _, err := p.Capacity(context.Background()); err == nil {
+		t.Fatal("expected error probing capacity in stub mode, got nil")
+	}
+}
+
 // TestCreateForwardsGPUSpec is the task 3.2 assertion: a create with GPUs > 0
 // sends gpus and gpu_kind to the host agent.
 func TestCreateForwardsGPUSpec(t *testing.T) {

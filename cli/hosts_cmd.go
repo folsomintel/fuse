@@ -164,6 +164,9 @@ func renderHostDetail(h *fuse.Host) {
 		[2]string{"updated", shortTime(h.UpdatedAt)},
 	)
 	renderDetail(rows)
+	for _, w := range h.Warnings {
+		warnf("warning: %s", w)
+	}
 	warnf("note: last_seen is set at registration and not refreshed; it is not a liveness signal")
 }
 
@@ -287,7 +290,13 @@ func newHostRegisterCmd() *cobra.Command {
 		Long: "register adds a compute host to the orchestrator's scheduler. the id is a\n" +
 			"free-form operator-supplied string and is the host's primary key, so use a\n" +
 			"readable one (e.g. prod-east-1). pass details via flags, or omit --url to\n" +
-			"fill them in interactively.",
+			"fill them in interactively.\n\n" +
+			"--cpus/--ram-mb/--storage-gb are optional: omit one (or leave it at 0) and\n" +
+			"the orchestrator probes the host agent for the real value instead of trusting\n" +
+			"a guess. pass one explicitly to override the probe (e.g. a deliberate\n" +
+			"overcommit or carve-out); a declared value above what was probed still\n" +
+			"registers, with a warning. --max-vms is a scheduling policy, not a hardware\n" +
+			"fact, so it is always required.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id := args[0]
@@ -299,10 +308,10 @@ func newHostRegisterCmd() *cobra.Command {
 				err := runForm(huh.NewGroup(
 					huh.NewInput().Title("Host URL").Description("agent base url, e.g. http://10.0.0.5:9000").Value(&hostURL),
 					huh.NewInput().Title("Region").Value(&region),
-					huh.NewInput().Title("CPUs (capacity)").Value(&cpusS).Validate(validateInt),
-					huh.NewInput().Title("RAM MB (capacity)").Value(&ramS).Validate(validateInt),
-					huh.NewInput().Title("Storage GB (capacity)").Value(&storS).Validate(validateInt),
-					huh.NewInput().Title("Max VMs (capacity)").Value(&vmsS).Validate(validateInt),
+					huh.NewInput().Title("CPUs (capacity)").Description("0 = probe from host agent").Value(&cpusS).Validate(validateInt),
+					huh.NewInput().Title("RAM MB (capacity)").Description("0 = probe from host agent").Value(&ramS).Validate(validateInt),
+					huh.NewInput().Title("Storage GB (capacity)").Description("0 = probe from host agent").Value(&storS).Validate(validateInt),
+					huh.NewInput().Title("Max VMs (capacity)").Description("required; scheduling policy, not probed").Value(&vmsS).Validate(validateInt),
 				))
 				if err != nil {
 					return err
@@ -349,10 +358,10 @@ func newHostRegisterCmd() *cobra.Command {
 	cmd.Flags().StringVar(&region, "region", "", "region label")
 	cmd.Flags().StringVar(&token, "token", "", "token the orchestrator uses to call the host")
 	cmd.Flags().StringVar(&backend, "backend", "", "virtualization backend: firecracker (default) or qemu")
-	cmd.Flags().IntVar(&cpus, "cpus", 0, "cpu capacity")
-	cmd.Flags().IntVar(&ramMB, "ram-mb", 0, "ram capacity in MB")
-	cmd.Flags().IntVar(&storageGB, "storage-gb", 0, "storage capacity in GB")
-	cmd.Flags().IntVar(&maxVMs, "max-vms", 0, "max vm count")
+	cmd.Flags().IntVar(&cpus, "cpus", 0, "cpu capacity override (0 = probe from host agent)")
+	cmd.Flags().IntVar(&ramMB, "ram-mb", 0, "ram capacity in MB override (0 = probe from host agent)")
+	cmd.Flags().IntVar(&storageGB, "storage-gb", 0, "storage capacity in GB override (0 = probe from host agent)")
+	cmd.Flags().IntVar(&maxVMs, "max-vms", 0, "max vm count (required; not probed, it's a scheduling policy)")
 	cmd.Flags().IntVar(&gpus, "gpus", 0, "gpu device count (requires --backend qemu)")
 	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label (e.g. a100)")
 	return cmd

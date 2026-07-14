@@ -195,6 +195,7 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 | POST   | `/v1/vm/{id}/snapshot`    | `{comment, include_ram}` — disk-only (`include_ram` ignored).                                                                                                                                                                                              |
 | GET    | `/v1/vm/{id}/snapshots`   | `{snapshots:[...]}`                                                                                                                                                                                                                                        |
 | POST   | `/v1/vm/{id}/restore`     | `{snapshot_id, include_ram}` — stops fc, swaps rootfs, reboots VM.                                                                                                                                                                                         |
+| GET    | `/v1/capacity`            | `{cpus, ram_mb, storage_gb}` — real cpu count, total ram, and free disk on this host. `fuse host register` probes this instead of trusting operator-declared flags.                                                                                        |
 
 `url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port =
 `19550 + vm_index`. Public host is auto-detected; override with
