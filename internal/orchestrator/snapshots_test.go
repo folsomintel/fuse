@@ -22,7 +22,9 @@ func (e *snapshotTestEnv) Name() string  { return e.name }
 func (e *snapshotTestEnv) URL() string   { return e.url }
 func (e *snapshotTestEnv) Token() string { return "" }
 
-func (e *snapshotTestEnv) Exec(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+func (e *snapshotTestEnv) Exec(context.Context, []string, ExecOptions) (ExecResult, error) {
+	return ExecResult{}, nil
+}
 func (e *snapshotTestEnv) ExecStream(context.Context, io.Writer, io.Writer, string, ...string) error {
 	return nil
 }

@@ -36,17 +36,65 @@ type fakeEnv struct {
 	mu          sync.Mutex
 	checkpoints []orchestrator.Checkpoint
 	execCalls   [][]string
+
+	// execResult and execErr program what Exec returns, so a test can drive
+	// both a clean run and a guest command that exits non-zero — which are
+	// different outcomes the handler must not conflate.
+	execResult orchestrator.ExecResult
+	execErr    error
+
+	// execArgv and execOpts record what Exec was actually asked to run.
+	execArgv [][]string
+	execOpts []orchestrator.ExecOptions
+
+	// attachStream is handed back by Attach; attachErr overrides it.
+	// attachSpec records what the handler asked for.
+	attachStream io.ReadWriteCloser
+	attachErr    error
+	attachSpec   orchestrator.AttachSpec
+	attachCalls  int
 }
 
-func (e *fakeEnv) Name() string                                            { return e.name }
-func (e *fakeEnv) URL() string                                             { return e.url }
-func (e *fakeEnv) Token() string                                           { return "" }
-func (e *fakeEnv) Exec(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+func (e *fakeEnv) Name() string  { return e.name }
+func (e *fakeEnv) URL() string   { return e.url }
+func (e *fakeEnv) Token() string { return "" }
+
+func (e *fakeEnv) Exec(_ context.Context, cmd []string, opts orchestrator.ExecOptions) (orchestrator.ExecResult, error) {
+	e.mu.Lock()
+	e.execArgv = append(e.execArgv, cmd)
+	e.execOpts = append(e.execOpts, opts)
+	res, err := e.execResult, e.execErr
+	e.mu.Unlock()
+	return res, err
+}
+
+func (e *fakeEnv) Attach(_ context.Context, spec orchestrator.AttachSpec) (io.ReadWriteCloser, error) {
+	e.mu.Lock()
+	e.attachSpec = spec
+	e.attachCalls++
+	stream, err := e.attachStream, e.attachErr
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return stream, nil
+}
+
 func (e *fakeEnv) ExecStream(_ context.Context, _, _ io.Writer, name string, args ...string) error {
 	e.mu.Lock()
 	e.execCalls = append(e.execCalls, append([]string{name}, args...))
 	e.mu.Unlock()
 	return nil
+}
+
+// execInvocations returns a copy of the argv recorded by Exec (as opposed to
+// execCommands, which records the ExecStream calls drain makes).
+func (e *fakeEnv) execInvocations() [][]string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([][]string, len(e.execArgv))
+	copy(out, e.execArgv)
+	return out
 }
 
 // execCommands returns a copy of the recorded ExecStream calls so drain tests

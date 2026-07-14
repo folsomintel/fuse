@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -194,6 +195,7 @@ type remoteEnv struct {
 
 var (
 	_ orchestrator.Environment      = (*remoteEnv)(nil)
+	_ orchestrator.Attacher         = (*remoteEnv)(nil)
 	_ orchestrator.TokenSetter      = (*remoteEnv)(nil)
 	_ orchestrator.EndpointReporter = (*remoteEnv)(nil)
 )
@@ -226,17 +228,36 @@ func (e *remoteEnv) SetToken(token string) {
 	e.tokenMu.Unlock()
 }
 
-func (e *remoteEnv) Exec(ctx context.Context, name string, args ...string) ([]byte, error) {
-	req := execRequest{Cmd: append([]string{name}, args...)}
+// Exec runs argv in the guest via the host agent and returns the result with
+// stdout, stderr, and the exit code intact. A non-zero exit code is a normal
+// outcome, not an error: the guest ran the command and it failed, which is
+// information the caller asked for.
+func (e *remoteEnv) Exec(ctx context.Context, cmd []string, opts orchestrator.ExecOptions) (orchestrator.ExecResult, error) {
+	req := execRequest{Cmd: cmd}
+	if opts.Timeout > 0 {
+		req.TimeoutMS = int(opts.Timeout.Milliseconds())
+	}
 	var resp execResponse
 	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
-		return nil, fmt.Errorf("exec: %w", err)
+		return orchestrator.ExecResult{}, fmt.Errorf("exec: %w", err)
 	}
-	out := append(resp.Stdout, resp.Stderr...)
-	if resp.ExitCode != 0 {
-		return out, fmt.Errorf("exec exit %d", resp.ExitCode)
+	return orchestrator.ExecResult{
+		ExitCode: resp.ExitCode,
+		Stdout:   resp.Stdout,
+		Stderr:   resp.Stderr,
+	}, nil
+}
+
+// Attach opens a fuse-attach/1 stream to a process in the guest. The frames on
+// it are opaque here: the provider is a conduit, and only the far ends (the
+// host agent and the client) encode or decode them.
+func (e *remoteEnv) Attach(ctx context.Context, spec orchestrator.AttachSpec) (io.ReadWriteCloser, error) {
+	path := fmt.Sprintf("/v1/vm/%s/attach?%s", e.id, hostwire.AttachQuery(spec).Encode())
+	c, err := hostwire.Dial(ctx, e.client.baseURL, e.client.token, path, hostwire.AttachProto)
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	return c, nil
 }
 
 func (e *remoteEnv) ExecStream(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
@@ -408,6 +429,9 @@ type uploadRequest struct {
 
 type execRequest struct {
 	Cmd []string `json:"cmd"`
+	// TimeoutMS bounds the command in the guest. Zero leaves the host agent
+	// on its own default.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
 type execResponse struct {
@@ -627,11 +651,12 @@ func (e *stubEnv) SetToken(token string) {
 	e.mu.Unlock()
 }
 
-// Exec simulates a successful guest command. The in-memory stub has no real
-// guest, so it returns empty output and no error — enough for the dev/stub
-// server to drive the full VM lifecycle (including drain) end to end.
-func (e *stubEnv) Exec(_ context.Context, _ string, _ ...string) ([]byte, error) {
-	return nil, nil
+// Exec reports that the stub has no guest to run commands in. The stub used
+// to fake a successful empty run, which meant a provider with an unset BaseURL
+// answered every exec with a convincing lie. A caller debugging a VM needs to
+// know it is talking to nothing.
+func (e *stubEnv) Exec(_ context.Context, _ []string, _ orchestrator.ExecOptions) (orchestrator.ExecResult, error) {
+	return orchestrator.ExecResult{}, orchestrator.ErrExecUnsupported
 }
 
 // ExecStream simulates a successful guest command (no output written). Like

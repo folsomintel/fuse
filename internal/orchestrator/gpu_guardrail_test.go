@@ -21,8 +21,8 @@ type gpuTestEnv struct {
 func (e *gpuTestEnv) Name() string  { return e.name }
 func (e *gpuTestEnv) URL() string   { return e.url }
 func (e *gpuTestEnv) Token() string { return "" }
-func (e *gpuTestEnv) Exec(context.Context, string, ...string) ([]byte, error) {
-	return nil, nil
+func (e *gpuTestEnv) Exec(context.Context, []string, ExecOptions) (ExecResult, error) {
+	return ExecResult{}, nil
 }
 func (e *gpuTestEnv) ExecStream(context.Context, io.Writer, io.Writer, string, ...string) error {
 	return nil

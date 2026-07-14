@@ -97,12 +97,12 @@ func TestClientContract(t *testing.T) {
 		t.Fatalf("upload: %v", err)
 	}
 
-	out, err := env.Exec(ctx, "echo", "ok")
+	res, err := env.Exec(ctx, []string{"echo", "ok"}, orchestrator.ExecOptions{})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
-	if !strings.Contains(string(out), "ok") {
-		t.Fatalf("unexpected exec output: %q", out)
+	if !strings.Contains(string(res.Stdout), "ok") {
+		t.Fatalf("unexpected exec stdout: %q", res.Stdout)
 	}
 
 	sc, ok := env.(orchestrator.SnapshotCapable)
@@ -138,7 +138,7 @@ func TestClientContract(t *testing.T) {
 	}
 
 	// Validate that base64 decoding works via Exec response.
-	if got := base64.StdEncoding.EncodeToString([]byte("ok")); got == string(out) {
+	if got := base64.StdEncoding.EncodeToString([]byte("ok")); got == string(res.Stdout) {
 		t.Fatalf("exec output appears base64; expected decoded bytes")
 	}
 }
