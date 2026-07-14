@@ -89,7 +89,10 @@ func New(cfg Config) *Provider {
 	return p
 }
 
-var _ orchestrator.Provider = (*Provider)(nil)
+var (
+	_ orchestrator.Provider         = (*Provider)(nil)
+	_ orchestrator.SnapshotForkable = (*Provider)(nil)
+)
 
 // Create provisions a new sandbox.
 func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestrator.Environment, error) {
@@ -108,6 +111,45 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker create vm: %w", err)
+	}
+
+	env := &remoteEnv{
+		id:     resp.VMID,
+		url:    resp.URL,
+		client: p,
+	}
+	if env.url == "" {
+		env.url = fmt.Sprintf("fc://%s", resp.VMID)
+	}
+	return env, nil
+}
+
+// CreateFromCheckpoint provisions a brand-new sandbox seeded from an existing
+// vm's checkpoint, satisfying orchestrator.SnapshotForkable. The host agent
+// copies the named snapshot's rootfs into the new vm rather than the base
+// image; the source vm is untouched and keeps running.
+//
+// The returned Environment is a fully usable handle for the NEW vm (its own id
+// and url), not a view of the source. It carries no auth token: the guest's
+// disk still holds whatever credentials the source had, so ForkEnvironment
+// mints fresh ones for the fork rather than letting two vms share a secret.
+func (p *Provider) CreateFromCheckpoint(ctx context.Context, spec orchestrator.Spec, srcVMID, checkpointID string) (orchestrator.Environment, error) {
+	if p.stub != nil {
+		return p.stub.CreateFromCheckpoint(ctx, spec, srcVMID, checkpointID)
+	}
+
+	reqBody := forkVMRequest{
+		Name:       spec.Name,
+		SnapshotID: checkpointID,
+		CPUs:       spec.CPUs,
+		MemoryMB:   spec.RamMB,
+		StorageGB:  spec.StorageGB,
+		Region:     spec.Region,
+	}
+	var resp createVMResponse
+	path := fmt.Sprintf("/v1/vm/%s/fork", srcVMID)
+	if err := p.doJSON(ctx, http.MethodPost, path, reqBody, &resp); err != nil {
+		return nil, fmt.Errorf("firecracker fork vm %s from snapshot %s: %w", srcVMID, checkpointID, err)
 	}
 
 	env := &remoteEnv{
@@ -389,6 +431,19 @@ type createVMResponse struct {
 	URL  string `json:"url"`
 }
 
+// forkVMRequest seeds a new vm from an existing vm's snapshot. The host agent
+// resolves snapshot_id against the source vm in the URL path and copies that
+// snapshot's rootfs into the new vm, so no image is carried here. Sizing
+// fields left zero default to the source vm's on the host side.
+type forkVMRequest struct {
+	Name       string `json:"name"`
+	SnapshotID string `json:"snapshot_id"`
+	CPUs       int    `json:"cpus,omitempty"`
+	MemoryMB   int    `json:"memory_mb,omitempty"`
+	StorageGB  int    `json:"storage_gb,omitempty"`
+	Region     string `json:"region,omitempty"`
+}
+
 type getVMResponse struct {
 	VMID string `json:"vm_id"`
 	URL  string `json:"url"`
@@ -544,6 +599,57 @@ func (p *stubProvider) Create(_ context.Context, spec orchestrator.Spec) (orches
 		return nil, fmt.Errorf("env %s already exists", spec.Name)
 	}
 	env := &stubEnv{name: spec.Name, url: fmt.Sprintf("fc://%s", spec.Name), image: spec.Image}
+	p.envs[spec.Name] = env
+	return env, nil
+}
+
+// CreateFromCheckpoint seeds a new stub env from an existing one's checkpoint,
+// mirroring the remote path's semantics: the source must exist and must own the
+// checkpoint, and the new env is keyed by spec.Name. The seed checkpoint and the
+// source's files are copied in so the fork "boots" the snapshot's disk state,
+// which is what makes the stub useful for exercising fork end to end.
+func (p *stubProvider) CreateFromCheckpoint(_ context.Context, spec orchestrator.Spec, srcVMID, checkpointID string) (orchestrator.Environment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	src, ok := p.envs[srcVMID]
+	if !ok {
+		return nil, fmt.Errorf("source env %s not found", srcVMID)
+	}
+	if _, exists := p.envs[spec.Name]; exists {
+		return nil, fmt.Errorf("env %s already exists", spec.Name)
+	}
+
+	src.mu.Lock()
+	var (
+		seed  orchestrator.Checkpoint
+		found bool
+	)
+	for _, cp := range src.checkpoints {
+		if cp.ID == checkpointID {
+			seed, found = cp, true
+			break
+		}
+	}
+	files := make(map[string][]byte, len(src.files))
+	for path, data := range src.files {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		files[path] = cp
+	}
+	image := src.image
+	src.mu.Unlock()
+
+	if !found {
+		return nil, fmt.Errorf("checkpoint %s not found on %s", checkpointID, srcVMID)
+	}
+
+	env := &stubEnv{
+		name:        spec.Name,
+		url:         fmt.Sprintf("fc://%s", spec.Name),
+		image:       image,
+		files:       files,
+		checkpoints: []orchestrator.Checkpoint{seed},
+	}
 	p.envs[spec.Name] = env
 	return env, nil
 }

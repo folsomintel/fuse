@@ -4,7 +4,32 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/secrets"
 )
+
+// releaseForkCapacity gives back the host capacity a fork reserved, for a fork
+// that never became a live vm.
+func (fm *FleetManager) releaseForkCapacity(hostID string, spec Spec) {
+	if hostID == "" {
+		return
+	}
+	fm.mu.Lock()
+	fm.deallocateOnHost(hostID, spec)
+	fm.mu.Unlock()
+}
+
+// abandonFork tears down a fork that was created on the provider but could not
+// be finished, releasing both the real microVM (with its tap and forwards) and
+// the host capacity reserved for it. the vm is not in fm.vms and was never
+// persisted, so those need no cleanup. failures are logged rather than
+// returned: the caller is already reporting the error that got us here.
+func (fm *FleetManager) abandonFork(ctx context.Context, provider Provider, hostID, vmID string, spec Spec) {
+	if err := provider.Destroy(ctx, vmID); err != nil {
+		fm.logger.Warn("destroy partially forked vm failed", "vm", vmID, "err", err)
+	}
+	fm.releaseForkCapacity(hostID, spec)
+}
 
 // ForkOptions tunes a ForkEnvironment call. All fields are optional.
 type ForkOptions struct {
@@ -29,8 +54,15 @@ type ForkOptions struct {
 // same store path CreateSnapshot uses (upsertSnapshotRecord) and is
 // directly assertable via ListSnapshots / GetSnapshotByID.
 //
-// providers that cannot fork (the firecracker provider today) do not
-// implement SnapshotForkable, so this reports fork as unsupported.
+// the fork is charged to the source's host (a fork is pinned there: the seed
+// snapshot's rootfs is host-local) and is given its OWN guest credentials,
+// since it boots a copy of the source's disk and would otherwise answer to the
+// source's token.
+//
+// providers that cannot fork do not implement SnapshotForkable, so this reports
+// fork as unsupported for them. the firecracker provider implements it; the
+// qemu provider deliberately does not (vfio gpu passthrough cannot be
+// checkpointed).
 func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
 	// validate the source vm exists and is running, and resolve the
 	// provider under the lock (providerForHost requires fm.mu held),
@@ -43,6 +75,7 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	}
 	state := src.state
 	srcSpec := src.spec
+	srcEnv := src.env
 	srcHostID := src.hostID
 	provider := fm.provider
 	if srcHostID != "" {
@@ -54,6 +87,17 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 
 	if state != VMStateRunning {
 		return "", fmt.Errorf("vm %s in state %s: fork requires running", srcVMID, state)
+	}
+
+	// gpu environments cannot be forked: a vfio passthrough device cannot be
+	// checkpointed (d4). this is checked up front, before the provider is
+	// consulted, because it is a property of the ENVIRONMENT, not of the
+	// provider's capabilities. it previously lived inside the not-forkable
+	// branch below, which only held while no provider implemented
+	// SnapshotForkable; the firecracker provider now does, so keying the
+	// guardrail off the type assertion would silently stop protecting gpu vms.
+	if srcSpec.GPUs > 0 {
+		return "", fmt.Errorf("vm %s has a gpu passthrough device: fork is not supported for gpu environments", srcVMID)
 	}
 
 	// obtain the seed snapshot: snapshot the source when no existing
@@ -77,19 +121,25 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 		if existing.State != SnapshotStateReady {
 			return "", fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, opts.ReuseSnapshotID, existing.State)
 		}
+		// a ready record is not proof of an artifact on the host. fork itself
+		// writes lineage records (below) that are ready but back no checkpoint,
+		// and a snapshot can also be deleted out from under its record. confirm
+		// the provider really holds it, the same guard RestoreSnapshot applies,
+		// so a doomed fork fails here instead of 404ing deep in the host agent.
+		if srcEnv == nil {
+			return "", fmt.Errorf("vm %s has no active environment handle", srcVMID)
+		}
+		if _, found := lookupCheckpoint(ctx, srcEnv, opts.ReuseSnapshotID); !found {
+			return "", fmt.Errorf("%w: %s is not present on the host", ErrSnapshotNotFound, opts.ReuseSnapshotID)
+		}
 		seed = existing
 	}
 
 	// a true fork needs a provider that can seed a new environment from a
-	// checkpoint. the firecracker provider does not implement this yet, so
-	// fork is reported unsupported here. gpu environments (whose seed snapshot
-	// step above already fails when reuse_snapshot_id is empty) also cannot be
-	// forked, since vfio passthrough cannot be checkpointed (d4).
+	// checkpoint. the firecracker provider implements this; the qemu provider
+	// deliberately does not (its gpu envs are already rejected above).
 	forkable, ok := provider.(SnapshotForkable)
 	if !ok {
-		if srcSpec.GPUs > 0 {
-			return "", fmt.Errorf("vm %s has a gpu passthrough device: fork is not supported for gpu environments", srcVMID)
-		}
 		return "", fmt.Errorf("provider does not support fork for vm %s", srcVMID)
 	}
 
@@ -100,9 +150,73 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	spec := srcSpec
 	spec.Name = newVMID
 
+	// a fork is a real vm consuming real resources on the source's host, so it
+	// must be charged to that host. the fork does NOT go through Schedule: the
+	// seed snapshot's rootfs is host-local, so the fork can only be born where
+	// its source lives.
+	//
+	// this is load-bearing beyond bookkeeping: DestroyVM deallocates by v.spec
+	// unconditionally (fleet.go), so a fork that was never allocated would, on
+	// destroy, credit back its (source-sized) cpu/ram to a host that never
+	// charged for it. the counters clamp at zero, making the drift permanent
+	// and leaving the scheduler to overcommit that host from then on.
+	fm.mu.Lock()
+	if srcHostID != "" {
+		fm.allocateOnHost(srcHostID, spec)
+	}
+	fm.mu.Unlock()
+
 	newEnv, err := forkable.CreateFromCheckpoint(ctx, spec, srcVMID, seed.SnapshotID)
 	if err != nil {
+		fm.releaseForkCapacity(srcHostID, spec)
 		return "", fmt.Errorf("fork vm %s from snapshot %s: %w", srcVMID, seed.SnapshotID, err)
+	}
+
+	// the fork booted a byte copy of the source's disk, so its guest already has
+	// the SOURCE's credentials on it (/fuse/auth-token, /fuse/tls/*) and its
+	// fused unit auto-starts from that disk holding the SOURCE's identity.
+	// leaving it there would both leave this vm's record with no token at all
+	// and let two live vms authenticate with one shared secret, so mint fresh
+	// credentials for the fork.
+	//
+	// uploading the files is NOT enough on its own: fused reads --auth-token-file
+	// exactly once at process start (cmd/fused/main.go) and has no reloader, so
+	// the already-running process would keep serving the source's token. StartAgent
+	// is what makes the host agent rewrite the unit's env with the fork's own
+	// vm id and restart fused, which is the step that actually takes effect.
+	//
+	// only the credential files are uploaded, never a full FusedAgentSpec: the
+	// manifest and secrets the fork should run with are the ones already on the
+	// copied disk, and a nil manifest would clobber them.
+	//
+	// like Boot, this is a no-op without a 32-byte encryption key (dev mode):
+	// the source then had no credentials either, so the fork inherits none and
+	// stays consistent with it.
+	var encToken []byte
+	drainCommand := DefaultFusedDrainCommand
+	if len(fm.tokenEncryptionKey) == 32 {
+		creds, credErr := secrets.GenerateVMCredentials(newVMID)
+		if credErr != nil {
+			fm.abandonFork(ctx, provider, srcHostID, newVMID, spec)
+			return "", fmt.Errorf("generate credentials for forked vm %s: %w", newVMID, credErr)
+		}
+		if upErr := uploadFiles(ctx, newEnv, fusedCredentialFiles(creds)); upErr != nil {
+			fm.abandonFork(ctx, provider, srcHostID, newVMID, spec)
+			return "", fmt.Errorf("upload credentials to forked vm %s: %w", newVMID, upErr)
+		}
+		setTokenIfSupported(newEnv, creds)
+		encToken, err = secrets.EncryptToken(creds.AuthToken, fm.tokenEncryptionKey)
+		if err != nil {
+			fm.abandonFork(ctx, provider, srcHostID, newVMID, spec)
+			return "", fmt.Errorf("encrypt token for forked vm %s: %w", newVMID, err)
+		}
+		if agentErr := newEnv.StartAgent(ctx, AgentSpec{
+			AuthToken:    creds.AuthToken,
+			DrainCommand: drainCommand,
+		}); agentErr != nil {
+			fm.abandonFork(ctx, provider, srcHostID, newVMID, spec)
+			return "", fmt.Errorf("restart guest agent on forked vm %s with its own credentials: %w", newVMID, agentErr)
+		}
 	}
 
 	// register the new vm as running and persist it, mirroring the
@@ -111,15 +225,17 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	// and publishStateChange.
 	now := time.Now()
 	v := &vm{
-		id:        newVMID,
-		state:     VMStateRunning,
-		taskID:    forkTaskID,
-		hostID:    srcHostID,
-		env:       newEnv,
-		url:       newEnv.URL(),
-		spec:      spec,
-		createdAt: now,
-		updatedAt: now,
+		id:                 newVMID,
+		state:              VMStateRunning,
+		taskID:             forkTaskID,
+		hostID:             srcHostID,
+		env:                newEnv,
+		url:                newEnv.URL(),
+		spec:               spec,
+		authTokenEncrypted: encToken,
+		drainCommand:       drainCommand,
+		createdAt:          now,
+		updatedAt:          now,
 	}
 	fm.mu.Lock()
 	fm.vms[newVMID] = v
@@ -127,11 +243,14 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 
 	// persisting the running state is load-bearing: roll the in-memory
 	// registration back on failure so the map stays consistent with the
-	// store (same guard ProvisionAndAssign applies to persistVMByID).
+	// store (same guard ProvisionAndAssign applies to persistVMByID). the
+	// microVM is real by this point, so it has to be torn down too, or it
+	// keeps running on the host with nothing tracking it.
 	if err := fm.persistVMByID(ctx, newVMID); err != nil {
 		fm.mu.Lock()
 		delete(fm.vms, newVMID)
 		fm.mu.Unlock()
+		fm.abandonFork(ctx, provider, srcHostID, newVMID, spec)
 		return "", fmt.Errorf("persist forked vm %s running state: %w", newVMID, err)
 	}
 	// the task record mirrors the running task upsert in ProvisionAndAssign;

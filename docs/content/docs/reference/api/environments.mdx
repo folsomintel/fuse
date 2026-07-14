@@ -10,6 +10,7 @@ description: /v1/environments and /v1/snapshots
 | `GET` | `/v1/environments` | List environments. Optional exact-match filters: `task_id`, `state`, `host_id`. |
 | `POST` | `/v1/environments` | Create an environment. Blocks until running or failed. |
 | `GET` | `/v1/environments/{vmId}` | Fetch one environment. |
+| `POST` | `/v1/environments/{vmId}?action=fork` | Fork into a new environment seeded from a snapshot of this one. Optional body: `comment`, `reuse_snapshot_id`. Returns the new environment. |
 | `POST` | `/v1/environments/{vmId}?action=rotate-token` | Re-issue guest credentials. Returns `204`. |
 | `POST` | `/v1/environments/{vmId}?action=drain` | Graceful phase-1 teardown (running only). Returns `200` with the updated environment (`state: draining`). |
 | `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
@@ -80,6 +81,4 @@ data: {"event":"state","vm_id":"...","state":"running","url":"...","updated_at":
 | `DELETE` | `/v1/snapshots/{snapshotId}` | Delete (also removes the provider artifact). |
 
 See [Snapshots](/docs/learn/concepts/snapshots) for the concept-level model,
-including the QEMU/GPU exception (no snapshot support at all) and the known
-restore-corruption caveat covered in
-[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes).
+including the QEMU/GPU exception (no snapshot support at all).
