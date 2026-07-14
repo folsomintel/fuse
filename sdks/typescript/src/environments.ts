@@ -1,5 +1,13 @@
 import type { CallOptions, Transport } from "./transport.js";
-import type { CreateRequest, EnvironmentInfo, Event, ForkOptions } from "./types.js";
+import type {
+  CreateRequest,
+  EnvironmentInfo,
+  Event,
+  ExecRequest,
+  ExecResult,
+  ForkOptions,
+} from "./types.js";
+import { FuseError } from "./errors.js";
 import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
 
@@ -59,6 +67,40 @@ export class EnvironmentsService {
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       { query: { action: "fork" }, body, signal: opts.signal },
+    );
+  }
+
+  /**
+   * Run a command inside a running environment's guest and return its exit code
+   * with stdout and stderr kept separate.
+   *
+   * A non-zero exit_code is resolved, not thrown: the command ran and failed.
+   * A thrown error means the command could not be run at all.
+   *
+   * Exec requires the master token.
+   *
+   * @example
+   * const out = await client.environments.exec(id, { cmd: ["ls", "-l"] });
+   * if (out.exit_code !== 0) console.error(out.stderr);
+   */
+  async exec(
+    vmId: string,
+    body: ExecRequest,
+    opts: CallOptions = {},
+  ): Promise<ExecResult> {
+    requireArg(vmId, "vm id");
+    const hasCmd = (body.cmd?.length ?? 0) > 0;
+    const hasShell = (body.shell ?? "") !== "";
+    if (!hasCmd && !hasShell) {
+      throw new FuseError("one of cmd or shell is required");
+    }
+    if (hasCmd && hasShell) {
+      throw new FuseError("cmd and shell are mutually exclusive");
+    }
+    return this.t.json<ExecResult>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      { query: { action: "exec" }, body, signal: opts.signal },
     );
   }
 

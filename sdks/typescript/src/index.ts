@@ -23,6 +23,8 @@ export type {
   CreateRequest,
   EnvironmentInfo,
   ForkOptions,
+  ExecRequest,
+  ExecResult,
   Event,
   SnapshotRequest,
   SnapshotExport,
