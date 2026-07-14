@@ -197,8 +197,9 @@ FIRECRACKER_BASE_URL=http://127.0.0.1:${PORT}
 FIRECRACKER_TOKEN=${FC_AGENT_TOKEN}
 ORCH_LISTEN=:8080
 
-# State: Postgres (survives restarts). REQUIRED - fill this in before first start.
-DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/fuse_orchestrator?sslmode=require
+# State: Postgres (survives restarts). Auto-filled by \`fc-agent.sh bootstrap\`;
+# otherwise fill this in before the first start.
+DATABASE_URL=${DATABASE_URL:-postgres://USER:PASSWORD@HOST:5432/fuse_orchestrator?sslmode=require}
 
 # Auth: required, fail-closed. Set the UI's FUSE_TOKEN to the SAME value.
 ORCH_REQUIRE_AUTH=true
@@ -267,6 +268,94 @@ EOF
     sudo -n systemctl daemon-reload
     echo "[orch] orchestrator service removed (left $ORCH_DEFAULTS and $ORCH_BIN in place)"
     ;;
+  bootstrap)
+    # One-command host bring-up. Composes the pieces below into a working host +
+    # control plane, then registers itself and prints the connect line. Idempotent
+    # and re-runnable. Run with sudo: sudo ./fc-agent.sh bootstrap
+    #   flags: --no-updater (skip the weekly auto-update timer)
+    #          --no-register (don't self-register with the orchestrator)
+    shift || true
+    NO_UPDATER=0; NO_REGISTER=0
+    for a in "$@"; do
+      case "$a" in
+        --no-updater)  NO_UPDATER=1 ;;
+        --no-register) NO_REGISTER=1 ;;
+        *) echo "[bootstrap] unknown flag: $a (want --no-updater / --no-register)" >&2; exit 1 ;;
+      esac
+    done
+
+    echo "[bootstrap] 1/8 host dependencies"
+    "$FC_DIR/fc-deps.sh"
+    echo "[bootstrap] 2/8 firecracker + kernel + base rootfs"
+    "$FC_DIR/fc-install.sh"
+    echo "[bootstrap] 3/8 host agent service"
+    "$0" install-service
+    echo "[bootstrap] 4/8 postgres"
+    DB_URL="$("$FC_DIR/fc-postgres.sh")"
+    echo "[bootstrap] 5/8 orchestrator service"
+    # if an earlier run left the placeholder DATABASE_URL, fill it in now.
+    if [ -f "$ORCH_DEFAULTS" ] && sudo -n grep -q 'USER:PASSWORD@HOST' "$ORCH_DEFAULTS"; then
+      sudo -n sed -i "s#^DATABASE_URL=.*#DATABASE_URL=${DB_URL}#" "$ORCH_DEFAULTS"
+      sudo -n systemctl restart orchestrator.service 2>/dev/null || true
+    fi
+    DATABASE_URL="$DB_URL" "$0" install-orchestrator
+    if [ "$NO_UPDATER" != "1" ]; then
+      echo "[bootstrap] 6/8 auto-update timer"
+      UPDATER_ENV="$FC_DIR/.fc-updater.env"
+      touch "$UPDATER_ENV"
+      grep -q '^FUSE_ORCH_SERVICE=' "$UPDATER_ENV" || echo "FUSE_ORCH_SERVICE=orchestrator.service" >> "$UPDATER_ENV"
+      grep -q '^FUSE_ORCH_BIN=' "$UPDATER_ENV"     || echo "FUSE_ORCH_BIN=$ORCH_BIN" >> "$UPDATER_ENV"
+      "$0" install-updater
+    else
+      echo "[bootstrap] 6/8 skipping auto-update timer (--no-updater)"
+    fi
+    echo "[bootstrap] 7/8 guest agent (fused) + rootfs bake"
+    # fc-update.sh (run bare, no FUSE_ORCH_* here) fetches the latest fused release
+    # asset and bakes it into the rootfs. Non-fatal: the control plane is already up.
+    "$FC_DIR/fc-update.sh" || echo "[bootstrap]  ! fused/bake step failed - control plane is up, but new VMs lack the guest toolchain until it's fixed" >&2
+
+    # read back the generated orchestrator token + this host's agent token.
+    TOK=$(sudo -n grep -E '^ORCH_AUTH_TOKEN=' "$ORCH_DEFAULTS" | cut -d= -f2-)
+    # shellcheck disable=SC1090
+    [ -f "$ENV_FILE" ] && source "$ENV_FILE"   # FC_AGENT_TOKEN
+
+    if [ "$NO_REGISTER" != "1" ] && [ -n "$TOK" ]; then
+      echo "[bootstrap] 8/8 register this host with the orchestrator"
+      # wait for the api (migrations run on first boot).
+      for _ in $(seq 1 30); do
+        curl -fsS -H "Authorization: Bearer $TOK" http://127.0.0.1:8080/v1/hosts >/dev/null 2>&1 && break
+        sleep 1
+      done
+      CPUS=$(nproc 2>/dev/null || echo 4)
+      RAM_MB=$(( $(getconf _PHYS_PAGES 2>/dev/null || echo 2097152) * $(getconf PAGE_SIZE 2>/dev/null || echo 4096) / 1048576 ))
+      STORAGE_GB=$(df -Pk / 2>/dev/null | awk 'NR==2{printf "%d", $4/1048576}'); [ -n "$STORAGE_GB" ] || STORAGE_GB=100
+      if curl -fsS -X POST http://127.0.0.1:8080/v1/hosts \
+           -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+           -d "{\"id\":\"local-fc\",\"url\":\"http://127.0.0.1:${PORT}\",\"token\":\"${FC_AGENT_TOKEN:-}\",\"region\":\"local\",\"backend\":\"firecracker\",\"capacity\":{\"cpus\":${CPUS},\"ram_mb\":${RAM_MB},\"storage_gb\":${STORAGE_GB},\"vm_count\":$(( CPUS * 4 ))}}" \
+           >/dev/null 2>&1; then
+        echo "[bootstrap]  ✓ registered host local-fc (${CPUS} cpu / ${RAM_MB} MB / ${STORAGE_GB} GB)"
+      else
+        echo "[bootstrap]  ! host register skipped (already registered, or orchestrator not ready)"
+      fi
+    else
+      echo "[bootstrap] 8/8 skipping self-registration"
+    fi
+
+    IP=$(public_ip)
+    echo
+    echo "======================================================================"
+    echo " fuse host ready"
+    echo "   orchestrator : http://${IP}:8080"
+    if [ -n "$TOK" ]; then
+      echo "   token        : ${TOK}"
+      echo
+      echo "   drive it from your laptop:"
+      echo "     fuse connect http://${IP}:8080 --token ${TOK}"
+    else
+      echo "   token        : (not started - see $ORCH_DEFAULTS, then: sudo systemctl start orchestrator)"
+    fi
+    echo "======================================================================"
+    ;;
   *)
-    echo "usage: $0 {start|stop|restart|log|env|install-service|uninstall-service|install-updater|uninstall-updater|install-orchestrator|uninstall-orchestrator}" >&2; exit 1 ;;
+    echo "usage: $0 {start|stop|restart|log|env|bootstrap|install-service|uninstall-service|install-updater|uninstall-updater|install-orchestrator|uninstall-orchestrator}" >&2; exit 1 ;;
 esac

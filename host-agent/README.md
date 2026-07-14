@@ -45,7 +45,26 @@ agent-state/        # per-VM metadata, rootfs copies, snapshots
 .fc-agent.env       # bearer token (generated on first start)
 ```
 
-## Setup (bring up a host)
+## Setup (one command)
+
+On a host that meets the requirements above, `bootstrap` does everything: host
+deps, firecracker, the agent service, a local Postgres, the orchestrator (control
+plane), the weekly auto-update timer, the guest agent + rootfs bake, and it
+self-registers the host. Then it prints the token and the exact connect line.
+
+```bash
+git clone <this repo> ~/fc && cd ~/fc/host-agent
+sudo ./fc-agent.sh bootstrap
+```
+
+It is idempotent - safe to re-run. Flags: `--no-updater` (skip the auto-update
+timer), `--no-register` (don't self-register). After it finishes, drive the host
+from your laptop with the printed `fuse connect http://<host>:8080 --token <token>`.
+
+Everything below is the manual, step-by-step equivalent - use it when you want to
+run or skip individual stages.
+
+## Setup (manual, step by step)
 
 On a host that meets the requirements above:
 
