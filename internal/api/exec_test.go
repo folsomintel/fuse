@@ -368,6 +368,23 @@ func TestAttachEnvironment_GuestCloseEndsSession(t *testing.T) {
 	}
 }
 
+// Without this the host agent's own refusal comes back as an opaque 500, which
+// tells the caller nothing about what they got wrong.
+func TestAttachEnvironment_RequiresTTY(t *testing.T) {
+	h, _, p := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	provisionEnv(t, r, p)
+
+	_, resp := dialAttach(t, srv, "/v1/environments/fuse-task-1/attach")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when tty is missing", resp.StatusCode)
+	}
+}
+
 func TestAttachEnvironment_RequiresUpgradeHeader(t *testing.T) {
 	h, _, p := newTestHandler(t)
 	r := mustRouter(t, h)

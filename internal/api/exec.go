@@ -101,6 +101,15 @@ func (h *Handler) attachEnvironment(w http.ResponseWriter, r *http.Request) {
 	vmID := chi.URLParam(r, "vmId")
 	spec := hostwire.ParseAttachQuery(r.URL.Query())
 
+	// The host agent also refuses a non-tty attach, but its 400 would reach us
+	// as an opaque upgrade failure and surface to the client as a 500. Rejecting
+	// here is what turns "you forgot tty=1" back into a 400 that says so.
+	if !spec.TTY {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"attach requires tty=1; use ?action=exec for non-interactive commands", nil)
+		return
+	}
+
 	// Open the guest stream before hijacking. Once the connection is hijacked
 	// there is no ResponseWriter left to report a failure through, so every
 	// error that can be expressed as HTTP must be raised while we still can.
