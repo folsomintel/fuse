@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestEnvironmentsExec(t *testing.T) {
@@ -104,6 +105,53 @@ func TestEnvironmentsExec_ServerErrorSurfaces(t *testing.T) {
 	c, _ := New(srv.URL, "tok")
 	if _, err := c.Environments.Exec(context.Background(), "fuse-1", ExecRequest{Cmd: []string{"ls"}}); err == nil {
 		t.Fatal("want an error for a 409, got nil")
+	}
+}
+
+// A guest command can outlast the default client timeout. Exec must run on the
+// no-timeout client and bound itself by context instead, or a long --timeout is
+// unreachable. Here the regular client's timeout is tiny and the server is
+// slow: exec must still succeed because it does not use that client.
+func TestEnvironmentsExec_UsesNoTimeoutClient(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(120 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ExecResult{Stdout: "slow\n"})
+	}))
+	defer srv.Close()
+
+	// A regular client that would give up in 20ms - far shorter than the
+	// server's 120ms - so a call routed through it would fail.
+	c, err := New(srv.URL, "tok", WithHTTPClient(&http.Client{Timeout: 20 * time.Millisecond}))
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+
+	res, err := c.Environments.Exec(context.Background(), "fuse-1",
+		ExecRequest{Cmd: []string{"sleep", "1"}, TimeoutMS: 5000})
+	if err != nil {
+		t.Fatalf("exec failed - it used the timed-out client: %v", err)
+	}
+	if res.Stdout != "slow\n" {
+		t.Errorf("stdout = %q, want the full result", res.Stdout)
+	}
+}
+
+// The caller's own shorter deadline must still win over exec's derived one.
+func TestEnvironmentsExec_CallerDeadlineStillWins(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(ExecResult{})
+	}))
+	defer srv.Close()
+
+	c, _ := New(srv.URL, "tok")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	_, err := c.Environments.Exec(ctx, "fuse-1", ExecRequest{Cmd: []string{"sleep", "1"}, TimeoutMS: 600000})
+	if err == nil {
+		t.Fatal("want the caller's 30ms deadline to fire, got nil")
 	}
 }
 

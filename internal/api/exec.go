@@ -45,6 +45,17 @@ func (h *Handler) execEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The guest command can run far longer than the server's WriteTimeout,
+	// which Go arms at header-read time. Without clearing it, a command past
+	// ~WriteTimeout makes the final response flush fail with an i/o timeout and
+	// the client gets a reset connection instead of the result, so the
+	// advertised long --timeout is unreachable. The SSE and attach handlers
+	// clear the deadline the same way. The request context still bounds the
+	// call, so this does not make exec unbounded. A writer that cannot carry a
+	// deadline (some test recorders) returns an error, which is harmless: the
+	// deadline it lacks is the one we wanted gone.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+
 	res, err := h.Fleet.Exec(r.Context(), vmID, cmd, orchestrator.ExecOptions{
 		Timeout: time.Duration(req.TimeoutMS) * time.Millisecond,
 	})

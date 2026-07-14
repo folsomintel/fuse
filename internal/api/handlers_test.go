@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -47,6 +48,11 @@ type fakeEnv struct {
 	execArgv [][]string
 	execOpts []orchestrator.ExecOptions
 
+	// execDelay makes Exec block before returning, to stand in for a
+	// long-running guest command. Read without the lock so it must be set
+	// before the call.
+	execDelay time.Duration
+
 	// attachStream is handed back by Attach; attachErr overrides it.
 	// attachSpec records what the handler asked for.
 	attachStream io.ReadWriteCloser
@@ -63,8 +69,11 @@ func (e *fakeEnv) Exec(_ context.Context, cmd []string, opts orchestrator.ExecOp
 	e.mu.Lock()
 	e.execArgv = append(e.execArgv, cmd)
 	e.execOpts = append(e.execOpts, opts)
-	res, err := e.execResult, e.execErr
+	res, err, delay := e.execResult, e.execErr, e.execDelay
 	e.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	return res, err
 }
 

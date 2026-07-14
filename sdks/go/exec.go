@@ -18,6 +18,17 @@ import (
 	"time"
 )
 
+// defaultExecServerTimeout mirrors the orchestrator's own default guest-command
+// bound. It is what the server applies when TimeoutMS is zero, so the client
+// waits at least that long before giving up.
+const defaultExecServerTimeout = 60 * time.Second
+
+// execHTTPOverhead is headroom on top of the guest timeout for the hops the
+// guest timeout does not cover: the ssh connect on the host and the network
+// round trip. Without it a command that runs for exactly its guest timeout
+// would race the client's deadline.
+const execHTTPOverhead = 30 * time.Second
+
 // ExecRequest is the body of an exec call. Exactly one of Cmd or Shell must be
 // set.
 type ExecRequest struct {
@@ -67,11 +78,24 @@ func (s *EnvironmentsService) Exec(ctx context.Context, vmID string, in ExecRequ
 	values := url.Values{}
 	values.Set("action", "exec")
 
+	// A guest command can run far longer than the default client timeout, so
+	// this uses the no-timeout stream client and bounds the call by a context
+	// deadline derived from the requested guest timeout instead. Without this
+	// the 60s client default would cut a longer command short awaiting headers,
+	// making the requested TimeoutMS unreachable. An existing shorter deadline
+	// on ctx still wins.
+	guest := time.Duration(in.TimeoutMS) * time.Millisecond
+	if guest <= 0 {
+		guest = defaultExecServerTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, guest+execHTTPOverhead)
+	defer cancel()
+
 	req, err := s.t.newRequest(ctx, http.MethodPost, path, values, in)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doStream(req)
 	if err != nil {
 		return nil, err
 	}

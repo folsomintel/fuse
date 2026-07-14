@@ -2,12 +2,14 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
@@ -242,6 +244,50 @@ func TestEnvironmentAction_Exec_NonMasterForbidden(t *testing.T) {
 	}
 	if code := decodeError(t, rr.Body).Error.Code; code != CodeUnauthorized {
 		t.Errorf("code = %q, want %q", code, CodeUnauthorized)
+	}
+}
+
+// A guest command can outlast the server's WriteTimeout. Unless the handler
+// clears that deadline, the final response flush fails and the client gets a
+// reset connection instead of the result -- so the advertised long --timeout
+// would be unreachable. This drives a real server whose write deadline is far
+// shorter than the command.
+func TestEnvironmentAction_Exec_OutlastsWriteTimeout(t *testing.T) {
+	h, _, p := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	srv := httptest.NewUnstartedServer(r)
+	srv.Config.WriteTimeout = 100 * time.Millisecond
+	srv.Start()
+	defer srv.Close()
+
+	env := provisionEnv(t, r, p)
+	env.mu.Lock()
+	env.execResult = orchestrator.ExecResult{Stdout: []byte("slow-but-done\n")}
+	env.execDelay = 400 * time.Millisecond // outlasts WriteTimeout by 4x
+	env.mu.Unlock()
+
+	body, _ := json.Marshal(ExecEnvironmentRequest{Cmd: []string{"sleep", "1"}})
+	resp, err := http.Post(srv.URL+"/v1/environments/fuse-task-1?action=exec",
+		"application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body (the deadline was not cleared): %v", err)
+	}
+	var res ExecEnvironmentResponse
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatalf("decode body %q: %v", out, err)
+	}
+	if res.Stdout != "slow-but-done\n" {
+		t.Errorf("stdout = %q, want the full result", res.Stdout)
 	}
 }
 
