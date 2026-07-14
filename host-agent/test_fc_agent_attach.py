@@ -205,6 +205,48 @@ class AttachRelayTest(unittest.TestCase):
             self.assertEqual(code, 0)
             sock.close()
 
+    def test_oversized_resize_does_not_wedge_the_session(self):
+        """A resize past the 16-bit winsize range must be clamped, not raise
+        struct.error. Before the fix that exception escaped every handler and
+        left _reap blocked in waitpid forever, wedging the thread and leaking
+        the ssh child. Here the session must still complete and report its exit.
+        """
+        with mock.patch.object(
+            fc_agent, "attach_argv", return_value=["/bin/sh", "-c", "read _; exit 0"]
+        ):
+            sock, head = self.dial("tty=1&rows=24&cols=80")
+            self.assertIn("101", head)
+
+            sock.sendall(
+                fc_agent.encode_frame(
+                    fc_agent.FRAME_RESIZE, json.dumps({"rows": 70000, "cols": 80}).encode()
+                )
+            )
+            # If the resize wedged the relay, this stdin never gets read and
+            # read_until_exit hangs until the socket timeout fails the test.
+            sock.sendall(fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"\n"))
+            _, code = read_until_exit(sock)
+            self.assertEqual(code, 0)
+            sock.close()
+
+    def test_empty_argv_element_is_preserved(self):
+        """`-- grep '' file` must reach the guest as three args, not two. The
+        query parse used to drop blank values, silently turning it into
+        `grep file`."""
+        seen = {}
+
+        def capture(guest_ip, cmd):
+            seen["cmd"] = cmd
+            return ["/bin/sh", "-c", "exit 0"]
+
+        with mock.patch.object(fc_agent, "attach_argv", side_effect=capture):
+            sock, head = self.dial("tty=1&cmd=grep&cmd=&cmd=file")
+            self.assertIn("101", head)
+            read_until_exit(sock)
+            sock.close()
+
+        self.assertEqual(seen["cmd"], ["grep", "", "file"])
+
     def test_resize_reaches_the_pty(self):
         """The guest must see the window size we asked for, and a later resize
         frame must take effect: that is the whole reason resize is in-band.

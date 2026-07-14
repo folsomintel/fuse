@@ -804,6 +804,12 @@ def set_winsize(fd: int, rows: int, cols: int) -> None:
     process group, which is how ssh learns to tell the guest its new size."""
     if rows <= 0 or cols <= 0:
         return
+    # A winsize field is 16 bits. A relayed resize frame carrying rows/cols
+    # above 65535 would otherwise make struct.pack raise struct.error (not an
+    # OSError), which the pty relay does not catch, wedging the session. Clamp
+    # rather than raise: a client asking for an absurd size wants the maximum.
+    rows = min(rows, 0xFFFF)
+    cols = min(cols, 0xFFFF)
     packed = struct.pack("HHHH", rows, cols, 0, 0)
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, packed)
@@ -932,7 +938,10 @@ def do_attach(handler, vm_id: str, spec: dict) -> None:
                     conn.sendall(encode_frame(FRAME_STDOUT, out))
             if done:
                 break
-    except (OSError, ValueError):
+    except Exception:
+        # Any escape from the relay loop means we are tearing down, and the
+        # child must be killed, not waited on: _reap(kill=False) would block in
+        # waitpid forever on a still-live ssh -tt process.
         client_gone = True
     finally:
         exit_code = _reap(pid, kill=client_gone)
@@ -1063,7 +1072,7 @@ class Handler(BaseHTTPRequestHandler):
                 # other operation on this VM until the human logs out.
                 if action == "attach" and method == "GET":
                     self.close_connection = True
-                    spec = parse_attach_spec(parse_qs(urlparse(self.path).query))
+                    spec = parse_attach_spec(parse_qs(urlparse(self.path).query, keep_blank_values=True))
                     do_attach(self, vm_id, spec)
                     return None
 
