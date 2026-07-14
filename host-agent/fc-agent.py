@@ -509,7 +509,15 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
         add_agent_forward(meta["host_port"], guest_ip)
-    sudo(["cp", str(snap_rootfs), meta["rootfs"]])
+    # Copy into a fresh inode and rename over the live rootfs instead of
+    # overwriting it in place. The just-killed guest can leave dirty host
+    # page-cache pages tied to the old rootfs inode; an in-place cp can
+    # leave those stale pages readable at offsets it doesn't touch, which
+    # is the source of NUL/stale-byte corruption on restore. A brand-new
+    # inode has no such pages to leak.
+    tmp_rootfs = f"{meta['rootfs']}.restore-tmp"
+    sudo(["cp", str(snap_rootfs), tmp_rootfs])
+    sudo(["mv", tmp_rootfs, meta["rootfs"]])
     sudo(["chmod", "666", meta["rootfs"]], check=False)
     start_firecracker(meta)
     save_meta(meta)
