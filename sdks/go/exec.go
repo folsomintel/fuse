@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -121,11 +122,16 @@ type AttachOptions struct {
 
 // AttachStream is a live duplex connection to a process inside a guest.
 //
-// It is not safe for concurrent use by multiple writers; serialize writes, or
-// give each direction its own goroutine with only one of them writing.
+// Writes are serialized internally. They have to be: a terminal-resize handler
+// fires on a signal and would otherwise interleave a resize frame into the
+// middle of a stdin frame being written by another goroutine.
+//
+// Reads are not serialized; a single reader is the expected shape.
 type AttachStream struct {
 	conn net.Conn
 	r    *bufio.Reader
+
+	wmu sync.Mutex
 }
 
 // Frame is one decoded message from an attach stream.
@@ -295,6 +301,8 @@ func (s *AttachStream) WriteFrame(t byte, payload []byte) error {
 	binary.BigEndian.PutUint32(buf[4:8], uint32(len(payload)))
 	copy(buf[frameHeaderLen:], payload)
 
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
 	_, err := s.conn.Write(buf)
 	return err
 }
