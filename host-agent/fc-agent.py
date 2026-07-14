@@ -388,7 +388,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
             # reach a file outside it and get copied into the caller's guest.
             images_root = os.path.realpath(IMAGES_DIR)
             resolved = os.path.realpath(os.path.join(images_root, f"{image}.ext4"))
-            if resolved != images_root and not resolved.startswith(images_root + os.sep):
+            if not resolved.startswith(images_root + os.sep):
                 raise HTTPError(400, f"invalid base image name: {image!r}")
             source_rootfs = Path(resolved)
             if not source_rootfs.exists():
