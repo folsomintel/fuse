@@ -34,6 +34,7 @@ type mockEnv struct {
 func (e *mockEnv) Name() string  { return e.name }
 func (e *mockEnv) URL() string   { return e.url }
 func (e *mockEnv) Token() string { return "" }
+
 // Exec records the argv and options it was called with and replays a
 // programmed result, so exec tests can assert both what reached the guest and
 // what came back. It deliberately does not implement Attacher: that absence is

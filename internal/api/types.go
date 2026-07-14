@@ -152,7 +152,42 @@ const (
 	CodeUnavailable     = "unavailable"
 	CodeInternal        = "internal"
 	CodeUnauthorized    = "unauthorized"
+	CodeUnimplemented   = "unimplemented"
 )
+
+// ── Exec types ─────────────────────────────────────────────────────
+
+// ExecEnvironmentRequest is the JSON body accepted by
+// POST /v1/environments/{vmId}?action=exec.
+//
+// Exactly one of cmd or shell must be set.
+type ExecEnvironmentRequest struct {
+	// Cmd is the argv to run in the guest, e.g. ["ls", "-l", "/var/log"].
+	// Argv needs no quoting rules and cannot be turned into an injection by
+	// interpolating a value, so it is the default.
+	Cmd []string `json:"cmd,omitempty"`
+
+	// Shell runs the string under `sh -lc`. It is the explicit opt-in for
+	// what argv cannot express: pipelines, redirects, and globs.
+	Shell string `json:"shell,omitempty"`
+
+	// TimeoutMS bounds the command inside the guest. Zero takes the server
+	// default; anything above the server ceiling is clamped to it.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+// ExecEnvironmentResponse is the outcome of a guest command.
+//
+// A non-zero exit_code arrives with HTTP 200: the command ran and failed,
+// which is a successful answer to the question that was asked. Stdout and
+// stderr are separate, and are plain strings rather than base64 because exec
+// output is overwhelmingly text and every caller would otherwise pay a
+// decoding tax for the rare binary case.
+type ExecEnvironmentResponse struct {
+	ExitCode int    `json:"exit_code"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+}
 
 // ── API key types ──────────────────────────────────────────────────
 

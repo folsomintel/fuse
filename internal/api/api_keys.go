@@ -29,12 +29,17 @@ type APIKeyStore interface {
 // keys. In insecure mode (no principal set) the request is treated as
 // master, matching BearerAuth's open pass-through.
 func (h *Handler) requireMaster(w http.ResponseWriter, r *http.Request) bool {
+	return h.requireMasterToken(w, r, "API key management requires the master token")
+}
+
+// requireMasterToken is requireMaster with a caller-supplied message, so
+// operator-only endpoints other than key management can explain themselves.
+func (h *Handler) requireMasterToken(w http.ResponseWriter, r *http.Request, msg string) bool {
 	p, ok := PrincipalFromContext(r.Context())
 	if !ok || p.Master {
 		return true // insecure mode, or genuine master
 	}
-	writeError(w, http.StatusForbidden, CodeUnauthorized,
-		"API key management requires the master token", nil)
+	writeError(w, http.StatusForbidden, CodeUnauthorized, msg, nil)
 	return false
 }
 
