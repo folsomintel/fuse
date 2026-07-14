@@ -79,6 +79,21 @@ def sanitize_name(name: str) -> str:
     return s or "vm"
 
 
+def safe_child(parent: Path, *parts: str) -> Path:
+    """Resolve parent/<parts...>, refusing anything that escapes parent.
+
+    Request fields (image names, snapshot ids) get interpolated into
+    filesystem paths, so a value like "../../etc/shadow" would otherwise
+    reach a file outside the directory we meant to read from -- and, since
+    the resolved file is copied into the caller's guest, hand it out.
+    """
+    root = parent.resolve()
+    candidate = (root / Path(*parts)).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise HTTPError(400, f"invalid path component in {'/'.join(parts)!r}")
+    return candidate
+
+
 def run(cmd: list[str], check: bool = True, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, check=check, input=input_bytes)
 
@@ -383,7 +398,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         image = req.get("image") or ""
         source_rootfs = BASE_ROOTFS
         if image:
-            source_rootfs = IMAGES_DIR / f"{image}.ext4"
+            source_rootfs = safe_child(IMAGES_DIR, f"{image}.ext4")
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
@@ -543,7 +558,7 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     snapshot_id = req.get("snapshot_id") or ""
     if not snapshot_id:
         raise HTTPError(400, "snapshot_id required")
-    snap_rootfs = vm_dir(src_vm_id) / "snapshots" / sanitize_name(snapshot_id) / "rootfs.ext4"
+    snap_rootfs = safe_child(vm_dir(src_vm_id), "snapshots", sanitize_name(snapshot_id), "rootfs.ext4")
     if not snap_rootfs.exists():
         raise HTTPError(404, "snapshot not found")
 
