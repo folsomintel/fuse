@@ -79,29 +79,24 @@ def sanitize_name(name: str) -> str:
     return s or "vm"
 
 
-def safe_child(parent: Path, *parts: str) -> Path:
-    """Join parent/<parts...>, rejecting any component that could escape parent.
+def check_path_component(value: str, what: str) -> None:
+    """Reject a request-supplied string that could escape its directory.
 
-    Request fields (image names, snapshot ids) get interpolated into
-    filesystem paths, so a value like "../../etc/shadow" would otherwise
-    reach a file outside the directory we meant to read from -- and, since
-    the resolved file is copied into the caller's guest, hand it out.
-
-    Each component is validated against a strict allowlist before it is used
-    in any path operation: no separators, no parent refs, no absolute paths.
+    Image names and snapshot ids get interpolated into filesystem paths, so a
+    value like "../../etc/shadow" would otherwise reach a file outside the
+    directory we meant to read from -- and, since the resolved file is copied
+    into the caller's guest, hand it out. Callers must run this on the raw
+    value before using it in a path.
     """
-    for part in parts:
-        if (
-            not part
-            or part in (".", "..")
-            or "/" in part
-            or "\\" in part
-            or "\x00" in part
-        ):
-            raise HTTPError(400, f"invalid path component {part!r}")
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", part):
-            raise HTTPError(400, f"invalid path component {part!r}")
-    return parent.joinpath(*parts)
+    if (
+        not value
+        or ".." in value
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or not re.fullmatch(r"[A-Za-z0-9._-]+", value)
+    ):
+        raise HTTPError(400, f"invalid {what}: {value!r}")
 
 
 def run(cmd: list[str], check: bool = True, input_bytes: bytes | None = None) -> subprocess.CompletedProcess:
@@ -408,7 +403,8 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         image = req.get("image") or ""
         source_rootfs = BASE_ROOTFS
         if image:
-            source_rootfs = safe_child(IMAGES_DIR, f"{image}.ext4")
+            check_path_component(image, "base image name")
+            source_rootfs = IMAGES_DIR / f"{image}.ext4"
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
@@ -568,7 +564,8 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     snapshot_id = req.get("snapshot_id") or ""
     if not snapshot_id:
         raise HTTPError(400, "snapshot_id required")
-    snap_rootfs = safe_child(vm_dir(src_vm_id), "snapshots", sanitize_name(snapshot_id), "rootfs.ext4")
+    check_path_component(snapshot_id, "snapshot id")
+    snap_rootfs = vm_dir(src_vm_id) / "snapshots" / snapshot_id / "rootfs.ext4"
     if not snap_rootfs.exists():
         raise HTTPError(404, "snapshot not found")
 
