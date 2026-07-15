@@ -1,0 +1,14 @@
+{
+  "title": "Hosts",
+  "icon": "HardDrive",
+  "pages": [
+    "index",
+    "list",
+    "register",
+    "get",
+    "cordon",
+    "uncordon",
+    "remove",
+    "metrics"
+  ]
+}

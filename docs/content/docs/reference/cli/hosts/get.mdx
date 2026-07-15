@@ -1,0 +1,32 @@
+---
+title: fuse host get
+description: Show a host's details
+icon: Search
+---
+
+```bash
+fuse host get <id>
+```
+
+No flags beyond the globals. Prints the host's full detail: URL, region,
+backend, state, capacity vs. allocated (CPUs, RAM, storage, VM count, and GPUs
+if the host has any), last seen time, and created/updated timestamps.
+
+```bash
+$ fuse host get prod-east-1
+id            prod-east-1
+url           http://10.0.0.5:9000
+region        us-east
+backend       firecracker
+state         active
+cpus          4 / 16
+ram mb        8192 / 65536
+storage gb    100 / 500
+vms           1 / 20
+last seen     3m ago
+created       2026-01-15 10:00
+updated       2026-01-15 10:00
+```
+
+`last seen` is set once at registration and is never refreshed afterward, it is
+not a liveness signal, don't use it to detect a dead host agent.

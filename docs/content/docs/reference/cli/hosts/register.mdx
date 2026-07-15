@@ -1,0 +1,106 @@
+---
+title: fuse host register
+description: Register a new compute host
+icon: PlusCircle
+---
+
+```bash
+fuse host register <id> [flags]
+```
+
+Adds a compute host to the orchestrator's scheduler. `<id>` is a free-form,
+operator-supplied string and is the host's primary key, use a readable one
+(for example `prod-east-1`).
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--url` | Host agent base URL. Required. |
+| `--region` | Region label. |
+| `--token` | Token the orchestrator uses to call this host's agent. |
+| `--backend` | `firecracker` (default) or `qemu`. |
+| `--cpus` | CPU capacity override. `0` (default) probes the host agent. |
+| `--ram-mb` | RAM capacity in MB, override. `0` (default) probes the host agent. |
+| `--storage-gb` | Storage capacity in GB, override. `0` (default) probes the host agent. |
+| `--max-vms` | Max concurrent VMs. Always required, this is scheduling policy, not a hardware fact, so it is never probed. |
+| `--gpus` | GPU device count. Requires `--backend qemu`. |
+| `--gpu-kind` | GPU model label, for example `a100`. |
+
+## Capacity probing
+
+`--cpus`, `--ram-mb`, and `--storage-gb` are optional. Leave any of them at `0`
+(the default) and the orchestrator probes the host agent for the real value
+instead of trusting an operator-declared guess. Pass one explicitly to override
+the probe, for a deliberate overcommit or a carve-out reserving part of the
+host for something else, a declared value above what the probe reports still
+registers successfully, with a warning printed rather than a rejection.
+
+If the host agent's provider doesn't support capacity probing and any of those
+three flags were left at `0`, registration fails outright: declare them
+explicitly in that case.
+
+```bash
+# probe cpus/ram/storage from the host agent; only declare what's policy
+fuse host register prod-east-1 \
+  --url http://10.0.0.5:9000 \
+  --region us-east \
+  --max-vms 20
+```
+
+```bash
+# override the probe with an explicit overcommit
+fuse host register prod-east-1 \
+  --url http://10.0.0.5:9000 \
+  --cpus 32 \
+  --ram-mb 65536 \
+  --storage-gb 500 \
+  --max-vms 20
+```
+
+## GPU hosts
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --gpus 1 \
+  --gpu-kind a100 \
+  --max-vms 4
+```
+
+`--gpus` requires `--backend qemu`; registering with `--gpus` set on a
+`firecracker`-backend host is rejected. See
+[GPU host setup](/docs/cloud/gpu-host-setup) for the full VFIO/IOMMU bring-up.
+
+## Interactive mode
+
+Omit `--url` in an interactive terminal to fill in the required fields via a
+form instead of flags. The form marks `--cpus`/`--ram-mb`/`--storage-gb` as
+"0 = probe from host agent" and `--max-vms` as "required, not probed" to match
+the flag behavior above.
+
+## Output
+
+On success, prints the registered host's full detail, including any capacity
+warnings:
+
+```bash
+$ fuse host register prod-east-1 --url http://10.0.0.5:9000 --max-vms 20
+registered host "prod-east-1"
+id            prod-east-1
+url           http://10.0.0.5:9000
+region        -
+backend       firecracker
+state         active
+cpus          0 / 16
+ram mb        0 / 65536
+storage gb    0 / 500
+vms           0 / 20
+last seen     ... (just now)
+warning: declared cpus (32) exceeds probed host capacity (16)
+```
+
+(The warning line only appears when a declared value actually exceeded the
+probe; a plain probe-everything registration prints no warnings.)

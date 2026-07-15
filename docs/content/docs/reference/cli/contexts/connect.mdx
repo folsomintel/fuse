@@ -1,0 +1,42 @@
+---
+title: fuse connect
+description: Add an orchestrator context and make it active
+icon: Plug
+---
+
+```bash
+fuse connect <url> [flags]
+```
+
+Stores an orchestrator's base URL and bearer token as a named context and makes
+it active. `<url>` is the orchestrator root (`scheme://host:port`), without a
+`/v1` suffix.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--token` | Bearer token for the orchestrator. |
+| `--name` | Context name. Defaults to the URL's hostname if omitted. |
+| `--master` | Mark this token as the master token, required for `fuse apikeys` commands. Informational client-side; the server enforces whether the token actually has master privileges. |
+
+## Examples
+
+```bash
+fuse connect http://localhost:8080
+```
+
+```bash
+fuse connect https://orchestrator.example.com --token "$FUSE_TOKEN" --name prod --master
+```
+
+## Notes
+
+With no `--token`, connecting only works against an orchestrator running in
+insecure/dev mode (no `ORCH_AUTH_TOKEN` set), the CLI prints a warning when you
+do this rather than failing outright, since it's a legitimate local-dev
+workflow. See [Authentication](/docs/reference/auth) for the full token model.
+
+Running `fuse connect` again with the same derived or explicit `--name`
+overwrites that context's URL and token in place rather than erroring, useful
+for rotating a token without a separate remove-then-reconnect step.

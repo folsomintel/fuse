@@ -1,0 +1,35 @@
+---
+title: fuse host remove
+description: Deregister a host
+icon: Trash2
+---
+
+```bash
+fuse host remove <id> [--yes]
+```
+
+Aliases: `rm`, `deregister`. Deregisters the host from the scheduler.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--yes` | Skip the confirmation prompt. |
+
+## Behavior
+
+Fails with a conflict error if any environments are still assigned to the host,
+drain or destroy them first:
+
+```bash
+fuse environment list --host-id prod-east-1   # see what's still there
+fuse environment destroy <id>                  # for each one
+fuse host remove prod-east-1
+```
+
+If the removed host was the active host selection for the current context, the
+selection is cleared automatically, you'll need to
+[select](/docs/reference/cli/hosts/list#select) a new one before running
+host-scoped commands again.
+
+Without `--yes` in an interactive terminal, prompts for confirmation first.
