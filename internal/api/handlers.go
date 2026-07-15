@@ -605,7 +605,11 @@ func (h *Handler) hostAction(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// registerHost registers or updates a host in the scheduler.
+// registerHost registers or updates a host in the scheduler. cpus/ram_mb/
+// storage_gb left at 0 are sourced from the host agent's capacity probe
+// (GET /v1/capacity) when the provider supports it; a declared value always
+// overrides the probe, with a warning if it exceeds what was probed.
+// vm_count is scheduling policy and is never probed.
 //
 //	@Summary	Register host
 //	@Tags		hosts
@@ -615,6 +619,7 @@ func (h *Handler) hostAction(w http.ResponseWriter, r *http.Request) {
 //	@Success	201		{object}	HostInfo
 //	@Failure	400		{object}	Error
 //	@Failure	500		{object}	Error
+//	@Failure	502		{object}	Error
 //	@Security	BearerAuth
 //	@Router		/v1/hosts [post]
 func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
@@ -633,9 +638,6 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "id and url are required", nil)
 		return
 	}
-	// TODO: Validate host capacity fields are positive (CPUs, RamMB, StorageGB,
-	// VMCount). Currently accepts zero/negative values which would cause the
-	// scheduler to make bad placement decisions.
 
 	backend := orchestrator.HostBackend(req.Backend)
 	if backend == "" {
@@ -651,24 +653,60 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 			"gpus > 0 requires backend \"qemu\"", nil)
 		return
 	}
-
-	host := orchestrator.Host{
-		ID:      req.ID,
-		URL:     req.URL,
-		Token:   req.Token,
-		Region:  req.Region,
-		Backend: backend,
-		Capacity: orchestrator.HostCapacity{
-			CPUs:      req.Capacity.CPUs,
-			RamMB:     req.Capacity.RamMB,
-			StorageGB: req.Capacity.StorageGB,
-			VMCount:   req.Capacity.VMCount,
-			GPUs:      req.Capacity.GPUs,
-			GPUKind:   req.Capacity.GPUKind,
-		},
+	if req.Capacity.GPUs < 0 {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "gpus must not be negative", nil)
+		return
 	}
 
 	provider := h.NewProvider(req.URL, req.Token, backend)
+
+	// CPUs/RamMB/StorageGB are hardware facts: a zero/negative value here
+	// means the operator left it unset (the CLI's --cpus etc. default to 0),
+	// so probe the host agent for the real numbers when it supports
+	// CapacityProber. VMCount (and GPUs) are scheduling policy, not
+	// something a host can report on its own, so they are never probed and
+	// must always be declared explicitly.
+	capacity := orchestrator.HostCapacity{
+		CPUs:      req.Capacity.CPUs,
+		RamMB:     req.Capacity.RamMB,
+		StorageGB: req.Capacity.StorageGB,
+		VMCount:   req.Capacity.VMCount,
+		GPUs:      req.Capacity.GPUs,
+		GPUKind:   req.Capacity.GPUKind,
+	}
+
+	var warnings []string
+	if prober, ok := provider.(orchestrator.CapacityProber); ok {
+		probed, err := prober.Capacity(r.Context())
+		switch {
+		case err == nil:
+			capacity.CPUs, warnings = resolveCapacityField("cpus", capacity.CPUs, probed.CPUs, warnings)
+			capacity.RamMB, warnings = resolveCapacityField("ram_mb", capacity.RamMB, probed.RamMB, warnings)
+			capacity.StorageGB, warnings = resolveCapacityField("storage_gb", capacity.StorageGB, probed.StorageGB, warnings)
+		case capacity.CPUs <= 0 || capacity.RamMB <= 0 || capacity.StorageGB <= 0:
+			_ = provider.Close()
+			writeError(w, http.StatusBadGateway, CodeInternal,
+				"could not probe host capacity and cpus/ram_mb/storage_gb were not all declared explicitly: "+err.Error(), nil)
+			return
+		}
+	}
+
+	if capacity.CPUs <= 0 || capacity.RamMB <= 0 || capacity.StorageGB <= 0 || capacity.VMCount <= 0 {
+		_ = provider.Close()
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"cpus, ram_mb, storage_gb, and vm_count must be positive (declare them explicitly, or omit cpus/ram_mb/storage_gb to probe a host agent that supports it)", nil)
+		return
+	}
+
+	host := orchestrator.Host{
+		ID:       req.ID,
+		URL:      req.URL,
+		Token:    req.Token,
+		Region:   req.Region,
+		Backend:  backend,
+		Capacity: capacity,
+	}
+
 	if err := h.Fleet.RegisterHost(r.Context(), host, provider); err != nil {
 		writeFleetError(w, err)
 		return
@@ -679,7 +717,24 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, CodeInternal, "host registered but not found", nil)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toAPIHost(info))
+	resp := toAPIHost(info)
+	resp.Warnings = warnings
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// resolveCapacityField applies the declared-overrides-probed rule for a
+// single capacity field: declared <= 0 means "not set", so the probed value
+// wins outright. A positive declared value that exceeds what was probed is
+// kept (it's the operator's explicit call, e.g. a deliberate overcommit) but
+// appends a warning so it doesn't pass silently.
+func resolveCapacityField(name string, declared, probed int, warnings []string) (int, []string) {
+	if declared <= 0 {
+		return probed, warnings
+	}
+	if probed > 0 && declared > probed {
+		warnings = append(warnings, fmt.Sprintf("declared %s (%d) exceeds probed host capacity (%d)", name, declared, probed))
+	}
+	return declared, warnings
 }
 
 // listHosts returns all registered hosts.

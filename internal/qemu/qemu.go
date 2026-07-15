@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -166,6 +167,27 @@ func (p *Provider) Close() error {
 	return nil
 }
 
+// Capacity implements orchestrator.CapacityProber by asking the host agent
+// for its real CPU count, total RAM, and free disk via GET /v1/capacity.
+// Not supported in stub mode: there is no real hardware for the in-memory
+// stub to report on.
+func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, error) {
+	if p.stub != nil {
+		return orchestrator.HostCapacity{}, errors.New("qemu: capacity probing requires a real host agent, not the in-memory stub")
+	}
+	var resp capacityResponse
+	if err := p.doJSON(ctx, http.MethodGet, "/v1/capacity", nil, &resp); err != nil {
+		return orchestrator.HostCapacity{}, fmt.Errorf("qemu capacity: %w", err)
+	}
+	return orchestrator.HostCapacity{
+		CPUs:      resp.CPUs,
+		RamMB:     resp.RamMB,
+		StorageGB: resp.StorageGB,
+	}, nil
+}
+
+var _ orchestrator.CapacityProber = (*Provider)(nil)
+
 // remoteEnv represents a QEMU VM managed by the host agent. It implements
 // orchestrator.Environment (plus TokenSetter) but NOT SnapshotCapable: a
 // passed-through GPU cannot be checkpointed (D4).
@@ -301,6 +323,14 @@ type createVMResponse struct {
 type getVMResponse struct {
 	VMID string `json:"vm_id"`
 	URL  string `json:"url"`
+}
+
+// capacityResponse is the GET /v1/capacity response: the host agent's real
+// CPU count, total RAM, and free disk.
+type capacityResponse struct {
+	CPUs      int `json:"cpus"`
+	RamMB     int `json:"ram_mb"`
+	StorageGB int `json:"storage_gb"`
 }
 
 type listVMResponse struct {

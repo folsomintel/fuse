@@ -147,6 +147,9 @@ export interface Host {
   last_seen: string;
   created_at: string;
   updated_at: string;
+  /** Non-fatal registration notices (e.g. declared capacity exceeding the
+   * probed value). Only ever populated on the response to hosts.register. */
+  warnings?: string[];
 }
 
 /**
