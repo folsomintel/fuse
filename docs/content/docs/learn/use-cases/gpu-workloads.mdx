@@ -1,0 +1,79 @@
+---
+title: GPU batch and training jobs
+description: Whole-device GPU passthrough for workloads that need real hardware, not a shared slice
+icon: Cpu
+---
+
+Some workloads (model training, batch inference, anything CUDA-heavy) need a
+real, whole GPU: not a virtualized fraction of one, not a shared slice behind
+someone else's driver stack. Fuse's QEMU/VFIO backend passes an entire GPU
+device (and its full IOMMU group) into the guest, so the workload talks to the
+hardware directly.
+
+## The pattern
+
+Register a GPU host with its device inventory, then request a GPU by kind in
+your [Fusefile](/docs/learn/concepts/fusefile), the environment schedules onto
+a matching host automatically:
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --gpus 1 \
+  --gpu-kind a100 \
+  --max-vms 4
+```
+
+```yaml
+version: 1
+image: ghcr.io/acme/training:latest
+
+resources:
+  cpus: 16
+  memory: 64GB
+  gpu: 1
+  gpu_kind: a100
+
+run: python train.py --epochs 50
+```
+
+```bash
+fuse up
+```
+
+- You never name a backend directly in the Fusefile, requesting `gpu: 1`
+  is what routes the environment onto a QEMU-backed host with matching free
+  GPU inventory. CPU-only Fusefiles keep scheduling onto the default
+  Firecracker backend, untouched.
+- `gpu_kind` is an optional exact match (`a100`, or whatever label the host
+  registered with). Omit it to accept any available GPU kind on a host that
+  has one free.
+- The whole GPU (and every PCI function in its IOMMU group, including a
+  companion audio device if it has one) passes through to the guest. The
+  workload sees real hardware, not an emulated or shared device.
+
+## The tradeoff: no snapshots
+
+GPU/QEMU-backed environments cannot be snapshotted or forked at all, a
+VFIO-passed-through device can't be checkpointed the way a Firecracker
+microVM's disk can. Snapshot and fork calls against a GPU environment fail
+cleanly with a `conflict` error rather than silently doing nothing. Design
+long training runs to checkpoint their own progress to durable storage
+(object storage, a mounted volume) from inside the guest, the way you
+normally would for a long job that might restart, rather than relying on
+Fuse's snapshot mechanism.
+
+## Bringing up a GPU host
+
+Registering the host is the easy part, getting a bare-metal box IOMMU-ready
+and VFIO-bound is the real setup work. See
+[GPU host setup](/docs/cloud/gpu-host-setup) for the full bring-up: driver
+branch selection, `qemu-vfio-bind.sh`, and the hardware validation e2e test.
+
+## Read next
+
+- [Providers](/docs/learn/concepts/providers) for the Firecracker-vs-QEMU
+  backend model.
+- [GPU host setup](/docs/cloud/gpu-host-setup) for the operational bring-up.

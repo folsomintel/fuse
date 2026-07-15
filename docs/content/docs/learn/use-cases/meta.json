@@ -1,0 +1,10 @@
+{
+  "title": "Use Cases",
+  "icon": "Sparkles",
+  "pages": [
+    "agent-sandboxes",
+    "ci-runners",
+    "gpu-workloads",
+    "interactive-debugging"
+  ]
+}
