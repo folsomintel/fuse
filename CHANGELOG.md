@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.4.0](https://github.com/folsomintel/fuse/compare/v0.3.0...v0.4.0) (2026-07-15)
+
+
+### Features
+
+* **api:** expose guest exec and an attach stream over the http api ([827b2a7](https://github.com/folsomintel/fuse/commit/827b2a72feaceae959b90cc49f8cc08f4ea8bb27))
+* **cli:** add environment exec and environment shell ([04b2b60](https://github.com/folsomintel/fuse/commit/04b2b605c0a153333b842d88232fc3c4bcdfd88e))
+* **fork:** implement firecracker environment fork end to end ([fab5dfa](https://github.com/folsomintel/fuse/commit/fab5dfa67d7abef19f0bd125e2aa88a44e7940e1))
+* **fork:** implement firecracker environment fork end to end ([a564a8a](https://github.com/folsomintel/fuse/commit/a564a8a86e424d9d3d6fafc118344617601cf6fa))
+* **host-agent:** add a pty attach endpoint and honour exec timeouts ([77a2353](https://github.com/folsomintel/fuse/commit/77a235316f5771c071a4b233e7b05507cd7dc4d6))
+* **host-agent:** bootstrap command for one-command host bring-up and self-registration ([e0e00c6](https://github.com/folsomintel/fuse/commit/e0e00c61e14e535f23e16fbcca479f65dfa697a1))
+* **host-agent:** probe real capacity instead of trusting operator flags ([8ffaf46](https://github.com/folsomintel/fuse/commit/8ffaf464c331bc28e8f9a0b18b94986dc8e5af71))
+* **orchestrator:** give Environment.Exec a faithful result and add an Attacher capability ([76a38ea](https://github.com/folsomintel/fuse/commit/76a38ea976c0250cf8135823d6d47c538654964b))
+* probe host capacity from the agent instead of trusting operator-declared flags ([916cd65](https://github.com/folsomintel/fuse/commit/916cd650aac010439eded779f0f770f2f5cfc9e5))
+* **sdk/go:** add Environments.Exec and an attach stream client ([c32a299](https://github.com/folsomintel/fuse/commit/c32a299e9991b7102f7a844aef98c2c58b7ad479))
+* **sdk:** add exec to the typescript and python sdks ([96dae3b](https://github.com/folsomintel/fuse/commit/96dae3b610008112534c00f49c8f489b583f5516))
+* **vms:** exec ([355aa71](https://github.com/folsomintel/fuse/commit/355aa71501e29b1b1136d33a85153570b4874f90))
+
+
+### Bug Fixes
+
+* **api:** reject an attach without tty=1 with a 400 instead of a 500 ([fa69107](https://github.com/folsomintel/fuse/commit/fa69107667710852ef3c1a197359aec1216775d5))
+* avoid stale page-cache corruption on fc-agent snapshot restore ([faa7340](https://github.com/folsomintel/fuse/commit/faa734037fcb689bb033e4bca495ee926fbf1640))
+* avoid stale page-cache corruption on fc-agent snapshot restore ([2c0732f](https://github.com/folsomintel/fuse/commit/2c0732f1ff8b0c31d0306331e6d47a7124921d92))
+* **exec:** let a long guest command outlive both 60s http ceilings ([b9bc805](https://github.com/folsomintel/fuse/commit/b9bc805f0cfb23576a03d82745aaf55c11a6df7a))
+* **host-agent:** clamp oversized resize and preserve empty argv elements ([ebe1413](https://github.com/folsomintel/fuse/commit/ebe14133c243712e45840d05dc8ade62d4f8d68c))
+* **host-agent:** guard path components inline so codeql sees the sanitizer ([0d1bc92](https://github.com/folsomintel/fuse/commit/0d1bc92b6b537dfc251936e9c09a47c0b68029a0))
+* **host-agent:** inline path-component guard at each call site for codeql ([4183e21](https://github.com/folsomintel/fuse/commit/4183e2194bd27ae7ed212e5673d1d1c3bedc3fa1))
+* **host-agent:** realpath containment guard for image and snapshot paths ([a39dbee](https://github.com/folsomintel/fuse/commit/a39dbee2ce9cf3bc791c915abc057a495b205a65))
+* **host-agent:** reject path traversal in image and snapshot names ([89d3602](https://github.com/folsomintel/fuse/commit/89d36024c6c08f9402512984ff4ac769f58fcdca))
+* **host-agent:** simplify image containment guard to match snapshot guard ([e695bf8](https://github.com/folsomintel/fuse/commit/e695bf8a33f27b67d1470bc307ce98c72a54b26b))
+* **host-agent:** validate path components with allowlist to satisfy codeql ([0b72b8e](https://github.com/folsomintel/fuse/commit/0b72b8ed0c80cbae328802142302a3e300f927c5))
+* resolve blank page content caused by tabMode top grid collision, fix app branding ([7fbde14](https://github.com/folsomintel/fuse/commit/7fbde14f95ccf81eb38562fb27193b501d0b09ec))
+* stage the missed Exec-signature fix and pin do_attach's execvp path to SSH_BASE[0] for codeql ([054284a](https://github.com/folsomintel/fuse/commit/054284a8e4ecfd144b584bdd0b9432b70415fc99))
+* stop rootfs bake dying silently at e2fsck and unwedge agent rebuilds ([1ea3e30](https://github.com/folsomintel/fuse/commit/1ea3e302e09edaf81fdd469ca45209df50ef2101))
+* stop rootfs bake dying silently at e2fsck and unwedge agent rebuilds ([7b951e4](https://github.com/folsomintel/fuse/commit/7b951e4493a4125de3eab3de4c223e994ec77600))
+
 ## [0.3.0](https://github.com/folsomintel/fuse/compare/v0.2.0...v0.3.0) (2026-07-12)
 
 
