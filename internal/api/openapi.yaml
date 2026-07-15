@@ -201,33 +201,73 @@ paths:
           drained — any other state returns 409 Conflict. If the agent's
           Down RPC fails the VM remains in `draining` so the caller
           can still proceed with DELETE; the error is returned as 5xx.
+        - `exec` — run a single command inside the guest and return its
+          exit code, stdout, and stderr. Takes an
+          ExecEnvironmentRequest body and returns an
+          ExecEnvironmentResponse. See the exit-code contract below.
+
+        **Exec: a non-zero exit code is not an HTTP error.** A guest
+        command that exits non-zero comes back as **200** with that
+        code in `exit_code`. The command ran, and it failed; that is the
+        answer the caller asked for, not a transport failure. Clients
+        and SDKs must surface it as a value and must not raise on it.
+
+        HTTP errors are reserved for the cases where the command could
+        not be run at all:
+
+        - 400 `invalid_argument` — neither `cmd` nor `shell` was set, or
+          both were.
+        - 403 `unauthorized` — exec requires the master token. API keys
+          are refused: exec is root in the guest, and keys carry no
+          scopes today.
+        - 404 `not_found` — unknown VM.
+        - 409 `conflict` — the VM is not running (e.g. draining).
+        - 501 `unimplemented` — the provider has no guest to exec into
+          (e.g. the in-memory stub).
+      requestBody:
+        required: false
+        description: |
+          Required for `exec`, which rejects an empty body with 400.
+          Ignored by `rotate-token` and `drain`.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecEnvironmentRequest"
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [rotate-token, drain]
+            enum: [rotate-token, drain, exec]
           description: The action to perform.
       responses:
         "200":
           description: |
-            Drain succeeded. Body is the updated Environment with
-            `state == "draining"`.
+            Drain succeeded (body is the updated Environment with
+            `state == "draining"`), or exec completed (body is an
+            ExecEnvironmentResponse). An exec whose guest command exited
+            non-zero lands here, not in an error response.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Environment"
+                oneOf:
+                  - $ref: "#/components/schemas/Environment"
+                  - $ref: "#/components/schemas/ExecEnvironmentResponse"
         "204":
           description: Action succeeded (rotate-token).
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
     delete:
       tags: [environments]
       operationId: destroyEnvironment
@@ -243,6 +283,154 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /v1/environments/{vmId}/attach:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    get:
+      tags: [environments]
+      operationId: attachEnvironment
+      summary: Open an interactive stream to a process inside the guest.
+      description: |
+        Upgrades the connection to `fuse-attach/1` and relays a raw
+        duplex byte stream between the client and a process in the
+        guest. This is the transport behind `fuse environment shell`.
+
+        **This endpoint is not really describable in OpenAPI.** What is
+        modelled below is only the handshake — the request that opens
+        the stream, and the 101 that accepts it. Everything of substance
+        happens afterwards, on a hijacked socket that carries framed
+        bytes rather than JSON. Treat the 101 as the end of the part
+        this document can speak to. Attach is deliberately absent from
+        the TypeScript and Python SDKs; only the Go SDK and the CLI
+        speak it, because only an interactive terminal needs it.
+
+        **Handshake.** The request must carry `Upgrade: fuse-attach/1`
+        and `Connection: Upgrade` over HTTP/1.1. A request without the
+        Upgrade header is rejected with 400 `invalid_argument`. The
+        server replies `101 Switching Protocols` and echoes the
+        `Upgrade` header, after which the connection is no longer HTTP.
+        HTTP/2 cannot be used: the connection has to be hijackable.
+
+        Attach requires the master token, for the same reason exec does:
+        it is a root shell in the guest.
+
+        **Why the spec is in the query string.** An upgrade is a GET, so
+        there is no body to put it in. Repeated `cmd` parameters
+        preserve argv boundaries, which means an argument containing
+        spaces survives the round trip without a quoting convention:
+
+        ```
+        GET /v1/environments/vm-123/attach?tty=1&rows=24&cols=80&cmd=sh&cmd=-c&cmd=echo+hi
+        ```
+
+        **Frame protocol (`fuse-attach/1`).** Once upgraded, both
+        directions carry length-prefixed frames. The orchestrator does
+        not interpret them; it relays bytes verbatim between the client
+        and the host agent, which is what lets the same protocol run on
+        both hops.
+
+        ```
+        frame = [type:1][reserved:3][length:4 big-endian][payload:length]
+        ```
+
+        | type | name   | direction       | payload                |
+        | ---- | ------ | --------------- | ---------------------- |
+        | 0    | stdin  | client → server | raw bytes              |
+        | 1    | stdout | server → client | raw bytes              |
+        | 2    | stderr | server → client | raw bytes              |
+        | 3    | resize | client → server | `{"rows":24,"cols":80}` |
+        | 4    | exit   | server → client | `{"exit_code":0}`      |
+
+        A single frame's payload is capped at 1 MiB (1048576 bytes), so
+        a bogus length on the wire cannot be turned into an allocation.
+        The `exit` frame carries the guest command's own status and is
+        the last frame of a session; as with exec, a non-zero
+        `exit_code` is a normal outcome and not an error.
+      parameters:
+        - name: tty
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1", "true"]
+          description: |
+            Request a pty for the process. Any other value (including
+            the parameter's absence) means no pty.
+        - name: rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: |
+            Initial pty height. Only seeds the window size at startup;
+            later resizes travel as type 3 frames on the stream itself.
+            Values outside the range are ignored rather than rejected.
+        - name: cols
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: |
+            Initial pty width. Same handling as `rows`.
+        - name: cmd
+          in: query
+          required: false
+          explode: true
+          style: form
+          schema:
+            type: array
+            items:
+              type: string
+          description: |
+            The argv to run, one array element per repeated `cmd`
+            parameter. Omit it entirely to get the guest's login shell.
+          example: ["sh", "-c", "echo hi"]
+      responses:
+        "101":
+          description: |
+            Upgrade accepted. The connection leaves HTTP and carries
+            fuse-attach/1 frames in both directions until either end
+            closes it.
+          headers:
+            Upgrade:
+              schema:
+                type: string
+                enum: [fuse-attach/1]
+            Connection:
+              schema:
+                type: string
+                enum: [Upgrade]
+        "400":
+          description: |
+            The request did not carry `Upgrade: fuse-attach/1`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          description: |
+            The guest stream could not be opened, or the connection was
+            not hijackable. Reported as HTTP because every error that
+            can be expressed as HTTP is raised before the upgrade; once
+            the socket is hijacked there is no ResponseWriter left to
+            report through.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
 
   /v1/environments/{vmId}/events:
     parameters:
@@ -541,6 +729,15 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: |
+        The caller authenticated, but not as the master operator.
+        Master-only surfaces (exec, attach, API key management) refuse
+        API keys.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     NotFound:
       description: Resource does not exist.
       content:
@@ -565,6 +762,14 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Unimplemented:
+      description: |
+        The operation is not supported by the backing provider (e.g. an
+        exec or attach against an environment with no real guest).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     Error:
@@ -582,8 +787,10 @@ components:
                 - not_found
                 - conflict
                 - invalid_argument
+                - unauthorized
                 - unavailable
                 - internal
+                - unimplemented
             message:
               type: string
               description: Human-readable description.
@@ -727,6 +934,72 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    ExecEnvironmentRequest:
+      type: object
+      description: |
+        Body of POST /v1/environments/{vmId}?action=exec.
+
+        Exactly one of `cmd` or `shell` must be set. Setting neither, or
+        both, is a 400 `invalid_argument`. (The constraint is one of
+        cardinality, not of type, so it is stated here rather than
+        expressed as a schema keyword.)
+      properties:
+        cmd:
+          type: array
+          items:
+            type: string
+          description: |
+            The argv to run in the guest, e.g. `["ls", "-l", "/var/log"]`.
+            Preferred over `shell`: argv has no quoting rules and cannot
+            be turned into an injection by interpolating a value.
+          example: ["ls", "-l", "/var/log"]
+        shell:
+          type: string
+          description: |
+            A command line to run under `sh -lc`. The explicit opt-in for
+            what argv cannot express: pipelines, redirects, and globs.
+          example: "ls | wc -l"
+        timeout_ms:
+          type: integer
+          description: |
+            Bounds how long the command may run inside the guest. Zero
+            (or omitted) takes the server default of 60000 ms. Values
+            above the server ceiling of 600000 ms are clamped to it, not
+            rejected.
+          example: 5000
+      example:
+        cmd: ["ls", "-l"]
+        timeout_ms: 5000
+
+    ExecEnvironmentResponse:
+      type: object
+      description: |
+        The outcome of a guest command.
+
+        A non-zero `exit_code` arrives with **HTTP 200**: the command
+        ran and failed, which is a successful answer to the question the
+        caller asked. It is not an error and must not be raised by an
+        SDK. HTTP errors mean the command could not be run at all.
+
+        `stdout` and `stderr` are kept apart, and are plain strings
+        rather than base64 — exec output is overwhelmingly text, and
+        encoding it would make every caller pay a decoding tax for the
+        rare binary case.
+      required: [exit_code, stdout, stderr]
+      properties:
+        exit_code:
+          type: integer
+          description: |
+            The guest command's own exit status. Non-zero is a normal
+            result, delivered with HTTP 200.
+          example: 0
+        stdout:
+          type: string
+          example: "hi\n"
+        stderr:
+          type: string
+          example: ""
 
     CreateSnapshotRequest:
       type: object

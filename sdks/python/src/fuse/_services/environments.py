@@ -4,7 +4,14 @@ from collections.abc import Iterator
 from urllib.parse import quote
 
 from .._transport import Transport
-from ..types import CreateRequest, EnvironmentInfo, Event, ForkOptions
+from ..types import (
+    CreateRequest,
+    EnvironmentInfo,
+    Event,
+    ExecRequest,
+    ExecResult,
+    ForkOptions,
+)
 from .events import stream_events
 
 
@@ -49,6 +56,24 @@ class EnvironmentsService:
             "POST", path, params={"action": "fork"}, body=options or ForkOptions()
         )
         return EnvironmentInfo.model_validate(resp.json())
+
+    def exec(self, vm_id: str, request: ExecRequest) -> ExecResult:
+        # runs a command inside a running environment's guest. requires the
+        # master token.
+        #
+        # a non-zero exit_code is returned, not raised: the command ran and
+        # failed. an ApiError means the command could not be run at all.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        has_cmd = bool(request.cmd)
+        has_shell = bool(request.shell)
+        if not has_cmd and not has_shell:
+            raise ValueError("one of cmd or shell is required")
+        if has_cmd and has_shell:
+            raise ValueError("cmd and shell are mutually exclusive")
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request("POST", path, params={"action": "exec"}, body=request)
+        return ExecResult.model_validate(resp.json())
 
     def rotate_token(self, vm_id: str) -> None:
         if not vm_id:

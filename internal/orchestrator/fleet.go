@@ -54,6 +54,16 @@ var (
 	// in the wrapping fmt.Errorf context so callers and operators can
 	// see why the transition was rejected.
 	ErrVMNotRunning = errors.New("vm not running")
+
+	// ErrExecUnsupported is returned by Exec when the environment has no
+	// real guest to run commands in (e.g. the in-memory stub a provider
+	// falls back to when its BaseURL is unset). Reporting it is what keeps
+	// a misconfigured host from answering exec with a fabricated success.
+	ErrExecUnsupported = errors.New("exec not supported by provider")
+
+	// ErrAttachUnsupported is returned by Attach when the environment does
+	// not implement Attacher.
+	ErrAttachUnsupported = errors.New("attach not supported by provider")
 )
 
 // VMState represents the lifecycle state of a managed VM.

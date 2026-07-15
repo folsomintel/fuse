@@ -154,6 +154,11 @@ func (h *Handler) register(r chi.Router) {
 	r.Post("/v1/environments/{vmId}", h.environmentAction)
 	r.Delete("/v1/environments/{vmId}", h.destroyEnvironment)
 
+	// Attach is a sub-path rather than an ?action= verb because it is a
+	// protocol upgrade, not a JSON call: it has no request body and it never
+	// returns a JSON response.
+	r.Get("/v1/environments/{vmId}/attach", h.attachEnvironment)
+
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
 	r.Get("/v1/snapshots/{snapshotId}", h.getSnapshot)
@@ -482,11 +487,12 @@ func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 // environmentAction dispatches an action on an environment via ?action= query param.
 //
 //	@Summary		Environment action
-//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork.
+//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, exec.
 //	@Tags			environments
 //	@Param			vmId	path	string	true	"VM identifier"
-//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork)
+//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, exec)
 //	@Success		200		{object}	Environment	"Drain succeeded; updated VM state returned"
+//	@Success		200		{object}	ExecEnvironmentResponse	"Exec ran; a non-zero exit_code is still a 200"
 //	@Success		201		{object}	Environment	"Fork succeeded; new environment returned"
 //	@Success		204		"Action succeeded"
 //	@Failure		400		{object}	Error
@@ -503,6 +509,8 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 		h.drainEnvironment(w, r)
 	case "fork":
 		h.forkEnvironment(w, r)
+	case "exec":
+		h.execEnvironment(w, r)
 	default:
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
 			"missing or unknown action query parameter", nil)

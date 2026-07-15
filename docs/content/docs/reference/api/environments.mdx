@@ -13,8 +13,10 @@ description: /v1/environments and /v1/snapshots
 | `POST` | `/v1/environments/{vmId}?action=fork` | Fork into a new environment seeded from a snapshot of this one. Optional body: `comment`, `reuse_snapshot_id`. Returns the new environment. |
 | `POST` | `/v1/environments/{vmId}?action=rotate-token` | Re-issue guest credentials. Returns `204`. |
 | `POST` | `/v1/environments/{vmId}?action=drain` | Graceful phase-1 teardown (running only). Returns `200` with the updated environment (`state: draining`). |
+| `POST` | `/v1/environments/{vmId}?action=exec` | Run one command in the guest. Returns `200` with the guest's exit code, stdout, and stderr. Master token only. |
 | `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
 | `GET` | `/v1/environments/{vmId}/events` | Server-Sent Events stream of state transitions. |
+| `GET` | `/v1/environments/{vmId}/attach` | Interactive pty stream over an HTTP/1.1 upgrade. Master token only. |
 
 ### Create request
 
@@ -69,6 +71,87 @@ id: <128-bit hex>
 data: {"event":"state","vm_id":"...","state":"running","url":"...","updated_at":"..."}
 
 ```
+
+## Exec
+
+`POST /v1/environments/{vmId}?action=exec` runs one command inside a running
+environment's guest. Exactly one of `cmd` or `shell` must be set:
+
+```json
+{
+  "cmd": ["ls", "-l", "/var/log"],
+  "timeout_ms": 5000
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `cmd` | Argv to run in the guest. Needs no quoting rules and cannot be turned into an injection by interpolating a value, so it is the default. |
+| `shell` | A one-liner run under `sh -lc`. The explicit opt-in for what argv cannot express: pipelines, redirects, and globs. |
+| `timeout_ms` | Bounds the command inside the guest. `0` or omitted takes the server default of 60s; anything above the 600s ceiling is clamped to it. |
+
+A command that ran returns `200`, whatever it exited with:
+
+```json
+{ "exit_code": 0, "stdout": "hi\n", "stderr": "" }
+```
+
+**A non-zero `exit_code` is still a `200`.** The command ran and it failed, which is
+the answer the caller asked for, not a transport failure. The SDKs do not raise on
+it; inspect `exit_code` yourself. HTTP errors are reserved for the cases where the
+command could not be run at all:
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_argument` | Neither `cmd` nor `shell` was set, or both were. |
+| `403` | `unauthorized` | Exec requires the master token; API keys are refused. |
+| `404` | `not_found` | Unknown environment. |
+| `409` | `conflict` | The environment is not running. A `draining` VM is refused even though its guest is still reachable, since letting new commands in behind a drain would undo it. |
+| `501` | `unimplemented` | The provider has no guest to exec into (the stub, for example). |
+
+Exec is master-token only because it is root in the guest, and API keys carry no
+scopes today: anything weaker would silently make every issued key a root shell on
+every VM in the fleet. See [Authentication](/docs/reference/auth).
+
+## Attach
+
+`GET /v1/environments/{vmId}/attach` opens an interactive pty inside the guest. It is
+an HTTP/1.1 upgrade rather than a JSON route:
+
+```
+GET /v1/environments/{vmId}/attach?tty=1&rows=24&cols=80&cmd=sh&cmd=-c&cmd=echo+hi
+Upgrade: fuse-attach/1
+Connection: Upgrade
+```
+
+The server answers `101 Switching Protocols`, after which both ends speak frames. An
+upgrade is a `GET` and so has no body: the attach spec rides in the query string, and
+repeated `cmd` params preserve argv boundaries. Attach is master-token only and
+raises the same errors as exec, all of them before the upgrade, while there is still
+a response to write them to.
+
+This is what backs [`fuse environment shell`](/docs/reference/cli/environments#fuse-environment-shell).
+It is in the Go SDK only; the TypeScript and Python SDKs do not implement it, since
+only the CLI needs a pty.
+
+### Frame protocol
+
+`fuse-attach/1` is spoken between the client and the host agent. The orchestrator
+relays the bytes verbatim without interpreting them:
+
+```
+frame = [type:1][reserved:3][length:4 big-endian][payload:length]
+```
+
+| Type | Name | Direction | Payload |
+| --- | --- | --- | --- |
+| `0` | stdin | client to server | Raw bytes. |
+| `1` | stdout | server to client | Raw bytes. |
+| `2` | stderr | server to client | Raw bytes. A pty merges stdout and stderr, so an interactive session sees everything on stdout. |
+| `3` | resize | client to server | `{"rows":24,"cols":80}` |
+| `4` | exit | server to client | `{"exit_code":0}` |
+
+A single payload is capped at 1 MiB.
 
 ## Snapshots
 

@@ -61,6 +61,40 @@ export interface ForkOptions {
   comment?: string;
 }
 
+/** ExecRequest is the body for environments.exec. Exactly one of cmd or shell must be set. */
+export interface ExecRequest {
+  /**
+   * The argv to run in the guest, e.g. ["ls", "-l"]. Argv needs no quoting
+   * rules and cannot be turned into an injection by interpolating a value, so
+   * prefer it.
+   */
+  cmd?: string[];
+
+  /**
+   * Runs the string under `sh -lc`. Use it only for what argv cannot express:
+   * pipelines, redirects, and globs.
+   */
+  shell?: string;
+
+  /**
+   * Bounds the command inside the guest. Zero or unset takes the server
+   * default; the server clamps anything above its ceiling.
+   */
+  timeout_ms?: number;
+}
+
+/**
+ * ExecResult is the outcome of a guest command.
+ *
+ * A non-zero exit_code is a successful call: the command ran and failed. Only a
+ * thrown error means the command could not be run at all.
+ */
+export interface ExecResult {
+  exit_code: number;
+  stdout: string;
+  stderr: string;
+}
+
 /**
  * Event is one item from environments.events. It matches the server's SSE
  * wire payload. Stream-level failures are thrown from the async iterator

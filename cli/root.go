@@ -26,6 +26,12 @@ type appState struct {
 	output     string // table | json
 	ctxName    string // --context override (empty = stored current)
 	configPath string // --config override (empty = default path)
+
+	// exitCode is the exit status of a guest command run by `environment exec`
+	// or `environment shell`. It travels here rather than back through RunE
+	// because a guest command that fails is not a CLI error: returning one
+	// would make fang render "Error: ..." above output the user already saw.
+	exitCode int
 }
 
 var app = &appState{}
