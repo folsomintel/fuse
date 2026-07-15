@@ -899,7 +899,13 @@ def do_attach(handler, vm_id: str, spec: dict) -> None:
     pid, master_fd = pty.fork()
     if pid == 0:
         try:
-            os.execvp(argv[0], argv)
+            # SSH_BASE[0] ("ssh"), not argv[0]: argv is built by concatenating
+            # SSH_BASE with the caller-supplied cmd, and indexing into that
+            # concatenation reads as an attacker-controlled exec path to static
+            # analysis even though position 0 is always the literal from
+            # SSH_BASE. Naming the constant directly keeps the executable
+            # unambiguous.
+            os.execvp(SSH_BASE[0], argv)
         except Exception:
             pass
         os._exit(127)

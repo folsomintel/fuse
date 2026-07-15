@@ -37,7 +37,9 @@ func (e *credForkEnv) SetToken(token string) {
 	e.authToken = token
 }
 
-func (e *credForkEnv) Exec(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+func (e *credForkEnv) Exec(context.Context, []string, ExecOptions) (ExecResult, error) {
+	return ExecResult{}, nil
+}
 func (e *credForkEnv) ExecStream(context.Context, io.Writer, io.Writer, string, ...string) error {
 	return nil
 }
