@@ -1,49 +1,12 @@
 ---
 title: Hosts
-description: HostsService, full method reference
+description: Registering and managing the compute hosts the scheduler places VMs onto
 icon: HardDrive
 ---
 
-`client.Hosts` is a `*HostsService`. It registers and manages the compute hosts the
-scheduler places microVMs onto.
-
-## Register
-
-```go
-func (s *HostsService) Register(ctx context.Context, req RegisterHostRequest) (*Host, error)
-```
-
-```go
-type RegisterHostRequest struct {
-	ID       string
-	URL      string
-	Token    string
-	Region   string
-	Backend  string
-	Capacity HostCapacity
-}
-
-type HostCapacity struct {
-	CPUs      int
-	RamMB     int
-	StorageGB int
-	VMCount   int
-	GPUs      int
-	GPUKind   string
-}
-```
-
-`ID` is a free-form, operator-supplied string and doubles as the host's primary
-key. `Backend` defaults to `"firecracker"` server-side if left empty; only
-`"qemu"` hosts may register with `Capacity.GPUs > 0`.
-
-`Capacity.CPUs`, `RamMB`, and `StorageGB` are optional hardware facts: leave any
-of them at `0` and the orchestrator probes the host agent for the real value
-instead of trusting a guess. Pass one explicitly to override the probe (for a
-deliberate overcommit or carve-out); a declared value above what the probe
-reports still registers, with a warning rather than a rejection. `VMCount` is a
-scheduling policy, not something a host can report on its own, so it is never
-probed and must always be set.
+`client.Hosts` registers and manages the compute hosts the scheduler places
+microVMs onto. Register a host, letting the orchestrator probe its real
+hardware capacity rather than trusting a guess:
 
 ```go
 host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
@@ -56,68 +19,39 @@ host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
 		VMCount: 20, // required; cpus/ram_mb/storage_gb left at 0 to probe
 	},
 })
+if err != nil {
+	log.Fatal(err)
+}
 for _, w := range host.Warnings {
 	log.Println("warning:", w)
 }
 ```
 
-If the host agent's provider doesn't support capacity probing and any of
-`CPUs`/`RamMB`/`StorageGB` were left at `0`, registration fails with a `502`
-`*APIError`, declare them explicitly in that case.
+- `ID` is a free-form, operator-supplied string and doubles as the host's
+  primary key. `Backend` defaults to `"firecracker"` if left empty; only
+  `"qemu"` hosts may register with `Capacity.GPUs > 0`.
+- `Capacity.CPUs`, `RamMB`, and `StorageGB` are optional hardware facts:
+  leaving any at `0` (as above) has the orchestrator probe the host agent for
+  the real value instead of trusting a guess. Pass one explicitly to override
+  the probe, for a deliberate overcommit or carve-out, a declared value above
+  what the probe reports still registers, with a warning rather than a
+  rejection. If the host's provider doesn't support probing and a value was
+  left at `0`, registration fails with a `502` `*APIError` instead, declare
+  it explicitly in that case.
+- `Capacity.VMCount` is scheduling policy, not something a host can report on
+  its own, so it's never probed and is always required.
+- `host.Warnings` is only ever populated on this call's response, non-fatal
+  notices like a declared value exceeding what was probed.
 
-## List
+## Everything else
 
-```go
-func (s *HostsService) List(ctx context.Context) ([]Host, error)
-```
+| Method | Purpose |
+| --- | --- |
+| `List(ctx)` | List every registered host with its declared `Capacity` and live `Allocated` figures. |
+| `Get(ctx, hostID)` | Fetch one host by ID. |
+| `Cordon(ctx, hostID)` / `Uncordon(ctx, hostID)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
+| `Deregister(ctx, hostID)` | Remove the host. Fails with a `conflict` `*APIError` if environments are still assigned to it. |
 
-Returns every registered host, each showing its declared `Capacity` and live
-`Allocated` figures.
-
-## Get
-
-```go
-func (s *HostsService) Get(ctx context.Context, hostID string) (*Host, error)
-```
-
-```go
-type Host struct {
-	ID        string
-	URL       string
-	Region    string
-	State     string
-	Backend   string
-	Capacity  HostCapacity
-	Allocated HostCapacity
-	LastSeen  time.Time
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Warnings  []string
-}
-```
-
-`State` is one of `active`, `cordoned`, or `draining`. `LastSeen` is set at
-registration and is not refreshed afterward, it is not a liveness signal.
-`Warnings` is only ever populated on the response to `Register`, non-fatal
-notices such as a declared capacity value that exceeded what was probed from
-the host agent.
-
-## Cordon and Uncordon
-
-```go
-func (s *HostsService) Cordon(ctx context.Context, hostID string) error
-func (s *HostsService) Uncordon(ctx context.Context, hostID string) error
-```
-
-Cordoning marks a host unschedulable: the scheduler stops placing new
-environments there without touching what's already running. Uncordoning reverses
-it.
-
-## Deregister
-
-```go
-func (s *HostsService) Deregister(ctx context.Context, hostID string) error
-```
-
-Removes a host from the scheduler. Fails with a `conflict` `*APIError` if any
-environments are still assigned to it, drain or destroy them first.
+`Host.State` is one of `active`, `cordoned`, or `draining`. `Host.LastSeen` is
+set once at registration and never refreshed, it is not a liveness signal.
+These mirror the [HTTP API](/docs/reference/api/hosts) one to one.

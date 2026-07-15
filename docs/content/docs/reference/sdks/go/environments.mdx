@@ -1,182 +1,122 @@
 ---
 title: Environments
-description: EnvironmentsService, full method reference
+description: Provisioning, running commands in, and tearing down microVMs
 icon: Boxes
 ---
 
-`client.Environments` is an `*EnvironmentsService`. It provisions, inspects, and
-tears down microVMs.
-
-## List
-
-```go
-func (s *EnvironmentsService) List(ctx context.Context, opt ListEnvironmentsOptions) ([]EnvironmentInfo, error)
-```
-
-```go
-type ListEnvironmentsOptions struct {
-	TaskID string
-	State  string
-	HostID string
-}
-```
-
-All three filters are optional exact matches; a zero-value `ListEnvironmentsOptions{}`
-lists everything.
-
-```go
-envs, err := client.Environments.List(ctx, fuse.ListEnvironmentsOptions{
-	State: fuse.StateRunning,
-})
-```
-
-## Get
-
-```go
-func (s *EnvironmentsService) Get(ctx context.Context, vmID string) (*EnvironmentInfo, error)
-```
-
-Fetches one environment by its assigned ID. Returns a `not_found` `*APIError` if it
-doesn't exist.
-
-## Create
-
-```go
-func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest) (*EnvironmentInfo, error)
-```
-
-```go
-type CreateRequest struct {
-	TaskID         string
-	Spec           Spec
-	ManifestInline string
-	Secrets        map[string]string
-	StartupScript  string
-	GatewayURL     string
-	GatewayToken   string
-	Expose         []ExposeSpec
-}
-
-type Spec struct {
-	CPUs              int32
-	RamMB              int32
-	StorageGB          int32
-	GPUs               int32
-	GPUKind            string
-	Region             string
-	MaxRuntimeSeconds  int64
-	Image              string
-}
-```
-
-`TaskID` must be unique; the orchestrator uses it as part of the generated VM
-name. `GPUs` is a whole-device count; a non-zero value routes the environment to a
-host registered with matching free GPU capacity (necessarily a QEMU-backed host).
-`Create` blocks server-side until the environment reaches `running` or fails, so
-the returned value already reflects the outcome.
+`client.Environments` provisions, inspects, drives, and tears down microVMs.
+Here's a complete flow: create one, wait for it to boot, run a command inside
+it, then tear it down.
 
 ```go
 env, err := client.Environments.Create(ctx, fuse.CreateRequest{
-	TaskID: "task-1",
-	Spec: fuse.Spec{
-		CPUs:      2,
-		RamMB:     2048,
-		StorageGB: 10,
-	},
-	Secrets: map[string]string{"pg_password": "..."},
+	TaskID: "build-1",
+	Spec:   fuse.Spec{CPUs: 2, RamMB: 2048, StorageGB: 10},
 })
-```
+if err != nil {
+	log.Fatal(err)
+}
 
-## Drain
+res, err := client.Environments.Exec(ctx, env.ID, fuse.ExecRequest{
+	Cmd: []string{"make", "test"},
+})
+if err != nil {
+	log.Fatal(err)
+}
+if res.ExitCode != 0 {
+	log.Fatalf("tests failed: %s", res.Stderr)
+}
 
-```go
-func (s *EnvironmentsService) Drain(ctx context.Context, vmID string) (*EnvironmentInfo, error)
-```
-
-Phase one of a two-phase teardown: signals the guest agent to stop gracefully. The
-environment moves to `draining` but is not destroyed; call `Destroy` afterward to
-remove it. Only `running` environments can be drained; any other state returns a
-`conflict` `*APIError`.
-
-## Fork
-
-```go
-func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions) (*EnvironmentInfo, error)
-```
-
-```go
-type ForkOptions struct {
-	ReuseSnapshotID string
-	Comment         string
+if err := client.Environments.Destroy(ctx, env.ID); err != nil {
+	log.Fatal(err)
 }
 ```
 
-Creates a new environment seeded from an existing one's state. With
-`ReuseSnapshotID` empty, the server takes a fresh snapshot of `vmID` first;
-otherwise it reuses the named snapshot instead of taking a new one. Unlike most
-methods here, `Fork` sends a request body rather than dispatching a bare action, so
-it isn't built on the same internal helper as `Drain`/`RotateToken`. Fork is
-unavailable wherever snapshotting is, GPU/QEMU-backed environments cannot be
-forked.
+- `Create` provisions from a `Spec` (CPUs, RAM, storage, and optionally GPU)
+  and blocks server-side until the environment is `running` or provisioning
+  fails, so the returned `*EnvironmentInfo` already reflects the outcome. No
+  separate poll-until-ready step is needed for the common case.
+- `Exec` runs one command inside the guest and returns its exit code with
+  stdout/stderr kept apart. A **non-zero `ExitCode` is a successful call**,
+  not an `error`, the command ran and failed, which is the answer you asked
+  for. Only a non-nil `error` means the command couldn't run at all (VM not
+  found, VM not running, or the provider has no guest to exec into).
+  `Exec` requires the master token, see [Errors](/docs/reference/sdks/go/errors).
+- `Destroy` tears the environment down from any state and is idempotent, a
+  second call on an already-gone environment returns a `not_found`
+  `*APIError` rather than panicking or hanging.
 
-## RotateToken
+## Watching state instead of exec
 
-```go
-func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) error
-```
-
-Re-issues the guest agent's credentials without recreating the VM. Returns no
-value on success (the server responds `204`), useful if a token may have leaked.
-
-## Destroy
-
-```go
-func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error
-```
-
-Forcefully tears the environment down from any state. Idempotent: a second call
-against an already-destroyed environment returns a `not_found` `*APIError`, not a
-different failure mode.
-
-## Events
+If you need to react to lifecycle transitions rather than run a one-shot
+command, `Events` opens a live stream instead of a single call:
 
 ```go
-func (s *EnvironmentsService) Events(ctx context.Context, vmID string) (<-chan Event, error)
-```
-
-```go
-type Event struct {
-	ID        string
-	Kind      string
-	VMID      string
-	State     string
-	URL       string
-	Error     string
-	UpdatedAt time.Time
-	Err       error
+events, err := client.Environments.Events(ctx, env.ID)
+if err != nil {
+	log.Fatal(err)
 }
-```
-
-Opens the SSE event stream and returns a channel of `Event` values. The first
-event is a snapshot of the current state, delivered immediately on connect;
-subsequent events fire on every transition. The channel closes cleanly on EOF, or
-after a final `Event` with `Err` set if the underlying stream failed. `Err` is the
-only field populated on that final event, everything else is the zero value.
-
-`Events` uses a dedicated no-timeout HTTP client internally, since the default
-60-second client would otherwise kill a long-lived stream. Cancel `ctx` to stop
-consuming early:
-
-```go
-ctx, cancel := context.WithCancel(context.Background())
-events, _ := client.Environments.Events(ctx, env.ID)
 for ev := range events {
-	if ev.State == fuse.StateRunning {
-		cancel()
+	if ev.Err != nil {
+		log.Fatal(ev.Err)
+	}
+	log.Println(ev.State)
+	if fuse.IsTerminalState(ev.State) {
 		break
 	}
 }
 ```
+
+The stream delivers the current state immediately on connect, then one event
+per transition, and closes on its own after a terminal state
+(`destroyed`/`failed`). See the full walkthrough in
+[Quickstart](/docs/reference/sdks/go/quickstart).
+
+## Interactive sessions
+
+For a real terminal instead of a one-shot command, `Attach` opens a framed,
+duplex stream to a pty inside the guest, the same mechanism behind
+[`fuse environment shell`](/docs/reference/cli/environment/shell):
+
+```go
+stream, err := client.Environments.Attach(ctx, env.ID, fuse.AttachOptions{
+	Rows: 24, Cols: 80,
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer stream.Close()
+
+go io.Copy(stream, os.Stdin)
+for {
+	f, err := stream.ReadFrame()
+	if err != nil {
+		break
+	}
+	if f.Type == fuse.FrameStdout || f.Type == fuse.FrameStderr {
+		os.Stdout.Write(f.Payload)
+	}
+}
+```
+
+This needs a real terminal on the calling end (raw mode, resize handling),
+it's built for building your own `fuse environment shell`-style tool, not for
+scripted automation, use `Exec` for that. Also master-token only.
+
+## Everything else
+
+| Method | Purpose |
+| --- | --- |
+| `List(ctx, ListEnvironmentsOptions{...})` | List environments, optionally filtered by `TaskID`/`State`/`HostID`. |
+| `Get(ctx, vmID)` | Fetch one environment by ID. |
+| `Drain(ctx, vmID)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
+| `Fork(ctx, vmID, ForkOptions{...})` | Create a new environment seeded from a snapshot of this one. |
+| `RotateToken(ctx, vmID)` | Re-issue the guest's credentials without recreating the VM. |
+
+Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
+can't be forked, see [Providers](/docs/learn/concepts/providers). Full
+signatures are in the SDK's Go doc comments; the shapes above mirror the
+[HTTP API](/docs/reference/api/environments) one to one.
 
 ## Lifecycle states
 

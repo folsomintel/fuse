@@ -1,109 +1,52 @@
 ---
 title: Snapshots
-description: SnapshotsService, full method reference
+description: Capturing and restoring a running microVM's state
 icon: Camera
 ---
 
-`client.Snapshots` is a `*SnapshotsService`. It captures and restores the state of
-a running microVM.
-
-## Create
-
-```go
-func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody SnapshotRequest) (*Snapshot, error)
-```
-
-```go
-type SnapshotRequest struct {
-	Comment          string
-	Mode             string
-	RetentionSeconds int64
-	Metadata         map[string]string
-	ExportRef        string
-	ExportStatus     string
-}
-```
-
-`vmID` must be a `running` environment. `Mode` is `"manual"` or `"auto"`.
-`RetentionSeconds` of `0` keeps the snapshot forever. All fields on
-`SnapshotRequest` are optional, a zero-value struct is a valid request.
+`client.Snapshots` captures and restores the state of a running microVM. Take
+a snapshot before something risky, and restore if it goes wrong:
 
 ```go
 snap, err := client.Snapshots.Create(ctx, env.ID, fuse.SnapshotRequest{
 	Comment: "before risky migration",
 	Mode:    "manual",
 })
-```
+if err != nil {
+	log.Fatal(err)
+}
 
-## List
+// ... do the risky thing ...
 
-```go
-func (s *SnapshotsService) List(ctx context.Context, opt ListSnapshotsOptions) ([]Snapshot, error)
-```
-
-```go
-type ListSnapshotsOptions struct {
-	VMID     string
-	TaskID   string
-	TenantID string
-	State    string
+if err := client.Snapshots.Restore(ctx, snap.ID); err != nil {
+	log.Fatal(err)
 }
 ```
 
-All four filters are optional exact matches.
-
-## Get
-
-```go
-func (s *SnapshotsService) Get(ctx context.Context, snapshotID string) (*Snapshot, error)
-```
-
-```go
-type Snapshot struct {
-	ID               string
-	VMID             string
-	TaskID           string
-	TenantID         string
-	ParentSnapshotID string
-	Mode             string
-	State            string
-	Comment          string
-	SizeBytes        int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	RetentionUntil   *time.Time
-	LastError        string
-	ExportRef        string
-	Exports          []SnapshotExport
-}
-```
-
-`State` is one of `creating`, `ready`, `restoring`, `deleting`, or `error`.
-`RetentionUntil` is `nil` when the snapshot is kept forever.
-
-## Delete
-
-```go
-func (s *SnapshotsService) Delete(ctx context.Context, snapshotID string) error
-```
-
-Leaf-only: also deletes the underlying provider artifact. There is no soft-delete.
-
-## Restore
-
-```go
-func (s *SnapshotsService) Restore(ctx context.Context, snapshotID string) error
-```
-
-Restores the snapshot in place, onto its original VM, which must still be running.
-There is no cross-host restore, clone, or standalone restore into a new VM, use
-`Fork` on `EnvironmentsService` for that instead.
+- `Create`'s `vmID` must be a `running` environment. `SnapshotRequest` is
+  entirely optional, a zero-value struct is a valid request; `Mode` is
+  `"manual"` or `"auto"`, and `RetentionSeconds` of `0` keeps it forever.
+- `Restore` is **in place only**: it restores onto the snapshot's original
+  VM, which must still be running. There is no cross-host restore, clone, or
+  standalone restore into a new VM, use `Fork` on
+  [`EnvironmentsService`](/docs/reference/sdks/go/environments) for that
+  instead.
 
 <Callout type="warn" title="Known limitation">
 Restoring while the guest has unsynced writes can corrupt the restored data. See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
 for the workaround.
 </Callout>
+
+## Everything else
+
+| Method | Purpose |
+| --- | --- |
+| `List(ctx, ListSnapshotsOptions{...})` | List snapshots, optionally filtered by `VMID`/`TaskID`/`TenantID`/`State`. |
+| `Get(ctx, snapshotID)` | Fetch one snapshot's full detail, including `State` (`creating`\|`ready`\|`restoring`\|`deleting`\|`error`) and `Exports`. |
+| `Delete(ctx, snapshotID)` | Leaf-only delete; also removes the underlying provider artifact. No soft-delete. |
+
+These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 
 ## The QEMU/GPU exception
 

@@ -5,52 +5,22 @@ icon: TriangleAlert
 ---
 
 Every SDK method that talks to the orchestrator returns a Go `error`. Non-2xx
-responses come back as a `*APIError`, decoded from the server's structured error
-envelope; anything else (a network failure, a body that fails to decode) is a
-plain wrapped error.
-
-## APIError
+responses come back as a `*APIError`, decoded from the server's structured
+error envelope; anything else (a network failure, a body that fails to
+decode) is a plain wrapped error. Branch on the code, not the message:
 
 ```go
-type APIError struct {
-	Status    int
-	Code      string
-	Message   string
-	Details   map[string]string
-	RequestID string
-	Body      []byte
+env, err := client.Environments.Get(ctx, id)
+if fuse.IsNotFound(err) {
+	// handle the 404 case
+} else if err != nil {
+	log.Fatal(err)
 }
-
-func (e *APIError) Error() string
 ```
 
-`Status` is the HTTP status code. `Code` is the server's stable, machine-readable
-error code. `RequestID` echoes the `X-Request-ID` response header, useful for
-correlating a failure with server-side logs. `Body` is the raw response body, kept
-around for debugging.
-
-## Error codes
-
-```go
-const (
-	CodeNotFound        = "not_found"
-	CodeConflict        = "conflict"
-	CodeInvalidArgument = "invalid_argument"
-	CodeUnavailable     = "unavailable"
-	CodeInternal        = "internal"
-	CodeUnauthorized    = "unauthorized"
-)
-```
-
-## Extracting an APIError
-
-```go
-func AsAPIError(err error) (*APIError, bool)
-```
-
-Walks the error chain (via `errors.As`) looking for an `*APIError`. Use this when
-you need the full struct, status code, request ID, and all, rather than just a
-yes/no code check.
+`fuse.AsAPIError(err)` gets you the full struct when you need more than a
+yes/no check, `Status`, `Code`, `RequestID` (for correlating with server-side
+logs), and `Body`:
 
 ```go
 if apiErr, ok := fuse.AsAPIError(err); ok {
@@ -68,18 +38,40 @@ func IsInvalidArgument(err error) bool
 func IsUnavailable(err error) bool
 ```
 
-Each reports whether `err` is an `*APIError` with the matching code. Prefer these
-over comparing `Code` strings directly, and definitely over comparing `Error()`'s
-formatted message, which is meant for logs, not branching logic.
+Each reports whether `err` is an `*APIError` with the matching code. Prefer
+these over comparing `Code` strings directly, and definitely over comparing
+`Error()`'s formatted message, which is meant for logs, not branching logic.
+
+The server also returns a sixth code, `unimplemented` (`501`, when a
+provider has no guest to [`Exec`](/docs/reference/sdks/go/environments) or
+[`Attach`](/docs/reference/sdks/go/environments#interactive-sessions) into),
+with no matching `Is*` helper yet, check `apiErr.Code == "unimplemented"`
+directly until one is added.
+
+## APIError
 
 ```go
-env, err := client.Environments.Get(ctx, id)
-if fuse.IsNotFound(err) {
-	// handle the 404 case
-} else if err != nil {
-	log.Fatal(err)
+type APIError struct {
+	Status    int
+	Code      string
+	Message   string
+	Details   map[string]string
+	RequestID string
+	Body      []byte
 }
 ```
+
+## Full code list
+
+| Constant | Wire value | Typical status |
+| --- | --- | --- |
+| `CodeNotFound` | `not_found` | `404` |
+| `CodeConflict` | `conflict` | `409` |
+| `CodeInvalidArgument` | `invalid_argument` | `400` |
+| `CodeUnauthorized` | `unauthorized` | `401` or `403` |
+| `CodeUnavailable` | `unavailable` | `503` |
+| `CodeInternal` | `internal` | `500` or `502` |
+| (none yet) | `unimplemented` | `501` |
 
 ## CheckResponse
 
@@ -87,10 +79,8 @@ if fuse.IsNotFound(err) {
 func CheckResponse(resp *http.Response) error
 ```
 
-The lower-level function every service method calls internally: returns `nil` for
-a 2xx response, or a populated `*APIError` otherwise, parsed from the
-`{"error":{code,message,details}}` envelope (falling back to the HTTP status text
-if the body doesn't parse as that shape). You won't normally call this directly,
-it's exported because `fuse.metrics`-style raw HTTP callers (like the CLI's
-`fuse metrics` command) reuse it to get the same error mapping as every other SDK
-call.
+The lower-level function every service method calls internally: returns
+`nil` for a 2xx response, or a populated `*APIError` otherwise. You won't
+normally call this directly, it's exported because raw HTTP callers (like
+the CLI's `fuse metrics` command) reuse it to get the same error mapping as
+every other SDK call.

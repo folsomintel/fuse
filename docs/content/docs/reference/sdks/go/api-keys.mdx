@@ -1,59 +1,29 @@
 ---
 title: API keys
-description: APIKeysService, full method reference
+description: Issuing and revoking orchestrator-global API keys
 icon: KeySquare
 ---
 
-`client.APIKeys` is an `*APIKeysService`. All three methods require the master
-token, the server enforces this regardless of what token the client was
-constructed with.
-
-## Create
-
-```go
-func (s *APIKeysService) Create(ctx context.Context, label string) (*CreatedAPIKey, error)
-```
-
-```go
-type CreatedAPIKey struct {
-	APIKey
-	Key string
-}
-
-type APIKey struct {
-	ID         string
-	Label      string
-	CreatedAt  time.Time
-	LastUsedAt *time.Time
-	RevokedAt  *time.Time
-}
-```
-
-`label` is an optional human-readable name. `CreatedAPIKey.Key` holds the raw
-secret and is returned exactly once, it cannot be recovered afterward. Store it
-immediately.
+`client.APIKeys` mints and revokes API keys. All three methods require the
+master token, the server enforces this regardless of what token the client
+was constructed with.
 
 ```go
 key, err := client.APIKeys.Create(ctx, "ci-runner")
 if err != nil {
 	log.Fatal(err)
 }
-fmt.Println("save this now:", key.Key)
+fmt.Println("save this now:", key.Key) // shown exactly once
 ```
 
-## List
+`label` is optional. `key.Key` holds the raw secret and is returned exactly
+once, it cannot be recovered afterward, store it immediately.
 
-```go
-func (s *APIKeysService) List(ctx context.Context) ([]APIKey, error)
-```
+## Everything else
 
-Returns metadata only, `APIKey` has no `Key` field. `LastUsedAt` and `RevokedAt`
-are `nil` until they happen.
+| Method | Purpose |
+| --- | --- |
+| `List(ctx)` | List key metadata, `APIKey` has no `Key` field. `LastUsedAt`/`RevokedAt` are `nil` until they happen. |
+| `Revoke(ctx, id)` | Revoke the key with the given `id` (the `APIKey.ID`, not the secret itself). |
 
-## Revoke
-
-```go
-func (s *APIKeysService) Revoke(ctx context.Context, id string) error
-```
-
-Revokes the key with the given `id` (the `APIKey.ID`, not the secret itself).
+These mirror the [HTTP API](/docs/reference/api/api-keys) one to one.
