@@ -1,49 +1,12 @@
 ---
 title: Hosts
-description: HostsService, full method reference
+description: Registering and managing the compute hosts the scheduler places VMs onto
 icon: HardDrive
 ---
 
-`client.hosts` is a `HostsService`. It registers and manages the compute hosts the
-scheduler places microVMs onto.
-
-## register
-
-```ts
-register(body: RegisterHostRequest, opts?: CallOptions): Promise<Host>
-```
-
-```ts
-interface RegisterHostRequest {
-  id: string;
-  url: string;
-  token?: string;
-  region?: string;
-  backend?: string;
-  capacity: HostCapacity;
-}
-
-interface HostCapacity {
-  cpus: number;
-  ram_mb: number;
-  storage_gb: number;
-  vm_count: number;
-  gpus?: number;
-  gpu_kind?: string;
-}
-```
-
-`id` is a free-form, operator-supplied string and doubles as the host's primary
-key. `backend` defaults to `"firecracker"` server-side if omitted; only `"qemu"`
-hosts may register with `capacity.gpus > 0`.
-
-`capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts: leave
-any at `0` and the orchestrator probes the host agent for the real value
-instead of trusting a guess. Pass one explicitly to override the probe (for a
-deliberate overcommit or carve-out); a declared value above what the probe
-reports still registers, with a warning rather than a rejection. `vm_count` is a
-scheduling policy, not something a host can report on its own, so it is never
-probed and must always be set.
+`client.hosts` registers and manages the compute hosts the scheduler places
+microVMs onto. Register a host, letting the orchestrator probe its real
+hardware capacity rather than trusting a guess:
 
 ```ts
 const host = await client.hosts.register({
@@ -59,64 +22,31 @@ for (const w of host.warnings ?? []) {
 }
 ```
 
-If the host agent's provider doesn't support capacity probing and any of
-`cpus`/`ram_mb`/`storage_gb` were left at `0`, registration throws a
-`FuseApiError` with `status === 502`, declare them explicitly in that case.
+- `id` is a free-form, operator-supplied string and doubles as the host's
+  primary key. `backend` defaults to `"firecracker"` if omitted; only
+  `"qemu"` hosts may register with `capacity.gpus > 0`.
+- `capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts:
+  leaving any at `0` (as above) has the orchestrator probe the host agent for
+  the real value instead of trusting a guess. Pass one explicitly to override
+  the probe, for a deliberate overcommit or carve-out, a declared value above
+  what the probe reports still registers, with a warning rather than a
+  rejection. If the host's provider doesn't support probing and a value was
+  left at `0`, registration throws a `FuseApiError` with `status === 502`
+  instead, declare it explicitly in that case.
+- `capacity.vm_count` is scheduling policy, not something a host can report
+  on its own, so it's never probed and is always required.
+- `host.warnings` is only ever populated on this call's response, non-fatal
+  notices like a declared value exceeding what was probed.
 
-## list
+## Everything else
 
-```ts
-list(opts?: CallOptions): Promise<Host[]>
-```
+| Method | Purpose |
+| --- | --- |
+| `list()` | List every registered host with its declared `capacity` and live `allocated` figures. |
+| `get(hostId)` | Fetch one host by ID. |
+| `cordon(hostId)` / `uncordon(hostId)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
+| `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `code === "conflict"` if environments are still assigned to it. |
 
-Returns every registered host, each showing its declared `capacity` and live
-`allocated` figures.
-
-## get
-
-```ts
-get(hostId: string, opts?: CallOptions): Promise<Host>
-```
-
-```ts
-interface Host {
-  id: string;
-  url: string;
-  region?: string;
-  state: string;
-  backend?: string;
-  capacity: HostCapacity;
-  allocated: HostCapacity;
-  last_seen: string;
-  created_at: string;
-  updated_at: string;
-  warnings?: string[];
-}
-```
-
-`state` is one of `active`, `cordoned`, or `draining`. `last_seen` is set at
-registration and is not refreshed afterward, it is not a liveness signal.
-`warnings` is only ever populated on the response to `register`, non-fatal
-notices such as a declared capacity value that exceeded what was probed from
-the host agent.
-
-## cordon and uncordon
-
-```ts
-cordon(hostId: string, opts?: CallOptions): Promise<void>
-uncordon(hostId: string, opts?: CallOptions): Promise<void>
-```
-
-Cordoning marks a host unschedulable: the scheduler stops placing new
-environments there without touching what's already running. Uncordoning reverses
-it.
-
-## deregister
-
-```ts
-deregister(hostId: string, opts?: CallOptions): Promise<void>
-```
-
-Removes a host from the scheduler. Throws a `FuseApiError` with
-`code === "conflict"` if any environments are still assigned to it, drain or
-destroy them first.
+`Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
+is set once at registration and never refreshed, it is not a liveness
+signal. These mirror the [HTTP API](/docs/reference/api/hosts) one to one.
