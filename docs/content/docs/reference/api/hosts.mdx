@@ -1,0 +1,129 @@
+---
+title: Hosts
+description: "/v1/hosts: register, list, inspect, cordon, remove"
+icon: HardDrive
+---
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/v1/hosts` | List hosts. |
+| `POST` | `/v1/hosts` | Register a host. |
+| `GET` | `/v1/hosts/{hostId}` | Fetch one host. |
+| `POST` | `/v1/hosts/{hostId}?action=cordon` | Mark unschedulable. |
+| `POST` | `/v1/hosts/{hostId}?action=uncordon` | Return to scheduling. |
+| `DELETE` | `/v1/hosts/{hostId}` | Remove. `409` if VMs are still assigned. |
+
+## Register
+
+```
+POST /v1/hosts
+```
+
+### Request body
+
+```json
+{
+  "id": "prod-east-1",
+  "url": "http://10.0.0.5:9000",
+  "token": "...",
+  "region": "us-east",
+  "backend": "firecracker",
+  "capacity": {
+    "cpus": 0,
+    "ram_mb": 0,
+    "storage_gb": 0,
+    "vm_count": 20,
+    "gpus": 0,
+    "gpu_kind": ""
+  }
+}
+```
+
+`id`, `url`, and `capacity.vm_count` are required. `backend` defaults to
+`firecracker` if omitted; only `qemu` hosts may register with
+`capacity.gpus > 0`.
+
+`capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts: a
+value of `0` (or omitted) means "probe the host agent for the real value"
+instead of trusting an operator-declared guess. A positive value overrides the
+probe; if it exceeds what was actually probed, registration still succeeds and
+the response's `warnings` array notes it rather than rejecting the request.
+`capacity.vm_count` is scheduling policy, not a hardware fact: it is always
+required and never probed.
+
+### Response
+
+`201` with the created `HostInfo`, including any capacity warnings:
+
+```json
+{
+  "id": "prod-east-1",
+  "url": "http://10.0.0.5:9000",
+  "region": "us-east",
+  "state": "active",
+  "backend": "firecracker",
+  "capacity": { "cpus": 16, "ram_mb": 65536, "storage_gb": 500, "vm_count": 20 },
+  "allocated": { "cpus": 0, "ram_mb": 0, "storage_gb": 0, "vm_count": 0 },
+  "last_seen": "2026-01-15T10:00:00Z",
+  "created_at": "2026-01-15T10:00:00Z",
+  "updated_at": "2026-01-15T10:00:00Z",
+  "warnings": ["declared cpus (32) exceeds probed host capacity (16)"]
+}
+```
+
+`warnings` is only ever populated on this response; it's absent (or an empty
+array) everywhere else `HostInfo` appears. `capacity.cpus`/`ram_mb`/
+`storage_gb` in the response always reflect the resolved values (probed or
+overridden), never the raw `0` you may have sent.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_argument` | Missing `id`/`url`, `gpus > 0` on a non-`qemu` backend, or `cpus`/`ram_mb`/`storage_gb`/`vm_count` resolve to non-positive after probing. |
+| `502` | `internal` | `cpus`/`ram_mb`/`storage_gb` were left at `0` but the host agent's provider doesn't support capacity probing, or the probe itself failed. |
+| `500` | `internal` | Unexpected server error. |
+
+## List
+
+```
+GET /v1/hosts
+```
+
+Returns `200` with `{"hosts": [...]}`, every registered host with its
+declared `capacity` and live `allocated` figures. No filters.
+
+## Get
+
+```
+GET /v1/hosts/{hostId}
+```
+
+Returns `200` with the `HostInfo` (`warnings` absent, it's only populated on
+the register response), or `404` `not_found` if it doesn't exist.
+
+## Host states
+
+`active`, `cordoned`, `draining`.
+
+## Cordon and uncordon
+
+```
+POST /v1/hosts/{hostId}?action=cordon
+POST /v1/hosts/{hostId}?action=uncordon
+```
+
+Cordoning marks the host unschedulable, the scheduler stops placing new
+environments there without touching what's already running. Uncordoning
+reverses it. Both return `204` on success, `404` `not_found` if the host
+doesn't exist.
+
+## Remove
+
+```
+DELETE /v1/hosts/{hostId}
+```
+
+Returns `204` on success, `404` `not_found` if it doesn't exist, or `409`
+`conflict` if any environments are still assigned to it, drain or destroy
+them first.

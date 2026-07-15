@@ -1,10 +1,8 @@
 ---
-title: Environments and snapshots
-description: /v1/environments and /v1/snapshots
-icon: Webhook
+title: Environments
+description: "/v1/environments: create, list, inspect, drain, fork, destroy"
+icon: Boxes
 ---
-
-## Environments
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -17,7 +15,13 @@ icon: Webhook
 | `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
 | `GET` | `/v1/environments/{vmId}/events` | Server-Sent Events stream of state transitions. |
 
-### Create request
+## Create
+
+```
+POST /v1/environments
+```
+
+### Request body
 
 ```json
 {
@@ -29,39 +33,146 @@ icon: Webhook
     "gpus": 0,
     "gpu_kind": "",
     "region": "us-east",
-    "max_runtime_seconds": 3600
+    "max_runtime_seconds": 3600,
+    "image": ""
   },
   "manifest_inline": "<base64>",
-  "secrets": { "key": "value" }
+  "secrets": { "key": "value" },
+  "startup_script": "",
+  "gateway_url": "",
+  "gateway_token": "",
+  "expose": [{ "port": 8080, "as": "http" }]
 }
 ```
 
-`gpus` is a whole-device count; a non-zero value routes the environment to a host
-with matching free GPU inventory (necessarily QEMU-backed, see
+`task_id` and `spec` are required; every other field is optional. `gpus` is a
+whole-device count; a non-zero value routes the environment to a host with
+matching free GPU inventory (necessarily QEMU-backed, see
 [Providers](/docs/learn/concepts/providers)). `max_runtime_seconds` is a
-leak-detection ceiling; `0` uses the fleet default, and the orchestrator tears down
-tasks that exceed it with no state transitions.
+leak-detection ceiling; `0` uses the fleet default, and the orchestrator tears
+down tasks that exceed it with no state transitions. `manifest_inline` is raw
+manifest JSON, base64-encoded; when omitted, the orchestrator uses a minimal
+internal manifest.
 
-### Environment states
+### Response
+
+`201` with the created `Environment`:
+
+```json
+{
+  "id": "fuse-abc123",
+  "state": "running",
+  "task_id": "t-1",
+  "host_id": "prod-east-1",
+  "url": "https://10.0.0.5:9550",
+  "spec": { "cpus": 2, "ram_mb": 2048, "storage_gb": 10 },
+  "created_at": "2026-01-15T10:00:00Z",
+  "updated_at": "2026-01-15T10:01:00Z",
+  "error": ""
+}
+```
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_argument` | Missing `task_id`/`spec`, or a malformed body. |
+| `409` | `conflict` | `task_id` collides with an existing environment. |
+| `500` | `internal` | Unexpected server error. |
+| `503` | `unavailable` | The orchestrator is rejecting work (for example, shutting down). |
+
+## List
+
+```
+GET /v1/environments?task_id=&state=&host_id=
+```
+
+All three query parameters are optional exact-match filters. Returns `200`
+with `{"environments": [...]}`.
+
+## Get
+
+```
+GET /v1/environments/{vmId}
+```
+
+Returns `200` with the `Environment`, or `404` `not_found` if it doesn't exist.
+
+## Fork
+
+```
+POST /v1/environments/{vmId}?action=fork
+```
+
+### Request body (optional)
+
+```json
+{ "reuse_snapshot_id": "", "comment": "" }
+```
+
+With `reuse_snapshot_id` empty, the server takes a fresh snapshot of `vmId`
+first; otherwise it reuses the named snapshot. Returns `201` with the new
+`Environment`. Unavailable wherever snapshotting is, GPU/QEMU-backed
+environments cannot be forked (`409` `conflict`).
+
+## Drain
+
+```
+POST /v1/environments/{vmId}?action=drain
+```
+
+Phase one of a two-phase teardown: calls the guest agent's drain RPC so the
+service DAG stops gracefully. The VM transitions to `draining` but is **not**
+destroyed, a subsequent `DELETE` tears it down. Only `running` VMs can be
+drained, any other state returns `409` `conflict`. If the agent's drain call
+itself fails, the VM remains in `draining` so the caller can still proceed
+with `DELETE`; the error surfaces as a `5xx`. Returns `200` with the updated
+`Environment` (`state: "draining"`) on success.
+
+## Rotate token
+
+```
+POST /v1/environments/{vmId}?action=rotate-token
+```
+
+Generates fresh per-VM credentials and pushes them to the guest. Returns
+`204` with no body.
+
+## Destroy
+
+```
+DELETE /v1/environments/{vmId}
+```
+
+Forcefully destroys the VM and marks its task failed. Idempotent: a second
+call on an already-gone VM returns `404`, not an error. Returns `204` on
+success.
+
+## Environment states
 
 `provisioning`, `running`, `draining`, `destroying` are the stored states.
-`destroyed` and `failed` are synthesized terminal states on the event stream only:
-they signal the record has been removed, not a stored state on the VM.
+`destroyed` and `failed` are synthesized terminal states on the event stream
+only, they signal the record has been removed, not a stored state on the VM.
 
-### Event stream semantics
+## Events
 
-`GET /v1/environments/{vmId}/events` replaces polling for state transitions:
+```
+GET /v1/environments/{vmId}/events
+```
 
-- The first event is always a snapshot of the current state, emitted immediately on
-  connect; no need to `GET` first.
+Replaces polling for state transitions with a Server-Sent Events stream:
+
+- The first event is always a snapshot of the current state, emitted
+  immediately on connect, no need to `GET` first.
 - Subsequent events fire on every transition.
-- The stream closes cleanly after a terminal event (`destroyed`/`failed`), or on
-  client disconnect.
-- A `: keepalive` comment line is emitted every 15 seconds so proxies don't idle the
-  connection out.
+- The stream closes cleanly after a terminal event (`destroyed`/`failed`), or
+  on client disconnect.
+- A `: keepalive` comment line is emitted every 15 seconds so proxies don't
+  idle the connection out.
 - This is single-process pub/sub: a subscriber connected to a different
-  orchestrator replica than the publishing one will not see events. Acceptable
-  today since the orchestrator runs as a single process.
+  orchestrator replica than the publishing one will not see events.
+  Acceptable today since the orchestrator runs as a single process. See
+  [Scaling](/docs/cloud/scaling) for what this means operationally.
 
 Wire format is standard SSE:
 
@@ -71,15 +182,6 @@ data: {"event":"state","vm_id":"...","state":"running","url":"...","updated_at":
 
 ```
 
-## Snapshots
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `POST` | `/v1/environments/{vmId}/snapshots` | Snapshot a running VM. |
-| `GET` | `/v1/snapshots` | List, with optional filters. |
-| `GET` | `/v1/snapshots/{snapshotId}` | Fetch one. |
-| `POST` | `/v1/snapshots/{snapshotId}?action=restore` | Restore in place onto the original VM. |
-| `DELETE` | `/v1/snapshots/{snapshotId}` | Delete (also removes the provider artifact). |
-
-See [Snapshots](/docs/learn/concepts/snapshots) for the concept-level model,
-including the QEMU/GPU exception (no snapshot support at all).
+`GET /v1/environments/{vmId}/events` returns `404` `not_found` immediately if
+the VM doesn't exist at connect time, rather than opening a stream that never
+emits anything.

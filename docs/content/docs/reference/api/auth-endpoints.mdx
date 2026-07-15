@@ -1,0 +1,63 @@
+---
+title: Login and logout
+description: "/login and /logout: session cookie exchange for browser callers"
+icon: LogIn
+---
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/login` | Exchange the shared token for an HttpOnly session cookie. |
+| `POST` | `/logout` | Clear the session cookie. |
+
+Both are mounted **outside** `BearerAuth`, and outside the `/v1` prefix, so an
+unauthenticated browser can reach them before it holds any credential. Neither
+appears in `internal/api/openapi.yaml`; this page is the primary reference for
+them. See [Authentication](/docs/reference/auth) for the full session-cookie
+model, cookie attributes, and the same-origin deployment constraint.
+
+## Login
+
+```
+POST /login
+```
+
+### Request body
+
+```json
+{ "token": "..." }
+```
+
+The single shared token (the operator's `ORCH_AUTH_TOKEN`, or any live API
+key). There's no username field, there are no users.
+
+### Response
+
+`204` with no body on success. Sets the HttpOnly `fuse_session` cookie
+(`SameSite=Lax`, `Secure` when the server is serving TLS, 7-day `Max-Age`).
+The SPA never sees or stores the token itself after this, the cookie does the
+work.
+
+When the orchestrator has no `ORCH_AUTH_TOKEN` configured at all (insecure/dev
+mode), `/login` is a no-op `204` regardless of what `token` was sent, so the
+same SPA flow works unmodified in dev.
+
+### Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| `400` | `invalid_argument` | Malformed JSON body. |
+| `401` | `unauthorized` | `token` doesn't match. |
+
+A failed login fires the same audit hook (`OnAuthFailure`) as a failed bearer
+request on any other endpoint, tied to the request ID.
+
+## Logout
+
+```
+POST /logout
+```
+
+No request body. Always returns `204` and clears the session cookie
+(`Max-Age=-1`). Safe to call unauthenticated, clearing a cookie the caller may
+not even hold is harmless, there's no server-side session state to worry about
+leaking.
