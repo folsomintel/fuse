@@ -1,0 +1,78 @@
+---
+title: Monitoring
+description: Prometheus metrics, health checks, and what to alert on
+icon: Gauge
+---
+
+The orchestrator exposes Prometheus metrics on `/metrics` (unauthenticated, the
+stock `promhttp.Handler()`) and liveness/readiness probes on `/health` and
+`/ready`. See [Health, readiness, and metrics](/docs/reference/api/health) for
+the full endpoint reference; this page focuses on what to actually watch.
+
+## Scraping
+
+```yaml
+scrape_configs:
+  - job_name: fuse-orchestrator
+    static_configs:
+      - targets: ["orchestrator:8080"]
+```
+
+No authentication is needed for the scrape itself, `/metrics` is deliberately
+mounted outside the auth middleware chain so Prometheus doesn't need a token.
+If the orchestrator is behind a reverse proxy that does require auth for
+everything else, carve out an exception for `/metrics` (and `/health`,
+`/ready`) at the proxy layer.
+
+## What to watch
+
+**Reconcile health** is the single most important signal, the reconcile loop
+is what keeps the state store and the real provider fleet in sync:
+
+- `orchestrator_reconcile_cycles_total` should be increasing steadily (every
+  30 seconds by default). A flat rate means the loop has stopped, usually a
+  panic or a wedged dependency.
+- `orchestrator_reconcile_duration_seconds` climbing over time suggests the
+  fleet has grown past what a single reconcile pass handles comfortably, or a
+  provider call is slow.
+- `orchestrator_reconcile_orphans_dead_lettered_total` increasing means VMs
+  are being given up on after repeated cleanup failures, worth a look at
+  orchestrator logs for the specific VM IDs.
+- `orchestrator_reconcile_stuck_tasks_failed_total` increasing means a task
+  exceeded its `max_runtime_seconds` ceiling and the orchestrator couldn't
+  tear it down cleanly.
+
+**Fleet size drift**: `orchestrator_fleet_tracked_vms` (what the state store
+thinks exists) versus `orchestrator_fleet_provider_vms` (what the provider
+actually reports) should track each other closely. A persistent gap means
+something is out of sync, check `orchestrator_reconcile_vms_missing_provider_total`
+for the specific failure mode.
+
+**HTTP health**: the standard RED metrics apply directly.
+
+- `rate(orchestrator_http_requests_total{code=~"5.."}[5m])` for server error
+  rate.
+- `histogram_quantile(0.99, rate(orchestrator_http_request_duration_seconds_bucket[5m]))`
+  for p99 latency, grouped by `route`.
+- `orchestrator_http_requests_in_flight` as a saturation signal.
+
+All three HTTP metrics are labeled by the chi route **pattern**
+(`/v1/environments/{vmId}`), not the raw path, so cardinality stays bounded
+even under a flood of requests to nonexistent IDs.
+
+## Suggested alerts
+
+| Condition | Severity | Why |
+| --- | --- | --- |
+| `orchestrator_reconcile_cycles_total` flat for 5+ minutes | Critical | The reconcile loop has stopped; state will drift from reality. |
+| `/ready` returning `503` for 2+ minutes | Critical | The orchestrator can't serve traffic; likely a Postgres outage. |
+| `rate(orchestrator_http_requests_total{code=~"5.."}[5m]) > 0` sustained | Warning | Server errors on the API surface. |
+| `orchestrator_reconcile_orphans_dead_lettered_total` increasing | Warning | VMs stuck in an unrecoverable state, needs manual cleanup. |
+
+## What isn't covered
+
+There is no per-VM metrics API, `orchestrator_fleet_tracked_vms` is a fleet
+total, not broken out by task or host. For per-host capacity, poll
+[`GET /v1/hosts/{hostId}`](/docs/reference/api/hosts#get) or use
+[`fuse host metrics`](/docs/reference/cli/hosts/metrics) instead, that data
+isn't in the Prometheus registry.

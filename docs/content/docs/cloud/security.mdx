@@ -1,0 +1,103 @@
+---
+title: Security hardening
+description: TLS, CIDR allowlisting, fail-closed mode, and secrets encryption
+icon: ShieldCheck
+---
+
+Fuse's auth model is deliberately simple: a single shared bearer token, no
+users, no roles. See [Authentication](/docs/reference/auth) for the full model.
+This page covers the operational hardening controls available on top of that
+model.
+
+## TLS
+
+```bash
+export ORCH_TLS_CERT=/path/to/cert.pem
+export ORCH_TLS_KEY=/path/to/key.pem
+```
+
+Both unset (the default) serves plain HTTP. Setting both switches to HTTPS and
+flips the session cookie's `Secure` attribute on, an HttpOnly cookie without
+`Secure` would otherwise be sendable over an accidental plaintext connection.
+There is no built-in certificate rotation, mutual TLS, or cipher-suite
+configuration, terminate TLS at a reverse proxy in front of the orchestrator
+if you need any of that.
+
+## CIDR allowlisting
+
+```bash
+export ORCH_ALLOWED_CIDRS=10.0.0.0/8,192.168.1.0/24
+```
+
+Comma-separated CIDR blocks. Requests from outside every listed range are
+rejected with `403`, before bearer auth even runs. Empty (the default) means
+no IP restriction. Invalid CIDR syntax fails the orchestrator at startup
+rather than silently ignoring the bad entry, so a typo here is caught
+immediately, not discovered later as an unexpected open door.
+
+## Fail-closed production mode
+
+```bash
+export ORCH_REQUIRE_AUTH=true
+```
+
+Without this, the orchestrator boots happily with no auth configured at all,
+convenient for local dev, dangerous to leave on by accident in production.
+Setting `ORCH_REQUIRE_AUTH=true` makes the orchestrator refuse to start unless
+`ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are **all**
+set, a missing one fails fast at boot with the specific missing variable
+named, rather than silently running in a weaker mode than intended. Set this
+in every production deployment.
+
+## Secrets encryption at rest
+
+```bash
+export TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
+```
+
+Must be exactly 64 hex characters (32 bytes); anything else fails at boot with
+a specific error rather than silently truncating or padding. Used to encrypt
+per-VM guest-agent tokens at rest with AES-256-GCM before they're written to
+the state store. Losing this key doesn't lock you out of the orchestrator
+itself, but it does mean previously-issued per-VM tokens can no longer be
+decrypted, rotate every environment's token afterward via
+[`fuse environment rotate-token`](/docs/reference/cli/environment/rotate-token)
+if you ever have to regenerate it.
+
+## Master token vs. API keys
+
+Prefer revocable [API keys](/docs/reference/cli/apikeys) over the master
+token for anything automated (CI runners, other services). The master token
+can mint and revoke keys; a compromised API key can only do what its
+holder was scoped to do at the API level (everything an authenticated caller
+can do, except manage other keys), and it can be individually revoked without
+rotating the master secret and re-distributing it everywhere.
+
+## Same-origin deployment only
+
+The session-cookie flow (`SameSite=Lax`, no CORS middleware) only supports a
+browser SPA served same-origin through a reverse proxy in front of both the
+static assets and the API. A genuinely cross-origin deployment (the SPA on a
+different domain than the API) isn't supported today, the browser blocks the
+credentialed `/login` request at the CORS preflight before auth even runs.
+Front any browser-based dashboard through a same-origin reverse proxy rather
+than attempting a cross-origin setup. See
+[Authentication](/docs/reference/auth#browser--session-auth) for the full
+cookie model.
+
+## Host agent tokens are a separate concern
+
+`FIRECRACKER_TOKEN` (and `QEMU_AGENT_TOKEN` for GPU hosts) authenticate the
+orchestrator to each host agent, entirely independent of the operator-facing
+API token above. Rotating one doesn't affect the other. See
+[Firecracker host setup](/docs/cloud/firecracker-host-setup) and
+[GPU host setup](/docs/cloud/gpu-host-setup).
+
+## What this doesn't cover
+
+Broader infrastructure hardening, network segmentation between hosts, host OS
+patching, Firecracker's own jailer configuration, isn't implemented by Fuse's
+Go code and is genuinely general infrastructure-security practice rather than
+something specific to this project. Apply your organization's standard
+hardening baseline to the machines running the orchestrator and host agents,
+the controls on this page are what Fuse itself provides on top of that.

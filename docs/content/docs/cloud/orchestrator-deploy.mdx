@@ -28,6 +28,24 @@ With `FIRECRACKER_BASE_URL` unset, the orchestrator runs the in-memory stub prov
 (fine for local dev, not for production). With `DATABASE_URL` unset, state is
 in-memory and does not survive a restart.
 
+## Postgres is the source of truth
+
+Fuse doesn't ship any backup or disaster-recovery tooling of its own, no
+`pg_dump` wrapper, no export/import command, no point-in-time-recovery
+integration. Everything durable (environment records, snapshot metadata, API
+keys, host registrations) lives in the four migrations under
+`internal/orchestrator/migrations/`, applied automatically at boot. Treat this
+Postgres database the same way you'd treat any other production database: standard
+backup practices apply (`pg_dump`/`pg_restore`, WAL archiving, a managed
+Postgres provider's automated snapshots, whatever your organization already
+uses elsewhere). This is general Postgres operational guidance, not something
+specific to Fuse, there's no Fuse-side hook or lifecycle event tied to it.
+
+Snapshot restore (`fuse snapshot restore`, see
+[Snapshots](/docs/learn/concepts/snapshots)) is an entirely different, VM-level
+concept, restoring a Firecracker microVM's disk from a checkpoint. It has no
+relationship to Postgres backup and doesn't substitute for one.
+
 ## Quickest path: co-locate with a Firecracker host
 
 The simplest topology co-locates the orchestrator on a Firecracker host and talks to

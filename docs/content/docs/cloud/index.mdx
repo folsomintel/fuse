@@ -4,7 +4,7 @@ description: "Deploying Fuse for real workloads: orchestrator, hosts, and GPU ho
 icon: Cloud
 ---
 
-import { Server, Router, Cpu, Wrench } from 'lucide-react';
+import { Server, Router, Cpu, Wrench, Gauge, ShieldCheck } from 'lucide-react';
 
 Fuse is self-hosted: you run the orchestrator (the control plane) and one or more
 hosts (each running a host agent) yourself. This section covers bringing all of that
@@ -30,6 +30,18 @@ up for real workloads, beyond the in-memory stub used in the [Quickstart](/docs/
     title="GPU host setup"
     description="Bring up a host running qemu-agent, driving QEMU/VFIO whole-GPU-passthrough environments."
     href="/docs/cloud/gpu-host-setup"
+  />
+  <Card
+    icon={<Gauge />}
+    title="Monitoring"
+    description="Prometheus metrics, health checks, and what to alert on."
+    href="/docs/cloud/monitoring"
+  />
+  <Card
+    icon={<ShieldCheck />}
+    title="Security hardening"
+    description="TLS, CIDR allowlisting, fail-closed mode, and secrets encryption."
+    href="/docs/cloud/security"
   />
   <Card
     icon={<Wrench />}
