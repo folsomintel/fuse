@@ -19,6 +19,9 @@ j() { curl -fsS "${AUTH[@]}" "$@"; }
 say "health"
 j "$BASE/healthz"; echo
 
+say "capacity"
+j "$BASE/v1/capacity"; echo
+
 say "create $NAME"
 j -X POST "$BASE/v1/vm" -d "{\"name\":\"$NAME\",\"cpus\":1,\"memory_mb\":512,\"storage_gb\":1,\"region\":\"local\"}"
 echo

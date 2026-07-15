@@ -149,6 +149,20 @@ func (p *fakeProvider) List(_ context.Context, _ string) ([]orchestrator.Environ
 
 func (*fakeProvider) Close() error { return nil }
 
+// capacityProbeProvider wraps fakeProvider and implements
+// orchestrator.CapacityProber so registerHost tests can exercise the
+// probe-when-unset / warn-when-declared-exceeds-probed / cannot-probe paths
+// deterministically.
+type capacityProbeProvider struct {
+	*fakeProvider
+	capacity orchestrator.HostCapacity
+	err      error
+}
+
+func (p *capacityProbeProvider) Capacity(_ context.Context) (orchestrator.HostCapacity, error) {
+	return p.capacity, p.err
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 // newTestHandler wires a real FleetManager with an in-memory state
@@ -919,6 +933,191 @@ func TestRegisterHost_RejectsUnknownBackend(t *testing.T) {
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegisterHost_MissingVMCountReturns400(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-no-vmcount",
+		URL: "http://host-no-vmcount.test",
+		Capacity: HostCapacity{
+			CPUs:      4,
+			RamMB:     8192,
+			StorageGB: 100,
+			// VMCount omitted: never probed, always required.
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+	env := decodeError(t, rr.Body)
+	if env.Error.Code != CodeInvalidArgument {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeInvalidArgument)
+	}
+}
+
+func TestRegisterHost_NegativeGPUsReturns400(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:      "host-negative-gpus",
+		URL:     "http://host-negative-gpus.test",
+		Backend: "qemu",
+		Capacity: HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10, GPUs: -1,
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRegisterHost_NoProviderNoCapacityReturns400 is the pre-existing
+// behavior when the provider cannot probe (fakeProvider does not implement
+// CapacityProber) and the operator declared no capacity at all: registration
+// must fail rather than silently accepting a zero-capacity host.
+func TestRegisterHost_NoProviderNoCapacityReturns400(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-no-capacity",
+		URL: "http://host-no-capacity.test",
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+	env := decodeError(t, rr.Body)
+	if env.Error.Code != CodeInvalidArgument {
+		t.Errorf("code = %q, want %q", env.Error.Code, CodeInvalidArgument)
+	}
+}
+
+// ── Host registration: capacity probing (issue #22) ────────────────
+
+// newTestHandlerWithCapacityProvider is like newTestHandlerWithProvider but
+// NewProvider returns a capacityProbeProvider so registerHost's probe path
+// is reachable.
+func newTestHandlerWithCapacityProvider(t *testing.T, capacity orchestrator.HostCapacity, probeErr error) (*Handler, *orchestrator.FleetManager) {
+	t.Helper()
+	p := newFakeProvider()
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider: p,
+		Prefix:   "fuse-",
+	})
+	h := &Handler{
+		Fleet: fm,
+		NewProvider: func(url, token string, backend orchestrator.HostBackend) orchestrator.Provider {
+			return &capacityProbeProvider{fakeProvider: newFakeProvider(), capacity: capacity, err: probeErr}
+		},
+	}
+	return h, fm
+}
+
+// TestRegisterHost_ProbesCapacityWhenUnset covers proposal item 1+2: omitted
+// cpus/ram_mb/storage_gb are sourced from the host agent's probe, not left
+// at zero.
+func TestRegisterHost_ProbesCapacityWhenUnset(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{CPUs: 8, RamMB: 16384, StorageGB: 200}, nil)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-probed",
+		URL: "http://host-probed.test",
+		Capacity: HostCapacity{
+			VMCount: 10, // must still be declared explicitly
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if info.Capacity.CPUs != 8 || info.Capacity.RamMB != 16384 || info.Capacity.StorageGB != 200 {
+		t.Errorf("capacity = %+v, want probed 8/16384/200", info.Capacity)
+	}
+	if len(info.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", info.Warnings)
+	}
+}
+
+// TestRegisterHost_DeclaredOverridesProbeWithWarning covers proposal item 2+3:
+// an explicit override wins over the probe but is flagged when it exceeds
+// what the host actually has.
+func TestRegisterHost_DeclaredOverridesProbeWithWarning(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{CPUs: 8, RamMB: 16384, StorageGB: 200}, nil)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-override",
+		URL: "http://host-override.test",
+		Capacity: HostCapacity{
+			CPUs:    32, // declared, exceeds probed 8
+			VMCount: 10,
+			// ram_mb/storage_gb omitted -> probed
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if info.Capacity.CPUs != 32 {
+		t.Errorf("capacity.cpus = %d, want 32 (declared override kept)", info.Capacity.CPUs)
+	}
+	if info.Capacity.RamMB != 16384 || info.Capacity.StorageGB != 200 {
+		t.Errorf("capacity ram/storage = %d/%d, want probed 16384/200", info.Capacity.RamMB, info.Capacity.StorageGB)
+	}
+	if len(info.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one", info.Warnings)
+	}
+}
+
+// TestRegisterHost_ProbeFailsWithoutFullDeclaredCapacityReturns502 covers the
+// case where the agent can't be probed and the operator didn't fully declare
+// capacity as a fallback: registration must fail loudly rather than admit a
+// host with guessed numbers.
+func TestRegisterHost_ProbeFailsWithoutFullDeclaredCapacityReturns502(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{}, fmt.Errorf("connection refused"))
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-probe-down",
+		URL: "http://host-probe-down.test",
+		Capacity: HostCapacity{
+			VMCount: 10,
+			// cpus/ram_mb/storage_gb all unset and unprobeable.
+		},
+	})
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRegisterHost_ProbeFailsButDeclaredCapacityCompleteSucceeds asserts a
+// down/unreachable host agent doesn't block registration when the operator
+// already declared full capacity explicitly.
+func TestRegisterHost_ProbeFailsButDeclaredCapacityCompleteSucceeds(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{}, fmt.Errorf("connection refused"))
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-probe-down-declared",
+		URL: "http://host-probe-down-declared.test",
+		Capacity: HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10,
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
 	}
 }
 
