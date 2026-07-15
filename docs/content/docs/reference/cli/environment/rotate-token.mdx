@@ -1,0 +1,18 @@
+---
+title: fuse environment rotate-token
+description: Re-issue guest agent credentials
+icon: RefreshCw
+---
+
+```bash
+fuse environment rotate-token <id>
+```
+
+Alias: `rotate`. No flags beyond the globals. Re-issues the guest agent's
+credentials without recreating the VM, useful if you suspect a token has
+leaked. The environment keeps running throughout.
+
+```bash
+fuse environment rotate-token fuse-abc123
+# rotated token for environment "fuse-abc123"
+```

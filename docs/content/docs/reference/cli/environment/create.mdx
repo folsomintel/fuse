@@ -1,0 +1,60 @@
+---
+title: fuse environment create
+description: Provision a new environment from a raw resource spec
+icon: CirclePlus
+---
+
+```bash
+fuse environment create [flags]
+```
+
+Provisions a new environment directly from flags, without a
+[Fusefile](/docs/learn/concepts/fusefile). For most workflows,
+[`fuse up`](/docs/reference/cli/up) (which compiles a Fusefile into this same
+underlying call) is the higher-level, more maintainable path; use `create`
+directly for scripting, one-off environments, or when you don't want a Fusefile
+on disk at all.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--task-id` | Task ID. Required. |
+| `--cpus` | CPU count. |
+| `--ram-mb` | RAM in MB. |
+| `--storage-gb` | Storage in GB. |
+| `--region` | Region, influences scheduling (does not pin to the active host). |
+| `--max-runtime` | Max runtime in seconds. `0` means unlimited. |
+| `--manifest` | Inline manifest JSON, or `@path` to read from a file. |
+| `--startup-script` | Inline startup script, or `@path` to read from a file. |
+| `--gateway-url` | Gateway URL. |
+| `--gateway-token` | Gateway token. |
+| `--secret` | Secret as `key=value`. Repeatable. |
+| `--follow` | Stream provisioning events until a terminal state, instead of returning immediately. |
+
+## Examples
+
+```bash
+fuse environment create \
+  --task-id my-task \
+  --cpus 2 \
+  --ram-mb 2048 \
+  --storage-gb 10 \
+  --follow
+```
+
+```bash
+fuse environment create --task-id my-task --startup-script @./start.sh --secret pg_password=hunter2
+```
+
+## Interactive mode
+
+With no `--task-id` in an interactive terminal, the required fields are
+collected via a form instead of flags.
+
+## Scheduling note
+
+`create` schedules orchestrator-wide, the active host selection (see
+[Hosts](/docs/reference/cli/hosts)) does not pin placement. If a host is
+currently selected, the CLI prints a reminder of this so it isn't mistaken for
+pinning. Use `--region` to influence which host the scheduler picks.

@@ -1,0 +1,19 @@
+---
+title: fuse apikeys list
+description: List API key metadata
+icon: List
+---
+
+```bash
+fuse apikeys list
+```
+
+Alias: `ls`. Requires the master token. Metadata only, the raw secret is never
+shown again after creation.
+
+```bash
+$ fuse apikeys list
+ID      LABEL       CREATED   LAST USED  REVOKED
+key-1   ci-runner   3d ago    1h ago     -
+key-2   local-dev   1w ago    -          -
+```

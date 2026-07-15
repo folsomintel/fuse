@@ -39,11 +39,14 @@ directory, created automatically on first `fuse connect`.
 
 | Command | Purpose |
 | --- | --- |
-| `fuse connect` / `fuse context` | Add and switch between orchestrator contexts. See [Connecting and contexts](/docs/reference/cli/contexts). |
+| `fuse connect` / `fuse context` | Add and switch between orchestrator contexts. See [Contexts](/docs/reference/cli/contexts). |
 | `fuse hosts` / `fuse host` | Manage compute hosts. See [Hosts](/docs/reference/cli/hosts). |
-| `fuse environment` / `fuse up` / `fuse init` | Manage environments (VMs). See [Environments](/docs/reference/cli/environments). |
-| `fuse snapshot` | Manage VM snapshots. See [Snapshots](/docs/reference/cli/snapshots). |
-| `fuse apikeys` / `fuse metrics` | Manage API keys and view fleet metrics. See [API keys and metrics](/docs/reference/cli/apikeys-metrics). |
+| `fuse environment` | Manage environments (VMs) directly. See [Environments](/docs/reference/cli/environment). |
+| `fuse up` | Compile a [Fusefile](/docs/learn/concepts/fusefile) and create an environment from it. See [`fuse up`](/docs/reference/cli/up). |
+| `fuse init` | Scaffold an example Fusefile. See [`fuse init`](/docs/reference/cli/init). |
+| `fuse snapshot` | Manage VM snapshots. See [Snapshots](/docs/reference/cli/snapshot). |
+| `fuse apikeys` | Manage orchestrator-global API keys. See [API keys](/docs/reference/cli/apikeys). |
+| `fuse metrics` | Print fleet-wide Prometheus metrics. See [`fuse metrics`](/docs/reference/cli/metrics). |
 
 Most commands print human-readable tables by default; pass `-o json` for
 machine-readable output, which is the same shape returned by the [HTTP API](/docs/reference/api).

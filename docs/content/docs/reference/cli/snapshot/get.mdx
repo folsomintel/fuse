@@ -1,0 +1,31 @@
+---
+title: fuse snapshot get
+description: Show one snapshot's details
+icon: Search
+---
+
+```bash
+fuse snapshot get <id>
+```
+
+No flags beyond the globals. Prints the snapshot's full detail: VM ID, task ID,
+tenant ID, parent snapshot (if forked from one), mode, state, size, retention,
+timestamps, comment, export reference, and, if the snapshot has an export in
+progress, the export's destination and status.
+
+```bash
+$ fuse snapshot get snap-1
+id           snap-1
+vm id        fuse-abc123
+task id      my-task
+tenant id    -
+parent       -
+mode         manual
+state        ready
+size         1.2 GB
+retention    keep forever
+created      2026-01-15 10:00
+updated      2026-01-15 10:01
+comment      before risky migration
+export ref   -
+```

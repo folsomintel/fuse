@@ -1,0 +1,25 @@
+---
+title: fuse environment watch
+description: Stream state transitions until terminal
+icon: Eye
+---
+
+```bash
+fuse environment watch <id>
+```
+
+Alias: `follow`. No flags beyond the globals. Streams the environment's state
+transitions live (backed by the same Server-Sent Events mechanism as the HTTP
+API's event stream, no polling loop involved) until it reaches a terminal state
+(`destroyed` or `failed`), then exits.
+
+```bash
+fuse environment watch fuse-abc123
+# provisioning
+# running
+```
+
+Equivalent to passing `--follow` to
+[`fuse environment create`](/docs/reference/cli/environment/create) or
+[`fuse up`](/docs/reference/cli/up), but usable standalone against an
+environment that already exists.

@@ -5,8 +5,11 @@
     "index",
     "contexts",
     "hosts",
-    "environments",
-    "snapshots",
-    "apikeys-metrics"
+    "environment",
+    "up",
+    "init",
+    "snapshot",
+    "apikeys",
+    "metrics"
   ]
 }

@@ -1,0 +1,30 @@
+---
+title: fuse apikeys create
+description: Issue a new API key
+icon: CirclePlus
+---
+
+```bash
+fuse apikeys create [--label "..."]
+```
+
+Requires the master token. The raw secret is shown exactly once, at creation,
+and cannot be recovered afterward.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--label` | Human-readable label for the key. |
+
+```bash
+$ fuse apikeys create --label ci-runner
+save this key now: the secret is shown only once and cannot be recovered
+id       key-1
+label    ci-runner
+created  2026-01-15 10:00
+key      fuse_sk_...
+```
+
+The warning to save the key is printed to stderr before the table/JSON output,
+so scripted callers parsing stdout as JSON still see it.

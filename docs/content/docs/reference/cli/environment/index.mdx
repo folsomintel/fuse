@@ -1,0 +1,33 @@
+---
+title: Overview
+description: Managing environments (VMs)
+icon: BookOpen
+---
+
+`fuse environment` (aliases `environments`, `env`, `envs`) manages the VM
+lifecycle: provision, inspect, drain, fork, and destroy. See
+[Environments](/docs/learn/concepts/environments) for the concept-level
+lifecycle model, and [`fuse up`](/docs/reference/cli/up) /
+[`fuse init`](/docs/reference/cli/init) for the [Fusefile](/docs/learn/concepts/fusefile)
+path, a higher-level alternative to `fuse environment create` for most
+workflows.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse environment list`](/docs/reference/cli/environment/list) | List environments, filtered. |
+| [`fuse environment get`](/docs/reference/cli/environment/get) | Show one environment's details. |
+| [`fuse environment create`](/docs/reference/cli/environment/create) | Provision a new environment from a raw resource spec. |
+| [`fuse environment destroy`](/docs/reference/cli/environment/destroy) | Tear down an environment. |
+| [`fuse environment drain`](/docs/reference/cli/environment/drain) | Gracefully drain (phase one of teardown). |
+| [`fuse environment fork`](/docs/reference/cli/environment/fork) | Fork into a new environment. |
+| [`fuse environment rotate-token`](/docs/reference/cli/environment/rotate-token) | Re-issue guest agent credentials. |
+| [`fuse environment watch`](/docs/reference/cli/environment/watch) | Stream state transitions until terminal. |
+
+## Scheduling scope
+
+`create` schedules orchestrator-wide, the active host selection (see
+[Hosts](/docs/reference/cli/hosts)) does not pin placement. Use `--region` on
+`create` to influence which host the scheduler picks, or filter `list` by
+`--host-id` to scope the view without affecting placement.

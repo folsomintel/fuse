@@ -1,0 +1,31 @@
+---
+title: fuse snapshot list
+description: List snapshots, filtered
+icon: List
+---
+
+```bash
+fuse snapshot list [flags]
+```
+
+Alias: `ls`.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--vm-id` | Filter by VM ID. |
+| `--task-id` | Filter by task ID. |
+| `--tenant-id` | Filter by tenant ID. |
+| `--state` | Filter by state: `creating`\|`ready`\|`restoring`\|`deleting`\|`error`. |
+
+Snapshot listing is not host-scoped, there's no host filter in the API, so
+selecting an active host has no effect on this command. If an active host is
+selected and neither `--vm-id` nor `--task-id` is passed, the CLI warns that
+it's showing all matching snapshots regardless.
+
+```bash
+$ fuse snapshot list --vm-id fuse-abc123
+ID       VM ID        STATE  MODE    SIZE    PARENT  CREATED  COMMENT
+snap-1   fuse-abc123  ready  manual  1.2 GB  -       3m ago   before migration
+```

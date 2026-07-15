@@ -1,0 +1,65 @@
+---
+title: fuse up
+description: Compile a Fusefile and create an environment from it
+icon: Rocket
+---
+
+```bash
+fuse up [path] [flags]
+```
+
+Reads a [Fusefile](/docs/learn/concepts/fusefile), compiles it into a resource
+spec, manifest, and startup script, then creates an environment from the
+result. Streams provisioning events until a terminal state unless `--no-wait`
+is set.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `-f, --file` | Path to the Fusefile. Default: `./Fusefile`, or a positional path argument. |
+| `--secret` | Secret as `key=value`. Repeatable. Overrides `--secrets-file` on key collision. |
+| `--secrets-file` | Path to a file of `KEY=VALUE` secret lines. `#`-prefixed lines and blanks are ignored. |
+| `--task-id` | Environment task ID. Default: the Fusefile's parent directory name. |
+| `--no-wait` | Create the environment without streaming provisioning events. |
+
+## Path resolution
+
+The Fusefile path is resolved in this priority order: `-f/--file` if set, then
+a positional argument, then `./Fusefile` as the default.
+
+```bash
+fuse up                          # ./Fusefile
+fuse up ./services/api           # ./services/api/Fusefile
+fuse up -f custom.fusefile.yaml
+```
+
+## Secrets
+
+```bash
+fuse up --secret pg_password=hunter2
+fuse up --secrets-file .env.secrets
+fuse up --secrets-file .env.secrets --secret pg_password=override  # override wins on collision
+```
+
+If any secret named in the Fusefile's `secrets` list is missing from the
+resolved set (flags plus file), `up` fails fast with the list of missing names
+rather than creating a broken environment.
+
+## Examples
+
+```bash
+fuse up
+# creating environment fuse-abc123 (task my-service)
+# provisioning
+# running
+```
+
+```bash
+fuse up --no-wait
+# creates immediately, does not stream events; watch separately with
+# `fuse environment watch <id>`
+```
+
+See [Fusefile](/docs/learn/concepts/fusefile) for the full field reference and
+[`fuse init`](/docs/reference/cli/init) to scaffold one.

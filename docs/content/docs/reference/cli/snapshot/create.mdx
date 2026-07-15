@@ -1,0 +1,32 @@
+---
+title: fuse snapshot create
+description: Snapshot a running environment
+icon: CirclePlus
+---
+
+```bash
+fuse snapshot create <vm-id> [flags]
+```
+
+Creates a snapshot of the given environment (VM). The VM must be `running`.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--comment` | Snapshot comment. |
+| `--mode` | `manual` or `auto`. |
+| `--retention` | Retention in seconds. `0` keeps it forever. |
+| `--export-ref` | Export reference. |
+| `--metadata` | Metadata as `key=value`. Repeatable. |
+
+## Examples
+
+```bash
+fuse snapshot create fuse-abc123 --comment "before risky migration" --mode manual
+```
+
+## Interactive mode
+
+With a TTY and no flags set, comment/mode/retention are collected via a form
+instead of flags.

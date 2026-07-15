@@ -1,0 +1,18 @@
+---
+title: Overview
+description: Managing orchestrator-global API keys
+icon: BookOpen
+---
+
+`fuse apikeys` (aliases `apikey`, `keys`) manages revocable API keys.
+Orchestrator-global and all-or-nothing, these commands require the master
+token, the active context must be connected with `--master`. See
+[Authentication](/docs/reference/auth) for the full token model.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse apikeys create`](/docs/reference/cli/apikeys/create) | Issue a new API key. |
+| [`fuse apikeys list`](/docs/reference/cli/apikeys/list) | List key metadata. |
+| [`fuse apikeys revoke`](/docs/reference/cli/apikeys/revoke) | Revoke a key. |

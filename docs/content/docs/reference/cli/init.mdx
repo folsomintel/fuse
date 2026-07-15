@@ -1,0 +1,39 @@
+---
+title: fuse init
+description: Scaffold an example Fusefile
+icon: FileCode
+---
+
+```bash
+fuse init [path] [flags]
+```
+
+Writes a fully commented example [Fusefile](/docs/learn/concepts/fusefile) to
+disk, documenting the full v1 contract, every field is present with an
+explanatory comment.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `-f, --file` | Path to write. Default: `./Fusefile`. |
+| `--force` | Overwrite an existing file at the target path. |
+
+## Examples
+
+```bash
+fuse init
+# writes ./Fusefile
+
+fuse init ./services/api
+# writes ./services/api/Fusefile
+
+fuse init --force
+# overwrites an existing ./Fusefile
+```
+
+Without `--force`, `init` refuses to overwrite an existing file at the target
+path, protecting any edits you've already made.
+
+After scaffolding, edit the file to match your workload, then run
+[`fuse up`](/docs/reference/cli/up) to bring it up.

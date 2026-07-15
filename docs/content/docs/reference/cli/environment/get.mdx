@@ -1,0 +1,29 @@
+---
+title: fuse environment get
+description: Show one environment's details
+icon: Search
+---
+
+```bash
+fuse environment get <id>
+```
+
+No flags beyond the globals. Prints the environment's full detail: state, task
+ID, host ID, URL, resource spec (CPUs, RAM, storage, region, max runtime), and,
+if the environment is in a `failed` state, the last error message.
+
+```bash
+$ fuse environment get fuse-abc123
+id             fuse-abc123
+state          running
+task id        my-task
+host id        prod-east-1
+url            http://10.0.0.5:9550
+cpus           2
+ram mb         2048
+storage gb     10
+region         us-east
+max runtime s  3600
+created        2026-01-15 10:00
+updated        2026-01-15 10:01
+```

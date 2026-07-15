@@ -1,0 +1,15 @@
+{
+  "title": "Environments",
+  "icon": "Boxes",
+  "pages": [
+    "index",
+    "list",
+    "get",
+    "create",
+    "destroy",
+    "drain",
+    "fork",
+    "rotate-token",
+    "watch"
+  ]
+}

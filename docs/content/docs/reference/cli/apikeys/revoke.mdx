@@ -1,0 +1,23 @@
+---
+title: fuse apikeys revoke
+description: Revoke an API key
+icon: Ban
+---
+
+```bash
+fuse apikeys revoke <id> [--yes]
+```
+
+Requires the master token. `<id>` is the key's ID (from
+[`fuse apikeys list`](/docs/reference/cli/apikeys/list)), not the secret
+itself, the secret was only ever shown once at creation and isn't needed to
+revoke it.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--yes` | Skip the confirmation prompt. |
+
+Revocation is immediate: any request authenticated with the revoked key's
+secret is rejected from that point forward.

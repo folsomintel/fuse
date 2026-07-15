@@ -1,0 +1,34 @@
+---
+title: fuse environment destroy
+description: Tear down an environment
+icon: Trash2
+---
+
+```bash
+fuse environment destroy <id> [--yes]
+```
+
+Aliases: `rm`, `delete`. Forcefully tears the environment down from any state.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--yes` | Skip the confirmation prompt. |
+
+## Behavior
+
+Idempotent: destroying an already-gone environment returns a not-found error
+rather than succeeding silently or failing in some other way, useful in
+scripts that don't need to check existence first.
+
+Without `--yes` in an interactive terminal, prompts for confirmation first.
+
+To tear down gracefully instead of forcefully, drain first:
+
+```bash
+fuse environment drain <id>
+fuse environment destroy <id>
+```
+
+See [`fuse environment drain`](/docs/reference/cli/environment/drain).

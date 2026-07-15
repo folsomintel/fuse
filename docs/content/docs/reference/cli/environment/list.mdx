@@ -1,0 +1,43 @@
+---
+title: fuse environment list
+description: List environments, filtered
+icon: List
+---
+
+```bash
+fuse environment list [flags]
+```
+
+Alias: `ls`. Scoped to the active host by default (see
+[Hosts](/docs/reference/cli/hosts)); pass `--all` to see everything across the
+whole fleet.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--task-id` | Filter by task ID. |
+| `--state` | Filter by state: `provisioning`\|`running`\|`draining`\|`destroying`\|`destroyed`\|`failed`. |
+| `--host-id` | Filter by host ID. Defaults to the active host if `--all` is not set. |
+| `--all` | List across all hosts, ignoring the active host. |
+
+## Examples
+
+```bash
+fuse environment list
+# scoped to the active host
+
+fuse environment list --all
+# every environment, fleet-wide
+
+fuse environment list --state running --all
+# every running environment, fleet-wide
+
+fuse environment list --task-id my-task
+```
+
+```bash
+$ fuse environment list
+ID           STATE    TASK ID   HOST         URL                CREATED
+fuse-abc123  running  my-task   prod-east-1  http://10.0.0.5:9550  3m ago
+```
