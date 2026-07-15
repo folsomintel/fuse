@@ -1,0 +1,120 @@
+---
+title: Advanced usage
+description: Custom transports, retries, request correlation, and testing
+icon: Wrench
+---
+
+## Custom HTTP client
+
+`http_client` replaces the `httpx.Client` used for every normal (non-streaming)
+request. Use it to set custom transport-level behavior, connection pooling
+limits, or proxy configuration. If you supply one, you're responsible for its
+`base_url`:
+
+```python
+import httpx
+import fuse
+
+http_client = httpx.Client(base_url="https://orchestrator.example.com", timeout=10.0)
+client = fuse.Client("https://orchestrator.example.com", token="...", http_client=http_client)
+```
+
+This does not affect the event stream: `events()` always uses a separate,
+internally managed `httpx.Client` with no timeout, since a request-level deadline
+would kill a long-lived SSE connection.
+
+## Retries
+
+The SDK does not retry requests itself, a failed call raises immediately, either
+an `httpx` exception or a `fuse.ApiError`. Retry policy is callsite-specific, so
+wrap calls yourself:
+
+```python
+import time
+
+def create_with_retry(client: fuse.Client, request: fuse.CreateRequest) -> fuse.EnvironmentInfo:
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            return client.environments.create(request)
+        except fuse.ApiError as exc:
+            last_err = exc
+            if not fuse.is_unavailable(exc):
+                raise  # not retryable
+            time.sleep(attempt + 1)
+    raise last_err
+```
+
+`is_unavailable` and `is_conflict` are usually the two codes worth retrying (the
+orchestrator rejecting work while shutting down, or a transient scheduling
+conflict); `is_invalid_argument` and `is_not_found` are not, retrying won't
+change the outcome.
+
+## Request correlation
+
+`request_id` is a callable invoked once per request. Its return value is sent as
+`X-Request-ID` and echoed back on every response, including error responses,
+where it also appears on `ApiError.request_id`. Use it to thread a trace ID from
+your own service into the orchestrator's logs and audit events:
+
+```python
+import uuid
+
+client = fuse.Client(
+    base_url, token,
+    request_id=lambda: str(uuid.uuid4()),
+)
+```
+
+An empty string from the callable omits the header entirely rather than sending
+a blank one.
+
+## Testing against the stub
+
+The orchestrator itself, not the SDK, has a built-in in-memory stub provider: run
+it with no `FIRECRACKER_BASE_URL` set and it simulates VM lifecycle behavior
+without booting real microVMs. This is the fastest way to test SDK-driven code
+end to end without a real Firecracker host:
+
+```bash
+go build -o bin/fuse ./cmd/orchestrator
+./bin/fuse   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
+```
+
+Point a `fuse.Client` at `http://localhost:8080` with no token (the orchestrator
+also runs without auth when `ORCH_AUTH_TOKEN` is unset), and every SDK call
+behaves exactly as it would against a real deployment, states transition, events
+stream, snapshots and forks work, just nothing is actually virtualized
+underneath.
+
+For unit-testing your own code that calls the SDK, `respx` (the library the
+SDK's own test suite uses) intercepts `httpx` globally, so it captures both the
+normal and streaming clients:
+
+```python
+import httpx
+import respx
+import fuse
+
+@respx.mock
+def test_create_environment():
+    respx.post("https://fuse.test/v1/environments").mock(
+        return_value=httpx.Response(
+            200, json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"}
+        )
+    )
+    with fuse.Client("https://fuse.test", "tok") as client:
+        env = client.environments.create(fuse.CreateRequest(task_id="task-1"))
+    assert env.id == "vm-1"
+```
+
+## Choosing a timeout
+
+The default 60-second `timeout` on the normal-request client is generous enough
+for every non-streaming call, including `create`, which blocks server-side until
+the environment reaches `running` or fails. If you're provisioning environments
+with a large `max_runtime_seconds` or a slow custom image pull, you generally
+don't need a longer client timeout for that, `create` itself doesn't wait for the
+whole runtime, only for the initial boot. Where you do want a shorter timeout is
+read-only calls like `list`/`get` in a hot path, pass a dedicated `http_client`
+with its own timeout rather than wrapping every call in your own timeout logic.

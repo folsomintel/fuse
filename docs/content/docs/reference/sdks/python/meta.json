@@ -8,6 +8,7 @@
     "hosts",
     "snapshots",
     "api-keys",
-    "errors"
+    "errors",
+    "advanced"
   ]
 }

@@ -1,0 +1,128 @@
+---
+title: Advanced usage
+description: Custom fetch, retries, request correlation, and testing
+icon: Wrench
+---
+
+## Custom fetch
+
+`fetch` replaces the implementation used for every request, including the event
+stream. Use it to add logging, route through a proxy, or supply a polyfill on a
+runtime without a global `fetch`:
+
+```ts
+const client = new FuseClient({
+  baseUrl: "https://orchestrator.example.com",
+  token,
+  fetch: (input, init) => {
+    console.log("fetching", input);
+    return fetch(input, init);
+  },
+});
+```
+
+If no global `fetch` exists and no `fetch` option is supplied, the client throws
+a `FuseError` at construction time rather than failing later on the first
+request.
+
+## Retries
+
+The SDK does not retry requests itself, a failed call rejects immediately, either
+with a `FuseError` (transport/configuration) or a `FuseApiError` (a non-2xx
+response). Retry policy is callsite-specific, so wrap calls yourself:
+
+```ts
+import { isUnavailable, FuseApiError } from "@folsom/fuse";
+
+async function createWithRetry(client: FuseClient, body: CreateRequest) {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await client.environments.create(body);
+    } catch (err) {
+      lastErr = err;
+      if (!isUnavailable(err)) throw err; // not retryable
+      await new Promise((r) => setTimeout(r, (attempt + 1) * 1000));
+    }
+  }
+  throw lastErr;
+}
+```
+
+`isUnavailable` and `isConflict` are usually the two codes worth retrying (the
+orchestrator rejecting work while shutting down, or a transient scheduling
+conflict); `isInvalidArgument` and `isNotFound` are not, retrying won't change
+the outcome.
+
+## Request correlation
+
+`requestId` is a function called once per request. Its return value is sent as
+`X-Request-ID` and echoed back on every response, including error responses,
+where it also appears on `FuseApiError.requestId`. Use it to thread a trace ID
+from your own service into the orchestrator's logs and audit events:
+
+```ts
+import { randomUUID } from "node:crypto";
+
+const client = new FuseClient({
+  baseUrl,
+  token,
+  requestId: () => randomUUID(),
+});
+```
+
+An empty string from the function omits the header entirely rather than sending
+a blank one.
+
+## Testing against the stub
+
+The orchestrator itself, not the SDK, has a built-in in-memory stub provider: run
+it with no `FIRECRACKER_BASE_URL` set and it simulates VM lifecycle behavior
+without booting real microVMs. This is the fastest way to test SDK-driven code
+end to end without a real Firecracker host:
+
+```bash
+go build -o bin/fuse ./cmd/orchestrator
+./bin/fuse   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
+```
+
+Point a `FuseClient` at `http://localhost:8080` with no token (the orchestrator
+also runs without auth when `ORCH_AUTH_TOKEN` is unset), and every SDK call
+behaves exactly as it would against a real deployment, states transition, events
+stream, snapshots and forks work, just nothing is actually virtualized
+underneath.
+
+For unit-testing your own code that calls the SDK, spin up a real local server
+with Node's `http` module (the same approach the SDK's own test suite uses) and
+point a `FuseClient` at it:
+
+```ts
+import { createServer } from "node:http";
+import { FuseClient } from "@folsom/fuse";
+
+const server = createServer((req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify({ id: "vm-1", state: "running", task_id: "task-1", url: "u" }));
+});
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+const { port } = server.address() as { port: number };
+
+const client = new FuseClient({ baseUrl: `http://127.0.0.1:${port}`, token: "tok" });
+const env = await client.environments.create({ task_id: "task-1" });
+// assert on env, then server.close()
+```
+
+Any HTTP mocking library that intercepts the global `fetch` (`msw`, `nock`'s
+fetch interceptor, and so on) works too, the SDK has no dependency on a specific
+one.
+
+## Choosing a timeout
+
+`timeoutMs` at the client level is a sensible default for every non-streaming
+call, including `create`, which blocks server-side until the environment reaches
+`running` or fails. If you're provisioning environments with a large
+`max_runtime_seconds` or a slow custom image pull, you generally don't need a
+longer client timeout for that, `create` itself doesn't wait for the whole
+runtime, only for the initial boot. `timeoutMs` is never applied to `events()`,
+that stream has no built-in timeout by design, use `{ signal }` to bound it
+instead.
