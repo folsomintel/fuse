@@ -37,6 +37,14 @@ interface HostCapacity {
 key. `backend` defaults to `"firecracker"` server-side if omitted; only `"qemu"`
 hosts may register with `capacity.gpus > 0`.
 
+`capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts: leave
+any at `0` and the orchestrator probes the host agent for the real value
+instead of trusting a guess. Pass one explicitly to override the probe (for a
+deliberate overcommit or carve-out); a declared value above what the probe
+reports still registers, with a warning rather than a rejection. `vm_count` is a
+scheduling policy, not something a host can report on its own, so it is never
+probed and must always be set.
+
 ```ts
 const host = await client.hosts.register({
   id: "prod-east-1",
@@ -44,9 +52,16 @@ const host = await client.hosts.register({
   token: agentToken,
   region: "us-east",
   backend: "firecracker",
-  capacity: { cpus: 16, ram_mb: 65536, storage_gb: 500, vm_count: 20 },
+  capacity: { cpus: 0, ram_mb: 0, storage_gb: 0, vm_count: 20 }, // 0 = probe
 });
+for (const w of host.warnings ?? []) {
+  console.warn(w);
+}
 ```
+
+If the host agent's provider doesn't support capacity probing and any of
+`cpus`/`ram_mb`/`storage_gb` were left at `0`, registration throws a
+`FuseApiError` with `status === 502`, declare them explicitly in that case.
 
 ## list
 
@@ -75,11 +90,15 @@ interface Host {
   last_seen: string;
   created_at: string;
   updated_at: string;
+  warnings?: string[];
 }
 ```
 
 `state` is one of `active`, `cordoned`, or `draining`. `last_seen` is set at
 registration and is not refreshed afterward, it is not a liveness signal.
+`warnings` is only ever populated on the response to `register`, non-fatal
+notices such as a declared capacity value that exceeded what was probed from
+the host agent.
 
 ## cordon and uncordon
 

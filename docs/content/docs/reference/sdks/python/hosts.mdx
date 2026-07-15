@@ -35,6 +35,14 @@ class HostCapacity(BaseModel):
 key. `backend` defaults to `"firecracker"` server-side if left unset; only
 `"qemu"` hosts may register with `capacity.gpus > 0`.
 
+`capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts: leave
+any at `0` and the orchestrator probes the host agent for the real value
+instead of trusting a guess. Pass one explicitly to override the probe (for a
+deliberate overcommit or carve-out); a declared value above what the probe
+reports still registers, with a warning rather than a rejection. `vm_count` is a
+scheduling policy, not something a host can report on its own, so it is never
+probed and must always be set.
+
 ```python
 host = client.hosts.register(
     fuse.RegisterHostRequest(
@@ -43,10 +51,16 @@ host = client.hosts.register(
         token=agent_token,
         region="us-east",
         backend="firecracker",
-        capacity=fuse.HostCapacity(cpus=16, ram_mb=65536, storage_gb=500, vm_count=20),
+        capacity=fuse.HostCapacity(vm_count=20),  # cpus/ram_mb/storage_gb left at 0 to probe
     )
 )
+for w in host.warnings:
+    print("warning:", w)
 ```
+
+If the host agent's provider doesn't support capacity probing and any of
+`cpus`/`ram_mb`/`storage_gb` were left at `0`, registration raises
+`fuse.ApiError` with `status == 502`, declare them explicitly in that case.
 
 ## list
 
@@ -75,10 +89,14 @@ class Host(BaseModel):
     last_seen: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    warnings: list[str] = []
 ```
 
 `state` is one of `active`, `cordoned`, or `draining`. `last_seen` is set at
 registration and is not refreshed afterward, it is not a liveness signal.
+`warnings` is only ever populated on the response to `register`, non-fatal
+notices such as a declared capacity value that exceeded what was probed from
+the host agent.
 
 ## cordon and uncordon
 

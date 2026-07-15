@@ -37,6 +37,14 @@ type HostCapacity struct {
 key. `Backend` defaults to `"firecracker"` server-side if left empty; only
 `"qemu"` hosts may register with `Capacity.GPUs > 0`.
 
+`Capacity.CPUs`, `RamMB`, and `StorageGB` are optional hardware facts: leave any
+of them at `0` and the orchestrator probes the host agent for the real value
+instead of trusting a guess. Pass one explicitly to override the probe (for a
+deliberate overcommit or carve-out); a declared value above what the probe
+reports still registers, with a warning rather than a rejection. `VMCount` is a
+scheduling policy, not something a host can report on its own, so it is never
+probed and must always be set.
+
 ```go
 host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
 	ID:      "prod-east-1",
@@ -45,13 +53,17 @@ host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
 	Region:  "us-east",
 	Backend: "firecracker",
 	Capacity: fuse.HostCapacity{
-		CPUs:      16,
-		RamMB:     65536,
-		StorageGB: 500,
-		VMCount:   20,
+		VMCount: 20, // required; cpus/ram_mb/storage_gb left at 0 to probe
 	},
 })
+for _, w := range host.Warnings {
+	log.Println("warning:", w)
+}
 ```
+
+If the host agent's provider doesn't support capacity probing and any of
+`CPUs`/`RamMB`/`StorageGB` were left at `0`, registration fails with a `502`
+`*APIError`, declare them explicitly in that case.
 
 ## List
 
@@ -80,11 +92,15 @@ type Host struct {
 	LastSeen  time.Time
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Warnings  []string
 }
 ```
 
 `State` is one of `active`, `cordoned`, or `draining`. `LastSeen` is set at
 registration and is not refreshed afterward, it is not a liveness signal.
+`Warnings` is only ever populated on the response to `Register`, non-fatal
+notices such as a declared capacity value that exceeded what was probed from
+the host agent.
 
 ## Cordon and Uncordon
 
