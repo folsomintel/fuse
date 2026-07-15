@@ -1,53 +1,26 @@
 ---
 title: API keys
-description: APIKeysService, full method reference
+description: Issuing and revoking orchestrator-global API keys
 icon: KeySquare
 ---
 
-`client.api_keys` is an `APIKeysService`. All three methods require the master
-token, the server enforces this regardless of what token the client was
-constructed with.
-
-## create
-
-```python
-def create(self, label: str = "") -> CreatedAPIKey: ...
-```
-
-```python
-class APIKey(BaseModel):
-    id: str = ""
-    label: str = ""
-    created_at: datetime | None = None
-    last_used_at: datetime | None = None
-    revoked_at: datetime | None = None
-
-class CreatedAPIKey(APIKey):
-    key: str = ""
-```
-
-`label` is an optional human-readable name. `CreatedAPIKey.key` holds the raw
-secret and is returned exactly once, it cannot be recovered afterward. Store it
-immediately.
+`client.api_keys` mints and revokes API keys. All three methods require the
+master token, the server enforces this regardless of what token the client
+was constructed with.
 
 ```python
 key = client.api_keys.create("ci-runner")
-print("save this now:", key.key)
+print("save this now:", key.key)  # shown exactly once
 ```
 
-## list
+`label` is optional. `key.key` holds the raw secret and is returned exactly
+once, it cannot be recovered afterward, store it immediately.
 
-```python
-def list(self) -> list[APIKey]: ...
-```
+## Everything else
 
-Returns metadata only, `APIKey` has no `key` field. `last_used_at` and
-`revoked_at` are `None` until they happen.
+| Method | Purpose |
+| --- | --- |
+| `list()` | List key metadata, `APIKey` has no `key` field. `last_used_at`/`revoked_at` are `None` until they happen. |
+| `revoke(key_id)` | Revoke the key with the given `key_id` (the `APIKey.id`, not the secret itself). |
 
-## revoke
-
-```python
-def revoke(self, key_id: str) -> None: ...
-```
-
-Revokes the key with the given `key_id` (the `APIKey.id`, not the secret itself).
+These mirror the [HTTP API](/docs/reference/api/api-keys) one to one.
