@@ -65,8 +65,22 @@ fuse environment fork <id> --comment "branch for experiment"
 ```
 
 Forking creates a new environment from an existing one's state, either by taking a
-fresh snapshot or reusing an existing one via `--reuse-snapshot`. See
-[Snapshots](/docs/learn/concepts/snapshots): forking is unavailable wherever
+fresh snapshot or reusing an existing one via `--reuse-snapshot`. The source keeps
+running and is not modified.
+
+The fork is a full environment of its own: its own ID, its own IP and ports, and its
+own guest credentials. Because it boots a copy of the source's disk, it starts out
+with the source's filesystem contents, but it is re-issued a fresh auth token on
+creation, so the two environments never share a secret.
+
+A fork always lands on the **same host** as its source (the seed snapshot lives on
+that host's disk), and it is charged against that host's capacity like any other
+environment. Forking a source whose host is full will fail.
+
+Snapshots are disk-only, so a fork cold-boots the snapshot's disk rather than
+resuming the source's memory: expect a normal boot, not a sub-second resume.
+
+See [Snapshots](/docs/learn/concepts/snapshots): forking is unavailable wherever
 snapshotting is (i.e. QEMU/GPU environments).
 
 ## Rotating guest credentials

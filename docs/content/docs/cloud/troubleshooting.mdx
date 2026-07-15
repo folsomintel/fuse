@@ -75,37 +75,29 @@ rootfs by mounting the ext4 file from the host and modifying it there (the same 
 
 ## Snapshot restore can corrupt unsynced writes
 
-<Callout type="warn" title="Known limitation">
-Restoring a snapshot while the guest has unsynced writes can corrupt the restored
-data. This is a known, unfixed issue as of this writing.
+<Callout type="info" title="Fixed">
+This was a real data-corruption bug in earlier host agents. It is fixed. If you are
+running a host agent from before the fix, update it.
 </Callout>
 
-**Symptom:** a clean snapshot-then-restore cycle (no writes in between) round-trips
-correctly. But if the guest has written data that hasn't been flushed to disk at the
-moment you call restore, the affected file reads back as NUL bytes after the
-restore completes, instead of the snapshot's actual content.
+**Symptom (on an un-updated host):** a clean snapshot-then-restore cycle (no writes
+in between) round-trips correctly. But if the guest had written data that hadn't been
+flushed to disk when you called restore, the affected file read back as NUL bytes
+afterwards instead of the snapshot's content.
 
-**Root cause:** restore stops the Firecracker process and copies the snapshot file
-over the live `rootfs.ext4` without discarding the (now-dead) VM's dirty host page
-cache first. Stale or torn data from that dead cache can leak into the restored
-image.
+**Root cause:** restore stopped the Firecracker process and copied the snapshot file
+*over* the live `rootfs.ext4` in place. The just-killed guest could still have dirty
+host page-cache pages tied to that inode, and the in-place copy left those stale
+pages readable at offsets it didn't overwrite.
 
-**Who's affected:** anyone using the normal "snapshot, do something risky, roll
-back" pattern where the guest was actively writing right before the restore call.
+**The fix:** restore now copies the snapshot to a temporary file and atomically
+renames it over the live rootfs, so the restored image always lands on a fresh inode
+with no page-cache history from the dead VM. No guest-side `sync` is required, and
+the old workaround (syncing inside the guest before every snapshot and restore) is no
+longer needed.
 
-**Workaround:** run `sync` inside the guest immediately before triggering a
-snapshot, and again before triggering a restore, to force pending writes to disk
-first. This avoids the corruption in practice, though it doesn't fix the underlying
-race.
-
-**Proper fix (not yet implemented):** flush or invalidate the rootfs page cache as
-part of the restore path itself, e.g. `blockdev --flushbufs`, opening the backing
-file with `O_DIRECT`, or `posix_fadvise(..., DONTNEED)`, or switch to Firecracker's
-native snapshot/restore mechanism instead of copying the backing file directly.
-
-This only affects [Firecracker-backed](/docs/learn/concepts/providers) snapshots:
-QEMU/GPU environments don't support snapshots at all, so the question doesn't arise
-there.
+If you still see stale data after a restore, you are almost certainly running a host
+agent that predates the fix. Update it and restart `fc-agent`.
 
 ## Where to look next
 
