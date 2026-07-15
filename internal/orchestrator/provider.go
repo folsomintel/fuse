@@ -181,6 +181,16 @@ type SnapshotDeleter interface {
 	DeleteCheckpoint(ctx context.Context, checkpointID string) error
 }
 
+// CapacityProber is implemented by providers that can report the real
+// hardware capacity of the host they front (CPU count, total RAM, free
+// disk) instead of trusting operator-declared numbers. RegisterHost type-
+// asserts to this interface at registration time to source capacity for any
+// field the operator left unset; providers that cannot probe (e.g. a stub
+// with no real hardware behind it) simply return an error.
+type CapacityProber interface {
+	Capacity(ctx context.Context) (HostCapacity, error)
+}
+
 // AgentSpec is the generic, provider-agnostic description of the guest agent
 // to launch inside a sandbox. fused is expressed as one configuration of this
 // spec via FusedAgentSpec (see agent_profile.go); nothing fuse-specific is

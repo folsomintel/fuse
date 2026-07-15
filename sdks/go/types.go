@@ -166,6 +166,11 @@ type Host struct {
 	LastSeen  time.Time    `json:"last_seen"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt time.Time    `json:"updated_at"`
+
+	// Warnings carries non-fatal notices from registration (e.g. a
+	// declared capacity value that exceeds what was probed from the host
+	// agent). Only ever populated on the response to Hosts.Register.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type hostList struct {

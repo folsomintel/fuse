@@ -34,12 +34,6 @@ must still be running. There is no cross-host restore, clone, or standalone rest
 into a new VM; use [fork](/docs/learn/concepts/environments#forking) if you want a
 new environment from a snapshot instead.
 
-<Callout type="warn" title="Known limitation">
-Restoring while the guest has unsynced writes can corrupt the restored data;
-see [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
-for the workaround.
-</Callout>
-
 ## Deleting
 
 ```bash

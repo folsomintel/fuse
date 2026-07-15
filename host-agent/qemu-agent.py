@@ -994,6 +994,29 @@ def _reap(pid: int, kill: bool) -> int:
         return 128 + os.WTERMSIG(status)
     return 0
 
+
+def host_capacity() -> dict:
+    """Real hardware capacity of this host: cpu count, total ram, and free
+    disk on the filesystem backing QEMU_DIR (where rootfs images and vm
+    state live). Fuse's orchestrator probes this at registration time
+    instead of trusting operator-declared --cpus/--ram-mb/--storage-gb
+    flags. GPU count/kind are not probed here (see VFIO_INVENTORY);
+    capacity.gpus stays operator-declared.
+    """
+    cpus = os.cpu_count() or 1
+    ram_mb = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    ram_mb = int(line.split()[1]) // 1024
+                    break
+    except OSError:
+        pass
+    free_bytes = shutil.disk_usage(QEMU_DIR).free
+    return {"cpus": cpus, "ram_mb": ram_mb, "storage_gb": free_bytes // (1024 ** 3)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "qemu-agent/0.1"
 
@@ -1115,6 +1138,9 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+            # Capacity
+            if path == "/v1/capacity" and method == "GET":
+                return self._json(200, host_capacity())
             # Health
             if path in ("/", "/healthz") and method == "GET":
                 return self._json(200, {"ok": True, "app_name": "qemu-agent"})

@@ -377,19 +377,29 @@ def stop_firecracker(meta: dict) -> None:
         sudo(["rm", "-f", sock], check=False)
 
 
-def create_vm(req: dict) -> dict:
+def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name)
 
     # Resolve the source rootfs before any allocation, so an unknown named
     # image fails fast with no vm dir/tap/forward left to roll back. Unset
     # (the common case today) is byte-for-byte the existing BASE_ROOTFS path.
-    image = req.get("image") or ""
-    source_rootfs = BASE_ROOTFS
-    if image:
-        source_rootfs = IMAGES_DIR / f"{image}.ext4"
-        if not source_rootfs.exists():
-            raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
+    # A caller-supplied source_rootfs (fork_vm, seeding from a snapshot) wins
+    # over the image lookup.
+    if source_rootfs is None:
+        image = req.get("image") or ""
+        source_rootfs = BASE_ROOTFS
+        if image:
+            # image names the request into a filesystem path, so resolve it and
+            # confirm it stays under IMAGES_DIR; "../../etc/shadow" would else
+            # reach a file outside it and get copied into the caller's guest.
+            images_root = os.path.realpath(IMAGES_DIR)
+            resolved = os.path.realpath(os.path.join(images_root, f"{image}.ext4"))
+            if not resolved.startswith(images_root + os.sep):
+                raise HTTPError(400, f"invalid base image name: {image!r}")
+            source_rootfs = Path(resolved)
+            if not source_rootfs.exists():
+                raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
     d = vm_dir(vm_id)
     if d.exists():
@@ -516,11 +526,57 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
         add_agent_forward(meta["host_port"], guest_ip)
-    sudo(["cp", str(snap_rootfs), meta["rootfs"]])
+    # Copy into a fresh inode and rename over the live rootfs instead of
+    # overwriting it in place. The just-killed guest can leave dirty host
+    # page-cache pages tied to the old rootfs inode; an in-place cp can
+    # leave those stale pages readable at offsets it doesn't touch, which
+    # is the source of NUL/stale-byte corruption on restore. A brand-new
+    # inode has no such pages to leak.
+    tmp_rootfs = f"{meta['rootfs']}.restore-tmp"
+    sudo(["cp", str(snap_rootfs), tmp_rootfs])
+    sudo(["mv", tmp_rootfs, meta["rootfs"]])
     sudo(["chmod", "666", meta["rootfs"]], check=False)
     start_firecracker(meta)
     save_meta(meta)
     wait_for_ssh(meta["guest_ip"], timeout=30.0)
+
+
+def fork_vm(src_vm_id: str, req: dict) -> dict:
+    """Create a brand-new VM seeded from one of src_vm_id's snapshots.
+
+    This is create_vm with the snapshot's rootfs standing in for the base
+    image, so the new VM gets its own index/tap/IPs/MAC/host port and its own
+    rootfs copy. The source VM is untouched and keeps running.
+
+    Sizing (cpus/memory/storage/region) defaults to the source's, so a fork
+    without overrides reproduces the source's shape.
+    """
+    src_meta = load_meta(src_vm_id)
+    if not src_meta:
+        raise HTTPError(404, "source vm not found")
+    snapshot_id = req.get("snapshot_id") or ""
+    if not snapshot_id:
+        raise HTTPError(400, "snapshot_id required")
+    # snapshot_id names the request into a filesystem path, so resolve it and
+    # confirm it stays under this vm's snapshots dir before touching the file.
+    snaps_root = os.path.realpath(os.path.join(str(vm_dir(src_vm_id)), "snapshots"))
+    resolved = os.path.realpath(os.path.join(snaps_root, snapshot_id, "rootfs.ext4"))
+    if not resolved.startswith(snaps_root + os.sep):
+        raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
+    snap_rootfs = Path(resolved)
+    if not snap_rootfs.exists():
+        raise HTTPError(404, "snapshot not found")
+
+    fork_req = dict(req)
+    for field in ("cpus", "memory_mb", "storage_gb", "region"):
+        if not fork_req.get(field) and src_meta.get(field):
+            fork_req[field] = src_meta[field]
+    # The rootfs comes from the snapshot, so any "image" in the request is
+    # meaningless here; drop it so create_vm cannot try to resolve it.
+    fork_req.pop("image", None)
+
+    with _create_lock:
+        return create_vm(fork_req, source_rootfs=snap_rootfs)
 
 
 # -- Upload / Exec / start-agent ---------------------------------------------
@@ -945,6 +1001,27 @@ def _reap(pid: int, kill: bool) -> int:
         return 128 + os.WTERMSIG(status)
     return 0
 
+
+def host_capacity() -> dict:
+    """Real hardware capacity of this host: cpu count, total ram, and free
+    disk on the filesystem backing FC_DIR (where rootfs images and vm state
+    live). Fuse's orchestrator probes this at registration time instead of
+    trusting operator-declared --cpus/--ram-mb/--storage-gb flags.
+    """
+    cpus = os.cpu_count() or 1
+    ram_mb = 0
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemTotal:"):
+                    ram_mb = int(line.split()[1]) // 1024
+                    break
+    except OSError:
+        pass
+    free_bytes = shutil.disk_usage(FC_DIR).free
+    return {"cpus": cpus, "ram_mb": ram_mb, "storage_gb": free_bytes // (1024 ** 3)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "fc-agent/0.1"
 
@@ -1078,6 +1155,17 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+                    if action == "fork" and method == "POST":
+                        # Seeds a NEW vm from vm_id's snapshot. Holds vm_id's
+                        # lock (the source must not be restored/destroyed
+                        # mid-copy) and takes _create_lock inside fork_vm to
+                        # allocate the new vm. No path takes _create_lock
+                        # before a vm lock, so this order cannot cycle.
+                        body = self._read_json()
+                        return self._json(200, vm_public(fork_vm(vm_id, body)))
+            # Capacity
+            if path == "/v1/capacity" and method == "GET":
+                return self._json(200, host_capacity())
             # Health
             if path in ("/", "/healthz") and method == "GET":
                 return self._json(200, {"ok": True, "app_name": "fc-agent"})

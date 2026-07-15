@@ -1106,6 +1106,7 @@ components:
           type: integer
         vm_count:
           type: integer
+          description: Max concurrent VMs.
         gpus:
           type: integer
           description: |
@@ -1134,7 +1135,15 @@ components:
             Virtualization backend. Defaults to "firecracker". Only
             "qemu" hosts may register with capacity.gpus > 0.
         capacity:
-          $ref: "#/components/schemas/HostCapacity"
+          allOf:
+            - $ref: "#/components/schemas/HostCapacity"
+          description: |
+            cpus/ram_mb/storage_gb: 0 (or omitted) means "probe the host
+            agent for the real value" instead of zero capacity. A positive
+            value overrides the probe; if it exceeds what was probed,
+            registration still succeeds but HostInfo.warnings notes it.
+            vm_count is scheduling policy, not a hardware fact: always
+            required, never probed.
 
     HostInfo:
       type: object
@@ -1167,6 +1176,14 @@ components:
         updated_at:
           type: string
           format: date-time
+        warnings:
+          type: array
+          items:
+            type: string
+          description: |
+            Non-fatal registration notices (e.g. a declared capacity value
+            that exceeded what was probed from the host agent). Only ever
+            populated on the response to POST /v1/hosts.
 
     HostList:
       type: object

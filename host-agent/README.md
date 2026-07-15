@@ -45,7 +45,26 @@ agent-state/        # per-VM metadata, rootfs copies, snapshots
 .fc-agent.env       # bearer token (generated on first start)
 ```
 
-## Setup (bring up a host)
+## Setup (one command)
+
+On a host that meets the requirements above, `bootstrap` does everything: host
+deps, firecracker, the agent service, a local Postgres, the orchestrator (control
+plane), the weekly auto-update timer, the guest agent + rootfs bake, and it
+self-registers the host. Then it prints the token and the exact connect line.
+
+```bash
+git clone <this repo> ~/fc && cd ~/fc/host-agent
+sudo ./fc-agent.sh bootstrap
+```
+
+It is idempotent - safe to re-run. Flags: `--no-updater` (skip the auto-update
+timer), `--no-register` (don't self-register). After it finishes, drive the host
+from your laptop with the printed `fuse connect http://<host>:8080 --token <token>`.
+
+Everything below is the manual, step-by-step equivalent - use it when you want to
+run or skip individual stages.
+
+## Setup (manual, step by step)
 
 On a host that meets the requirements above:
 
@@ -176,6 +195,7 @@ All routes under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON in
 | POST   | `/v1/vm/{id}/snapshot`    | `{comment, include_ram}` — disk-only (`include_ram` ignored).                                                                                                                                                                                              |
 | GET    | `/v1/vm/{id}/snapshots`   | `{snapshots:[...]}`                                                                                                                                                                                                                                        |
 | POST   | `/v1/vm/{id}/restore`     | `{snapshot_id, include_ram}` — stops fc, swaps rootfs, reboots VM.                                                                                                                                                                                         |
+| GET    | `/v1/capacity`            | `{cpus, ram_mb, storage_gb}` — real cpu count, total ram, and free disk on this host. `fuse host register` probes this instead of trusting operator-declared flags.                                                                                        |
 
 `url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port =
 `19550 + vm_index`. Public host is auto-detected; override with
