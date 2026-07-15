@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { pathOf, queryOf, readBody, serve, type TestServer } from "./server.js";
+import { FuseApiError, isConflict, isFuseApiError } from "../src/index.js";
 
 let current: TestServer | undefined;
 afterEach(async () => {
@@ -98,6 +99,104 @@ describe("environments", () => {
       comment: "forked",
     });
     expect(env.id).toBe("vm-2");
+  });
+
+  it("exec posts action=exec with an argv body and decodes the result", async () => {
+    let method: string | undefined;
+    let path: string | undefined;
+    let query: string | undefined;
+    let body = "";
+    current = await serve(async (req, res) => {
+      method = req.method;
+      path = pathOf(req);
+      query = queryOf(req);
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"exit_code":0,"stdout":"hi\\n","stderr":""}`);
+    });
+
+    const out = await current.client.environments.exec("vm-1", {
+      cmd: ["ls", "-l"],
+      timeout_ms: 5000,
+    });
+
+    expect(method).toBe("POST");
+    expect(path).toBe("/v1/environments/vm-1");
+    expect(query).toBe("action=exec");
+    expect(JSON.parse(body)).toEqual({ cmd: ["ls", "-l"], timeout_ms: 5000 });
+    expect(out).toEqual({ exit_code: 0, stdout: "hi\n", stderr: "" });
+  });
+
+  it("exec returns a non-zero exit_code instead of throwing", async () => {
+    current = await serve((req, res) => {
+      // the command ran and failed: still a 200, not an api error.
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"exit_code":2,"stdout":"","stderr":"no such file\\n"}`);
+    });
+
+    const out = await current.client.environments.exec("vm-1", {
+      cmd: ["cat", "/nope"],
+    });
+
+    expect(out.exit_code).toBe(2);
+    expect(out.stderr).toBe("no such file\n");
+    expect(out.stdout).toBe("");
+  });
+
+  it("exec posts a shell body for pipelines", async () => {
+    let query: string | undefined;
+    let body = "";
+    current = await serve(async (req, res) => {
+      query = queryOf(req);
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"exit_code":0,"stdout":"3\\n","stderr":""}`);
+    });
+
+    const out = await current.client.environments.exec("vm-1", {
+      shell: "ls | wc -l",
+    });
+
+    expect(query).toBe("action=exec");
+    expect(JSON.parse(body)).toEqual({ shell: "ls | wc -l" });
+    expect(out.stdout).toBe("3\n");
+  });
+
+  it("exec throws a FuseApiError when the vm is not running", async () => {
+    current = await serve((req, res) => {
+      res.statusCode = 409;
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"error":{"code":"conflict","message":"vm is draining"}}`);
+    });
+
+    let caught: unknown;
+    try {
+      await current.client.environments.exec("vm-1", { cmd: ["ls"] });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(isFuseApiError(caught)).toBe(true);
+    expect(isConflict(caught)).toBe(true);
+    expect((caught as FuseApiError).status).toBe(409);
+  });
+
+  it("exec rejects a body that is not exactly one of cmd or shell", async () => {
+    let called = false;
+    current = await serve((req, res) => {
+      called = true;
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"exit_code":0,"stdout":"","stderr":""}`);
+    });
+
+    await expect(current.client.environments.exec("vm-1", {})).rejects.toThrow(
+      "one of cmd or shell is required",
+    );
+    await expect(
+      current.client.environments.exec("vm-1", { cmd: ["ls"], shell: "ls" }),
+    ).rejects.toThrow("cmd and shell are mutually exclusive");
+
+    expect(called).toBe(false);
   });
 
   it("list sends snake_case query and unwraps the envelope", async () => {

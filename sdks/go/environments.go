@@ -97,6 +97,24 @@ func (t *transport) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// doStream runs a request on the no-timeout client, for calls whose duration is
+// bounded by the request context rather than a fixed client timeout (a
+// long-running exec, an SSE stream).
+func (t *transport) doStream(req *http.Request) (*http.Response, error) {
+	if t == nil {
+		return nil, errors.New("transport is nil")
+	}
+	client := t.streamHTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	return resp, nil
+}
+
 type EnvironmentsService struct {
 	t *transport
 }

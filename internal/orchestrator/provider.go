@@ -78,8 +78,11 @@ type Environment interface {
 	// URL returns the sandbox's reachable address for the guest agent.
 	URL() string
 
-	// Exec runs a command and returns combined output.
-	Exec(ctx context.Context, name string, args ...string) ([]byte, error)
+	// Exec runs argv inside the sandbox and reports the result. A non-zero
+	// guest exit code is carried in ExecResult.ExitCode, not returned as an
+	// error; err is reserved for transport and provider failures, so callers
+	// must check both.
+	Exec(ctx context.Context, cmd []string, opts ExecOptions) (ExecResult, error)
 
 	// ExecStream runs a command with stdout/stderr wired to writers.
 	ExecStream(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error
@@ -94,6 +97,54 @@ type Environment interface {
 	// when reaching URL(). Empty string for providers whose URL
 	// self-authenticates.
 	Token() string
+}
+
+// Exec timeout bounds. Guest commands are bounded so a hung command cannot
+// pin an SSH session on the host agent forever. MaxExecTimeout matches the
+// host agent's own per-exec ceiling; asking for more would let the caller's
+// deadline outlive the guest command it is waiting on.
+const (
+	DefaultExecTimeout = 60 * time.Second
+	MaxExecTimeout     = 600 * time.Second
+)
+
+// ExecOptions tunes a single Exec call.
+type ExecOptions struct {
+	// Timeout bounds how long the guest command may run. Zero means
+	// DefaultExecTimeout. Values above MaxExecTimeout are clamped.
+	Timeout time.Duration
+}
+
+// ExecResult is the outcome of running a command inside a sandbox. Stdout and
+// Stderr are kept separate and byte-exact; ExitCode is the guest command's
+// own status, which is meaningful even when it is non-zero.
+type ExecResult struct {
+	ExitCode int
+	Stdout   []byte
+	Stderr   []byte
+}
+
+// AttachSpec describes an interactive attach to a sandbox.
+type AttachSpec struct {
+	// Cmd is the argv to run. Empty means the guest's login shell.
+	Cmd []string
+
+	// TTY requests a pty for the process. Rows and Cols seed its initial
+	// window size; further resizes arrive as frames on the stream itself.
+	TTY  bool
+	Rows uint16
+	Cols uint16
+}
+
+// Attacher is implemented by environments that can open a raw duplex byte
+// stream to a process inside the sandbox. The stream carries the fuse-attach/1
+// frame protocol (see docs/attach.md); nothing between the caller and the
+// guest interprets those frames, so the orchestrator relays them verbatim.
+//
+// Environments with no real guest (e.g. in-memory stubs) omit this method;
+// callers type-assert and report ErrAttachUnsupported when it is absent.
+type Attacher interface {
+	Attach(ctx context.Context, spec AttachSpec) (io.ReadWriteCloser, error)
 }
 
 // TokenSetter is implemented by environments whose per-sandbox auth

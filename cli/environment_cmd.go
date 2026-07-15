@@ -24,6 +24,8 @@ func newEnvironmentCmd() *cobra.Command {
 		newEnvCreateCmd(),
 		newEnvDestroyCmd(),
 		newEnvDrainCmd(),
+		newEnvExecCmd(),
+		newEnvShellCmd(),
 		newEnvForkCmd(),
 		newEnvRotateTokenCmd(),
 		newEnvWatchCmd(),

@@ -22,13 +22,29 @@ type mockEnv struct {
 	execCalls [][]string
 	execErr   error
 	execHook  func(ctx context.Context) error
+
+	// Exec (as opposed to ExecStream) fixtures: what it recorded, and what
+	// it should hand back.
+	execArgv   [][]string
+	execOpts   []ExecOptions
+	execResult ExecResult
+	execRunErr error
 }
 
 func (e *mockEnv) Name() string  { return e.name }
 func (e *mockEnv) URL() string   { return e.url }
 func (e *mockEnv) Token() string { return "" }
-func (e *mockEnv) Exec(_ context.Context, _ string, _ ...string) ([]byte, error) {
-	return nil, nil
+
+// Exec records the argv and options it was called with and replays a
+// programmed result, so exec tests can assert both what reached the guest and
+// what came back. It deliberately does not implement Attacher: that absence is
+// what lets a test exercise the ErrAttachUnsupported path.
+func (e *mockEnv) Exec(_ context.Context, cmd []string, opts ExecOptions) (ExecResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.execArgv = append(e.execArgv, cmd)
+	e.execOpts = append(e.execOpts, opts)
+	return e.execResult, e.execRunErr
 }
 func (e *mockEnv) ExecStream(ctx context.Context, _, _ io.Writer, name string, args ...string) error {
 	e.mu.Lock()

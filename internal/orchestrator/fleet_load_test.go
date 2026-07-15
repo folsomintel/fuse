@@ -422,7 +422,9 @@ func (e *stubLoadEnv) Name() string  { return e.name }
 func (e *stubLoadEnv) URL() string   { return e.url }
 func (e *stubLoadEnv) Token() string { return "" }
 
-func (e *stubLoadEnv) Exec(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+func (e *stubLoadEnv) Exec(context.Context, []string, ExecOptions) (ExecResult, error) {
+	return ExecResult{}, nil
+}
 func (e *stubLoadEnv) ExecStream(_ context.Context, _ io.Writer, _ io.Writer, _ string, _ ...string) error {
 	return nil
 }

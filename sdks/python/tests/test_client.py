@@ -86,6 +86,87 @@ def test_environments_fork() -> None:
 
 
 @respx.mock
+def test_environments_exec() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200, json={"exit_code": 0, "stdout": "hi\n", "stderr": ""}
+        )
+    )
+    with new_client() as client:
+        result = client.environments.exec(
+            "vm-1", fuse.ExecRequest(cmd=["ls", "-l"], timeout_ms=5000)
+        )
+
+    request = route.calls.last.request
+    assert request.method == "POST"
+    assert request.url.path == "/v1/environments/vm-1"
+    assert request.url.params.get("action") == "exec"
+    body = json.loads(request.content)
+    assert body == {"cmd": ["ls", "-l"], "timeout_ms": 5000}
+    assert result.exit_code == 0
+    assert result.stdout == "hi\n"
+    assert result.stderr == ""
+
+
+@respx.mock
+def test_environments_exec_nonzero_exit_is_returned() -> None:
+    # a command that ran and failed is a successful call, not an error.
+    respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200, json={"exit_code": 2, "stdout": "", "stderr": "no such file\n"}
+        )
+    )
+    with new_client() as client:
+        result = client.environments.exec("vm-1", fuse.ExecRequest(cmd=["false"]))
+
+    assert result.exit_code == 2
+    assert result.stderr == "no such file\n"
+
+
+@respx.mock
+def test_environments_exec_shell() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200, json={"exit_code": 0, "stdout": "3\n", "stderr": ""}
+        )
+    )
+    with new_client() as client:
+        result = client.environments.exec(
+            "vm-1", fuse.ExecRequest(shell="ls | wc -l")
+        )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"shell": "ls | wc -l"}
+    assert result.stdout == "3\n"
+
+
+def test_environments_exec_requires_exactly_one_of_cmd_or_shell() -> None:
+    with new_client() as client:
+        with pytest.raises(ValueError):
+            client.environments.exec("vm-1", fuse.ExecRequest())
+        with pytest.raises(ValueError):
+            client.environments.exec(
+                "vm-1", fuse.ExecRequest(cmd=["ls"], shell="ls")
+            )
+
+
+@respx.mock
+def test_environments_exec_conflict() -> None:
+    respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            409, json={"error": {"code": "conflict", "message": "vm is not running"}}
+        )
+    )
+    with new_client() as client:
+        with pytest.raises(fuse.ApiError) as excinfo:
+            client.environments.exec("vm-1", fuse.ExecRequest(cmd=["ls"]))
+
+    err = excinfo.value
+    assert err.status == 409
+    assert fuse.is_conflict(err)
+
+
+@respx.mock
 def test_environments_get_with_endpoints() -> None:
     respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
         return_value=httpx.Response(

@@ -10,6 +10,8 @@
     "drain",
     "fork",
     "rotate-token",
-    "watch"
+    "watch",
+    "exec",
+    "shell"
   ]
 }

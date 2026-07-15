@@ -1,0 +1,22 @@
+---
+title: fuse environment shell
+description: Attach an interactive terminal to a running environment's guest
+icon: SquareTerminal
+---
+
+```bash
+fuse environment shell <id>          # alias: ssh
+fuse environment shell <id> -- top
+```
+
+With no command this opens the guest's login shell. A command after `--` runs
+instead of the shell, still on a terminal.
+
+This is a relayed pty, not SSH: there is no `scp`, no port forwarding, and no
+key-based login. It needs a real terminal and refuses to run when stdin and stdout
+are not a tty, so for scripted commands use [`exec`](/docs/reference/cli/environment/exec).
+The session exits with the guest command's exit code.
+
+`shell` requires the [master token](/docs/reference/auth). It is root in the guest,
+and API keys carry no scopes today, so anything weaker would silently make every
+issued key a root shell on every VM in the fleet.

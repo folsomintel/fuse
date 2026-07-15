@@ -21,8 +21,8 @@ type bootMockEnv struct {
 func (e *bootMockEnv) Name() string  { return e.name }
 func (e *bootMockEnv) URL() string   { return e.url }
 func (e *bootMockEnv) Token() string { return "" }
-func (e *bootMockEnv) Exec(_ context.Context, _ string, _ ...string) ([]byte, error) {
-	return nil, nil
+func (e *bootMockEnv) Exec(_ context.Context, _ []string, _ ExecOptions) (ExecResult, error) {
+	return ExecResult{}, nil
 }
 func (e *bootMockEnv) ExecStream(_ context.Context, _, _ io.Writer, name string, args ...string) error {
 	e.execCalls = append(e.execCalls, append([]string{name}, args...))

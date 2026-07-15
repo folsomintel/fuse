@@ -84,6 +84,29 @@ class ForkOptions(_Model):
     comment: Optional[str] = None
 
 
+class ExecRequest(_Model):
+    # body for environments.exec. exactly one of cmd or shell must be set.
+    #
+    # cmd is argv: it needs no quoting rules and interpolating a value into it
+    # cannot turn into an injection, so prefer it. shell runs the string under
+    # `sh -lc` and is only for what argv cannot express: pipelines, redirects,
+    # and globs. timeout_ms bounds the command inside the guest; unset or 0
+    # takes the server default and the server clamps anything above its ceiling.
+    cmd: Optional[list[str]] = None
+    shell: Optional[str] = None
+    timeout_ms: Optional[int] = None
+
+
+class ExecResult(_Model):
+    # the outcome of a guest command.
+    #
+    # a non-zero exit_code is a successful call: the command ran and failed.
+    # only a raised ApiError means the command could not be run at all.
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
 class Event(BaseModel):
     # one item from EnvironmentsService.events. err is set only on a
     # stream-level failure, as the final event before the iterator ends.
