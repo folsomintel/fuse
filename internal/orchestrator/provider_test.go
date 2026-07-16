@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 )
 
@@ -12,6 +13,7 @@ import (
 type bootMockEnv struct {
 	name         string
 	url          string
+	mu           sync.Mutex
 	uploads      map[string][]byte
 	agentCommand string
 	execCalls    [][]string
@@ -29,6 +31,8 @@ func (e *bootMockEnv) ExecStream(_ context.Context, _, _ io.Writer, name string,
 	return nil
 }
 func (e *bootMockEnv) Upload(_ context.Context, data []byte, path string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.uploads == nil {
 		e.uploads = make(map[string][]byte)
 	}

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -17,6 +18,7 @@ type credForkEnv struct {
 	name string
 	url  string
 
+	mu          sync.Mutex
 	files       map[string][]byte
 	checkpoints []Checkpoint
 
@@ -45,6 +47,8 @@ func (e *credForkEnv) ExecStream(context.Context, io.Writer, io.Writer, string, 
 }
 
 func (e *credForkEnv) Upload(_ context.Context, data []byte, path string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.files == nil {
 		e.files = make(map[string][]byte)
 	}

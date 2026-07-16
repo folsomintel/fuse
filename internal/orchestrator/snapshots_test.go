@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,6 +15,7 @@ type snapshotTestEnv struct {
 	name string
 	url  string
 
+	mu          sync.Mutex
 	files       map[string][]byte
 	checkpoints []Checkpoint
 }
@@ -29,6 +31,8 @@ func (e *snapshotTestEnv) ExecStream(context.Context, io.Writer, io.Writer, stri
 	return nil
 }
 func (e *snapshotTestEnv) Upload(_ context.Context, data []byte, path string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.files == nil {
 		e.files = make(map[string][]byte)
 	}

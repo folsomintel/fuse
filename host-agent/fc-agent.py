@@ -64,6 +64,8 @@ if not TOKEN:
     sys.exit(1)
 
 VMS_DIR.mkdir(parents=True, exist_ok=True)
+SSH_CONTROL_DIR = STATE_DIR / "ssh-control"
+SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
 
 _vm_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -150,7 +152,7 @@ def tap_name(idx: int) -> str:
     return f"fcv{idx}"
 
 
-def setup_tap(idx: int) -> tuple[str, str, str]:
+def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     tap = tap_name(idx)
     host_ip = f"10.200.{idx}.1"
     guest_ip = f"10.200.{idx}.2"
@@ -158,18 +160,15 @@ def setup_tap(idx: int) -> tuple[str, str, str]:
     sudo(["ip", "tuntap", "add", tap, "mode", "tap"])
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
-    host_iface = subprocess.check_output(
-        "ip -o route get 8.8.8.8 | awk '{print $5}'", shell=True
-    ).decode().strip()
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
     # NAT rules (idempotent)
     for chk, add in [
-        (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", host_iface, "-j", "MASQUERADE"],
-         ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", host_iface, "-j", "MASQUERADE"]),
-        (["iptables", "-C", "FORWARD", "-i", tap, "-o", host_iface, "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", tap, "-o", host_iface, "-j", "ACCEPT"]),
-        (["iptables", "-C", "FORWARD", "-i", host_iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", host_iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
+        (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
+         ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
+        (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
+         ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"]),
+        (["iptables", "-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+         ["iptables", "-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
     ]:
         if sudo(chk, check=False).returncode != 0:
             sudo(add)
@@ -186,9 +185,8 @@ def host_iface() -> str:
     ).decode().strip()
 
 
-def add_agent_forward(host_port: int, guest_ip: str) -> None:
+def add_agent_forward(host_port: int, guest_ip: str, iface: str) -> None:
     """DNAT <host>:host_port -> guest_ip:FUSED_PORT, plus FORWARD allow."""
-    iface = host_iface()
     rules = [
         ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
@@ -262,11 +260,23 @@ SSH_BASE = [
     "-o", "LogLevel=ERROR",
     "-o", "ConnectTimeout=5",
     "-o", "BatchMode=yes",
+    # Reuse one multiplexed connection per guest instead of paying a fresh
+    # TCP+SSH handshake on every call (readiness poll, uploads, exec, agent
+    # start easily add up to 8-10 calls per create). Short-lived on purpose:
+    # ControlPersist expires the master on its own, so a stale socket left
+    # by a destroyed VM is harmless (a new VM at the same guest ip just
+    # starts a fresh master once the old one has timed out).
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=60s",
 ]
 
 
+def _ssh_control_path(guest_ip: str) -> str:
+    return str(SSH_CONTROL_DIR / f"{guest_ip}.sock")
+
+
 def ssh_exec(guest_ip: str, remote_cmd: str, stdin: bytes | None = None, timeout: float = 60.0) -> tuple[int, bytes, bytes]:
-    cmd = SSH_BASE + [f"root@{guest_ip}", remote_cmd]
+    cmd = SSH_BASE + ["-o", f"ControlPath={_ssh_control_path(guest_ip)}", f"root@{guest_ip}", remote_cmd]
     try:
         cp = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
@@ -280,7 +290,7 @@ def wait_for_ssh(guest_ip: str, timeout: float = 30.0) -> bool:
         rc, _, _ = ssh_exec(guest_ip, "true", timeout=4.0)
         if rc == 0:
             return True
-        time.sleep(1)
+        time.sleep(0.3)
     return False
 
 
@@ -331,18 +341,27 @@ def start_firecracker(meta: dict) -> None:
     )
     pid_out = subprocess.check_output(["bash", "-lc", cmd]).decode().strip()
     # The shell pid isn't the firecracker pid; discover via ss/lsof on the sock.
-    time.sleep(0.3)
-    for _ in range(20):
+    # The socket usually appears in well under 50ms, so poll fast instead of
+    # eating a fixed startup delay before the first check.
+    for _ in range(100):
         if sock.exists():
             break
-        time.sleep(0.2)
+        time.sleep(0.02)
     if not sock.exists():
         raise RuntimeError(f"firecracker failed to open {sock} (see {log})")
+    # sudo/setsid can leave its own short-lived process visible alongside the
+    # actual detached firecracker child right as the socket appears; settle
+    # briefly so pgrep sees the final process tree, then take the highest
+    # (most recently forked, i.e. deepest/real) pid among matches rather than
+    # the first -- otherwise destroy_vm can end up killing the wrapper and
+    # leaking the real firecracker process.
+    time.sleep(0.05)
     pgrep = subprocess.run(
         ["pgrep", "-f", f"firecracker --api-sock {sock}"],
         capture_output=True, text=True,
     )
-    real_pid = int(pgrep.stdout.strip().split("\n")[0]) if pgrep.stdout.strip() else int(pid_out)
+    pids = [int(p) for p in pgrep.stdout.split()]
+    real_pid = max(pids) if pids else int(pid_out)
     meta["pid"] = real_pid
     meta["sock"] = str(sock)
     # Make sock readable by our user so we could inspect; curl uses sudo anyway.
@@ -408,14 +427,22 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     (d / "snapshots").mkdir()
 
     idx = pick_index()
-    tap, host_ip, guest_ip = setup_tap(idx)
+    iface = host_iface()
+    tap, host_ip, guest_ip = setup_tap(idx, iface)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
-    add_agent_forward(host_port, guest_ip)
+    add_agent_forward(host_port, guest_ip, iface)
+    # Guard against a stale multiplexed connection from a previous VM that
+    # held this same guest ip (indices, and so ips, get reused).
+    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
 
     rootfs = d / "rootfs.ext4"
-    # Per-VM rootfs copy (so writes don't affect other VMs).
-    shutil.copyfile(source_rootfs, rootfs)
+    # Per-VM rootfs copy (so writes don't affect other VMs). Reflink when the
+    # filesystem supports copy-on-write (near-instant); same fallback pattern
+    # as snapshot_create's rootfs copy below.
+    sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
+    if not rootfs.exists():
+        shutil.copyfile(source_rootfs, rootfs)
     sudo(["chmod", "666", str(rootfs)], check=False)
 
     meta = {
@@ -472,6 +499,7 @@ def destroy_vm(vm_id: str) -> None:
     for endpoint in meta.get("expose_endpoints", []):
         del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
     teardown_tap(meta["tap"])
+    Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
 
 
@@ -522,10 +550,12 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])
-    tap, host_ip, guest_ip = setup_tap(meta["index"])
+    iface = host_iface()
+    tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
-        add_agent_forward(meta["host_port"], guest_ip)
+        add_agent_forward(meta["host_port"], guest_ip, iface)
+    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
     # Copy into a fresh inode and rename over the live rootfs instead of
     # overwriting it in place. The just-killed guest can leave dirty host
     # page-cache pages tied to the old rootfs inode; an in-place cp can
@@ -1092,7 +1122,13 @@ class Handler(BaseHTTPRequestHandler):
                         raise HTTPError(404, "vm not found")
                     return self._json(200, vm_public(meta))
                 if method == "DELETE":
-                    destroy_vm(vm_id)
+                    # Same lock order as create/fork (vm_lock outer, _create_lock
+                    # inner) so a delete can never run mid-create: it either
+                    # completes before the create starts or waits for the create
+                    # (and its meta.tmp writes) to finish first.
+                    with vm_lock(vm_id):
+                        with _create_lock:
+                            destroy_vm(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -1214,11 +1250,12 @@ def reattach_vms() -> None:
         try:
             # Recreate TAP + DNAT using the stored index/ports.
             teardown_tap(meta["tap"])
-            tap, host_ip, guest_ip = setup_tap(meta["index"])
+            iface = host_iface()
+            tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
             if "host_port" in meta:
                 del_agent_forward(meta["host_port"], guest_ip)
-                add_agent_forward(meta["host_port"], guest_ip)
+                add_agent_forward(meta["host_port"], guest_ip, iface)
             start_firecracker(meta)
             save_meta(meta)
         except Exception as e:

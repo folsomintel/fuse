@@ -80,6 +80,8 @@ if not TOKEN:
     sys.exit(1)
 
 VMS_DIR.mkdir(parents=True, exist_ok=True)
+SSH_CONTROL_DIR = STATE_DIR / "ssh-control"
+SSH_CONTROL_DIR.mkdir(parents=True, exist_ok=True)
 
 _vm_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -222,7 +224,7 @@ def tap_name(idx: int) -> str:
     return f"qv{idx}"
 
 
-def setup_tap(idx: int) -> tuple[str, str, str]:
+def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     """Create and configure the tap for a vm index; return (tap, host_ip, guest_ip)."""
     tap = tap_name(idx)
     host_ip = f"10.200.{idx}.1"
@@ -231,7 +233,6 @@ def setup_tap(idx: int) -> tuple[str, str, str]:
     sudo(["ip", "tuntap", "add", tap, "mode", "tap"])
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
-    iface = host_iface()
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
     for chk, add in [
         (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
@@ -258,9 +259,8 @@ def host_iface() -> str:
     ).decode().strip()
 
 
-def add_agent_forward(host_port: int, guest_ip: str) -> None:
+def add_agent_forward(host_port: int, guest_ip: str, iface: str) -> None:
     """DNAT host_port -> guest_ip:FUSED_PORT so the orchestrator can reach fused."""
-    iface = host_iface()
     rules = [
         ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
@@ -346,12 +346,24 @@ SSH_BASE = [
     "-o", "LogLevel=ERROR",
     "-o", "ConnectTimeout=5",
     "-o", "BatchMode=yes",
+    # Reuse one multiplexed connection per guest instead of paying a fresh
+    # TCP+SSH handshake on every call (readiness poll, uploads, exec, agent
+    # start easily add up to 8-10 calls per create). Short-lived on purpose:
+    # ControlPersist expires the master on its own, so a stale socket left
+    # by a destroyed VM is harmless (a new VM at the same guest ip just
+    # starts a fresh master once the old one has timed out).
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPersist=60s",
 ]
+
+
+def _ssh_control_path(guest_ip: str) -> str:
+    return str(SSH_CONTROL_DIR / f"{guest_ip}.sock")
 
 
 def ssh_exec(guest_ip: str, remote_cmd: str, stdin: bytes | None = None, timeout: float = 60.0) -> tuple[int, bytes, bytes]:
     """Run remote_cmd in the guest over SSH; return (rc, stdout, stderr)."""
-    cmd = SSH_BASE + [f"root@{guest_ip}", remote_cmd]
+    cmd = SSH_BASE + ["-o", f"ControlPath={_ssh_control_path(guest_ip)}", f"root@{guest_ip}", remote_cmd]
     try:
         cp = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired as e:
@@ -366,7 +378,7 @@ def wait_for_ssh(guest_ip: str, timeout: float = 30.0) -> bool:
         rc, _, _ = ssh_exec(guest_ip, "true", timeout=4.0)
         if rc == 0:
             return True
-        time.sleep(1)
+        time.sleep(0.3)
     return False
 
 
@@ -451,12 +463,13 @@ def start_qemu(meta: dict) -> None:
 
     sudo(argv, check=True)
 
-    time.sleep(0.3)
+    # The pidfile/socket usually appear in well under 50ms, so poll fast
+    # instead of eating a fixed startup delay before the first check.
     pidfile = d / "qemu.pid"
-    for _ in range(20):
+    for _ in range(100):
         if pidfile.exists() and sock.exists():
-            break 
-        time.sleep(0.2)
+            break
+        time.sleep(0.02)
     if not pidfile.exists():
         raise RuntimeError(f"qemu failed to start (see {log})")
          
@@ -509,13 +522,21 @@ def create_vm(req: dict) -> dict:
     d.mkdir(parents=True)
 
     idx = pick_index()
-    tap, host_ip, guest_ip = setup_tap(idx)
+    iface = host_iface()
+    tap, host_ip, guest_ip = setup_tap(idx, iface)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
-    add_agent_forward(host_port, guest_ip)
+    add_agent_forward(host_port, guest_ip, iface)
+    # Guard against a stale multiplexed connection from a previous VM that
+    # held this same guest ip (indices, and so ips, get reused).
+    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
 
     rootfs = d / "rootfs.qcow2"
-    shutil.copyfile(source_rootfs, rootfs)
+    # Reflink when the filesystem supports copy-on-write (near-instant);
+    # falls back to a full byte copy otherwise.
+    sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
+    if not rootfs.exists():
+        shutil.copyfile(source_rootfs, rootfs)
     sudo(["chmod", "666", str(rootfs)], check=False)
 
     meta = {
@@ -573,6 +594,7 @@ def destroy_vm(vm_id: str) -> None:
     for endpoint in meta.get("expose_endpoints", []):
         del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
     teardown_tap(meta["tap"])
+    Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
     
 
@@ -1087,7 +1109,13 @@ class Handler(BaseHTTPRequestHandler):
                         raise HTTPError(404, "vm not found")
                     return self._json(200, vm_public(meta))
                 if method == "DELETE":
-                    destroy_vm(vm_id)
+                    # Same lock order as create/fork (vm_lock outer, _create_lock
+                    # inner) so a delete can never run mid-create: it either
+                    # completes before the create starts or waits for the create
+                    # (and its meta.tmp writes) to finish first.
+                    with vm_lock(vm_id):
+                        with _create_lock:
+                            destroy_vm(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -1189,11 +1217,12 @@ def reattach_vms() -> None:
         print(f"[qemu-agent] reattach: relaunching {meta['vm_id']}", flush=True)
         try:
             teardown_tap(meta["tap"])
-            tap, host_ip, guest_ip = setup_tap(meta["index"])
+            iface = host_iface()
+            tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
             if "host_port" in meta:
                 del_agent_forward(meta["host_port"], guest_ip)
-                add_agent_forward(meta["host_port"], guest_ip)
+                add_agent_forward(meta["host_port"], guest_ip, iface)
             start_qemu(meta)
             save_meta(meta)
         except Exception as e:

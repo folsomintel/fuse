@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -262,15 +263,28 @@ type bootInputs struct {
 	opts      BootOptions
 }
 
-// uploadFiles uploads every path->bytes entry of files into the env. The
-// generic boot path drives all guest uploads (manifest, secrets, credentials)
-// through this from AgentSpec.Files; the agent profile decides which files
-// exist and where they land.
+// uploadFiles uploads every path->bytes entry of files into the env,
+// concurrently: each upload is an independent guest file with no shared
+// state, so there is no reason to pay their round trips one after another.
+// The generic boot path drives all guest uploads (manifest, secrets,
+// credentials) through this from AgentSpec.Files; the agent profile decides
+// which files exist and where they land.
 func uploadFiles(ctx context.Context, env Environment, files map[string][]byte) error {
+	var wg sync.WaitGroup
+	errs := make(chan error, len(files))
 	for path, data := range files {
-		if err := env.Upload(ctx, data, path); err != nil {
-			return fmt.Errorf("upload %s: %w", path, err)
-		}
+		wg.Add(1)
+		go func(path string, data []byte) {
+			defer wg.Done()
+			if err := env.Upload(ctx, data, path); err != nil {
+				errs <- fmt.Errorf("upload %s: %w", path, err)
+			}
+		}(path, data)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		return err
 	}
 	return nil
 }
