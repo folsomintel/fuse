@@ -18,17 +18,20 @@ const defaultHealthCheckTimeout = 2 * time.Second
 // stack traces or huge driver errors into probe responses.
 const readinessErrorMaxLen = 200
 
-// Healthcheck wires /health and /ready handlers.
+// Healthcheck wires /health, /ready, and /v1/version handlers.
 //
-// /health: liveness probe. Always 200; no dependencies.
-// /ready:  readiness probe. 200 when state store + fleet are reachable.
+// /health:     liveness probe. Always 200; no dependencies.
+// /ready:      readiness probe. 200 when state store + fleet are reachable.
 //
 //	503 with a JSON breakdown when any check fails.
 //
-// Both are plaintext / unauthenticated by design — k8s and ALB probes
-// don't (and shouldn't) carry bearer tokens, so this handler is
-// mounted on the outer mux in server/main.go alongside /metrics,
-// outside the auth + CIDR middleware chain installed by Handler.Router.
+// /v1/version: identifies the process as the fuse orchestrator.
+//
+// All three are plaintext / unauthenticated by design — k8s and ALB probes
+// don't (and shouldn't) carry bearer tokens, and a CLI probing an unknown
+// URL can't carry a confirmed token yet either. This handler is mounted on
+// the outer mux in server/main.go alongside /metrics, outside the auth +
+// CIDR middleware chain installed by Handler.Router.
 type Healthcheck struct {
 	// Fleet is the FleetManager whose readiness we report. A nil
 	// pointer is treated as "not initialized" and fails readiness.
@@ -41,6 +44,11 @@ type Healthcheck struct {
 	// CheckTimeout bounds each readiness dependency check. If zero,
 	// defaults to defaultHealthCheckTimeout.
 	CheckTimeout time.Duration
+
+	// BuildVersion is the orchestrator build version reported by
+	// /v1/version. Empty renders as "dev" (matching main.version's zero
+	// value).
+	BuildVersion string
 }
 
 // Liveness reports that the process is up and able to serve HTTP.
@@ -48,6 +56,21 @@ type Healthcheck struct {
 // this to decide whether to restart the pod.
 func (h *Healthcheck) Liveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Version identifies this process as the fuse orchestrator, unauthenticated
+// so a caller can tell it apart from a host agent (or nothing at all)
+// before it has a valid token. `fuse connect` probes this before saving a
+// context.
+func (h *Healthcheck) Version(w http.ResponseWriter, _ *http.Request) {
+	v := h.BuildVersion
+	if v == "" {
+		v = "dev"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"service": "fuse-orchestrator",
+		"version": v,
+	})
 }
 
 // Readiness reports whether the orchestrator can currently serve

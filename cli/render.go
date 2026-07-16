@@ -83,6 +83,8 @@ func friendly(err error) error {
 		msg = http.StatusText(apiErr.Status)
 	}
 	switch {
+	case apiErr.Code == fuse.CodeRouteNotFound:
+		return fmt.Errorf("%s (is this the orchestrator? the url may be wrong, or point at a different service)", msg)
 	case apiErr.Status == http.StatusForbidden || apiErr.Code == "forbidden":
 		return fmt.Errorf("forbidden: %s\n  your token may lack permission (api-key commands need the master token), or the endpoint may be CIDR-restricted", msg)
 	case fuse.IsUnauthorized(err):

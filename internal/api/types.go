@@ -153,6 +153,12 @@ const (
 	CodeInternal        = "internal"
 	CodeUnauthorized    = "unauthorized"
 	CodeUnimplemented   = "unimplemented"
+
+	// CodeRouteNotFound distinguishes "this URL isn't a route this server
+	// exposes" (wrong host, wrong port, not the orchestrator at all) from
+	// CodeNotFound's "route exists, resource doesn't" (e.g. an unknown vm
+	// or host id).
+	CodeRouteNotFound = "route_not_found"
 )
 
 // ── Exec types ─────────────────────────────────────────────────────

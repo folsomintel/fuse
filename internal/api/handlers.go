@@ -40,6 +40,11 @@ type Handler struct {
 	// Empty means no auth (insecure/dev mode).
 	AuthToken string
 
+	// Version is the orchestrator build version, stamped into the Server
+	// response header on every request (e.g. "fuse-orchestrator/0.4.0").
+	// Empty renders as "fuse-orchestrator/dev".
+	Version string
+
 	// APIKeys is the store of revocable API keys. When non-nil it is
 	// consulted by BearerAuth as a second accept path (after the master
 	// token) and backs the /v1/api-keys management endpoints. Nil
@@ -92,6 +97,20 @@ type Handler struct {
 func (h *Handler) Router() (http.Handler, error) {
 	r := chi.NewRouter()
 
+	// Server header so a caller (e.g. `fuse connect`'s probe) can identify
+	// this process even on a route it doesn't recognize.
+	version := h.Version
+	if version == "" {
+		version = "dev"
+	}
+	serverHeader := "fuse-orchestrator/" + version
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Server", serverHeader)
+			next.ServeHTTP(w, r)
+		})
+	})
+
 	// Request ID (outermost — every other layer can read RequestID(ctx)).
 	r.Use(RequestIDMiddleware)
 
@@ -136,6 +155,17 @@ func (h *Handler) Router() (http.Handler, error) {
 		}
 		priv.Use(BearerAuth(h.AuthToken, keyAuth, h.OnAuthFailure))
 		h.register(priv)
+	})
+
+	// A URL that doesn't match any registered route is not the same
+	// failure as a registered route whose resource doesn't exist (a 404
+	// via writeError(CodeNotFound) elsewhere in this file) — it usually
+	// means the caller has the wrong host, wrong port, or isn't talking to
+	// the orchestrator at all. Give it its own code so the CLI can tell
+	// the two apart instead of rendering a bare "not found".
+	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, CodeRouteNotFound,
+			"no such route: "+r.Method+" "+r.URL.Path, nil)
 	})
 
 	return r, nil

@@ -20,6 +20,13 @@ const (
 	CodeUnavailable     = "unavailable"
 	CodeInternal        = "internal"
 	CodeUnauthorized    = "unauthorized"
+	CodeUnimplemented   = "unimplemented"
+
+	// CodeRouteNotFound means the URL doesn't match any route the server
+	// exposes — a wrong host/port, or a server that isn't the fuse
+	// orchestrator at all — as opposed to CodeNotFound's "route exists,
+	// resource doesn't".
+	CodeRouteNotFound = "route_not_found"
 )
 
 type apiErrorEnvelope struct {

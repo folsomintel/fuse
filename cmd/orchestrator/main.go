@@ -319,6 +319,7 @@ func run() error {
 		SecureCookies:           useTLS,
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
+		Version:                 version,
 		MetricsRequestsTotal:    promMetrics.HTTPRequestsTotal,
 		MetricsRequestDuration:  promMetrics.HTTPRequestDuration,
 		MetricsRequestsInFlight: promMetrics.HTTPRequestsInFlight,
@@ -333,11 +334,12 @@ func run() error {
 	// router so Prometheus and load-balancer / k8s probes can scrape
 	// without a Bearer token. These probes intentionally do not (and
 	// shouldn't) carry credentials.
-	hc := &api.Healthcheck{Fleet: fm, Store: store}
+	hc := &api.Healthcheck{Fleet: fm, Store: store, BuildVersion: version}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health", hc.Liveness)
 	mux.HandleFunc("/ready", hc.Readiness)
+	mux.HandleFunc("/v1/version", hc.Version)
 	mux.Handle("/", router)
 
 	srv := &http.Server{
