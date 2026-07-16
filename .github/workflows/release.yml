@@ -123,6 +123,8 @@ jobs:
       - run: npm run build
       # the tagged commit already carries the right version in package.json.
       - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish-pypi:
     name: Publish Python SDK to PyPI
