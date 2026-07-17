@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/folsomintel/fuse/compare/v0.5.0...v0.6.0) (2026-07-17)
+
+
+### Features
+
+* **cli:** add support for --no-verify flag to connect and quickstart commands ([b43f7b2](https://github.com/folsomintel/fuse/commit/b43f7b254eeff90a07747811e3700af8400c5a19))
+
 ## [0.5.0](https://github.com/folsomintel/fuse/compare/v0.4.0...v0.5.0) (2026-07-17)
 
 
