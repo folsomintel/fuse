@@ -192,6 +192,21 @@ type CapacityProber interface {
 	Capacity(ctx context.Context) (HostCapacity, error)
 }
 
+// HTTPStatusError carries the HTTP status code (and trimmed body) from a
+// non-2xx host-agent response so callers can branch on the code without
+// importing a specific provider package. Providers wrap their raw HTTP
+// errors in this type; RegisterHost uses it to tell "agent rejected the
+// token" (401) apart from "agent unreachable" or any other failure when the
+// register-time capacity probe (see CapacityProber) errors out.
+type HTTPStatusError struct {
+	Code int
+	Body string
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
+}
+
 // AgentSpec is the generic, provider-agnostic description of the guest agent
 // to launch inside a sandbox. fused is expressed as one configuration of this
 // spec via FusedAgentSpec (see agent_profile.go); nothing fuse-specific is

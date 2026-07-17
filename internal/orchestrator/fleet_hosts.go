@@ -345,12 +345,24 @@ func (fm *FleetManager) hostFromRecord(r HostRecord) Host {
 		return h
 	}
 	if len(fm.tokenEncryptionKey) == 32 {
-		if plain, err := secrets.DecryptToken(r.TokenEncrypted, fm.tokenEncryptionKey); err == nil {
+		plain, err := secrets.DecryptToken(r.TokenEncrypted, fm.tokenEncryptionKey)
+		if err == nil {
 			h.Token = plain
 			return h
 		}
+		// A configured 32-byte key that cannot decrypt this row means the
+		// key changed (or the row is corrupt), not a legacy plaintext
+		// token. Using the raw ciphertext bytes as a bearer token would
+		// silently 401 every call to this host with garbage that looks
+		// like a real token. Fail loud instead: leave the token empty so
+		// the failure is a clean, diagnosable "rejected the token", and
+		// tell the operator the key is the problem.
+		fm.logger.Error("host token decrypt failed; leaving token empty (check TOKEN_ENCRYPTION_KEY has not changed)",
+			"host_id", r.ID, "error", err)
+		return h
 	}
-	// Fallback: ciphertext stored without encryption (legacy / dev).
+	// No encryption key configured: the row holds a plaintext token stored
+	// on a keyless (legacy / dev) orchestrator.
 	h.Token = string(r.TokenEncrypted)
 	return h
 }

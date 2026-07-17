@@ -279,7 +279,7 @@ func TestRemote_http_error(t *testing.T) {
 	// status code, and its Error() string must remain byte-identical to the
 	// previous fmt.Errorf("http %d: %s", ...) so text-matching callers keep
 	// working.
-	var statusErr *httpStatusError
+	var statusErr *orchestrator.HTTPStatusError
 	if !errors.As(err, &statusErr) {
 		t.Fatalf("expected *httpStatusError, got %T: %v", err, err)
 	}
@@ -454,7 +454,7 @@ func TestStartAgent_non_404_error_propagates(t *testing.T) {
 	if gotStartSurfd {
 		t.Fatal("must not fall back to /start-surfd on non-404 error")
 	}
-	var statusErr *httpStatusError
+	var statusErr *orchestrator.HTTPStatusError
 	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusInternalServerError {
 		t.Fatalf("expected *httpStatusError code 500, got %T: %v", err, err)
 	}

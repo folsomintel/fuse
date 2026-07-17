@@ -7,6 +7,32 @@ icon: Server
 For anything past local dev, run the orchestrator as a service rather than a
 foreground process.
 
+## Tokens and ports
+
+Two things cause most bring-up confusion: which token goes where, and which
+port is which service. State both up front.
+
+There are three distinct tokens, travelling in different directions:
+
+| Token | Set on | Used by | Flag / env |
+| --- | --- | --- | --- |
+| Orchestrator bearer | Orchestrator | you → orchestrator | `ORCH_AUTH_TOKEN` / `fuse connect --token` |
+| Host agent token | Host agent (`fc-agent`) | orchestrator → agent | `fuse host register --token` (the agent's `FC_AGENT_TOKEN`) |
+| API key | Orchestrator | apps → orchestrator | `fuse apikeys create` |
+
+The single most common setup mistake is passing the host agent token to
+`fuse connect`, or the orchestrator token to `fuse host register`. They are not
+interchangeable. `fuse connect` and `fuse host register` both probe with the
+token you give them and fail early with a message naming the layer that
+rejected it, rather than surfacing an opaque `401` one command later.
+
+Default ports:
+
+| Port | Service |
+| --- | --- |
+| `8080` | Orchestrator (control plane API) |
+| `8090` | Host agent (`fc-agent` / `qemu-agent`) |
+
 ## Configuration
 
 | Env var | Flag | Default | Purpose |
@@ -76,6 +102,34 @@ It then prints the `FUSE_BASE_URL` and `FUSE_TOKEN` values for connecting a
 dashboard, if you're running one. `FUSE_TOKEN` must match the orchestrator's
 `ORCH_AUTH_TOKEN`. Open `8080/tcp` (or terminate TLS at a reverse proxy and point
 clients there). Remove the service with `./fc-agent.sh uninstall-orchestrator`.
+
+## One script: dedicated control-plane host
+
+For a host that runs only the control plane (no co-located agent), use the
+standalone installer instead:
+
+```bash
+sudo ./scripts/install-orchestrator.sh
+```
+
+It installs the `orchestrator` binary (from `ORCH_BIN_SRC=/path`, a local
+`./orchestrator`, or the latest GitHub release), writes `/etc/fuse/orchestrator.env`
+with a freshly generated `ORCH_AUTH_TOKEN` and `TOKEN_ENCRYPTION_KEY` (never
+overwriting an existing file), installs and starts `fuse-orchestrator.service`,
+and prints the exact `fuse connect` line to run from your laptop:
+
+```
+orchestrator installed and listening on :8080
+
+  fuse connect http://<this-host>:8080 --token <generated> --master
+```
+
+The default posture is a single-node, in-memory store with auth on, so it starts
+immediately. For a durable deploy, set `DATABASE_URL` in
+`/etc/fuse/orchestrator.env`, uncomment `ORCH_REQUIRE_AUTH=true`, and restart. This
+is a different unit (`fuse-orchestrator.service`, config in `/etc/fuse/`) from the
+co-located `install-orchestrator` path above (`orchestrator.service`, config in
+`/etc/default/orchestrator`); use one or the other per host, not both.
 
 ## Running the orchestrator standalone
 

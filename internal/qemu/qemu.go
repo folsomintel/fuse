@@ -37,17 +37,6 @@ const (
 	fusedTLSKeyGuestPath   = "/fuse/tls/key.pem"
 )
 
-// httpStatusError carries the HTTP status code (and trimmed body) from a
-// non-2xx host-agent response so callers can branch on the code.
-type httpStatusError struct {
-	Code int
-	Body string
-}
-
-func (e *httpStatusError) Error() string {
-	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
-}
-
 // Config configures the QEMU provider client.
 type Config struct {
 	BaseURL     string       // host agent base URL, e.g. https://gpu-host.local
@@ -444,7 +433,7 @@ func (p *Provider) doJSON(ctx context.Context, method, path string, reqBody any,
 
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return &httpStatusError{Code: res.StatusCode, Body: strings.TrimSpace(string(b))}
+		return &orchestrator.HTTPStatusError{Code: res.StatusCode, Body: strings.TrimSpace(string(b))}
 	}
 	if respBody == nil {
 		return nil
