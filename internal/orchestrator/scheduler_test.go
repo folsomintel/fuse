@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -205,7 +206,7 @@ func TestHostCapacity_GPUFieldsRoundTripJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
 		t.Errorf("round trip = %+v, want %+v", out, in)
 	}
 }
@@ -329,6 +330,67 @@ func TestSchedule_gpuEmptyKindMatchesAnyKind(t *testing.T) {
 	}
 	if picked.ID != "h1" {
 		t.Errorf("picked %s, want h1", picked.ID)
+	}
+}
+
+func TestFits_migProfileUsesMIGPool(t *testing.T) {
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUs: 0, GPUKind: "a100",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+	}
+	tests := []struct {
+		name      string
+		allocated HostCapacity
+		spec      Spec
+		want      bool
+	}{
+		{
+			name: "profile fits free pool",
+			spec: Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 2, GPUProfile: "1g.10gb"},
+			want: true,
+		},
+		{
+			name:      "profile exhausted",
+			allocated: HostCapacity{MIGProfiles: map[string]int{"1g.10gb": 4}},
+			spec:      Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUProfile: "1g.10gb"},
+			want:      false,
+		},
+		{
+			name: "unknown profile",
+			spec: Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUProfile: "2g.20gb"},
+			want: false,
+		},
+		{
+			name: "whole-device request ignores mig pool",
+			spec: Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1},
+			want: false, // GPUs capacity is 0
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := fits(cap, tc.allocated, tc.spec)
+			if got != tc.want {
+				t.Errorf("fits = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSchedule_migProfilePlacedOnMatchingHost(t *testing.T) {
+	whole := gpuHost("whole-1", BackendQEMU, 2, "a100")
+	mig := gpuHost("mig-1", BackendQEMU, 0, "a100")
+	mig.Capacity.MIGProfiles = map[string]int{"1g.10gb": 4}
+
+	spec := gpuSpec(1, "a100")
+	spec.GPUProfile = "1g.10gb"
+
+	picked, _, err := Schedule(spec, []*Host{whole, mig}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "mig-1" {
+		t.Errorf("picked %s, want mig-1", picked.ID)
 	}
 }
 

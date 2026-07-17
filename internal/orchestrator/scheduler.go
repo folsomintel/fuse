@@ -43,6 +43,19 @@ type HostCapacity struct {
 
 	// GPUKind identifies the GPU model (e.g. "a100"). Empty when GPUs is 0.
 	GPUKind string `json:"gpu_kind,omitempty"`
+
+	// MIGProfiles is fractional GPU capacity: MIG instance count by
+	// profile name (e.g. {"1g.10gb": 4}). A GPU in MIG mode stays on the
+	// nvidia driver and exports mdev devices, so it is never part of the
+	// whole-device GPUs pool — the two counters are independent (D5).
+	// Only qemu-backed hosts may advertise MIG profiles.
+	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+}
+
+// freeMIG returns the free instance count for a MIG profile given the
+// host's capacity and allocated maps.
+func freeMIG(capacity, allocated HostCapacity, profile string) int {
+	return capacity.MIGProfiles[profile] - allocated.MIGProfiles[profile]
 }
 
 // HostBackend identifies the virtualization backend a host agent runs.
@@ -69,7 +82,13 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 		return false
 	}
 	if spec.GPUs > 0 {
-		if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
+		if spec.GPUProfile != "" {
+			// Fractional request: spec.GPUs counts MIG instances of the
+			// requested profile, allocated from the host's MIG pool (D5).
+			if freeMIG(capacity, allocated, spec.GPUProfile) < int(spec.GPUs) {
+				return false
+			}
+		} else if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
 			return false
 		}
 		if spec.GPUKind != "" && spec.GPUKind != capacity.GPUKind {

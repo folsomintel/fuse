@@ -67,6 +67,12 @@ QEMU_BIN = os.environ.get("QEMU_BIN", "/usr/bin/qemu-system-x86_64")
 # as emitted by `qemu-vfio-bind.sh --list`. The agent reads it to pick free
 # devices to attach at create time.
 VFIO_INVENTORY = Path(os.environ.get("VFIO_INVENTORY", str(QEMU_DIR / "vfio-inventory.txt")))
+# Path listing MIG instances exposed as mediated devices, one per line
+# ("<profile> <kind> <mdev_uuid>", e.g. "1g.10gb a100 c73f1fa6-..."). The
+# operator carves MIG GPU instances and creates the mdev devices (nvidia vGPU
+# host driver) before listing them here; the agent picks free ones to attach
+# via vfio-pci sysfsdev at create time (decision D5, fractional passthrough).
+MIG_INVENTORY = Path(os.environ.get("MIG_INVENTORY", str(QEMU_DIR / "mig-inventory.txt")))
 # Port the in-guest agent listens on; per-VM host ports DNAT to this.
 FUSED_PORT = int(os.environ.get("FUSED_PORT", "9550"))
 HOST_PORT_BASE = int(os.environ.get("FUSE_HOST_PORT_BASE", "19650"))
@@ -196,6 +202,72 @@ def pick_gpu_slots(count: int, kind: str | None) -> list[str]:
             f"{available_count} available in complete iommu groups")
 
     return selected
+
+
+# -- MIG / mdev inventory (fractional passthrough, decision D5) ---------------
+
+def read_mig_inventory() -> list[dict]:
+    """Parse MIG_INVENTORY into a list of allocatable MIG instances.
+
+    Each line is "<profile> <kind> <mdev_uuid>" (one MIG instance per line).
+    Returns dicts like {"profile": "1g.10gb", "kind": "a100", "uuid": "..."}.
+    """
+    if not MIG_INVENTORY.exists():
+        return []
+    devices: list[dict] = []
+    for lineno, raw in enumerate(MIG_INVENTORY.read_text().splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 3:
+            raise HTTPError(500, f"bad mig inventory at {MIG_INVENTORY}:{lineno}: {raw!r}")
+        profile, kind, mdev_uuid = parts
+        devices.append({"profile": profile.lower(), "kind": kind.lower(), "uuid": mdev_uuid})
+    return devices
+
+
+def allocated_mdev_uuids() -> set[str]:
+    """Return the set of mdev uuids already attached to a running vm.
+
+    Scans every vm meta.json under VMS_DIR so MIG allocation never
+    double-assigns an instance across concurrent VMs.
+    """
+    used: set[str] = set()
+    for meta in list_vms():
+        used.update(meta.get("gpu_mdevs", []))
+    return used
+
+
+def pick_mig_devices(count: int, profile: str, kind: str | None) -> list[str]:
+    """Choose `count` free MIG instances of `profile` (optionally by kind).
+
+    Returns their mdev uuids. Empty/None kind matches any kind. Raises
+    HTTPError(409) when fewer than `count` matching instances are free.
+    """
+    if count <= 0:
+        return []
+
+    want_profile = profile.lower()
+    want_kind = (kind or "").lower()
+    used = allocated_mdev_uuids()
+
+    selected: list[str] = []
+    for device in read_mig_inventory():
+        if device["profile"] != want_profile:
+            continue
+        if want_kind and device["kind"] != want_kind:
+            continue
+        if device["uuid"] in used:
+            continue
+        selected.append(device["uuid"])
+        if len(selected) == count:
+            return selected
+
+    kind_desc = f"kind {want_kind!r}" if want_kind else "any kind"
+    raise HTTPError(409,
+        f"insufficient free mig instances: requested {count} x {want_profile} of "
+        f"{kind_desc}, {len(selected)} free")
 
 
 # -- Networking ---------------------------------------------------------------
@@ -429,8 +501,10 @@ def start_qemu(meta: dict) -> None:
 
     Builds the qemu-system-x86_64 argv from meta: kvm acceleration, OVMF
     firmware, the per-vm rootfs drive, a tap netdev, vcpu/memory sizing, and one
-    "-device vfio-pci,host=<slot>" per assigned GPU in meta["gpu_slots"]. Detach
-    with setsid; record the pid and monitor socket in meta.
+    "-device vfio-pci,host=<slot>" per assigned whole GPU in meta["gpu_slots"]
+    plus one "-device vfio-pci,sysfsdev=/sys/bus/mdev/devices/<uuid>" per
+    assigned MIG instance in meta["gpu_mdevs"] (decision D5). Detach with
+    setsid; record the pid and monitor socket in meta.
     """
     d = vm_dir(meta["vm_id"])
     sock = d / "qmp.sock" 
@@ -460,6 +534,9 @@ def start_qemu(meta: dict) -> None:
 
     for slot in meta.get("gpu_slots", []):
         argv += ["-device", f"vfio-pci,host={slot}"]
+
+    for mdev_uuid in meta.get("gpu_mdevs", []):
+        argv += ["-device", f"vfio-pci,sysfsdev=/sys/bus/mdev/devices/{mdev_uuid}"]
 
     sudo(argv, check=True)
 
@@ -495,11 +572,14 @@ def create_vm(req: dict) -> dict:
     """Create and boot a vm from a create request.
 
     req carries name, cpus, memory_mb, storage_gb, region, image, and the GPU
-    fields the qemu provider forwards: gpus (int) and gpu_kind (str). Resolves
-    the base rootfs (BASE_ROOTFS or IMAGES_DIR/<image>.qcow2), allocates a
-    per-vm index/tap/host-port, picks `gpus` free VFIO devices matching
-    gpu_kind via pick_gpu_slots, copies a per-vm rootfs, then start_qemu. Rolls
-    back all allocations on any failure. Returns the vm meta dict.
+    fields the qemu provider forwards: gpus (int), gpu_kind (str), and
+    gpu_profile (str, MIG profile like "1g.10gb"). Resolves the base rootfs
+    (BASE_ROOTFS or IMAGES_DIR/<image>.qcow2), allocates a per-vm
+    index/tap/host-port, then picks GPU devices: with gpu_profile set, `gpus`
+    free MIG instances of that profile via pick_mig_devices (fractional, D5);
+    otherwise `gpus` free whole VFIO devices via pick_gpu_slots. Copies a
+    per-vm rootfs, then start_qemu. Rolls back all allocations on any failure.
+    Returns the vm meta dict.
     """
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name) 
@@ -514,7 +594,13 @@ def create_vm(req: dict) -> dict:
 
     gpu_count = int(req.get("gpus", "0"))
     gpu_kind = req.get("gpu_kind") or ""
-    gpu_slots = pick_gpu_slots(gpu_count, gpu_kind or None)
+    gpu_profile = (req.get("gpu_profile") or "").lower()
+    if gpu_profile:
+        gpu_slots: list[str] = []
+        gpu_mdevs = pick_mig_devices(gpu_count, gpu_profile, gpu_kind or None)
+    else:
+        gpu_slots = pick_gpu_slots(gpu_count, gpu_kind or None)
+        gpu_mdevs = []
 
     d = vm_dir(vm_id)
     if d.exists():
@@ -556,7 +642,9 @@ def create_vm(req: dict) -> dict:
         "host_port": host_port,
         "gpus": gpu_count,
         "gpu_kind": gpu_kind,
+        "gpu_profile": gpu_profile,
         "gpu_slots": gpu_slots,
+        "gpu_mdevs": gpu_mdevs,
         "url": f"{PUBLIC_HOST}:{host_port}",
         "created_at": now_iso(),
     }

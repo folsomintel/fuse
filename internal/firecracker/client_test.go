@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -161,7 +162,7 @@ func TestCapacityQueriesHostAgent(t *testing.T) {
 		t.Fatalf("capacity: %v", err)
 	}
 	want := orchestrator.HostCapacity{CPUs: 8, RamMB: 16384, StorageGB: 100}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("capacity = %+v, want %+v", got, want)
 	}
 }

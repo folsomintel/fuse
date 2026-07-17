@@ -18,9 +18,14 @@ type Fusefile struct {
 
 // Resources is the human-friendly hardware spec; compiled to ResourceSpec.
 type Resources struct {
-	CPUs       int32  `yaml:"cpus,omitempty"`
-	GPU        int    `yaml:"gpu,omitempty"`         // whole-device count
-	GPUKind    string `yaml:"gpu_kind,omitempty"`    // optional match, e.g. "a100"
+	CPUs    int32  `yaml:"cpus,omitempty"`
+	GPU     int    `yaml:"gpu,omitempty"`      // device count: whole GPUs, or MIG instances when gpu_profile is set
+	GPUKind string `yaml:"gpu_kind,omitempty"` // optional match, e.g. "a100"
+	// GPUProfile requests fractional GPU allocation: a MIG profile in
+	// nvidia mig-parted vocabulary (e.g. "1g.10gb", "2g.20gb"). When set,
+	// `gpu` counts MIG instances of this profile rather than whole
+	// devices (decision D5). Empty means whole-device allocation.
+	GPUProfile string `yaml:"gpu_profile,omitempty"`
 	Memory     string `yaml:"memory,omitempty"`      // e.g. "2GB"
 	Storage    string `yaml:"storage,omitempty"`     // e.g. "10GB"
 	MaxRuntime string `yaml:"max_runtime,omitempty"` // go duration

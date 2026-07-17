@@ -819,14 +819,22 @@ components:
           format: int32
           minimum: 0
           description: |
-            Count of whole GPU devices requested. Zero means no GPU.
-            A non-zero value routes the environment to a host with
-            matching free GPU inventory.
+            Count of GPU devices requested. Zero means no GPU.
+            With gpu_profile unset, this is whole devices; with
+            gpu_profile set, this is the count of MIG instances of
+            that profile (decision D5).
         gpu_kind:
           type: string
           description: |
             Optional GPU model to match (e.g. "a100"). Empty matches any
             kind on a host that has GPUs.
+        gpu_profile:
+          type: string
+          description: |
+            Optional MIG profile in mig-parted vocabulary (e.g. "1g.10gb").
+            When set, gpus counts MIG instances of this profile rather
+            than whole devices, and the qemu host agent attaches them
+            via vfio-pci sysfsdev (decision D5).
         region:
           type: string
         max_runtime_seconds:
@@ -1115,6 +1123,14 @@ components:
         gpu_kind:
           type: string
           description: GPU model (e.g. "a100"). Empty when gpus is 0.
+        mig_profiles:
+          type: object
+          additionalProperties:
+            type: integer
+          description: |
+            Fractional GPU capacity: MIG instance count by profile name
+            (e.g. {"1g.10gb": 4}). Requires backend "qemu". Independent
+            of the whole-device gpus counter (decision D5).
 
     RegisterHostRequest:
       type: object

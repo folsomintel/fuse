@@ -38,12 +38,19 @@ type Spec struct {
 	StorageGB int
 	Region    string
 
-	// GPUs is the count of whole GPU devices requested. Zero means no GPU.
+	// GPUs is the count of GPU devices requested: whole devices, or MIG
+	// instances when GPUProfile is set. Zero means no GPU.
 	GPUs int32
 
 	// GPUKind identifies the requested GPU model (e.g. "a100"). Empty when
 	// GPUs is 0.
 	GPUKind string
+
+	// GPUProfile requests fractional GPU allocation: a MIG profile in
+	// mig-parted vocabulary (e.g. "1g.10gb"), passed through as an mdev
+	// device by the qemu host agent (decision D5). Empty means whole-device
+	// allocation.
+	GPUProfile string
 
 	// MaxRuntime overrides FleetConfig.TaskStuckTimeout for this task.
 	// Zero means "use the fleet default". This is a leak-detection ceiling,

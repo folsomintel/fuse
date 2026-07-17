@@ -27,6 +27,10 @@ type ResourceSpec struct {
 	Image             string `json:"image,omitempty"`
 	GPUs              int32  `json:"gpus,omitempty"`
 	GPUKind           string `json:"gpu_kind,omitempty"`
+	// GPUProfile requests fractional GPU allocation: a MIG profile in
+	// mig-parted vocabulary (e.g. "1g.10gb"). When set, GPUs counts MIG
+	// instances of this profile rather than whole devices (decision D5).
+	GPUProfile string `json:"gpu_profile,omitempty"`
 }
 
 // ExposeSpec requests that a guest port be published as a reachable
@@ -235,6 +239,10 @@ type HostCapacity struct {
 	VMCount   int    `json:"vm_count"`
 	GPUs      int    `json:"gpus,omitempty"`
 	GPUKind   string `json:"gpu_kind,omitempty"`
+	// MIGProfiles advertises fractional GPU capacity: MIG instance count
+	// by profile name (e.g. {"1g.10gb": 4}). Like GPUs, it requires
+	// backend "qemu" and is declared by the operator, never probed.
+	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
 }
 
 // RegisterHostRequest is the JSON body accepted by POST /v1/hosts.

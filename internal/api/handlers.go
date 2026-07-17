@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/fusefile"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/secrets"
 	"github.com/go-chi/chi/v5"
@@ -247,6 +249,10 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "task_id is required", nil)
 		return
 	}
+	if err := validateGPUSpec(req.Spec); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+		return
+	}
 
 	manifest, err := h.resolver().Resolve(req)
 	if err != nil {
@@ -272,6 +278,28 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, toAPIEnvironment(*info))
+}
+
+// validateGPUSpec enforces GPU request invariants at the API boundary so
+// raw SDK/API callers get the same checks the fusefile compiler applies:
+// no negative counts, and a MIG profile only in mig-parted form alongside
+// a positive instance count. The fusefile compiler validates too, but it
+// runs client-side and is trivially bypassed.
+func validateGPUSpec(s ResourceSpec) error {
+	if s.GPUs < 0 {
+		return errors.New("spec.gpus must not be negative")
+	}
+	if s.GPUProfile != "" {
+		if !fusefile.ValidGPUProfile(s.GPUProfile) {
+			return fmt.Errorf(
+				"spec.gpu_profile: invalid MIG profile %q (expected mig-parted form like \"1g.10gb\")",
+				s.GPUProfile)
+		}
+		if s.GPUs == 0 {
+			return errors.New("spec.gpu_profile requires spec.gpus >= 1 (the count of MIG instances)")
+		}
+	}
+	return nil
 }
 
 // listEnvironments returns tracked environments with optional filters.
@@ -696,6 +724,23 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "gpus must not be negative", nil)
 		return
 	}
+	if len(req.Capacity.MIGProfiles) > 0 && backend != orchestrator.BackendQEMU {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"mig_profiles requires backend \"qemu\"", nil)
+		return
+	}
+	for profile, count := range req.Capacity.MIGProfiles {
+		if !fusefile.ValidGPUProfile(profile) {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+				fmt.Sprintf("mig_profiles: invalid MIG profile %q (expected mig-parted form like \"1g.10gb\")", profile), nil)
+			return
+		}
+		if count <= 0 {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+				fmt.Sprintf("mig_profiles[%s]: count must be positive", profile), nil)
+			return
+		}
+	}
 
 	provider := h.NewProvider(req.URL, req.Token, backend)
 
@@ -712,6 +757,14 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		VMCount:   req.Capacity.VMCount,
 		GPUs:      req.Capacity.GPUs,
 		GPUKind:   req.Capacity.GPUKind,
+	}
+	if len(req.Capacity.MIGProfiles) > 0 {
+		// Lowercase profile keys so scheduling matches the (also
+		// lowercased) spec.gpu_profile regardless of declared casing.
+		capacity.MIGProfiles = make(map[string]int, len(req.Capacity.MIGProfiles))
+		for profile, count := range req.Capacity.MIGProfiles {
+			capacity.MIGProfiles[strings.ToLower(profile)] = count
+		}
 	}
 
 	// The capacity probe doubles as an auth probe: it is the first (and,

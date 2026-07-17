@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
@@ -61,7 +62,7 @@ func TestCapacityQueriesHostAgent(t *testing.T) {
 		t.Fatalf("capacity: %v", err)
 	}
 	want := orchestrator.HostCapacity{CPUs: 16, RamMB: 65536, StorageGB: 500}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("capacity = %+v, want %+v", got, want)
 	}
 }
@@ -101,6 +102,37 @@ func TestCreateForwardsGPUSpec(t *testing.T) {
 	}
 	if got.GPUKind != "a100" {
 		t.Errorf("create payload gpu_kind = %q, want a100", got.GPUKind)
+	}
+}
+
+// TestCreateForwardsGPUProfile asserts a fractional MIG request is forwarded
+// to the host agent as gpu_profile (decision D5).
+func TestCreateForwardsGPUProfile(t *testing.T) {
+	var got createVMRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/vm" || r.Method != http.MethodPost {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(createVMResponse{VMID: "fuse-t1", URL: "https://guest.local"})
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL})
+	if _, err := p.Create(context.Background(), orchestrator.Spec{
+		Name: "fuse-t1", GPUs: 2, GPUKind: "a100", GPUProfile: "1g.10gb",
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if got.GPUs != 2 {
+		t.Errorf("create payload gpus = %d, want 2", got.GPUs)
+	}
+	if got.GPUProfile != "1g.10gb" {
+		t.Errorf("create payload gpu_profile = %q, want 1g.10gb", got.GPUProfile)
 	}
 }
 

@@ -1,8 +1,10 @@
 package api
 
 import (
-	"github.com/folsomintel/fuse/internal/orchestrator"
+	"strings"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // toAPIEnvironment converts an orchestrator VMInfo into the wire shape.
@@ -34,10 +36,13 @@ func toAPIResourceSpec(s orchestrator.Spec) ResourceSpec {
 		Image:             s.Image,
 		GPUs:              s.GPUs,
 		GPUKind:           s.GPUKind,
+		GPUProfile:        s.GPUProfile,
 	}
 }
 
 // toOrchestratorSpec converts a wire spec into the orchestrator type.
+// GPUProfile is lowercased so profile matching against host inventory is
+// case-insensitive end to end.
 func toOrchestratorSpec(s ResourceSpec) orchestrator.Spec {
 	return orchestrator.Spec{
 		CPUs:       int(s.CPUs),
@@ -48,6 +53,7 @@ func toOrchestratorSpec(s ResourceSpec) orchestrator.Spec {
 		Image:      s.Image,
 		GPUs:       s.GPUs,
 		GPUKind:    s.GPUKind,
+		GPUProfile: strings.ToLower(s.GPUProfile),
 	}
 }
 
@@ -84,25 +90,41 @@ func toAPIHost(h orchestrator.Host) HostInfo {
 		Backend: string(h.Backend),
 		State:   string(h.State),
 		Capacity: HostCapacity{
-			CPUs:      h.Capacity.CPUs,
-			RamMB:     h.Capacity.RamMB,
-			StorageGB: h.Capacity.StorageGB,
-			VMCount:   h.Capacity.VMCount,
-			GPUs:      h.Capacity.GPUs,
-			GPUKind:   h.Capacity.GPUKind,
+			CPUs:        h.Capacity.CPUs,
+			RamMB:       h.Capacity.RamMB,
+			StorageGB:   h.Capacity.StorageGB,
+			VMCount:     h.Capacity.VMCount,
+			GPUs:        h.Capacity.GPUs,
+			GPUKind:     h.Capacity.GPUKind,
+			MIGProfiles: copyMIGProfiles(h.Capacity.MIGProfiles),
 		},
 		Allocated: HostCapacity{
-			CPUs:      h.Allocated.CPUs,
-			RamMB:     h.Allocated.RamMB,
-			StorageGB: h.Allocated.StorageGB,
-			VMCount:   h.Allocated.VMCount,
-			GPUs:      h.Allocated.GPUs,
-			GPUKind:   h.Allocated.GPUKind,
+			CPUs:        h.Allocated.CPUs,
+			RamMB:       h.Allocated.RamMB,
+			StorageGB:   h.Allocated.StorageGB,
+			VMCount:     h.Allocated.VMCount,
+			GPUs:        h.Allocated.GPUs,
+			GPUKind:     h.Allocated.GPUKind,
+			MIGProfiles: copyMIGProfiles(h.Allocated.MIGProfiles),
 		},
 		LastSeen:  h.LastSeen,
 		CreatedAt: h.CreatedAt,
 		UpdatedAt: h.UpdatedAt,
 	}
+}
+
+// copyMIGProfiles clones a MIG profile map so wire responses never alias
+// the fleet's live allocation state. Nil (and empty) in, nil out, so the
+// json omitempty behavior is preserved.
+func copyMIGProfiles(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // toAPISnapshot converts a persisted SnapshotRecord into the wire shape.
