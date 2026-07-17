@@ -17,6 +17,9 @@
   },
   "dependencies": {
     "@opennextjs/cloudflare": "^1.20.1",
+    "@shikijs/langs": "^4.2.0",
+    "@shikijs/themes": "^4.2.0",
+    "shiki": "^4.2.0",
     "cnfast": "^0.0.8",
     "fumadocs-core": "16.10.7",
     "fumadocs-mdx": "15.0.13",
