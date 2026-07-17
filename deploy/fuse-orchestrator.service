@@ -1,0 +1,28 @@
+[Unit]
+Description=Fuse orchestrator (control plane)
+Documentation=https://github.com/folsomintel/fuse
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# All configuration comes from this file: ORCH_LISTEN, ORCH_AUTH_TOKEN,
+# TOKEN_ENCRYPTION_KEY, DATABASE_URL, ORCH_REQUIRE_AUTH. It is written (and
+# tokens generated) by scripts/install-orchestrator.sh.
+EnvironmentFile=/etc/fuse/orchestrator.env
+ExecStart=/usr/local/bin/orchestrator
+Restart=on-failure
+RestartSec=2
+
+# Light hardening that is safe for a root service reading a root-owned
+# EnvironmentFile. (Co-located installs via host-agent/fc-agent.sh use the
+# unit name orchestrator.service and /etc/default/orchestrator instead.)
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

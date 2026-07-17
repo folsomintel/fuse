@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1175,6 +1176,33 @@ func TestRegisterHost_ProbeFailsButDeclaredCapacityCompleteSucceeds(t *testing.T
 	})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestRegisterHost_AgentRejectsTokenReturns401 asserts that a host agent
+// rejecting the orchestrator's token (a 401 from the capacity/auth probe)
+// hard-refuses the registration, even when the operator declared full
+// capacity explicitly -- an unauthenticated host is useless, and this turns
+// a later opaque create-time 401 into a clear, layer-named error.
+func TestRegisterHost_AgentRejectsTokenReturns401(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{},
+		&orchestrator.HTTPStatusError{Code: http.StatusUnauthorized, Body: "unauthorized"})
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-bad-token",
+		URL: "http://host-bad-token.test",
+		Capacity: HostCapacity{
+			// Fully declared: proves the refusal is driven by the 401, not
+			// by missing capacity.
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10,
+		},
+	})
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502. body: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "rejected the token") {
+		t.Fatalf("body should name the token layer, got: %s", rr.Body.String())
 	}
 }
 

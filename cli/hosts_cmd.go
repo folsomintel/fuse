@@ -29,7 +29,25 @@ func newHostsCmd() *cobra.Command {
 		Args:    cobra.NoArgs,
 		RunE:    runHostsList,
 	})
+	// The `hosts`/`host` split is a trap: everyone reaches for
+	// `fuse hosts register` first. Register the same management
+	// subcommands under both so either name works.
+	cmd.AddCommand(hostManagementCommands()...)
 	return cmd
+}
+
+// hostManagementCommands builds the per-host management subcommands
+// (register, get, cordon, uncordon, remove, metrics). They are attached
+// to both `fuse host` and `fuse hosts` so neither name is a dead end.
+func hostManagementCommands() []*cobra.Command {
+	return []*cobra.Command{
+		newHostRegisterCmd(),
+		newHostGetCmd(),
+		newHostActionCmd("cordon", "Mark a host unschedulable", (*fuse.HostsService).Cordon),
+		newHostActionCmd("uncordon", "Mark a host schedulable again", (*fuse.HostsService).Uncordon),
+		newHostRemoveCmd(),
+		newHostMetricsCmd(),
+	}
 }
 
 func runHostsList(cmd *cobra.Command, _ []string) error {
@@ -107,14 +125,7 @@ func newHostCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.AddCommand(
-		newHostRegisterCmd(),
-		newHostGetCmd(),
-		newHostActionCmd("cordon", "Mark a host unschedulable", (*fuse.HostsService).Cordon),
-		newHostActionCmd("uncordon", "Mark a host schedulable again", (*fuse.HostsService).Uncordon),
-		newHostRemoveCmd(),
-		newHostMetricsCmd(),
-	)
+	cmd.AddCommand(hostManagementCommands()...)
 	return cmd
 }
 
@@ -299,6 +310,13 @@ func newHostRegisterCmd() *cobra.Command {
 		gpus        int
 		gpuKind     string
 		migProfiles []string
+		cpus      int
+		ramMB     int
+		storageGB int
+		maxVMs    int
+		gpus      int
+		gpuKind   string
+		noVerify  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "register <id>",
@@ -323,6 +341,7 @@ func newHostRegisterCmd() *cobra.Command {
 				cpusS, ramS, storS, vmsS := strconv.Itoa(cpus), strconv.Itoa(ramMB), strconv.Itoa(storageGB), strconv.Itoa(maxVMs)
 				err := runForm(huh.NewGroup(
 					huh.NewInput().Title("Host URL").Description("agent base url, e.g. http://10.0.0.5:9000").Value(&hostURL),
+					huh.NewInput().Title("Host agent token").Description("the agent's FC_AGENT_TOKEN (not the orchestrator token)").EchoMode(huh.EchoModePassword).Value(&token),
 					huh.NewInput().Title("Region").Value(&region),
 					huh.NewInput().Title("CPUs (capacity)").Description("0 = probe from host agent").Value(&cpusS).Validate(validateInt),
 					huh.NewInput().Title("RAM MB (capacity)").Description("0 = probe from host agent").Value(&ramS).Validate(validateInt),
@@ -343,6 +362,17 @@ func newHostRegisterCmd() *cobra.Command {
 			migMap, err := parseMIGProfiles(migProfiles)
 			if err != nil {
 				return err
+			// The firecracker host agent authenticates the orchestrator with
+			// its FC_AGENT_TOKEN. An empty token is almost always a mistake
+			// that only surfaces at the first `environment create` as an
+			// opaque 401, so require it here unless the operator opts out for
+			// a genuinely unauthenticated dev agent.
+			effectiveBackend := backend
+			if effectiveBackend == "" {
+				effectiveBackend = "firecracker"
+			}
+			if effectiveBackend == "firecracker" && token == "" && !noVerify {
+				return fmt.Errorf("host agent token required for the firecracker backend: pass --token (the agent's FC_AGENT_TOKEN), or --no-verify for an unauthenticated dev agent")
 			}
 			cl, _, err := app.client()
 			if err != nil {
@@ -377,8 +407,9 @@ func newHostRegisterCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&hostURL, "url", "", "host agent base url (required)")
 	cmd.Flags().StringVar(&region, "region", "", "region label")
-	cmd.Flags().StringVar(&token, "token", "", "token the orchestrator uses to call the host")
+	cmd.Flags().StringVar(&token, "token", "", "host agent token the orchestrator uses to call the host (its FC_AGENT_TOKEN)")
 	cmd.Flags().StringVar(&backend, "backend", "", "virtualization backend: firecracker (default) or qemu")
+	cmd.Flags().BoolVar(&noVerify, "no-verify", false, "allow an empty --token (unauthenticated dev agent)")
 	cmd.Flags().IntVar(&cpus, "cpus", 0, "cpu capacity override (0 = probe from host agent)")
 	cmd.Flags().IntVar(&ramMB, "ram-mb", 0, "ram capacity in MB override (0 = probe from host agent)")
 	cmd.Flags().IntVar(&storageGB, "storage-gb", 0, "storage capacity in GB override (0 = probe from host agent)")

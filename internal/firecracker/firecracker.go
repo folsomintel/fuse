@@ -20,20 +20,6 @@ import (
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
-// httpStatusError carries the HTTP status code (and trimmed body) from a
-// non-2xx host-agent response so callers can branch on the code (e.g. 404 to
-// trigger the /start-agent → /start-surfd fallback). Its Error() string is
-// byte-identical to the previous fmt.Errorf("http %d: %s", ...) so anything
-// matching on the message text keeps working.
-type httpStatusError struct {
-	Code int
-	Body string
-}
-
-func (e *httpStatusError) Error() string {
-	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
-}
-
 // fused guest paths for the FROZEN host-agent /start-surfd wire. The external
 // firecracker host agent cannot be changed, so its request still carries the
 // structured manifest/secrets/TLS guest paths. These constants exist solely to
@@ -379,7 +365,7 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		e.setEndpoints(resp.Endpoints)
 		return nil
 	}
-	var statusErr *httpStatusError
+	var statusErr *orchestrator.HTTPStatusError
 	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusNotFound {
 		return err
 	}
@@ -626,7 +612,7 @@ func (p *Provider) doJSON(ctx context.Context, method, path string, reqBody any,
 
 	if res.StatusCode >= 300 {
 		b, _ := io.ReadAll(res.Body)
-		return &httpStatusError{Code: res.StatusCode, Body: strings.TrimSpace(string(b))}
+		return &orchestrator.HTTPStatusError{Code: res.StatusCode, Body: strings.TrimSpace(string(b))}
 	}
 	if respBody == nil {
 		return nil

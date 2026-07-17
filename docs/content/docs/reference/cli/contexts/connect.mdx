@@ -19,6 +19,7 @@ it active. `<url>` is the orchestrator root (`scheme://host:port`), without a
 | `--token` | Bearer token for the orchestrator. |
 | `--name` | Context name. Defaults to the URL's hostname if omitted. |
 | `--master` | Mark this token as the master token, required for `fuse apikeys` commands. Informational client-side; the server enforces whether the token actually has master privileges. |
+| `--no-verify` | Skip the pre-save probe (for offline or scripted setup). |
 
 ## Examples
 
@@ -31,6 +32,17 @@ fuse connect https://orchestrator.example.com --token "$FUSE_TOKEN" --name prod 
 ```
 
 ## Notes
+
+Before saving, `connect` probes the URL to confirm it is really a fuse
+orchestrator (via the unauthenticated `GET /v1/version`) and, if you passed a
+`--token`, that the orchestrator accepts it. Each failure names the layer that
+failed rather than surfacing an opaque error one command later:
+
+- nothing listening: `no orchestrator at <url> (connection refused). is it running?`
+- wrong service or port: `<url> is not a fuse orchestrator (got Server: fc-agent/0.1). the orchestrator default port is 8080; 8090 is the host agent`
+- wrong token: `orchestrator at <url> rejected the token. this must be ORCH_AUTH_TOKEN, not the host-agent token`
+
+Pass `--no-verify` to skip the probe for offline or scripted setup.
 
 With no `--token`, connecting only works against an orchestrator running in
 insecure/dev mode (no `ORCH_AUTH_TOKEN` set), the CLI prints a warning when you

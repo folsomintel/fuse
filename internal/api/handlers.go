@@ -767,6 +767,17 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The capacity probe doubles as an auth probe: it is the first (and,
+	// at registration time, only) call the orchestrator makes to the host
+	// agent with the supplied token. A 401 here means the token is wrong,
+	// which is unambiguous and never a false positive, so we refuse the
+	// registration outright regardless of whether capacity was declared --
+	// a host the orchestrator cannot authenticate to is useless, and
+	// catching it here turns a later "firecracker create vm: http 401"
+	// into a clear, layer-named error. Other probe failures (agent
+	// unreachable) only block when capacity was not fully declared; with
+	// declared capacity we register but warn, so pre-provisioning still
+	// works without silently hiding an unreachable host.
 	var warnings []string
 	if prober, ok := provider.(orchestrator.CapacityProber); ok {
 		probed, err := prober.Capacity(r.Context())
@@ -775,11 +786,19 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 			capacity.CPUs, warnings = resolveCapacityField("cpus", capacity.CPUs, probed.CPUs, warnings)
 			capacity.RamMB, warnings = resolveCapacityField("ram_mb", capacity.RamMB, probed.RamMB, warnings)
 			capacity.StorageGB, warnings = resolveCapacityField("storage_gb", capacity.StorageGB, probed.StorageGB, warnings)
+		case isAgentUnauthorized(err):
+			_ = provider.Close()
+			writeError(w, http.StatusBadGateway, CodeUnauthorized,
+				fmt.Sprintf("host agent at %s rejected the token. this must be its FC_AGENT_TOKEN, not the orchestrator token", req.URL), nil)
+			return
 		case capacity.CPUs <= 0 || capacity.RamMB <= 0 || capacity.StorageGB <= 0:
 			_ = provider.Close()
 			writeError(w, http.StatusBadGateway, CodeInternal,
 				"could not probe host capacity and cpus/ram_mb/storage_gb were not all declared explicitly: "+err.Error(), nil)
 			return
+		default:
+			warnings = append(warnings,
+				fmt.Sprintf("could not verify host agent at %s (%s); registering with declared capacity", req.URL, err.Error()))
 		}
 	}
 
@@ -827,6 +846,15 @@ func resolveCapacityField(name string, declared, probed int, warnings []string) 
 		warnings = append(warnings, fmt.Sprintf("declared %s (%d) exceeds probed host capacity (%d)", name, declared, probed))
 	}
 	return declared, warnings
+}
+
+// isAgentUnauthorized reports whether err is a host-agent response that
+// rejected the orchestrator's bearer token (HTTP 401). Providers wrap raw
+// host-agent HTTP failures in orchestrator.HTTPStatusError, so a 401 is
+// distinguishable from an unreachable agent or any other failure.
+func isAgentUnauthorized(err error) bool {
+	var httpErr *orchestrator.HTTPStatusError
+	return errors.As(err, &httpErr) && httpErr.Code == http.StatusUnauthorized
 }
 
 // listHosts returns all registered hosts.

@@ -18,7 +18,8 @@ operator-supplied string and is the host's primary key, use a readable one
 | --- | --- |
 | `--url` | Host agent base URL. Required. |
 | `--region` | Region label. |
-| `--token` | Token the orchestrator uses to call this host's agent. |
+| `--token` | The host agent token the orchestrator uses to call this host (its `FC_AGENT_TOKEN`). Required for the `firecracker` backend unless `--no-verify`. |
+| `--no-verify` | Allow an empty `--token` (for a genuinely unauthenticated dev agent). |
 | `--backend` | `firecracker` (default) or `qemu`. |
 | `--cpus` | CPU capacity override. `0` (default) probes the host agent. |
 | `--ram-mb` | RAM capacity in MB, override. `0` (default) probes the host agent. |
@@ -26,6 +27,21 @@ operator-supplied string and is the host's primary key, use a readable one
 | `--max-vms` | Max concurrent VMs. Always required, this is scheduling policy, not a hardware fact, so it is never probed. |
 | `--gpus` | GPU device count. Requires `--backend qemu`. |
 | `--gpu-kind` | GPU model label, for example `a100`. |
+
+## Token verification
+
+The `--token` is the host agent's own token (`FC_AGENT_TOKEN`), not the
+orchestrator token. It is required for the `firecracker` backend: an empty token
+is almost always a mistake that would otherwise only surface at the first
+`environment create` as an opaque `401`. Pass `--no-verify` to register an
+unauthenticated dev agent with no token.
+
+At registration the orchestrator makes its first call to the host agent (the
+same call that probes capacity). If the agent rejects the token, registration is
+refused with `host agent at <url> rejected the token. this must be its
+FC_AGENT_TOKEN, not the orchestrator token` rather than persisting a host that
+can never be scheduled onto. If the agent is merely unreachable but you declared
+full capacity, the host still registers, with a warning.
 
 ## Capacity probing
 

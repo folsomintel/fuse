@@ -213,7 +213,9 @@ func TestEnvForkJSON(t *testing.T) {
 func TestConnectAndContextCurrent(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	root := newRootCmd()
-	root.SetArgs([]string{"--config", cfg, "connect", "http://localhost:9999", "--token", "abc", "--name", "dev"})
+	// --no-verify: this test exercises context persistence, not
+	// connectivity, and there is no orchestrator listening on :9999.
+	root.SetArgs([]string{"--config", cfg, "connect", "http://localhost:9999", "--token", "abc", "--name", "dev", "--no-verify"})
 	if err := root.Execute(); err != nil {
 		t.Fatalf("connect: %v", err)
 	}

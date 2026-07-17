@@ -73,6 +73,7 @@ func newRootCmd() *cobra.Command {
 		"path to the config file (default: $XDG_CONFIG_HOME/fuse/config.yaml)")
 
 	root.AddCommand(
+		newQuickstartCmd(),
 		newConnectCmd(),
 		newContextCmd(),
 		newHostsCmd(),
