@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/folsomintel/fuse/compare/v0.4.0...v0.5.0) (2026-07-17)
+
+
+### Features
+
+* **docs:** fix build ([af462c8](https://github.com/folsomintel/fuse/commit/af462c8ef849be8267d1b87304f574365cb65349))
+* **orchestrator:** add /v1/version endpoint and 404 route disambiguation ([aca3600](https://github.com/folsomintel/fuse/commit/aca3600a23afad062f0f18eb4e1f49b1aac3eb58))
+
+
+### Bug Fixes
+
+* **ci:** wire NPM_TOKEN into npm publish step ([29fb525](https://github.com/folsomintel/fuse/commit/29fb525234a0258379e2f1bdd3b01a7fc1dc62a9))
+* **docs:** build the open-next worker so cloudflare deploy succeeds ([c23d1b3](https://github.com/folsomintel/fuse/commit/c23d1b343ce1b875266d1e17a5445e30bf375564))
+* **docs:** reduce worker size under cloudflare limit (limit shiki langs, drop dynamic og route) ([5915d1d](https://github.com/folsomintel/fuse/commit/5915d1dc91189495cb5d9c27ef64e16510a56809))
+* **host-agent:** update ssh control socket path calculation and reuse logic ([c39ec7b](https://github.com/folsomintel/fuse/commit/c39ec7be0e8aaae6149f7df60f6a8ab224ff057b))
+
 ## [0.4.0](https://github.com/folsomintel/fuse/compare/v0.3.0...v0.4.0) (2026-07-15)
 
 
