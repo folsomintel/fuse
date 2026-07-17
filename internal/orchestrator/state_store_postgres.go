@@ -109,8 +109,8 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			vm_id, host_id, network_host, state, url, task_id, tenant_id,
 			cpus, ram_mb, storage_gb, region, max_runtime_seconds,
 			auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
-			gpus, gpu_kind
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			gpus, gpu_kind, gpu_profile
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (vm_id) DO UPDATE SET
 			host_id=EXCLUDED.host_id,
 			network_host=EXCLUDED.network_host,
@@ -130,7 +130,8 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			created_at=EXCLUDED.created_at,
 			updated_at=EXCLUDED.updated_at,
 			gpus=EXCLUDED.gpus,
-			gpu_kind=EXCLUDED.gpu_kind
+			gpu_kind=EXCLUDED.gpu_kind,
+			gpu_profile=EXCLUDED.gpu_profile
 	`,
 		vm.ID,
 		vm.HostID,
@@ -152,6 +153,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		vm.UpdatedAt.UTC(),
 		vm.Spec.GPUs,
 		vm.Spec.GPUKind,
+		vm.Spec.GPUProfile,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert vm %s: %w", vm.ID, err)
@@ -171,7 +173,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		SELECT vm_id, host_id, network_host, state, url, task_id, tenant_id,
 		       cpus, ram_mb, storage_gb, region, max_runtime_seconds,
 		       auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
-		       gpus, gpu_kind
+		       gpus, gpu_kind, gpu_profile
 		FROM orchestrator_vms
 	`)
 	if err != nil {
@@ -208,6 +210,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			&record.UpdatedAt,
 			&record.Spec.GPUs,
 			&record.Spec.GPUKind,
+			&record.Spec.GPUProfile,
 		); err != nil {
 			return nil, fmt.Errorf("scan vm row: %w", err)
 		}
@@ -522,14 +525,23 @@ func (s *PostgresStateStore) ListDeadLetters(ctx context.Context) ([]DeadLetterR
 }
 
 func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error {
-	_, err := s.db.ExecContext(ctx, `
+	migProfilesJSON, err := marshalMIGProfiles(h.Capacity.MIGProfiles)
+	if err != nil {
+		return fmt.Errorf("marshal mig profiles for host %s: %w", h.ID, err)
+	}
+	migAllocatedJSON, err := marshalMIGProfiles(h.Allocated.MIGProfiles)
+	if err != nil {
+		return fmt.Errorf("marshal mig allocation for host %s: %w", h.ID, err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO orchestrator_hosts (
 			host_id, url, token_encrypted, region, state, tenant_id,
 			cpus_total, ram_mb_total, storage_gb_total, vm_count_max,
 			cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
 			last_seen_at, created_at, updated_at,
-			backend, gpus_total, gpu_kind, gpus_allocated
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			backend, gpus_total, gpu_kind, gpus_allocated,
+			mig_profiles_json, mig_allocated_json
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (host_id) DO UPDATE SET
 			url=EXCLUDED.url,
 			token_encrypted=EXCLUDED.token_encrypted,
@@ -549,7 +561,9 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 			backend=EXCLUDED.backend,
 			gpus_total=EXCLUDED.gpus_total,
 			gpu_kind=EXCLUDED.gpu_kind,
-			gpus_allocated=EXCLUDED.gpus_allocated
+			gpus_allocated=EXCLUDED.gpus_allocated,
+			mig_profiles_json=EXCLUDED.mig_profiles_json,
+			mig_allocated_json=EXCLUDED.mig_allocated_json
 	`,
 		h.ID,
 		h.URL,
@@ -572,11 +586,43 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 		h.Capacity.GPUs,
 		h.Capacity.GPUKind,
 		h.Allocated.GPUs,
+		migProfilesJSON,
+		migAllocatedJSON,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert host %s: %w", h.ID, err)
 	}
 	return nil
+}
+
+// marshalMIGProfiles renders a MIG profile map as the JSON object stored in
+// the mig_*_json columns. Nil/empty maps store as "{}" to match the column
+// default, so unmigrated rows and hosts without MIG capacity look identical.
+func marshalMIGProfiles(m map[string]int) (string, error) {
+	if len(m) == 0 {
+		return "{}", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// unmarshalMIGProfiles is the inverse of marshalMIGProfiles: "{}" (or empty)
+// yields nil so in-memory state never carries useless empty maps.
+func unmarshalMIGProfiles(s string) (map[string]int, error) {
+	if s == "" || s == "{}" {
+		return nil, nil
+	}
+	var m map[string]int
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		return nil, err
+	}
+	if len(m) == 0 {
+		return nil, nil
+	}
+	return m, nil
 }
 
 func (s *PostgresStateStore) DeleteHost(ctx context.Context, hostID string) error {
@@ -592,7 +638,8 @@ const hostsSelect = `
 	       cpus_total, ram_mb_total, storage_gb_total, vm_count_max,
 	       cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
 	       last_seen_at, created_at, updated_at,
-	       backend, gpus_total, gpu_kind, gpus_allocated
+	       backend, gpus_total, gpu_kind, gpus_allocated,
+	       mig_profiles_json, mig_allocated_json
 	FROM orchestrator_hosts`
 
 // scanHost maps a row from hostsSelect onto a HostRecord. Both
@@ -600,9 +647,11 @@ const hostsSelect = `
 // in one place if the schema ever changes.
 func scanHost(scan func(...any) error) (HostRecord, error) {
 	var (
-		record  HostRecord
-		state   string
-		backend string
+		record           HostRecord
+		state            string
+		backend          string
+		migProfilesJSON  string
+		migAllocatedJSON string
 	)
 	if err := scan(
 		&record.ID,
@@ -626,11 +675,20 @@ func scanHost(scan func(...any) error) (HostRecord, error) {
 		&record.Capacity.GPUs,
 		&record.Capacity.GPUKind,
 		&record.Allocated.GPUs,
+		&migProfilesJSON,
+		&migAllocatedJSON,
 	); err != nil {
 		return HostRecord{}, err
 	}
 	record.State = HostState(state)
 	record.Backend = HostBackend(backend)
+	var err error
+	if record.Capacity.MIGProfiles, err = unmarshalMIGProfiles(migProfilesJSON); err != nil {
+		return HostRecord{}, fmt.Errorf("unmarshal mig profiles for host %s: %w", record.ID, err)
+	}
+	if record.Allocated.MIGProfiles, err = unmarshalMIGProfiles(migAllocatedJSON); err != nil {
+		return HostRecord{}, fmt.Errorf("unmarshal mig allocation for host %s: %w", record.ID, err)
+	}
 	return record, nil
 }
 

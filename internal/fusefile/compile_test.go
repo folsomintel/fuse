@@ -115,6 +115,23 @@ func TestCompileGPU(t *testing.T) {
 	if c.Spec.GPUKind != "a100" {
 		t.Fatalf("gpu_kind = %q, want a100", c.Spec.GPUKind)
 	}
+	if c.Spec.GPUProfile != "" {
+		t.Fatalf("gpu_profile = %q, want empty", c.Spec.GPUProfile)
+	}
+}
+
+func TestCompileGPUProfile(t *testing.T) {
+	f := &Fusefile{Version: 1, Resources: Resources{GPU: 2, GPUKind: "a100", GPUProfile: "1G.10GB"}}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Spec.GPUs != 2 {
+		t.Fatalf("gpus = %d, want 2", c.Spec.GPUs)
+	}
+	if c.Spec.GPUProfile != "1g.10gb" {
+		t.Fatalf("gpu_profile = %q, want 1g.10gb (lowercased)", c.Spec.GPUProfile)
+	}
 }
 
 func TestCompileGPUAbsentIsZero(t *testing.T) {
@@ -190,6 +207,16 @@ func TestCompileInvalid(t *testing.T) {
 			name:        "negative gpu count",
 			resources:   Resources{GPU: -1},
 			wantContain: `resources.gpu: must not be negative`,
+		},
+		{
+			name:        "invalid gpu profile",
+			resources:   Resources{GPU: 1, GPUProfile: "half"},
+			wantContain: `resources.gpu_profile: invalid MIG profile`,
+		},
+		{
+			name:        "gpu profile without count",
+			resources:   Resources{GPUProfile: "1g.10gb"},
+			wantContain: `resources.gpu_profile: requires resources.gpu >= 1`,
 		},
 	}
 

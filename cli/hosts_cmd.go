@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -158,6 +160,19 @@ func renderHostDetail(h *fuse.Host) {
 		}
 		rows = append(rows, [2]string{"gpus", gpuLine})
 	}
+	if len(h.Capacity.MIGProfiles) > 0 {
+		profiles := make([]string, 0, len(h.Capacity.MIGProfiles))
+		for profile := range h.Capacity.MIGProfiles {
+			profiles = append(profiles, profile)
+		}
+		sort.Strings(profiles)
+		parts := make([]string, len(profiles))
+		for i, profile := range profiles {
+			parts[i] = fmt.Sprintf("%s %d / %d", profile,
+				h.Allocated.MIGProfiles[profile], h.Capacity.MIGProfiles[profile])
+		}
+		rows = append(rows, [2]string{"mig", strings.Join(parts, ", ")})
+	}
 	rows = append(rows,
 		[2]string{"last seen", fmt.Sprintf("%s (%s)", shortTime(h.LastSeen), ago(h.LastSeen))},
 		[2]string{"created", shortTime(h.CreatedAt)},
@@ -277,12 +292,13 @@ func newHostRegisterCmd() *cobra.Command {
 		region    string
 		token     string
 		backend   string
-		cpus      int
-		ramMB     int
-		storageGB int
-		maxVMs    int
-		gpus      int
-		gpuKind   string
+		cpus        int
+		ramMB       int
+		storageGB   int
+		maxVMs      int
+		gpus        int
+		gpuKind     string
+		migProfiles []string
 	)
 	cmd := &cobra.Command{
 		Use:   "register <id>",
@@ -324,6 +340,10 @@ func newHostRegisterCmd() *cobra.Command {
 			if hostURL == "" {
 				return fmt.Errorf("host url is required: pass --url")
 			}
+			migMap, err := parseMIGProfiles(migProfiles)
+			if err != nil {
+				return err
+			}
 			cl, _, err := app.client()
 			if err != nil {
 				return err
@@ -335,12 +355,13 @@ func newHostRegisterCmd() *cobra.Command {
 				Region:  region,
 				Backend: backend,
 				Capacity: fuse.HostCapacity{
-					CPUs:      cpus,
-					RamMB:     ramMB,
-					StorageGB: storageGB,
-					VMCount:   maxVMs,
-					GPUs:      gpus,
-					GPUKind:   gpuKind,
+					CPUs:        cpus,
+					RamMB:       ramMB,
+					StorageGB:   storageGB,
+					VMCount:     maxVMs,
+					GPUs:        gpus,
+					GPUKind:     gpuKind,
+					MIGProfiles: migMap,
 				},
 			})
 			if err != nil {
@@ -364,7 +385,30 @@ func newHostRegisterCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxVMs, "max-vms", 0, "max vm count (required; not probed, it's a scheduling policy)")
 	cmd.Flags().IntVar(&gpus, "gpus", 0, "gpu device count (requires --backend qemu)")
 	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label (e.g. a100)")
+	cmd.Flags().StringArrayVar(&migProfiles, "mig-profile", nil,
+		"MIG instance capacity as profile=count (e.g. 1g.10gb=4); repeatable, requires --backend qemu")
 	return cmd
+}
+
+// parseMIGProfiles turns repeated --mig-profile profile=count flags into the
+// capacity map the register wire expects. Nil in, nil out.
+func parseMIGProfiles(entries []string) (map[string]int, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		profile, countS, ok := strings.Cut(entry, "=")
+		if !ok || profile == "" {
+			return nil, fmt.Errorf("invalid --mig-profile %q: expected profile=count (e.g. 1g.10gb=4)", entry)
+		}
+		count, err := strconv.Atoi(countS)
+		if err != nil || count <= 0 {
+			return nil, fmt.Errorf("invalid --mig-profile %q: count must be a positive number", entry)
+		}
+		out[strings.ToLower(profile)] = count
+	}
+	return out, nil
 }
 
 func validateInt(s string) error {

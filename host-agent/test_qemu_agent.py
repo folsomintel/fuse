@@ -30,6 +30,7 @@ class QEMUAgentTest(unittest.TestCase):
         qemu_agent.IMAGES_DIR = self.root / "images"
         qemu_agent.IMAGES_DIR.mkdir()
         qemu_agent.VFIO_INVENTORY = self.root / "vfio-inventory.txt"
+        qemu_agent.MIG_INVENTORY = self.root / "mig-inventory.txt"
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -37,6 +38,7 @@ class QEMUAgentTest(unittest.TestCase):
     def create_without_hardware(self, request):
         with (
             mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]),
+            mock.patch.object(qemu_agent, "pick_mig_devices", return_value=[]),
             mock.patch.object(
                 qemu_agent,
                 "setup_tap",
@@ -112,6 +114,120 @@ class QEMUAgentTest(unittest.TestCase):
             qemu_agent.create_vm({"name": "no-capacity", "gpus": 1})
 
         self.assertFalse(qemu_agent.vm_dir("no-capacity").exists())
+
+    def test_pick_mig_devices_by_profile(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+            "1g.10gb a100 bbb22222-2222-2222-2222-222222222222\n"
+            "2g.20gb a100 ccc33333-3333-3333-3333-333333333333\n"
+        )
+
+        uuids = qemu_agent.pick_mig_devices(2, "1g.10gb", "a100")
+
+        self.assertEqual(
+            uuids,
+            [
+                "aaa11111-1111-1111-1111-111111111111",
+                "bbb22222-2222-2222-2222-222222222222",
+            ],
+        )
+
+    def test_pick_mig_devices_skips_allocated(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+            "1g.10gb a100 bbb22222-2222-2222-2222-222222222222\n"
+        )
+        with mock.patch.object(
+            qemu_agent,
+            "allocated_mdev_uuids",
+            return_value={"aaa11111-1111-1111-1111-111111111111"},
+        ):
+            uuids = qemu_agent.pick_mig_devices(1, "1g.10gb", None)
+
+        self.assertEqual(uuids, ["bbb22222-2222-2222-2222-222222222222"])
+
+    def test_pick_mig_devices_insufficient_raises_409(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+        )
+
+        with self.assertRaises(qemu_agent.HTTPError) as raised:
+            qemu_agent.pick_mig_devices(2, "1g.10gb", "a100")
+
+        self.assertEqual(raised.exception.code, 409)
+
+    def test_create_with_gpu_profile_uses_mig_path(self):
+        qemu_agent.BASE_ROOTFS.write_bytes(b"default")
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+        )
+
+        with (
+            mock.patch.object(qemu_agent, "pick_gpu_slots") as pick_slots,
+            mock.patch.object(
+                qemu_agent,
+                "setup_tap",
+                return_value=("qv1", "10.200.1.1", "10.200.1.2"),
+            ),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            meta = qemu_agent.create_vm(
+                {
+                    "name": "mig-vm",
+                    "gpus": 1,
+                    "gpu_kind": "a100",
+                    "gpu_profile": "1G.10GB",
+                }
+            )
+
+        pick_slots.assert_not_called()
+        self.assertEqual(meta["gpu_profile"], "1g.10gb")
+        self.assertEqual(meta["gpu_slots"], [])
+        self.assertEqual(meta["gpu_mdevs"], ["aaa11111-1111-1111-1111-111111111111"])
+
+    def test_start_qemu_emits_mdev_sysfsdev(self):
+        meta = {
+            "vm_id": "mig-vm",
+            "memory_mb": 1024,
+            "cpus": 2,
+            "rootfs": "/tmp/rootfs.qcow2",
+            "tap": "qv1",
+            "mac": "06:00:ac:10:01:02",
+            "guest_ip": "10.200.1.2",
+            "host_ip": "10.200.1.1",
+            "gpu_slots": [],
+            "gpu_mdevs": ["aaa11111-1111-1111-1111-111111111111"],
+        }
+        captured = {}
+
+        def fake_sudo(cmd, check=True):
+            if isinstance(cmd, list) and cmd and cmd[0] == "/usr/bin/qemu-system-x86_64":
+                captured["argv"] = list(cmd)
+            return mock.Mock(returncode=0)
+
+        vm_path = self.root / "vms" / "mig-vm"
+        vm_path.mkdir(parents=True)
+        (vm_path / "qemu.pid").write_text("12345")
+        (vm_path / "qmp.sock").write_text("")
+
+        with (
+            mock.patch.object(qemu_agent, "sudo", side_effect=fake_sudo),
+            mock.patch.object(qemu_agent, "vm_dir", return_value=vm_path),
+            mock.patch.object(qemu_agent, "QEMU_BIN", "/usr/bin/qemu-system-x86_64"),
+            mock.patch.object(qemu_agent, "OVMF_CODE", Path("/usr/share/OVMF/OVMF_CODE.fd")),
+            mock.patch.object(qemu_agent, "KERNEL", self.root / "vmlinuz.bin"),
+            mock.patch("time.sleep"),
+        ):
+            qemu_agent.start_qemu(meta)
+
+        self.assertIn("argv", captured)
+        self.assertIn(
+            "vfio-pci,sysfsdev=/sys/bus/mdev/devices/aaa11111-1111-1111-1111-111111111111",
+            captured["argv"],
+        )
 
 
 if __name__ == "__main__":

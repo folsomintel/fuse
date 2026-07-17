@@ -1246,3 +1246,104 @@ func TestCreateEnvironment_GPUFieldsAbsentDefaultToZero(t *testing.T) {
 		t.Errorf("spec gpu fields = %+v, want zero values", env.Spec)
 	}
 }
+
+func TestCreateEnvironment_InvalidGPUProfileReturns400(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-bad-profile",
+		Spec:           ResourceSpec{GPUs: 1, GPUProfile: "half"},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateEnvironment_GPUProfileWithoutCountReturns400(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-profile-no-count",
+		Spec:           ResourceSpec{GPUProfile: "1g.10gb"},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateEnvironment_GPUProfileRoundTrip(t *testing.T) {
+	h, fm, provider := newTestHandler(t)
+	if err := fm.RegisterHost(context.Background(), orchestrator.Host{
+		ID:      "mig-host",
+		Backend: orchestrator.BackendQEMU,
+		Capacity: orchestrator.HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10,
+			GPUKind:     "a100",
+			MIGProfiles: map[string]int{"1g.10gb": 4},
+		},
+	}, provider); err != nil {
+		t.Fatal(err)
+	}
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID: "task-mig",
+		Spec: ResourceSpec{
+			CPUs: 2, RamMB: 1024, GPUs: 1, GPUKind: "a100", GPUProfile: "1G.10GB",
+		},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var env Environment
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if env.Spec.GPUProfile != "1g.10gb" {
+		t.Errorf("spec.gpu_profile = %q, want 1g.10gb (lowercased)", env.Spec.GPUProfile)
+	}
+}
+
+func TestRegisterHost_MIGProfilesRequireQEMU(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID: "fc-mig", URL: "http://host", Backend: "firecracker",
+		Capacity: HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10,
+			MIGProfiles: map[string]int{"1g.10gb": 2},
+		},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRegisterHost_MIGProfilesRoundTrip(t *testing.T) {
+	h, _ := newTestHandlerWithProvider(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID: "mig-host", URL: "http://host", Backend: "qemu",
+		Capacity: HostCapacity{
+			CPUs: 4, RamMB: 8192, StorageGB: 100, VMCount: 10, GPUKind: "a100",
+			MIGProfiles: map[string]int{"1G.10GB": 4},
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if info.Capacity.MIGProfiles["1g.10gb"] != 4 {
+		t.Errorf("mig_profiles = %v, want {1g.10gb: 4}", info.Capacity.MIGProfiles)
+	}
+}

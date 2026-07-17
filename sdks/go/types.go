@@ -4,11 +4,15 @@ import "time"
 
 // Spec is the hardware/runtime spec for a microVM.
 type Spec struct {
-	CPUs              int32  `json:"cpus,omitempty"`
-	RamMB             int32  `json:"ram_mb,omitempty"`
-	StorageGB         int32  `json:"storage_gb,omitempty"`
-	GPUs              int32  `json:"gpus,omitempty"`
-	GPUKind           string `json:"gpu_kind,omitempty"`
+	CPUs      int32  `json:"cpus,omitempty"`
+	RamMB     int32  `json:"ram_mb,omitempty"`
+	StorageGB int32  `json:"storage_gb,omitempty"`
+	GPUs      int32  `json:"gpus,omitempty"`
+	GPUKind   string `json:"gpu_kind,omitempty"`
+	// GPUProfile requests fractional GPU allocation: a MIG profile in
+	// mig-parted vocabulary (e.g. "1g.10gb"). When set, GPUs counts MIG
+	// instances of this profile rather than whole devices.
+	GPUProfile        string `json:"gpu_profile,omitempty"`
 	Region            string `json:"region,omitempty"`
 	MaxRuntimeSeconds int64  `json:"max_runtime_seconds,omitempty"`
 	Image             string `json:"image,omitempty"`
@@ -142,6 +146,9 @@ type HostCapacity struct {
 	VMCount   int    `json:"vm_count"`
 	GPUs      int    `json:"gpus,omitempty"`
 	GPUKind   string `json:"gpu_kind,omitempty"`
+	// MIGProfiles advertises fractional GPU capacity: MIG instance count
+	// by profile name (e.g. {"1g.10gb": 4}). Requires backend "qemu".
+	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
 }
 
 // RegisterHostRequest is the body for client.RegisterHost.

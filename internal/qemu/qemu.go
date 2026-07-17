@@ -97,14 +97,15 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 	}
 
 	reqBody := createVMRequest{
-		Name:      spec.Name,
-		CPUs:      spec.CPUs,
-		MemoryMB:  spec.RamMB,
-		StorageGB: spec.StorageGB,
-		Region:    spec.Region,
-		Image:     spec.Image,
-		GPUs:      spec.GPUs,
-		GPUKind:   spec.GPUKind,
+		Name:       spec.Name,
+		CPUs:       spec.CPUs,
+		MemoryMB:   spec.RamMB,
+		StorageGB:  spec.StorageGB,
+		Region:     spec.Region,
+		Image:      spec.Image,
+		GPUs:       spec.GPUs,
+		GPUKind:    spec.GPUKind,
+		GPUProfile: spec.GPUProfile,
 	}
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
@@ -334,6 +335,10 @@ type createVMRequest struct {
 	Image     string `json:"image,omitempty"`
 	GPUs      int32  `json:"gpus,omitempty"`
 	GPUKind   string `json:"gpu_kind,omitempty"`
+	// GPUProfile requests MIG instances instead of whole devices: the host
+	// agent allocates mdev devices of this profile and attaches them via
+	// vfio-pci sysfsdev (decision D5).
+	GPUProfile string `json:"gpu_profile,omitempty"`
 }
 
 type createVMResponse struct {
@@ -471,10 +476,11 @@ func (p *stubProvider) Create(_ context.Context, spec orchestrator.Spec) (orches
 		return nil, fmt.Errorf("env %s already exists", spec.Name)
 	}
 	env := &stubEnv{
-		name:    spec.Name,
-		url:     fmt.Sprintf("qemu://%s", spec.Name),
-		gpus:    spec.GPUs,
-		gpuKind: spec.GPUKind,
+		name:       spec.Name,
+		url:        fmt.Sprintf("qemu://%s", spec.Name),
+		gpus:       spec.GPUs,
+		gpuKind:    spec.GPUKind,
+		gpuProfile: spec.GPUProfile,
 	}
 	p.envs[spec.Name] = env
 	return env, nil
@@ -515,10 +521,11 @@ func (p *stubProvider) Close() error { return nil }
 // Environment but NOT SnapshotCapable, so snapshot/fork guardrails are
 // exercised identically in stub-backed tests.
 type stubEnv struct {
-	name    string
-	url     string
-	gpus    int32  // spec.GPUs at Create time, kept for test inspection
-	gpuKind string // spec.GPUKind at Create time, kept for test inspection
+	name       string
+	url        string
+	gpus       int32  // spec.GPUs at Create time, kept for test inspection
+	gpuKind    string // spec.GPUKind at Create time, kept for test inspection
+	gpuProfile string // spec.GPUProfile at Create time, kept for test inspection
 
 	mu        sync.Mutex
 	files     map[string][]byte

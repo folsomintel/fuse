@@ -29,6 +29,7 @@ type ResourceSpec struct {
 	Image             string
 	GPUs              int32
 	GPUKind           string
+	GPUProfile        string
 }
 
 // ExposeSpec requests that a guest port be published as a reachable
@@ -83,6 +84,20 @@ type manifestEnv struct {
 // unit is effectively case-insensitive.
 var sizePattern = regexp.MustCompile(`^(\d+)(MB|GB)$`)
 
+// gpuProfilePattern matches nvidia mig-parted profile names: <slices>g.<mem>gb
+// with an optional "+me" media-extensions suffix (e.g. "1g.10gb", "3g.20gb",
+// "1g.10gb+me"). MIG supports at most 7 slices per GPU. matching is done
+// against a lowercased copy so the profile is effectively case-insensitive.
+var gpuProfilePattern = regexp.MustCompile(`^[1-7]g\.\d+gb(\+me)?$`)
+
+// ValidGPUProfile reports whether s is a well-formed MIG profile name
+// ("1g.10gb", "2g.20gb", ...). Shared with the API layer's request
+// validation so raw SDK callers are held to the same vocabulary as
+// Fusefile authors.
+func ValidGPUProfile(s string) bool {
+	return gpuProfilePattern.MatchString(strings.ToLower(s))
+}
+
 // Compile turns the human-friendly Fusefile.Resources into a ResourceSpec.
 func Compile(f *Fusefile) (*Compiled, error) {
 	var errs []error
@@ -111,6 +126,18 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		errs = append(errs, fmt.Errorf("resources.gpu: must not be negative"))
 	}
 
+	if f.Resources.GPUProfile != "" {
+		if !ValidGPUProfile(f.Resources.GPUProfile) {
+			errs = append(errs, fmt.Errorf(
+				"resources.gpu_profile: invalid MIG profile %q (expected mig-parted form like \"1g.10gb\")",
+				f.Resources.GPUProfile))
+		}
+		if f.Resources.GPU == 0 {
+			errs = append(errs, fmt.Errorf(
+				"resources.gpu_profile: requires resources.gpu >= 1 (the count of MIG instances)"))
+		}
+	}
+
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
@@ -131,6 +158,7 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			Image:             f.Image,
 			GPUs:              int32(f.Resources.GPU),
 			GPUKind:           f.Resources.GPUKind,
+			GPUProfile:        strings.ToLower(f.Resources.GPUProfile),
 		},
 		ManifestJSON:    manifestJSON,
 		StartupScript:   compileStartupScript(f),

@@ -183,7 +183,15 @@ func (fm *FleetManager) allocateOnHost(hostID string, spec Spec) {
 	h.Allocated.CPUs += spec.CPUs
 	h.Allocated.RamMB += spec.RamMB
 	h.Allocated.StorageGB += spec.StorageGB
-	h.Allocated.GPUs += int(spec.GPUs)
+	if spec.GPUProfile != "" {
+		// Fractional allocation: consume MIG instances, not whole devices.
+		if h.Allocated.MIGProfiles == nil {
+			h.Allocated.MIGProfiles = make(map[string]int)
+		}
+		h.Allocated.MIGProfiles[spec.GPUProfile] += int(spec.GPUs)
+	} else {
+		h.Allocated.GPUs += int(spec.GPUs)
+	}
 	h.Allocated.VMCount++
 	h.UpdatedAt = time.Now()
 	fm.persistHostRecordBackground(fm.hostToRecord(*h))
@@ -209,9 +217,17 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	if h.Allocated.StorageGB < 0 {
 		h.Allocated.StorageGB = 0
 	}
-	h.Allocated.GPUs -= int(spec.GPUs)
-	if h.Allocated.GPUs < 0 {
-		h.Allocated.GPUs = 0
+	if spec.GPUProfile != "" {
+		if n := h.Allocated.MIGProfiles[spec.GPUProfile] - int(spec.GPUs); n > 0 {
+			h.Allocated.MIGProfiles[spec.GPUProfile] = n
+		} else if h.Allocated.MIGProfiles != nil {
+			delete(h.Allocated.MIGProfiles, spec.GPUProfile)
+		}
+	} else {
+		h.Allocated.GPUs -= int(spec.GPUs)
+		if h.Allocated.GPUs < 0 {
+			h.Allocated.GPUs = 0
+		}
 	}
 	h.Allocated.VMCount--
 	if h.Allocated.VMCount < 0 {

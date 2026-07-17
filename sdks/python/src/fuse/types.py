@@ -32,6 +32,8 @@ class Spec(_Model):
     storage_gb: Optional[int] = None
     gpus: Optional[int] = None
     gpu_kind: Optional[str] = None
+    # mig profile (e.g. "1g.10gb"); when set, gpus counts mig instances.
+    gpu_profile: Optional[str] = None
     region: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
     image: Optional[str] = None
@@ -170,6 +172,8 @@ class HostCapacity(_Model):
     vm_count: int = 0
     gpus: int = 0
     gpu_kind: str = ""
+    # fractional gpu capacity: mig instance count by profile name.
+    mig_profiles: Optional[dict[str, int]] = None
 
 
 class RegisterHostRequest(_Model):
