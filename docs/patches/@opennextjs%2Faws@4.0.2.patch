@@ -1,0 +1,19 @@
+diff --git a/dist/build/copyTracedFiles.js b/dist/build/copyTracedFiles.js
+index 9701b0401e987ee7cd696873af9d15b751580c52..c2991af7b6eb1d891b80811ef5cc7a709f3d5ff3 100644
+--- a/dist/build/copyTracedFiles.js
++++ b/dist/build/copyTracedFiles.js
+@@ -162,7 +162,13 @@ File ${serverPath} does not exist
+         computeCopyFilesForPage("instrumentation");
+         logger.debug("Adding instrumentation trace files");
+     }
+-    if (existsSync(path.join(dotNextDir, MIDDLEWARE_TRACE_FILE))) {
++    // next 16's `proxy.ts` (renamed from `middleware.ts`) runs on the node
++    // runtime and emits server/middleware.js.nft.json but no standalone
++    // server/middleware.js when the proxy is empty/passthrough. only enter this
++    // block when the standalone middleware.js actually exists, otherwise
++    // computeCopyFilesForPage("middleware") throws.
++    if (existsSync(path.join(dotNextDir, MIDDLEWARE_TRACE_FILE)) &&
++        existsSync(path.join(standaloneNextDir, "server/middleware.js"))) {
+         // We still need to copy the nft.json file so that computeCopyFilesForPage doesn't throw
+         copyFileAndMakeOwnerWritable(path.join(dotNextDir, MIDDLEWARE_TRACE_FILE), path.join(standaloneNextDir, MIDDLEWARE_TRACE_FILE));
+         computeCopyFilesForPage("middleware");

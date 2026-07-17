@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build": "next build",
+    "build": "opennextjs-cloudflare build",
+    "build:next": "next build",
     "dev": "next dev",
     "start": "next start",
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
@@ -49,5 +50,8 @@
     "@biomejs/biome": "^2.5.1",
     "@types/hast": "^3.0.4",
     "wrangler": "^4.111.0"
+  },
+  "patchedDependencies": {
+    "@opennextjs/aws@4.0.2": "patches/@opennextjs%2Faws@4.0.2.patch"
   }
 }

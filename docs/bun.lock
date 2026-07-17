@@ -42,6 +42,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@opennextjs/aws@4.0.2": "patches/@opennextjs%2Faws@4.0.2.patch",
+  },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@3.0.143", "", { "dependencies": { "@ai-sdk/provider": "3.0.13", "@ai-sdk/provider-utils": "4.0.35", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-RCH60KsUaNiZkI/fBuyau4yvYrVBIEgAcN+Ain94QpL1kVm28GduQzFKfGffAiJU2We0ZrmN4BHkoCZzACK96Q=="],
 
