@@ -2,5 +2,5 @@
   "title": "Learn",
   "icon": "BookOpen",
   "root": true,
-  "pages": ["index", "quickstart"]
+  "pages": ["index", "quickstart", "snapshot-and-rollback", "fork-to-debug"]
 }

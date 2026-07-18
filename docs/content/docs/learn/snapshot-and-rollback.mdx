@@ -1,0 +1,103 @@
+---
+title: "Lesson 2: Snapshot and roll back"
+description: Capture an environment's disk, make a change you regret, and undo it
+icon: History
+---
+
+In the [Quickstart](/docs/learn/quickstart) you brought up an environment. This
+lesson adds the safety net: take a snapshot before doing something risky, then
+roll back to it.
+
+You need the same setup as the quickstart, an orchestrator running on
+`localhost:8080` against the stub provider, and a connected CLI. Nothing here
+requires a real Firecracker host.
+
+## 1. Create an environment to work in
+
+Give it a task ID you'll recognize, and use `--no-wait` so the command returns:
+
+```bash
+fuse up --no-wait --task-id lesson2 --secret pg_password=devpassword
+```
+
+The environment's ID is the configured prefix plus your task ID, so `lesson2`
+becomes `fuse-lesson2`. That naming rule matters, most commands take the
+environment ID, not the task ID.
+
+```bash
+fuse environment get fuse-lesson2
+```
+
+<Callout type="warn" title="Known limitation">
+Without `--no-wait`, `up` keeps streaming after the environment is running and
+never exits on its own, see [issue #50](https://github.com/folsomintel/fuse/issues/50).
+Use `--no-wait` in scripts, and press `q` if you started it interactively.
+</Callout>
+
+## 2. Take a snapshot
+
+```bash
+fuse snapshot create fuse-lesson2 --comment "before risky change"
+```
+
+The snapshot is created synchronously and comes back `ready`:
+
+```
+mode               manual
+state              ready
+size               467 B
+retention          keep forever
+comment            before risky change
+```
+
+Note the ID it prints, the first one is `cp-1`. List them any time:
+
+```bash
+fuse snapshot list
+```
+
+A snapshot captures the environment's **disk only**. Memory is not included, so
+restoring is a reboot from that disk rather than a resume of a running process.
+See [Snapshots](/docs/concepts/snapshots) for the full model.
+
+## 3. Roll back
+
+Restore returns the environment's disk to the captured state:
+
+```bash
+fuse snapshot restore cp-1 --yes
+```
+
+```
+restoring snapshot "cp-1"
+```
+
+`--yes` skips the confirmation prompt. Without it in a script the command
+aborts with `Aborted (use --yes to skip confirmation).` rather than hanging on a
+prompt nothing will answer.
+
+Restore rewrites the disk of the **existing** environment in place, it does not
+create a new one. `fuse environment list` still shows exactly one environment
+afterward. If you want a copy instead of a rollback, that is a fork, which is
+[Lesson 3](/docs/learn/fork-to-debug).
+
+## 4. Clean up
+
+```bash
+fuse environment destroy fuse-lesson2 --yes
+```
+
+## What to take away
+
+- Snapshots are **disk-only and manual**. Nothing snapshots on your behalf.
+- Restore is **destructive to the current disk** and in-place. The snapshot
+  survives, the environment's current state does not.
+- Snapshots do not work on GPU environments at all, a passed-through device
+  can't be checkpointed. See [Providers](/docs/concepts/providers).
+
+## Read next
+
+- [Lesson 3: Fork to reproduce a bug](/docs/learn/fork-to-debug), which copies an
+  environment instead of rewinding it.
+- [Snapshots](/docs/concepts/snapshots) for retention, lineage, and the
+  leaf-only deletion rule.

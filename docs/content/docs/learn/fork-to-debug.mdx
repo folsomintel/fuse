@@ -1,0 +1,102 @@
+---
+title: "Lesson 3: Fork to reproduce a bug"
+description: Copy a running environment so you can break the copy safely
+icon: GitFork
+---
+
+[Lesson 2](/docs/learn/snapshot-and-rollback) rewound one environment in place.
+This lesson makes a **second** environment from the first, which is what you
+want when something is misbehaving and you'd rather investigate a copy than the
+original.
+
+## Why fork instead of restore
+
+Restore rewinds the environment you already have, and the state you were
+debugging is gone. Fork leaves the original untouched and gives you a duplicate
+to take apart. For a production incident that distinction is the whole point,
+you keep the evidence and experiment on the copy.
+
+## 1. Start from a running environment
+
+```bash
+fuse up --no-wait --task-id lesson3 --secret pg_password=devpassword
+```
+
+## 2. Fork it
+
+```bash
+fuse environment fork fuse-lesson3 --comment repro
+```
+
+Fork snapshots the source first, then provisions a brand-new environment from
+that snapshot. The copy gets a generated ID rather than one you choose:
+
+```
+fuse-fork-4da004cb6c97435c53074fbd9a141849
+```
+
+Both are now running, and the original is unchanged:
+
+```bash
+fuse environment list
+```
+
+```
+ID                                          STATE     TASK ID
+fuse-lesson3                                running   lesson3
+fuse-fork-4da004cb6c97435c53074fbd9a141849  running   fork-4da004cb...
+```
+
+To fork from a snapshot you already took, rather than taking a fresh one, pass
+`--reuse-snapshot <id>`.
+
+## 3. Investigate the copy
+
+The fork is an ordinary environment, so the usual commands take its ID:
+
+```bash
+fuse environment exec fuse-fork-4da004cb... -- cat /var/log/app.log
+fuse environment shell fuse-fork-4da004cb...
+```
+
+<Callout type="warn" title="Needs a real host">
+These two do not work against the stub provider, which has no guest to run
+anything in. On the stub they fail with `exec not supported by provider`. Create
+and fork work fine locally, but to actually run commands inside the copy you
+need a [Firecracker host](/docs/cloud/firecracker-host-setup).
+</Callout>
+
+## 4. Clean up both
+
+```bash
+fuse environment destroy fuse-fork-4da004cb... --yes
+fuse environment destroy fuse-lesson3 --yes
+```
+
+## Three things that surprise people
+
+**A fork cold-boots.** Snapshots are disk-only, so the copy boots from the
+snapshot's disk rather than resuming the source's memory. Expect a normal boot,
+not a sub-second resume, and don't expect in-memory state to carry over.
+
+**Setup and run do not re-execute.** The fork starts from the captured disk, so
+the `setup` and `run` commands from the Fusefile are not run again on the copy.
+Whatever they produced is already baked into the disk you forked.
+
+**The fork gets its own credentials.** It is a distinct environment with its own
+guest token, not a clone that shares the original's identity.
+
+<Callout type="warn" title="Known limitation">
+Fork bypasses the scheduler and performs no capacity check, so a fork can
+overcommit a host that is already full. It also cannot be used on GPU
+environments at all, and that failure currently surfaces as a `500` rather than
+a `4xx`, see [issue #49](https://github.com/folsomintel/fuse/issues/49).
+</Callout>
+
+## Read next
+
+- [Interactive debugging](/docs/guides/interactive-debugging) for the same idea
+  as a task recipe rather than a lesson.
+- [Environments](/docs/concepts/environments) for the full lifecycle.
+- [Scheduling and placement](/docs/concepts/scheduling) for why fork skipping the
+  scheduler matters.
