@@ -45,11 +45,11 @@ parsing `err.message`, which is meant for logs, not branching logic.
 `isFuseApiError` is a type guard, narrowing `err` to `FuseApiError` when
 true.
 
-The server also returns a sixth code, `unimplemented` (`501`, when a
+The server also returns a seventh code, `unimplemented` (`501`, when a
 provider has no guest to
-[`exec`](/docs/reference/sdks/typescript/environments) into), with no
-matching `is*` helper yet, check `err.code === "unimplemented"` directly
-until one is added.
+[`exec`](/docs/reference/sdks/typescript/environments) into or attach to),
+with no matching `is*` helper yet, check `err.code === "unimplemented"`
+directly until one is added.
 
 ## FuseApiError and FuseError
 
@@ -79,10 +79,18 @@ parse.
 | `ErrorCode.NotFound` | `not_found` | `404` |
 | `ErrorCode.Conflict` | `conflict` | `409` |
 | `ErrorCode.InvalidArgument` | `invalid_argument` | `400` |
-| `ErrorCode.Unauthorized` | `unauthorized` | `401` or `403` |
+| `ErrorCode.Unauthorized` | `unauthorized` | `401`, `403`, or `502` |
 | `ErrorCode.Unavailable` | `unavailable` | `503` |
 | `ErrorCode.Internal` | `internal` | `500` or `502` |
 | (none yet) | `unimplemented` | `501` |
+| (none yet) | `route_not_found` | `404` |
+| (none yet) | `forbidden` | `403` |
+
+The last two are easy to mistake for a code that has a helper, and neither
+is matched by one: `route_not_found` (a wrong host or port, or an endpoint
+this server does not mount) is **not** matched by `isNotFound()`, and
+`forbidden` (a CIDR-allowlist rejection) is **not** matched by
+`isUnauthorized()`. Check `err.code` directly for both.
 
 ## errorFromResponse
 

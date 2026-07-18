@@ -12,7 +12,7 @@ hardware capacity rather than trusting a guess:
 host = client.hosts.register(
     fuse.RegisterHostRequest(
         id="prod-east-1",
-        url="http://10.0.0.5:9000",
+        url="http://10.0.0.5:8090",
         token=agent_token,
         region="us-east",
         backend="firecracker",
@@ -31,11 +31,20 @@ for w in host.warnings:
   the real value instead of trusting a guess. Pass one explicitly to override
   the probe, for a deliberate overcommit or carve-out, a declared value above
   what the probe reports still registers, with a warning rather than a
-  rejection. If the host's provider doesn't support probing and a value was
-  left at `0`, registration raises `fuse.ApiError` with `status == 502`
-  instead, declare it explicitly in that case.
+  rejection. Both shipped backends can probe, but if the probe itself fails
+  because the host agent is unreachable and any of the three was left at `0`,
+  registration raises `fuse.ApiError` with `status == 502`, declare them
+  explicitly in that case.
 - `capacity.vm_count` is scheduling policy, not something a host can report
   on its own, so it's never probed and is always required.
+- `capacity.gpu_kind` is the declared GPU model label. Leaving it empty has
+  the probe fill it in; declaring one that disagrees with what the probe
+  reports registers anyway, with a warning rather than a rejection.
+- `capacity.mig_profiles` declares fractional GPU capacity as an instance
+  count by MIG profile name, for example `{"1g.10gb": 4}`. It is `"qemu"`-only
+  like `gpus`, and an unrecognized profile name (anything not in mig-parted
+  form) or a count of `0` or less raises `fuse.ApiError` with
+  `code == "invalid_argument"`.
 - `host.warnings` is only ever populated on this call's response, non-fatal
   notices like a declared value exceeding what was probed.
 
@@ -46,8 +55,17 @@ for w in host.warnings:
 | `list()` | List every registered host with its declared `capacity` and live `allocated` figures. |
 | `get(host_id)` | Fetch one host by ID. |
 | `cordon(host_id)` / `uncordon(host_id)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
-| `deregister(host_id)` | Remove the host. Raises `fuse.ApiError` with `code == "conflict"` if environments are still assigned to it. |
+| `deregister(host_id)` | Remove the host. Fails while environments are still assigned to it, see below. |
 
 `Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
 is set once at registration and never refreshed, it is not a liveness
 signal. These mirror the [HTTP API](/docs/reference/api/hosts) one to one.
+
+<Callout type="warn" title="Known limitation">
+Deregistering a host that still has environments assigned raises
+`fuse.ApiError` with `status == 500` and `code == "internal"`, whose message
+names the blocking VM (`host prod-east-1 still has vm vm-abc assigned`). This
+is a permanent property of the request rather than a server fault, so the
+status should be a 4xx and the code `conflict`. Match on the error message,
+not the status, until it is fixed.
+</Callout>

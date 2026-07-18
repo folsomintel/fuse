@@ -10,6 +10,8 @@ fuse environment exec <id> --shell 'ls /var/log | wc -l'
 fuse environment exec <id> --timeout 30s -- ./slow-job
 ```
 
+## Flags
+
 | Flag | Purpose |
 | --- | --- |
 | `--shell` | Run a one-liner under `sh -lc`, for pipelines, redirects, and globs. Mutually exclusive with a command after `--`. |

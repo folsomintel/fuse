@@ -20,12 +20,15 @@ one command brings up a host with the agent installed and a rootfs baked and rea
 
 - **One-script Firecracker setup** — host, agent, and a baked rootfs, ready to boot.
 - **Scheduling across hosts** — register hosts, and Fuse places microVMs for you.
-- **Optional whole-GPU environments** — route GPU requests to QEMU/VFIO hosts.
+- **Optional GPU environments** — whole GPUs or fractional MIG instances, routed
+  to QEMU/VFIO hosts.
 - **Full VM lifecycle** — provision, running, drain, destroy, tracked and reconciled.
 - **Snapshots** — capture a running microVM and restore from it.
 - **Live event streams** — tail a microVM's events over SSE.
 - **Durable state** — backed by Postgres, or in-memory for local runs.
-- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at rest.
+- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at
+  rest, when `TOKEN_ENCRYPTION_KEY` is set. Without it the orchestrator skips
+  credential generation entirely (insecure mode).
 - **REST API and Prometheus metrics** — drive everything over HTTP, observe it out of the box.
 
 ## How the pieces fit together

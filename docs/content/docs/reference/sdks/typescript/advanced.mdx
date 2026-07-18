@@ -58,8 +58,12 @@ the outcome.
 
 `requestId` is a function called once per request. Its return value is sent as
 `X-Request-ID` and echoed back on every response, including error responses,
-where it also appears on `FuseApiError.requestId`. Use it to thread a trace ID
-from your own service into the orchestrator's logs and audit events:
+where it also appears on `FuseApiError.requestId`. The server echoes it back
+only if it is 1 to 128 characters of `[A-Za-z0-9_-]`, anything else is silently
+replaced with a server-generated `req_<32hex>`, so a trace ID containing `.`,
+`:`, or `/` is dropped rather than propagated. `randomUUID()` below is safe.
+Use it to thread a trace ID from your own service into the orchestrator's logs
+and audit events:
 
 ```ts
 import { randomUUID } from "node:crypto";
@@ -82,15 +86,17 @@ without booting real microVMs. This is the fastest way to test SDK-driven code
 end to end without a real Firecracker host:
 
 ```bash
-go build -o bin/fuse ./cmd/orchestrator
-./bin/fuse   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
+go build -o bin/orchestrator ./cmd/orchestrator
+./bin/orchestrator   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
 ```
 
 Point a `FuseClient` at `http://localhost:8080` with no token (the orchestrator
 also runs without auth when `ORCH_AUTH_TOKEN` is unset), and every SDK call
 behaves exactly as it would against a real deployment, states transition, events
 stream, snapshots and forks work, just nothing is actually virtualized
-underneath.
+underneath. The one exception is `client.apiKeys.*`, which throws `404` /
+`route_not_found` here, key management needs a Postgres-backed store and its
+routes are not mounted without `DATABASE_URL`.
 
 For unit-testing your own code that calls the SDK, spin up a real local server
 with Node's `http` module (the same approach the SDK's own test suite uses) and

@@ -18,13 +18,19 @@ reproduce, then attach an interactive terminal to it directly:
 
 ```bash
 fuse up ./repro/Fusefile --task-id repro-bug-4821
-fuse environment shell repro-bug-4821
+fuse environment shell fuse-repro-bug-4821
 ```
 
 ```
-root@repro-bug-4821:~# systemctl status weird-service
-root@repro-bug-4821:~# journalctl -u weird-service --since "10 min ago"
+root@fuse-repro-bug-4821:~# systemctl status weird-service
+root@fuse-repro-bug-4821:~# journalctl -u weird-service --since "10 min ago"
 ```
+
+An environment's id is the orchestrator's VM prefix (`fuse-` by default)
+plus the task id, so `up` here prints
+`creating environment fuse-repro-bug-4821 (task repro-bug-4821)`. Every
+`fuse environment` subcommand takes that environment id, the task id on its
+own is not accepted.
 
 - [`fuse environment shell`](/docs/reference/cli/environment/shell) attaches
   a real pty to the guest, the same terminal experience as SSH, but relayed
@@ -33,7 +39,7 @@ root@repro-bug-4821:~# journalctl -u weird-service --since "10 min ago"
   meant for scripted use, that's what
   [`exec`](/docs/reference/cli/environment/exec) is for.
 - With no trailing command, `shell` opens the guest's login shell. Pass a
-  command after `--` (`fuse environment shell repro-bug-4821 -- top`) to run
+  command after `--` (`fuse environment shell fuse-repro-bug-4821 -- top`) to run
   something specific on a terminal instead of the login shell.
 - When you're done, destroy the environment. There's no cleanup step to
   forget, the whole reproduction environment, packages and all, goes away

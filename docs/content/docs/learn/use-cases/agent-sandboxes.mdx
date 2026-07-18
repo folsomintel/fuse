@@ -35,6 +35,11 @@ if (result.exit_code !== 0) {
 await client.environments.destroy(env.id);
 ```
 
+`exec` (and `shell`) require the orchestrator's master token. A Postgres-backed API
+key is rejected on both, so an agent service driving environments this way has to
+hold the master token rather than a scoped key. See
+[Authentication](/docs/reference/auth).
+
 - Each task gets its own VM, so one agent's runaway process or malicious
   output can't touch another task's environment or the host.
 - `exec` returns whatever the guest command exited with, `exit_code`,
@@ -56,10 +61,17 @@ box by hand.
 ## Checkpointing long-running agent work
 
 If an agent's task runs for a while and you want to save progress
-periodically rather than losing everything on a crash, snapshot the
-environment at checkpoints and fork from the last good one on failure, see
+periodically, snapshot the environment at checkpoints and fork from the last
+good one when a step goes wrong, see
 [Ephemeral CI runners](/docs/learn/use-cases/ci-runners) for the same pattern
 applied to build caching.
+
+Snapshot, fork, and restore all require the source environment to still be
+**running**, so this recovers from a failed agent *step* (the VM is fine, the
+work went wrong) rather than from a VM crash. Fork reaches its seed snapshot
+through the source environment, so once that environment is gone there is no
+running source left to fork from, and checkpointing is **not** a crash-recovery
+mechanism.
 
 ## Read next
 

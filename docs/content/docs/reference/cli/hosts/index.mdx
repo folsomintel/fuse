@@ -22,6 +22,11 @@ register, inspect, and manage individual hosts.
 | [`fuse host remove`](/docs/reference/cli/hosts/remove) | Deregister a host. |
 | [`fuse host metrics`](/docs/reference/cli/hosts/metrics) | Show capacity vs. allocated for a host. |
 
+The split is not strict: `register`, `get`, `cordon`, `uncordon`, `remove`, and
+`metrics` are registered under both names, so `fuse hosts register` works
+exactly as `fuse host register` does. Only the bare forms differ, `fuse hosts`
+lists and `fuse host <id>` selects.
+
 ## Active host selection
 
 Many other commands (`fuse environment list`'s default filter, for example)

@@ -40,8 +40,9 @@ class Client:
 construction time). `token` is sent as a bearer token and may be empty for an
 orchestrator running without auth.
 
-`Client` is a context manager. Use it with `with` so the underlying `httpx`
-clients are closed automatically:
+`Client` is a context manager. Use it with `with` so the `httpx` clients the
+SDK created are closed automatically. An `http_client` you supply is yours to
+close, the transport tracks ownership and deliberately leaves it open:
 
 ```python
 with fuse.Client("https://orchestrator.example.com", token="...") as client:
@@ -54,7 +55,7 @@ Without the `with` block, call `client.close()` yourself when you're done.
 
 | Parameter | Type | Purpose |
 | --- | --- | --- |
-| `http_client` | `httpx.Client \| None` | Supply your own `httpx.Client` (for connection pooling, custom TLS config, and so on). If set, you own its `base_url`. |
+| `http_client` | `httpx.Client \| None` | Supply your own `httpx.Client` (for connection pooling, custom TLS config, and so on). If set, you are responsible for both its `base_url` and closing it, neither `client.close()` nor the `with` block will close a client you supplied. |
 | `user_agent` | `str` | Override the `User-Agent` header. Default: `fuse-python/<version>`. |
 | `request_id` | `Callable[[], str] \| None` | Generator called once per request for `X-Request-ID`. An empty return value omits the header. |
 | `timeout` | `float` | Default per-request timeout in seconds. Default: `60.0`. Not applied to the SSE event stream, which uses a separate no-timeout client internally. |

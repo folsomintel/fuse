@@ -11,7 +11,7 @@ icon: HardDrive
 | `GET` | `/v1/hosts/{hostId}` | Fetch one host. |
 | `POST` | `/v1/hosts/{hostId}?action=cordon` | Mark unschedulable. |
 | `POST` | `/v1/hosts/{hostId}?action=uncordon` | Return to scheduling. |
-| `DELETE` | `/v1/hosts/{hostId}` | Remove. `409` if VMs are still assigned. |
+| `DELETE` | `/v1/hosts/{hostId}` | Remove. Fails if VMs are still assigned. |
 
 ## Register
 
@@ -24,7 +24,7 @@ POST /v1/hosts
 ```json
 {
   "id": "prod-east-1",
-  "url": "http://10.0.0.5:9000",
+  "url": "http://10.0.0.5:8090",
   "token": "...",
   "region": "us-east",
   "backend": "firecracker",
@@ -70,7 +70,7 @@ any `gpu_devices` you send is discarded.
 ```json
 {
   "id": "prod-east-1",
-  "url": "http://10.0.0.5:9000",
+  "url": "http://10.0.0.5:8090",
   "region": "us-east",
   "state": "active",
   "backend": "firecracker",
@@ -130,7 +130,7 @@ GPUs contributes one entry while still counting each card toward `gpus`. Treat
 | Status | Code | When |
 | --- | --- | --- |
 | `400` | `invalid_argument` | Missing `id`/`url`, `gpus > 0` or `mig_profiles` on a non-`qemu` backend, a negative `gpus`, a malformed `mig_profiles` key or non-positive count, or `cpus`/`ram_mb`/`storage_gb`/`vm_count` resolve to non-positive after probing. |
-| `502` | `internal` | `cpus`/`ram_mb`/`storage_gb` were left at `0` but the host agent's provider doesn't support capacity probing, or the probe itself failed. |
+| `502` | `internal` | `cpus`/`ram_mb`/`storage_gb` were left at `0` and the capacity probe itself failed, for example nothing is listening at `url`. |
 | `500` | `internal` | Unexpected server error. |
 
 ## List
@@ -173,6 +173,14 @@ doesn't exist.
 DELETE /v1/hosts/{hostId}
 ```
 
-Returns `204` on success, `404` `not_found` if it doesn't exist, or `409`
-`conflict` if any environments are still assigned to it, drain or destroy
-them first.
+Returns `204` on success, or `404` `not_found` if it doesn't exist. If any
+environments are still assigned to it the removal fails with `host <id> still has
+vm <id> assigned`, drain or destroy them first. The named VM is one of the
+assigned set rather than a count, and because the check walks a map it can differ
+between identical calls.
+
+<Callout type="warn" title="Known limitation">
+That failure returns `500` `internal`, not the `409` `conflict` you would expect.
+The orchestrator returns a bare error with no sentinel, so it falls through to the
+generic handler. Match on the message rather than the status until this is fixed.
+</Callout>

@@ -18,11 +18,15 @@ globals. Both forms are equivalent, `fuse hosts` with no subcommand runs
 ```bash
 $ fuse hosts
    ID           REGION   STATE   CPUS   RAM MB       VMS   LAST SEEN
-*  prod-east-1  us-east  active  4/16   8192/65536   1/20  3m ago
-   prod-west-1  us-west  active  0/16   0/65536      0/20  1h ago
+*  prod-east-1  us-east  active  4/16   8192/65536   1/20  3m
+   prod-west-1  us-west  active  0/16   0/65536      0/20  1h
 ```
 
 The `*` marks the host currently selected as active for this context.
+
+LAST SEEN is stamped at registration and never refreshed, it is **not** a
+liveness signal and the scheduler never consults it. Judge reachability from
+the STATE column and the host agent's own health endpoint instead.
 
 ## Select
 
@@ -44,4 +48,6 @@ fuse host
 
 Subcommands (`register`, `get`, `cordon`, `uncordon`, `remove`, `metrics`) take
 precedence over selection, `fuse host register ...` runs the register
-subcommand, not a selection attempt on a host literally named `register`.
+subcommand, not a selection attempt on a host literally named `register`. They
+are registered under the plural `fuse hosts` as well, so neither name is a dead
+end.

@@ -8,6 +8,12 @@ icon: KeySquare
 master token, the server enforces this regardless of what token the client
 was constructed with.
 
+API keys are **Postgres-only**. An orchestrator started without `DATABASE_URL`
+does not register the `/v1/api-keys` routes at all, so `Create`, `List`, and
+`Revoke` come back as a `404` `*APIError` with code `route_not_found`, not
+`unauthorized`. That is what you will hit against the in-memory stub described
+in [Advanced usage](/docs/reference/sdks/go/advanced#testing-against-the-stub).
+
 ```go
 key, err := client.APIKeys.Create(ctx, "ci-runner")
 if err != nil {

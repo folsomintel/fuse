@@ -1,6 +1,6 @@
 ---
 title: Health, readiness, and metrics
-description: "/health, /ready, and /metrics: unauthenticated probe endpoints"
+description: "/health, /ready, /metrics, and /v1/version: unauthenticated probe and identity endpoints"
 icon: Gauge
 ---
 
@@ -9,13 +9,15 @@ icon: Gauge
 | `GET` | `/health` | Liveness probe. |
 | `GET` | `/ready` | Readiness probe. |
 | `GET` | `/metrics` | Prometheus exposition. |
+| `GET` | `/v1/version` | Identify the process and its build version. |
 
-All three are mounted **outside** the auth and CIDR-allowlist middleware
+All four are mounted **outside** the auth and CIDR-allowlist middleware
 chain, entirely by design: Kubernetes/load-balancer probes and Prometheus
-scrapers don't (and shouldn't) carry bearer tokens. None of the three appear
-in `internal/api/openapi.yaml` as documented paths (`/metrics` is mentioned
-only in the spec's prose, not as a formal path entry); this page is the
-primary reference for all three.
+scrapers don't (and shouldn't) carry bearer tokens. `/health` and `/ready` are
+formal path entries in `internal/api/openapi.yaml`; `/metrics` is mentioned
+only in the spec's prose, not as a path entry; and `/v1/version` does not
+appear in the spec at all. This page expands on all four with the metric
+inventory the spec doesn't carry.
 
 ## Liveness
 
@@ -39,8 +41,9 @@ downstream dependency being unhealthy, that's what `/ready` is for.
 GET /ready
 ```
 
-Checks two dependencies, each bounded by a 2-second timeout so a wedged
-database can't hold the probe open indefinitely:
+Checks two dependencies. The state store check is bounded by a 2-second
+timeout so a wedged database can't hold the probe open indefinitely; the
+fleet check is a nil comparison and cannot block:
 
 - **`state_store`**: a bounded `ListVMs` call against Postgres (or the
   in-memory store in dev). Failures here typically mean Postgres is
@@ -97,8 +100,8 @@ own metrics alongside the default Go runtime and process collectors
 | `orchestrator_reconcile_orphans_destroyed_total` | Counter | Orphaned VMs the reconcile loop destroyed. |
 | `orchestrator_reconcile_orphans_failed_total` | Counter | Orphan destroy attempts that failed. |
 | `orchestrator_reconcile_orphans_dead_lettered_total` | Counter | Orphans given up on after repeated failures. |
-| `orchestrator_reconcile_stuck_tasks_suspected_total` | Counter | Tasks suspected stuck (no state transitions past the runtime ceiling). |
-| `orchestrator_reconcile_stuck_tasks_failed_total` | Counter | Stuck-task cleanup attempts that failed. |
+| `orchestrator_reconcile_stuck_tasks_suspected_total` | Counter | Tasks that exceeded the runtime ceiling once (first strike, no action taken yet). |
+| `orchestrator_reconcile_stuck_tasks_failed_total` | Counter | Tasks failed and their VMs torn down for exceeding the runtime ceiling twice (second strike). |
 | `orchestrator_reconcile_vms_missing_provider_total` | Counter | VMs tracked in the state store with no matching provider record. |
 
 **HTTP (RED metrics)**:
@@ -116,3 +119,21 @@ series count.
 
 See [Monitoring](/docs/cloud/monitoring) for a Prometheus scrape config and
 guidance on which metrics matter operationally.
+
+## Version
+
+```
+GET /v1/version
+```
+
+Always `200`, identifying the process and its build:
+
+```json
+{ "service": "fuse-orchestrator", "version": "1.4.0" }
+```
+
+`version` renders as `dev` when the binary wasn't stamped at build time.
+Despite sitting under the `/v1` prefix, this route is unauthenticated, it is
+served by the same handler as `/health` and `/ready` on the outer mux, so
+`fuse connect` can confirm it is talking to an orchestrator (rather than a
+host agent, or nothing at all) before it holds a validated token.

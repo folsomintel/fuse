@@ -12,8 +12,8 @@ once you're ready to run real workloads.
 ## 1. Build and run the orchestrator
 
 ```bash
-go build -o bin/fuse ./cmd/orchestrator
-./bin/fuse
+go build -o bin/orchestrator ./cmd/orchestrator
+./bin/orchestrator
 ```
 
 With no `FIRECRACKER_BASE_URL` set, the orchestrator runs against an in-memory stub
@@ -24,24 +24,28 @@ provider — handy for trying things out locally. It listens on `:8080` by defau
 The CLI binary is `fuse`, built from the repo's `cli/` package:
 
 ```bash
-go build -o bin/fuse-cli ./cli
+go build -o bin/fuse ./cli
 ```
 
-See [CLI overview](/docs/reference/cli) for other install paths.
+See [CLI overview](/docs/reference/cli) for global flags and config file layout.
 
 ## 3. Connect to the orchestrator
 
 ```bash
-fuse-cli connect http://localhost:8080
+fuse connect http://localhost:8080
 ```
 
 Since this local orchestrator has no `ORCH_AUTH_TOKEN` set, no `--token` is needed —
 that's insecure/dev mode, fine for local exploration only.
 
+`fuse quickstart` walks the same connect step interactively and registers a host on
+the way through, which is the path to take once you're moving to a real host rather
+than the stub provider.
+
 ## 4. Scaffold a Fusefile
 
 ```bash
-fuse-cli init
+fuse init
 ```
 
 This writes a fully commented example `Fusefile` to the current directory. Open it
@@ -51,18 +55,23 @@ and adjust `resources`, `run`, and any `services` you need. See
 ## 5. Bring it up
 
 ```bash
-fuse-cli up
+fuse up --secret pg_password=devpassword
 ```
 
 `up` compiles the Fusefile and creates an environment from it, then streams
 provisioning events until the environment reaches a terminal state (or pass
 `--no-wait` to return immediately).
 
+The scaffold from step 4 declares `pg_password` under `secrets`, so `up` refuses to
+create anything until you supply a value for it, either with `--secret` as above or
+with `--secrets-file`. Values live outside the Fusefile by design, the file names the
+secrets an environment requires rather than carrying them.
+
 ## 6. Check on it
 
 ```bash
-fuse-cli environment list
-fuse-cli environment get <id>
+fuse environment list
+fuse environment get <id>
 ```
 
 ## Next steps

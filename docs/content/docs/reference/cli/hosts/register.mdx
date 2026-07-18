@@ -64,14 +64,14 @@ Per-device GPU inventory is the reverse case: it is probe-only. The agent report
 each GPU's UUID, model, PCI address, memory, driver version, and MIG mode, and
 there is no flag to declare or override that list.
 
-If the host agent's provider doesn't support capacity probing and any of those
-three flags were left at `0`, registration fails outright: declare them
-explicitly in that case.
+If a value was left at `0` and the probe itself fails, for example because nothing
+is listening at `--url`, registration is refused rather than persisting a host with
+made-up capacity. Declare the values explicitly in that case.
 
 ```bash
 # probe cpus/ram/storage from the host agent; only declare what's policy
 fuse host register prod-east-1 \
-  --url http://10.0.0.5:9000 \
+  --url http://10.0.0.5:8090 \
   --region us-east \
   --max-vms 20
 ```
@@ -79,7 +79,7 @@ fuse host register prod-east-1 \
 ```bash
 # override the probe with an explicit overcommit
 fuse host register prod-east-1 \
-  --url http://10.0.0.5:9000 \
+  --url http://10.0.0.5:8090 \
   --cpus 32 \
   --ram-mb 65536 \
   --storage-gb 500 \
@@ -139,10 +139,10 @@ On success, prints the registered host's full detail, including any capacity
 warnings:
 
 ```bash
-$ fuse host register prod-east-1 --url http://10.0.0.5:9000 --max-vms 20
+$ fuse host register prod-east-1 --url http://10.0.0.5:8090 --max-vms 20
 registered host "prod-east-1"
 id            prod-east-1
-url           http://10.0.0.5:9000
+url           http://10.0.0.5:8090
 region        -
 backend       firecracker
 state         active

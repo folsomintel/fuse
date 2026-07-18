@@ -18,11 +18,14 @@ Aliases: `rm`, `delete`. Forcefully tears the environment down from any state.
 
 ## Behavior
 
-Idempotent: destroying an already-gone environment returns a not-found error
-rather than succeeding silently or failing in some other way, useful in
-scripts that don't need to check existence first.
+Destroy is **not** idempotent: destroying an environment that no longer exists
+returns a not-found error and a non-zero exit code, so scripts that tolerate a
+missing environment have to check first or ignore the exit code.
 
 Without `--yes` in an interactive terminal, prompts for confirmation first.
+Outside a terminal there is no prompt to answer, so destroy aborts with
+`aborted (use --yes to skip confirmation)` rather than proceeding. Always pass
+`--yes` in scripts and CI.
 
 To tear down gracefully instead of forcefully, drain first:
 

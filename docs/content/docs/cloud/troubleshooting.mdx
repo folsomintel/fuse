@@ -33,6 +33,23 @@ logs; it logs which mode it's running in, and confirm `FIRECRACKER_BASE_URL` and
 `FIRECRACKER_TOKEN` are set to the values `fc-agent.sh start` printed. See
 [Deploying the orchestrator](/docs/cloud/orchestrator-deploy).
 
+## `firecracker create vm: http 401`
+
+Symptom: `fuse up` or `fuse environment create` fails with
+`firecracker create vm: http 401`. The orchestrator is healthy and the host agent
+is running, only environment creation fails.
+
+Cause: the per-host agent token the orchestrator has stored no longer matches the
+agent's `FC_AGENT_TOKEN`. The agent authenticates every route, so the very first
+call the provider makes is rejected. This usually follows the agent's `.env` being
+regenerated, or `TOKEN_ENCRYPTION_KEY` changing (which leaves the stored token
+undecryptable). The two are stored separately, so re-running the agent never
+updates the orchestrator's copy on its own.
+
+Fix: print the current value with `./fc-agent.sh env` on the host, then re-register
+the host with it, `fuse host register <id> --token <FIRECRACKER_TOKEN> ...`.
+Registration overwrites the stored token.
+
 ## Rootfs bake fails or produces an incomplete guest
 
 Symptom: environments get stuck in `provisioning`, or the guest boots but `fused`

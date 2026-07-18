@@ -24,8 +24,14 @@ provisioning -> running -> draining -> destroying -> destroyed
   **not yet destroyed**. Only running environments can be drained; any other state
   returns a conflict.
 - **destroying / destroyed**: the VM is being (or has been) torn down.
-- **failed**: provisioning or an operation failed; the last error is attached to
-  the environment record.
+- **failed**: provisioning or an operation failed.
+
+`destroyed` and `failed` are terminal states you only ever observe on the event
+stream: by the time either is published the environment record has already been
+removed, so a follow-up `fuse environment get <id>` returns 404 rather than a record
+carrying the failure. The error text survives on the task record, and `--follow` (or
+`fuse environment watch`) prints it inline, so read it there rather than expecting it
+on the environment.
 
 Draining does not auto-destroy. A subsequent explicit destroy call removes the VM.
 
@@ -73,9 +79,14 @@ own guest credentials. Because it boots a copy of the source's disk, it starts o
 with the source's filesystem contents, but it is re-issued a fresh auth token on
 creation, so the two environments never share a secret.
 
+The source must be **running**; forking an environment in any other state fails.
+
 A fork always lands on the **same host** as its source (the seed snapshot lives on
 that host's disk), and it is charged against that host's capacity like any other
-environment. Forking a source whose host is full will fail.
+environment. It does **not** go through the scheduler, though, and no capacity check
+runs on that host: forking onto a host with nothing left succeeds and overcommits it,
+so keep an eye on the source host's headroom rather than relying on admission
+control to stop you.
 
 Snapshots are disk-only, so a fork cold-boots the snapshot's disk rather than
 resuming the source's memory: expect a normal boot, not a sub-second resume.
@@ -89,5 +100,17 @@ snapshotting is (i.e. QEMU/GPU environments).
 fuse environment rotate-token <id>
 ```
 
-Re-issues the guest agent's credentials without recreating the VM, useful if you
-suspect a token has leaked.
+Generates fresh TLS credentials and an auth token for a running environment, writes
+them into the guest's credential files, and persists the new encrypted token on the
+orchestrator, all without recreating the VM.
+
+Rotation requires the environment to be **running**, and it requires an orchestrator
+started with a 32-byte `TOKEN_ENCRYPTION_KEY`, a dev-mode orchestrator without one
+generates no per-VM credentials in the first place and so has nothing to rotate.
+
+<Callout type="warn" title="Known limitation">
+Rotation does **not** take effect inside a running guest. `fused` reads its auth
+token exactly once at process start and has no credential poller, so it keeps serving
+the old token until it is restarted. Treat rotate-token as updating the stored and
+on-disk copies, not as a way to revoke a leaked token.
+</Callout>

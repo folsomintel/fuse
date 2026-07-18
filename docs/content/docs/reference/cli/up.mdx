@@ -26,11 +26,15 @@ is set.
 ## Path resolution
 
 The Fusefile path is resolved in this priority order: `-f/--file` if set, then
-a positional argument, then `./Fusefile` as the default.
+a positional argument, then `./Fusefile` as the default. Both `-f` and the
+positional argument name the **file** itself, neither appends `Fusefile` to a
+directory, so pointing either at a directory fails with
+`read ./services/api: read ./services/api: is a directory` (the operation and
+path appear twice because the CLI prefixes an error that already names them).
 
 ```bash
-fuse up                          # ./Fusefile
-fuse up ./services/api           # ./services/api/Fusefile
+fuse up                                 # ./Fusefile
+fuse up ./services/api/Fusefile
 fuse up -f custom.fusefile.yaml
 ```
 

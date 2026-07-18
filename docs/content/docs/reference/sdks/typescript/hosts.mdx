@@ -11,7 +11,7 @@ hardware capacity rather than trusting a guess:
 ```ts
 const host = await client.hosts.register({
   id: "prod-east-1",
-  url: "http://10.0.0.5:9000",
+  url: "http://10.0.0.5:8090",
   token: agentToken,
   region: "us-east",
   backend: "firecracker",
@@ -30,9 +30,17 @@ for (const w of host.warnings ?? []) {
   the real value instead of trusting a guess. Pass one explicitly to override
   the probe, for a deliberate overcommit or carve-out, a declared value above
   what the probe reports still registers, with a warning rather than a
-  rejection. If the host's provider doesn't support probing and a value was
-  left at `0`, registration throws a `FuseApiError` with `status === 502`
-  instead, declare it explicitly in that case.
+  rejection. If the host's provider doesn't support probing at all and a value
+  was left at `0`, registration throws a `FuseApiError` with `status === 400`
+  and `code === "invalid_argument"`, declare all three explicitly in that case.
+  If a probe is attempted and fails while `cpus`, `ram_mb`, and `storage_gb`
+  are not all declared, you get `status === 502` and `code === "internal"`
+  instead.
+- the capacity probe doubles as an auth probe, it is the first call the
+  orchestrator makes to the host agent with the supplied `token`. If the agent
+  rejects it, registration fails with `status === 502` and
+  `code === "unauthorized"` regardless of whether capacity was declared.
+  `token` must be the agent's own `FC_AGENT_TOKEN`, not the orchestrator token.
 - `capacity.vm_count` is scheduling policy, not something a host can report
   on its own, so it's never probed and is always required.
 - `host.warnings` is only ever populated on this call's response, non-fatal
@@ -45,7 +53,16 @@ for (const w of host.warnings ?? []) {
 | `list()` | List every registered host with its declared `capacity` and live `allocated` figures. |
 | `get(hostId)` | Fetch one host by ID. |
 | `cordon(hostId)` / `uncordon(hostId)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
-| `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `code === "conflict"` if environments are still assigned to it. |
+| `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `status === 500` and `code === "internal"` if environments are still assigned to it. |
+
+<Callout type="warn" title="Known limitation">
+Deregistering a host that still has environments assigned returns
+`500`/`internal`, not the `409`/`conflict` the condition deserves. It is a
+permanent property of the request rather than a server fault, so the status
+should be a 4xx. Until that is fixed, match on the error message (`host <id>
+still has vm <id> assigned`) rather than on `status` or `isConflict()`, and
+drain the host's environments before removing it.
+</Callout>
 
 `Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
 is set once at registration and never refreshed, it is not a liveness

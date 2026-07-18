@@ -48,7 +48,7 @@ func main() {
 			log.Fatal(ev.Err)
 		}
 		log.Println("state:", ev.State)
-		if fuse.IsTerminalState(ev.State) {
+		if ev.State == fuse.StateRunning {
 			break
 		}
 	}
@@ -63,15 +63,22 @@ func main() {
 ## What each step does
 
 **Create** provisions a microVM from a `Spec` (CPUs, RAM, storage, and optionally
-GPU). `Create` blocks server-side until the environment is running or provisioning
-fails; the returned `*EnvironmentInfo` reflects whatever state the environment
-reached.
+GPU). `Create` blocks server-side until the environment is running, and returns
+an error if provisioning fails. There is **no** success path that hands back an
+`*EnvironmentInfo` in `failed` state, so don't branch on `env.State ==
+fuse.StateFailed` after a nil-error `Create`, that branch can never be taken.
 
 **Events** opens the SSE event stream for that environment and returns a
 `<-chan Event`. The stream delivers the current state immediately on connect, then
 one event per transition. It closes on its own after a terminal state
 (`destroyed` or `failed`), or after a final `Event` with `Err` set if the stream
 itself failed. There is no built-in timeout: cancel `ctx` to stop it early.
+
+Because `Create` has already returned by this point, the first event is a
+snapshot of the current state (`running`) and nothing transitions after it until
+something destroys the environment. Break on the state you are actually waiting
+for, as above, rather than on `fuse.IsTerminalState`, which is only ever true for
+`destroyed` or `failed` and would block this loop forever.
 
 **Destroy** tears the environment down. It is idempotent: destroying an
 already-gone environment returns a `not_found` `*APIError`, not a panic or a

@@ -37,12 +37,19 @@ than fetched at boot.
 rootfs, injecting:
 
 - `/usr/local/bin/fused`: the static Go agent binary.
-- Podman-static plus crun/runc/conmon/netavark/pasta/fuse-overlayfs, so the guest can
-  run the `services` from your Fusefile.
+- Podman-static plus crun/runc/conmon/netavark/pasta/fuse-overlayfs, with
+  `podman.socket` enabled, so the guest can run the `services` from your Fusefile.
+- docker-compose v2, installed as Podman's compose provider at
+  `/usr/local/bin/docker-compose`, which is what actually brings those `services` up
+  (the guest has no docker CLI).
 - iptables, symlinked to `xtables-legacy-multi` (the CI kernel has no nftables).
 - The host's CA bundle.
-- `fused.service`, a systemd unit with a drop-in slot the host agent uses to pass
-  `--manifest`/`--secrets`/`--gateway`/`--vm-id` at start time.
+- `fused.service`, a placeholder systemd unit so the guest boots with one present. On
+  start-agent the host agent **overwrites** it with a self-contained unit carrying
+  `--listen`/`--manifest`/`--secrets` inline, and passes `--gateway`/`--vm-id` and the
+  TLS flags through `FUSED_EXTRA_ARGS` in `/etc/default/fused`. Writing the whole unit
+  rather than a drop-in is deliberate, it means the agent also works on a plain
+  unbaked rootfs.
 - Required directories the base CI rootfs is missing (`/var/tmp`, `/var/lib/containers`,
   `/run/containers`).
 

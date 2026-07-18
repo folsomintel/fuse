@@ -27,8 +27,9 @@ POST /login
 { "token": "..." }
 ```
 
-The single shared token (the operator's `ORCH_AUTH_TOKEN`, or any live API
-key). There's no username field, there are no users.
+The operator's `ORCH_AUTH_TOKEN`. Unlike `/v1/*` routes, `/login` does **not**
+accept revocable API keys, only the master token, the session cookie it issues
+carries the master token itself. There's no username field, there are no users.
 
 ### Response
 

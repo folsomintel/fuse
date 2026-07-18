@@ -13,13 +13,27 @@ transitions live (backed by the same Server-Sent Events mechanism as the HTTP
 API's event stream, no polling loop involved) until it reaches a terminal state
 (`destroyed` or `failed`), then exits.
 
+On an interactive terminal, `watch` renders a live view: a `watching <id>`
+header, one colored line per transition, and a spinner reading
+`waiting for transitions (q to stop)` until the stream ends. `q`, `Esc`, or
+`Ctrl-C` stops it early.
+
+When output is not a terminal (piped, redirected, or run in CI), or when
+`--json` is set, `watch` falls back to a plain line-per-event renderer instead:
+
 ```bash
-fuse environment watch fuse-abc123
-# provisioning
-# running
+fuse environment watch fuse-abc123 | tee watch.log
+2026-01-15 10:00  provisioning
+2026-01-15 10:01  running      10.0.0.5:19551
+2026-01-15 11:30  destroyed
 ```
 
+With `--json`, the same stream is emitted as newline-delimited JSON.
+
+`running` is not where watch stops, it keeps waiting until the environment is
+destroyed or fails.
+
 Equivalent to passing `--follow` to
-[`fuse environment create`](/docs/reference/cli/environment/create) or
-[`fuse up`](/docs/reference/cli/up), but usable standalone against an
-environment that already exists.
+[`fuse environment create`](/docs/reference/cli/environment/create), or to
+letting [`fuse up`](/docs/reference/cli/up) stream by default (its opt-out is
+`--no-wait`), but usable standalone against an environment that already exists.

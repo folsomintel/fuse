@@ -6,7 +6,11 @@ icon: KeySquare
 
 `client.apiKeys` mints and revokes API keys. All three methods require the
 master token, the server enforces this regardless of what token the client
-was constructed with.
+was constructed with. They are also **Postgres-only**: with `DATABASE_URL`
+unset the orchestrator never mounts the `/v1/api-keys` routes at all, and all
+three methods throw a `FuseApiError` with `status === 404` and
+`code === "route_not_found"`, which `isNotFound()` does not match. The master
+token still works either way.
 
 ```ts
 const key = await client.apiKeys.create("ci-runner");

@@ -17,7 +17,7 @@ whole fleet.
 | Flag | Purpose |
 | --- | --- |
 | `--task-id` | Filter by task ID. |
-| `--state` | Filter by state: `provisioning`\|`running`\|`draining`\|`destroying`\|`destroyed`\|`failed`. |
+| `--state` | Filter by state: `provisioning`\|`running`\|`draining`\|`destroying`. |
 | `--host-id` | Filter by host ID. Defaults to the active host if `--all` is not set. |
 | `--all` | List across all hosts, ignoring the active host. |
 
@@ -38,6 +38,12 @@ fuse environment list --task-id my-task
 
 ```bash
 $ fuse environment list
-ID           STATE    TASK ID   HOST         URL                CREATED
-fuse-abc123  running  my-task   prod-east-1  http://10.0.0.5:9550  3m ago
+ID           STATE    TASK ID   HOST         URL               CREATED
+fuse-abc123  running  my-task   prod-east-1  10.0.0.5:19551    2026-01-15 10:00
 ```
+
+`destroyed` and `failed` are event-stream-only states, emitted over the wire by
+[`fuse environment watch`](/docs/reference/cli/environment/watch) but never
+stored on an environment record, so they are not filterable here. The filter is
+an exact match with no validation, so an unknown value returns an empty list
+rather than an error.

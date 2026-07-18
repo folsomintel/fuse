@@ -45,10 +45,13 @@ def create_with_retry(client: fuse.Client, request: fuse.CreateRequest) -> fuse.
     raise last_err
 ```
 
-`is_unavailable` and `is_conflict` are usually the two codes worth retrying (the
-orchestrator rejecting work while shutting down, or a transient scheduling
-conflict); `is_invalid_argument` and `is_not_found` are not, retrying won't
-change the outcome.
+`is_unavailable` is the only code worth retrying, and it covers genuine
+capacity exhaustion (no host with room, or no hosts at all) as well as the
+orchestrator rejecting work while shutting down, so a retry only helps if you
+expect capacity to free up. `is_conflict`, `is_invalid_argument`, and
+`is_not_found` are not retryable, retrying won't change the outcome. In
+particular a duplicate `task_id` conflicts on every attempt, the fix is a new
+`task_id` rather than a retry.
 
 ## Request correlation
 
@@ -69,6 +72,12 @@ client = fuse.Client(
 An empty string from the callable omits the header entirely rather than sending
 a blank one.
 
+The orchestrator only echoes IDs made of letters, digits, underscores, and
+hyphens, up to 128 bytes. Anything else is silently replaced with a
+server-generated `req_<hex>` ID, so correlation breaks with no error at all,
+normalize trace IDs containing colons, dots, or slashes before returning them
+from the callable. `uuid4()` as shown above is safe.
+
 ## Testing against the stub
 
 The orchestrator itself, not the SDK, has a built-in in-memory stub provider: run
@@ -77,8 +86,8 @@ without booting real microVMs. This is the fastest way to test SDK-driven code
 end to end without a real Firecracker host:
 
 ```bash
-go build -o bin/fuse ./cmd/orchestrator
-./bin/fuse   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
+go build -o bin/orchestrator ./cmd/orchestrator
+./bin/orchestrator   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
 ```
 
 Point a `fuse.Client` at `http://localhost:8080` with no token (the orchestrator
