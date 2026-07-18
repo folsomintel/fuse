@@ -127,12 +127,59 @@ def sudo(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
 
 # -- VFIO / GPU inventory -----------------------------------------------------
 
+def _parse_vfio_metadata(meta: str, kind: str, slots: list[str]) -> list[dict]:
+    """Parse the optional " | key=val;..." suffix into per-device dicts.
+
+    qemu-vfio-bind.sh emits one metadata blob per line, describing the group's
+    primary GPU (bus_id, uuid, model, memory_mb, mig_mode). Returns a
+    single-element devices list shaped like probe_gpu_devices()'s dicts, or []
+    when the blob is empty. Unknown keys are ignored; missing keys degrade to
+    sensible defaults.
+
+    Note: a single blob per line means a rare multi-GPU IOMMU group (e.g. an
+    NVLink pair sharing one group) contributes one device entry even though
+    group["count"] is > 1. Per-GPU device entries for such groups are deferred
+    to the device-aware model (issue #38).
+    """
+    fields: dict[str, str] = {}
+    for pair in meta.split(";"):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        key, _, val = pair.partition("=")
+        fields[key.strip()] = val.strip()
+    if not fields:
+        return []
+    try:
+        memory_mb = int(fields.get("memory_mb", "") or 0)
+    except ValueError:
+        memory_mb = 0
+    mig_mode = fields.get("mig_mode", "")
+    # prefer the gpu's own bus id from the blob; fall back to the group's first
+    # slot for old-format blobs that predate the bus_id key (the first slot may
+    # be a bridge, so this is only a last resort).
+    bus_id = fields.get("bus_id", "") or (slots[0] if slots else "")
+    return [{
+        "index": 0,
+        "uuid": fields.get("uuid", ""),
+        "model": fields.get("model", ""),
+        "pci_bus_id": bus_id,
+        "memory_mb": memory_mb,
+        "driver_version": fields.get("driver_version", ""),
+        "compute_cap": fields.get("compute_cap", ""),
+        "mig_capable": bool(mig_mode) and mig_mode != "N/A",
+        "mig_mode": mig_mode,
+    }]
+
+
 def read_vfio_inventory() -> list[dict]:
     """Parse VFIO_INVENTORY into a list of bindable GPU groups.
 
-    Each line is "<count> <kind> <pci_slot> [<pci_slot> ...]" as emitted by
-    qemu-vfio-bind.sh --list. Returns dicts like
-    {"count": 1, "kind": "a100", "slots": ["0000:17:00.0"]}.
+    Each line is "<count> <kind> <pci_slot> [<pci_slot> ...] [| key=val;...]" as
+    emitted by qemu-vfio-bind.sh --list. Returns dicts like
+    {"count": 1, "kind": "a100", "slots": ["0000:17:00.0"]}, plus a "devices"
+    list when the optional per-device metadata suffix is present. Old-format
+    lines (no " | " suffix) parse exactly as before, without a "devices" key.
     """
     if not VFIO_INVENTORY.exists():
         return []
@@ -140,8 +187,10 @@ def read_vfio_inventory() -> list[dict]:
     for lineno, raw in enumerate(VFIO_INVENTORY.read_text().splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
-            continue 
-        parts = line.split()
+            continue
+        # split off the optional metadata suffix before the count/kind/slots part
+        head, sep, meta = line.partition("|")
+        parts = head.split()
         if len(parts) < 3:
             raise HTTPError(500, f"bad vfio inventory at {VFIO_INVENTORY}:{lineno}: {raw!r}")
         count_s, kind, slots = parts[0], parts[1], parts[2:]
@@ -152,7 +201,12 @@ def read_vfio_inventory() -> list[dict]:
         if count <= 0 or len(slots) < count:
             raise HTTPError(500,
                 f"bad vfio inventory group at {VFIO_INVENTORY}:{lineno}: {raw!r}")
-        groups.append({"count": count, "kind": kind.lower(), "slots": slots})
+        group = {"count": count, "kind": kind.lower(), "slots": slots}
+        if sep:
+            devices = _parse_vfio_metadata(meta, kind.lower(), slots)
+            if devices:
+                group["devices"] = devices
+        groups.append(group)
     return groups
 
 
