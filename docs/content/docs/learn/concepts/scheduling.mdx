@@ -1,0 +1,137 @@
+---
+title: Scheduling and placement
+description: How the orchestrator picks a host for an environment
+icon: Crosshair
+---
+
+When you create an environment you never name a host. You describe what the
+workload needs, and the orchestrator picks a host that can satisfy it. This page
+explains how that choice is made, and just as importantly, what it does not
+consider.
+
+## Placement is always orchestrator-side
+
+There is no way to pin an environment to a host. The create request has no host
+field, and nothing in the scheduler can be bypassed.
+
+`fuse host <id>` looks like pinning but isn't. It sets a **client-side** scope
+that filters what `fuse environment list` shows you, nothing more. Create
+deliberately ignores it and says so:
+
+```bash
+note: create is orchestrator-scheduled; the active host "gpu-1" does not pin placement
+```
+
+If you need a workload on one specific host, the only lever is to make that host
+the only one that survives the filters below, by cordoning the others or by
+giving the environment a region only it serves.
+
+## The filter chain
+
+Every registered host is tested against four gates, in order. A host that fails
+any of them is out; there is no partial credit and no fallback tier.
+
+| Gate | Rule |
+| --- | --- |
+| State | The host must be `active`. Both `cordoned` and `draining` are excluded. |
+| Region | If the spec names a region, the host's region must match it exactly. An empty region disables the gate rather than preferring anything. |
+| Backend | A spec asking for GPUs is only placed on a `qemu` host. |
+| Capacity | The host must have room, see below. |
+
+The backend gate is defensive. Registration already refuses GPU capacity on a
+Firecracker host, so this second check exists to catch a stale or hand-edited
+host record rather than to do routine work.
+
+## What "has room" means
+
+Capacity is checked as `capacity - allocated` on four dimensions, always:
+
+- CPUs, RAM, and storage must each cover the request.
+- The host must have at least one free VM slot.
+
+GPUs are only considered when the spec asks for them, and the check takes one of
+three forms depending on what the host reported:
+
+- **A MIG request** (a `gpu_profile` is set) draws from the MIG instance pool for
+  that profile. The MIG pool and the whole-device pool are independent counters,
+  so a slice never consumes a card.
+- **A host reporting per-device inventory** counts free devices by UUID and
+  filters them by kind, which is what lets a host with mixed GPU models answer
+  correctly.
+- **A legacy host reporting only a scalar count** subtracts counts and compares
+  `gpu_kind` as an exact, case-sensitive string.
+
+That last difference is worth internalizing: on a per-device host, `gpu_kind` is
+matched as a case-insensitive substring of each device's model, so `a100`
+matches `NVIDIA A100-SXM4-40GB`. On a legacy scalar host the same request is an
+exact match and would not. The same Fusefile can therefore place differently
+depending on how the host reports its inventory.
+
+## Choosing among the survivors
+
+Placement is not first-fit. Every host that clears the filters is scored:
+
+```text
+score = free_cpus * 10000 + free_ram_mb
+```
+
+CPUs dominate, because they are the scarcest resource in practice, and free RAM
+breaks ties between hosts with equal CPUs. The fleet's placement policy then
+picks from the scored set:
+
+- **Spread** (the default) takes the **highest** score, the least-loaded host.
+- **Binpack** takes the **lowest** score, packing work onto hosts that are
+  already busy so others stay empty.
+
+Hosts are held in a map, so the order they are considered in varies between
+runs. Placement is still deterministic, because every comparison breaks ties on
+the host ID rather than on arrival order. Two identical requests against an
+unchanged fleet land on the same host.
+
+## What the scheduler ignores
+
+The list of what is *not* consulted is the more useful half of the model:
+
+- **Host liveness.** `last_seen` is recorded at registration and never
+  refreshed, and no gate reads it. A host whose agent died an hour ago is still
+  a placement candidate until someone cordons it.
+- **Real utilization.** Every number is the orchestrator's own bookkeeping
+  against what it has allocated. Nothing polls the host to ask what it is
+  actually doing, so work started outside Fuse is invisible.
+- **Capacity drift.** A host's capacity is recorded when it registers and never
+  re-probed.
+- Network topology, IOMMU groups, image availability, and tenant quotas are not
+  modeled at all.
+
+<Callout type="warn" title="Known limitation">
+`draining` is defined but inert. No eviction logic exists, so a draining host
+behaves exactly like a cordoned one: it takes no new placements, and its
+existing environments stay put until you move them yourself.
+</Callout>
+
+## When nothing fits
+
+A request that clears no host fails with `no host has sufficient capacity`,
+surfaced as a `503`. Fuse does not queue the request or wait for room to appear,
+a placement either succeeds now or is rejected now.
+
+<Callout type="warn" title="Known limitation">
+The rejection message reports only the CPU, RAM, and storage that were
+requested. A request rejected because of its region or its GPU kind still
+produces a message about CPU and memory, so it can read as a capacity problem
+when it is really a matching problem. Check the host's region and GPU inventory
+before adding hardware.
+</Callout>
+
+A GPU request made when no GPU host is registered at all fails differently, with
+`gpu workloads require a registered gpu host`, rather than reporting a capacity
+shortfall on hosts that could never have served it.
+
+## Read next
+
+- [Hosts](/docs/learn/concepts/hosts) for what capacity is probed versus
+  declared.
+- [Providers](/docs/learn/concepts/providers) for the backend split the GPU gate
+  depends on.
+- [The reconcile loop](/docs/learn/concepts/reconcile) for what happens to an
+  environment after it is placed.

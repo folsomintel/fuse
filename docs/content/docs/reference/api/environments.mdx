@@ -203,7 +203,8 @@ Replaces polling for state transitions with a Server-Sent Events stream:
 - This is single-process pub/sub: a subscriber connected to a different
   orchestrator replica than the publishing one will not see events.
   Acceptable today since the orchestrator runs as a single process. See
-  [Scaling](/docs/cloud/scaling) for what this means operationally.
+  [State and recovery](/docs/learn/concepts/state-and-recovery) for why that is
+  a design constraint rather than a deployment accident.
 
 Wire format is standard SSE:
 

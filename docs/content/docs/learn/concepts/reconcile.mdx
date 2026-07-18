@@ -1,0 +1,134 @@
+---
+title: The reconcile loop
+description: The background sweep that detects leaked VMs and runaway tasks
+icon: RefreshCw
+---
+
+Every 30 seconds the orchestrator compares what it thinks is running against
+what the providers say is running, and acts on the difference. This is the
+reconcile loop. It is worth understanding early, because it is the only thing
+that destroys resources you did not explicitly ask it to.
+
+The most important thing to know up front: **it is a leak detector, not a
+supervisor.** It never restarts, reschedules, or heals anything. Every action it
+takes is destructive or garbage collection. If you come from Kubernetes, this is
+the sharpest difference, there is no desired-state controller driving things back
+to health, and a failed task stays failed.
+
+## One cycle
+
+A cycle runs on a fixed 30-second tick, with no jitter and no catch-up. One
+converge also runs immediately at startup, so the first sweep happens before the
+first tick, not 30 seconds in.
+
+Each cycle, in order:
+
+1. **List** every VM the providers actually have.
+2. **Mark missing VMs.** A tracked VM the provider no longer reports is moved to
+   `destroying` and its task is failed.
+3. **Destroy orphans**, VMs the provider has that Fuse does not track.
+4. **Fail stuck tasks** that have exceeded their runtime ceiling.
+5. **Garbage-collect snapshots** past the retention window.
+6. **Reap** destroyed VMs and return their capacity to the host.
+
+<Callout type="warn" title="Known limitation">
+A failure listing VMs from any host aborts the entire cycle, it does not isolate
+the bad host. One unreachable host agent therefore suppresses stuck-task
+detection and snapshot GC fleet-wide until it recovers, and the only outward sign
+is a flat cycle in the metrics.
+</Callout>
+
+## Orphans
+
+An **orphan** is a VM present in a provider but absent from Fuse's own records.
+The definition is pure set difference, with no grace period, so anything the
+orchestrator has forgotten about is destroyed on the next tick.
+
+Destruction is retried up to five times. After that the orphan is recorded in the
+dead-letter queue and skipped permanently, so a VM that cannot be destroyed stops
+consuming the loop rather than blocking it forever. Retry counters live in
+memory, so restarting the orchestrator gives every dead-lettered orphan a fresh
+budget.
+
+<Callout type="warn" title="Known limitation">
+Destroying an orphan does not return its capacity to the host's allocated
+counters, unlike the normal reap path. The host stays over-counted until the
+orchestrator restarts, which recomputes allocations from live VMs.
+</Callout>
+
+## Stuck tasks
+
+A task is a candidate for failure when its VM is `running`, it still has a task
+attached, and it has exceeded its ceiling. The ceiling is the environment's own
+`max_runtime` when set, and otherwise the fleet default of two hours.
+
+Two properties matter more than the mechanism:
+
+**The ceiling measures total VM lifetime**, from creation, not time since the
+last state change. A long-running job is not spared by making progress. Any
+workload legitimately outliving the default must set `max_runtime` explicitly,
+or it will be destroyed mid-flight at the two-hour mark.
+
+**Detection is not a health check.** Nothing pings the guest and nothing reads a
+heartbeat. The loop knows only two things: how old a VM is, and whether the
+provider still lists it. The consequences run both ways, a wedged task that is
+young is completely invisible to this loop, and a healthy task that is old is a
+false positive unless it raised its own ceiling.
+
+A VM must exceed its ceiling on **two consecutive cycles** before it is failed,
+which guards against a single cycle skewed by a clock jump or a scheduling pause.
+The practical effect is that the real time-to-failure is the ceiling plus one
+interval, and a `task.stuck_suspected` event fires on the first strike, giving
+you roughly 30 seconds of warning in the event stream.
+
+## Dead letters
+
+Orphans that exhaust their retries and tasks failed for being stuck are both
+recorded in a dead-letter queue, keyed by kind and entity so repeated failures
+update one row rather than piling up duplicates.
+
+The queue is an **inspection surface only**. Nothing drains it, nothing retries
+from it, and writes to it are best-effort, a failure to record a dead letter is
+logged and swallowed rather than propagated. Treat it as a place to find out what
+went wrong, not as a work queue.
+
+## What the loop does not do
+
+- **It does not detect a dead host agent.** `last_seen` is never refreshed and
+  nothing sweeps for unreachable hosts. A dead agent surfaces only as the aborted
+  cycle described above.
+- **It does not drain hosts.** The `draining` host state exists but no eviction
+  logic backs it.
+- **It does not re-probe capacity.** Host capacity is fixed at registration.
+- **It does not rebalance.** Once placed, an environment stays on its host for
+  life.
+
+## Metrics
+
+Every cycle emits its results, including on the aborted path, so a stuck loop is
+visible rather than silent:
+
+| Metric | Measures |
+| --- | --- |
+| `orchestrator_reconcile_cycles_total` | Cycles completed. |
+| `orchestrator_reconcile_duration_seconds` | Cycle duration. |
+| `orchestrator_fleet_tracked_vms` | VMs Fuse believes exist. |
+| `orchestrator_fleet_provider_vms` | VMs the providers report. |
+| `orchestrator_reconcile_orphans_destroyed_total` | Orphans destroyed. |
+| `orchestrator_reconcile_orphans_failed_total` | Orphan destroy attempts that failed. |
+| `orchestrator_reconcile_orphans_dead_lettered_total` | Orphans that exhausted retries. |
+| `orchestrator_reconcile_stuck_tasks_suspected_total` | First-strike suspicions. |
+| `orchestrator_reconcile_stuck_tasks_failed_total` | Tasks actually failed. |
+| `orchestrator_reconcile_vms_missing_provider_total` | Tracked VMs the provider lost. |
+
+A persistent gap between `fleet_tracked_vms` and `fleet_provider_vms` is the
+signal worth alerting on, it means the two views of the world are diverging.
+Every counter is fleet-wide, there is no per-host breakdown.
+
+## Read next
+
+- [Scheduling and placement](/docs/learn/concepts/scheduling) for how a VM got
+  onto a host in the first place.
+- [State and recovery](/docs/learn/concepts/state-and-recovery) for what happens
+  across a restart.
+- [Monitoring](/docs/cloud/monitoring) for wiring these metrics up.

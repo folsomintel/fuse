@@ -1,0 +1,123 @@
+---
+title: State and recovery
+description: Why the orchestrator runs as a single replica, and what survives a restart
+icon: DatabaseZap
+---
+
+The orchestrator keeps the fleet's authoritative state in memory, guarded by a
+mutex, and writes it through to a store. That one design choice explains most of
+what follows: why you must run exactly one replica, what survives a crash, and
+which guarantees are deliberately given up for latency.
+
+## One replica, and nothing enforces it
+
+The in-memory maps of VMs, hosts, tasks, and retry counters are the source of
+truth. A second orchestrator against the same database has its own copy of all
+of it, and the two never coordinate.
+
+**Nothing prevents you from starting a second replica.** There is no leader
+election, no advisory lock, no lease, no PID guard, no startup check. The
+constraint is enforced by your deployment configuration and by nothing else.
+
+The failure is not subtle degradation, it is mutual destruction:
+
+- **Each replica destroys the other's VMs.** The reconcile loop defines an
+  orphan as a VM the provider reports but this process does not track. Replica B
+  does not know about replica A's environments, so it classifies them as orphans
+  and destroys them, and A does the same to B's. With the default 30-second tick
+  this begins within half a minute of the second process starting.
+- **Capacity is double-booked.** Placement reads free capacity and reserves it
+  under one process's mutex. The database is a write-behind cache here, with no
+  row locks and no version column, so both replicas read stale allocations and
+  place onto the same host.
+- **Event streams go dark.** The SSE broadcaster is per-process, so a client
+  connected to one replica sees nothing for environments managed by the other.
+
+If you take one operational rule from these docs, make it this one: run a single
+orchestrator, and make your process manager enforce it.
+
+## What survives a restart
+
+On boot the orchestrator rehydrates from the store before serving traffic. It
+rebuilds the host registry first, because VM recovery needs each host's provider
+to dispatch correctly, then walks the persisted VMs and triages them:
+
+- A VM recorded as **running** is probed against its provider. If the provider
+  still has it, the live handle is re-attached and the per-VM auth token is
+  decrypted and re-injected. If not, it is demoted to `destroying`.
+- A VM recorded as **provisioning** is demoted to `destroying` unconditionally,
+  on the grounds that a boot interrupted by a crash cannot be trusted.
+- Host allocation counters are then **recomputed from the live VMs** rather than
+  trusted from the database, which repairs the drift a crash mid-allocation
+  leaves behind.
+- Still-running VMs have their secrets re-uploaded, which is cheap, idempotent,
+  and covers the case where the guest rebooted on its own.
+
+<Callout type="warn" title="Known limitation">
+The provisioning demotion does not check the provider first. A VM that was
+mid-boot and actually succeeded is torn down anyway, so a crash-looping
+orchestrator destroys healthy environments on each restart.
+</Callout>
+
+Some state is deliberately never persisted and resets on every restart: orphan
+retry budgets, stuck-task strike counters, live provider handles, and SSE
+subscriptions. A VM one strike away from being failed as stuck starts over at
+zero after a restart.
+
+Per-device GPU bindings are a good illustration of the pattern. The set of GPU
+UUIDs a host has handed out is **not** stored as its own column; it is recomputed
+at recovery by walking the live VMs' own recorded UUIDs. The per-VM binding is
+the single source of truth, and the host-level view is derived from it, so the
+two cannot disagree after a crash.
+
+## Postgres or memory
+
+Set `DATABASE_URL` and state persists to Postgres, with migrations applied at
+startup. Leave it unset and the orchestrator uses an in-memory store instead.
+API-key authentication requires Postgres; the master token works either way.
+
+The in-memory store is fine for local development and it is what the
+[Quickstart](/docs/learn/quickstart) uses, but be clear about what "in-memory"
+means across a restart, because it is worse than simply forgetting:
+
+- **The host registry comes back empty**, so the scheduler is bypassed entirely
+  and every provision falls through to the single configured provider. GPU
+  requests fail outright.
+- **Every previously running VM is now untracked**, which makes all of them
+  orphans by definition. Because a converge runs at startup rather than after the
+  first tick, the orchestrator destroys them immediately.
+
+Restarting a memory-backed orchestrator that has real VMs behind it destroys
+them. Use Postgres for anything you would be unhappy to lose.
+
+## Writes are asynchronous, on purpose
+
+Creating an environment is durable before the API responds: the VM and its task
+are persisted inline, and a persistence failure rolls the create back.
+
+**Every subsequent state transition is written in the background.** Memory is
+authoritative and the store is a write-behind cache, with no ordering guarantee,
+no retry, and no acknowledgement. This keeps API latency off the database, and
+the tradeoff it makes is read-your-writes durability.
+
+The practical failure mode: if the process dies between returning `200` and
+flushing the write, the client holds a response describing a transition that was
+never recorded, and the VM comes back at its previous persisted state. The
+healers described above exist precisely because this drift is expected rather
+than exceptional.
+
+<Callout type="warn" title="Known limitation">
+Shutdown does not wait for in-flight background writes. Stopping the
+orchestrator cancels the reconcile loop and returns without draining the
+writers, so even a graceful shutdown can lose the most recent transitions. This
+is a known gap rather than intended behavior.
+</Callout>
+
+## Read next
+
+- [The reconcile loop](/docs/learn/concepts/reconcile) for the orphan rule that
+  makes a second replica so destructive.
+- [Scheduling and placement](/docs/learn/concepts/scheduling) for the capacity
+  bookkeeping that a second replica corrupts.
+- [Deploying the orchestrator](/docs/cloud/orchestrator-deploy) for running it as
+  a service.
