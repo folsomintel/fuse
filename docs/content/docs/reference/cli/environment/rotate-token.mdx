@@ -1,7 +1,7 @@
 ---
 title: fuse environment rotate-token
 description: Re-issue guest agent credentials
-icon: RefreshCw
+icon: refresh-cw
 ---
 
 ```bash
@@ -18,7 +18,7 @@ fuse environment rotate-token fuse-abc123
 # rotated token for environment "fuse-abc123"
 ```
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Rotation does not take effect in the running guest. `fused` reads its
 `--auth-token-file` exactly once at process start and has no credential
 poller, so a live agent keeps serving the **old** token until it is restarted.
@@ -26,7 +26,7 @@ Rotation is therefore not a remedy for a leaked token: destroy and recreate
 the environment, or [fork](/docs/reference/cli/environment/fork) it (a fork
 mints its own credentials and restarts the agent), if a token has actually
 leaked.
-</Callout>
+:::
 
 ## Errors
 
@@ -34,11 +34,11 @@ Rotation only works on a `running` environment, and the orchestrator must have
 been started with a 32-byte hex `TOKEN_ENCRYPTION_KEY`. Neither precondition
 wraps a sentinel error, so both surface as HTTP 500 rather than a 4xx.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 A 500 from `rotate-token` almost always means one of those two preconditions
 rather than a real server fault. Both are permanent properties of the request,
 not transient failures, so the status should be a 4xx. Match on the error
 message (`token rotation requires running`,
 `token rotation requires a 32-byte encryption key`) rather than the status
 until this is fixed.
-</Callout>
+:::

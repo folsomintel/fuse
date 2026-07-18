@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 description: Capturing and restoring a running microVM's state
-icon: Camera
+icon: camera
 ---
 
 `client.snapshots` captures and restores the state of a running microVM.
@@ -27,11 +27,11 @@ await client.snapshots.restore(snap.id);
   [the environments service](/docs/reference/sdks/typescript/environments)
   for that instead.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data. See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
 for the workaround.
-</Callout>
+:::
 
 ## Everything else
 

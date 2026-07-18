@@ -1,7 +1,7 @@
 ---
 title: fuse host register
 description: Register a new compute host
-icon: CirclePlus
+icon: circle-plus
 ---
 
 ```bash
@@ -49,13 +49,13 @@ unauthorized: host agent at http://10.0.0.5:8090 rejected the token. this must b
 If the agent is merely unreachable but you declared full capacity, the host
 still registers, with a warning.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 The second line is generic remediation the CLI appends to every `unauthorized`
 error, and it is wrong for this one. The token at fault is the host agent's
 `FC_AGENT_TOKEN` passed via `--token`, not the orchestrator token that
 `fuse connect` stores, so re-running `fuse connect` fixes nothing here. Fix the
 `--token` value instead.
-</Callout>
+:::
 
 ## Capacity probing
 

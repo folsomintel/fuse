@@ -1,18 +1,18 @@
 ---
 title: GPU (QEMU) host setup
 description: Whole-GPU passthrough via QEMU/VFIO
-icon: Cpu
+icon: cpu
 ---
 
 GPU environments use QEMU/KVM with whole IOMMU groups passed through via VFIO. This
 requires bare-metal Linux, IOMMU enabled, `/dev/kvm`, and a GPU that can be detached
 from its host driver.
 
-<Callout type="warn" title="No snapshots or forks">
+:::warning[No snapshots or forks]
 GPU environments do not support snapshots or forks: a VFIO-passed-through GPU can't
 be checkpointed. See [Providers](/docs/concepts/providers) and
 [Snapshots](/docs/concepts/snapshots).
-</Callout>
+:::
 
 ## Setup
 
@@ -74,11 +74,11 @@ carries metadata, the agent falls back to probing `nvidia-smi` live. The
 fallback is all-or-nothing across the whole file, a single enriched line
 suppresses it for every other line, rather than being decided per line.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 There is one metadata blob per line, so an IOMMU group with a count above 1
 contributes only a single per-device entry. On such hosts the reported GPU count can
 exceed the number of per-device entries.
-</Callout>
+:::
 
 ## Registering the host
 

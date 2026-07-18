@@ -1,7 +1,7 @@
 ---
 title: "Lesson 2: Snapshot and roll back"
 description: Capture an environment's disk, make a change you regret, and undo it
-icon: History
+icon: history
 ---
 
 In the [Quickstart](/docs/learn/quickstart) you brought up an environment. This
@@ -28,11 +28,11 @@ environment ID, not the task ID.
 fuse environment get fuse-lesson2
 ```
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Without `--no-wait`, `up` keeps streaming after the environment is running and
 never exits on its own, see [issue #50](https://github.com/folsomintel/fuse/issues/50).
 Use `--no-wait` in scripts, and press `q` if you started it interactively.
-</Callout>
+:::
 
 ## 2. Take a snapshot
 

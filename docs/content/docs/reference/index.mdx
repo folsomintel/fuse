@@ -1,10 +1,8 @@
 ---
 title: Overview
 description: SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator
-icon: BookOpen
+icon: book-open
 ---
-
-import { Terminal, Braces, Webhook, KeySquare } from 'lucide-react';
 
 This section is the reference for driving a running Fuse orchestrator: the three
 client SDKs, the operator CLI, and the raw HTTP API underneath both. If you're new
@@ -13,32 +11,12 @@ already know what an environment, host, and snapshot are.
 
 ## Picking a surface
 
-<Cards>
-  <Card
-    icon={<Terminal />}
-    title="CLI"
-    description="The fastest way to operate Fuse by hand: register hosts, bring up environments, inspect and tear things down."
-    href="/docs/reference/cli"
-  />
-  <Card
-    icon={<Braces />}
-    title="SDKs"
-    description="Drive Fuse programmatically from your own service or agent harness. Go, Python, and TypeScript, all mirroring the same shape."
-    href="/docs/reference/sdks/go"
-  />
-  <Card
-    icon={<Webhook />}
-    title="HTTP API"
-    description="The raw REST surface every SDK and the CLI itself are built on."
-    href="/docs/reference/api"
-  />
-  <Card
-    icon={<KeySquare />}
-    title="Authentication"
-    description="How the orchestrator authenticates callers, across the CLI, SDKs, and browser."
-    href="/docs/reference/auth"
-  />
-</Cards>
+<CardGroup cols={2}>
+  <Card title="CLI" href="/docs/reference/cli" icon="terminal">The fastest way to operate Fuse by hand: register hosts, bring up environments, inspect and tear things down.</Card>
+  <Card title="SDKs" href="/docs/reference/sdks/go" icon="braces">Drive Fuse programmatically from your own service or agent harness. Go, Python, and TypeScript, all mirroring the same shape.</Card>
+  <Card title="HTTP API" href="/docs/reference/api" icon="webhook">The raw REST surface every SDK and the CLI itself are built on.</Card>
+  <Card title="Authentication" href="/docs/reference/auth" icon="key-square">How the orchestrator authenticates callers, across the CLI, SDKs, and browser.</Card>
+</CardGroup>
 
 ## Resource coverage
 

@@ -1,7 +1,7 @@
 ---
 title: Fusefile
 description: The declarative spec format for a Fuse environment
-icon: FileCode
+icon: file-code
 ---
 
 A **Fusefile** is the canonical, human-authored way to describe a Fuse environment:
@@ -116,7 +116,7 @@ assumption that the host's reported per-device inventory is the better authority
 Matching is a case-insensitive substring test, so `gpu_kind: rtx4090` is rejected by
 the `rtx` entry.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 A MIG request cannot be pinned to a GPU model. When `gpu_profile` is set the
 scheduler matches on the profile pool alone and ignores `gpu_kind`, so a request
 can be routed to a host whose free instances are all the wrong card. The qemu
@@ -124,7 +124,7 @@ agent does filter instances by kind, so such a placement fails there with
 `insufficient free mig instances` rather than silently attaching the wrong GPU.
 `gpu_kind` is still validated for MIG capability, it just doesn't narrow host
 selection. See [GPU workloads](/docs/guides/gpu-workloads).
-</Callout>
+:::
 
 ## Scaffolding one
 

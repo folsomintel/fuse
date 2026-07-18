@@ -1,7 +1,7 @@
 ---
 title: Environments
 description: "The VM lifecycle: one microVM and the task running inside it"
-icon: Boxes
+icon: boxes
 ---
 
 An **environment** is a single microVM and the task running inside it. You create
@@ -108,9 +108,9 @@ Rotation requires the environment to be **running**, and it requires an orchestr
 started with a 32-byte `TOKEN_ENCRYPTION_KEY`, a dev-mode orchestrator without one
 generates no per-VM credentials in the first place and so has nothing to rotate.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Rotation does **not** take effect inside a running guest. `fused` reads its auth
 token exactly once at process start and has no credential poller, so it keeps serving
 the old token until it is restarted. Treat rotate-token as updating the stored and
 on-disk copies, not as a way to revoke a leaked token.
-</Callout>
+:::

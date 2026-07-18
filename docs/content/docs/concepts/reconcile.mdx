@@ -1,7 +1,7 @@
 ---
 title: The reconcile loop
 description: The background sweep that detects leaked VMs and runaway tasks
-icon: RefreshCw
+icon: refresh-cw
 ---
 
 Every 30 seconds the orchestrator compares what it thinks is running against
@@ -31,12 +31,12 @@ Each cycle, in order:
 5. **Garbage-collect snapshots** past the retention window.
 6. **Reap** destroyed VMs and return their capacity to the host.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 A failure listing VMs from any host aborts the entire cycle, it does not isolate
 the bad host. One unreachable host agent therefore suppresses stuck-task
 detection and snapshot GC fleet-wide until it recovers, and the only outward sign
 is a flat cycle in the metrics.
-</Callout>
+:::
 
 ## Orphans
 
@@ -50,11 +50,11 @@ consuming the loop rather than blocking it forever. Retry counters live in
 memory, so restarting the orchestrator gives every dead-lettered orphan a fresh
 budget.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Destroying an orphan does not return its capacity to the host's allocated
 counters, unlike the normal reap path. The host stays over-counted until the
 orchestrator restarts, which recomputes allocations from live VMs.
-</Callout>
+:::
 
 ## Stuck tasks
 

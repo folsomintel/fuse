@@ -1,7 +1,7 @@
 ---
 title: Scheduling and placement
 description: How the orchestrator picks a host for an environment
-icon: Crosshair
+icon: crosshair
 ---
 
 When you create an environment you never name a host. You describe what the
@@ -103,11 +103,11 @@ The list of what is *not* consulted is the more useful half of the model:
 - Network topology, IOMMU groups, image availability, and tenant quotas are not
   modeled at all.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 `draining` is defined but inert. No eviction logic exists, so a draining host
 behaves exactly like a cordoned one: it takes no new placements, and its
 existing environments stay put until you move them yourself.
-</Callout>
+:::
 
 ## When nothing fits
 
@@ -115,13 +115,13 @@ A request that clears no host fails with `no host has sufficient capacity`,
 surfaced as a `503`. Fuse does not queue the request or wait for room to appear,
 a placement either succeeds now or is rejected now.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 The rejection message reports only the CPU, RAM, and storage that were
 requested. A request rejected because of its region or its GPU kind still
 produces a message about CPU and memory, so it can read as a capacity problem
 when it is really a matching problem. Check the host's region and GPU inventory
 before adding hardware.
-</Callout>
+:::
 
 A GPU request made when no GPU host is registered at all fails differently, with
 `gpu workloads require a registered gpu host`, rather than reporting a capacity

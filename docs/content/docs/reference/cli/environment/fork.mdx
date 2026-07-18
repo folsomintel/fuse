@@ -1,7 +1,7 @@
 ---
 title: fuse environment fork
 description: Fork an environment into a new one
-icon: GitFork
+icon: git-fork
 ---
 
 ```bash
@@ -48,10 +48,10 @@ cannot be forked. See [Snapshots](/docs/concepts/snapshots) and
 The 404 reads confusingly when the snapshot plainly exists: a snapshot of
 another environment is rejected as not-found rather than as a mismatch.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 The not-running and GPU rejections return HTTP 500 because neither wraps a
 sentinel error. Both are permanent properties of the request rather than a
 server fault, so the status should be a 4xx. Match on the error message
 (`fork requires running`, `fork is not supported for gpu environments`) rather
 than the status until this is fixed.
-</Callout>
+:::

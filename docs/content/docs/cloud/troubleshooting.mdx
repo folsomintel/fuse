@@ -1,7 +1,7 @@
 ---
 title: Troubleshooting and known issues
 description: Common install/setup problems and known limitations, with workarounds
-icon: Wrench
+icon: wrench
 ---
 
 ## KVM not available
@@ -92,10 +92,10 @@ rootfs by mounting the ext4 file from the host and modifying it there (the same 
 
 ## Snapshot restore can corrupt unsynced writes
 
-<Callout type="info" title="Fixed">
+:::info[Fixed]
 This was a real data-corruption bug in earlier host agents. It is fixed. If you are
 running a host agent from before the fix, update it.
-</Callout>
+:::
 
 **Symptom (on an un-updated host):** a clean snapshot-then-restore cycle (no writes
 in between) round-trips correctly. But if the guest had written data that hadn't been

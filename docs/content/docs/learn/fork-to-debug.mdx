@@ -1,7 +1,7 @@
 ---
 title: "Lesson 3: Fork to reproduce a bug"
 description: Copy a running environment so you can break the copy safely
-icon: GitFork
+icon: git-fork
 ---
 
 [Lesson 2](/docs/learn/snapshot-and-rollback) rewound one environment in place.
@@ -59,12 +59,12 @@ fuse environment exec fuse-fork-4da004cb... -- cat /var/log/app.log
 fuse environment shell fuse-fork-4da004cb...
 ```
 
-<Callout type="warn" title="Needs a real host">
+:::warning[Needs a real host]
 These two do not work against the stub provider, which has no guest to run
 anything in. On the stub they fail with `exec not supported by provider`. Create
 and fork work fine locally, but to actually run commands inside the copy you
 need a [Firecracker host](/docs/cloud/firecracker-host-setup).
-</Callout>
+:::
 
 ## 4. Clean up both
 
@@ -86,12 +86,12 @@ Whatever they produced is already baked into the disk you forked.
 **The fork gets its own credentials.** It is a distinct environment with its own
 guest token, not a clone that shares the original's identity.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Fork bypasses the scheduler and performs no capacity check, so a fork can
 overcommit a host that is already full. It also cannot be used on GPU
 environments at all, and that failure currently surfaces as a `500` rather than
 a `4xx`, see [issue #49](https://github.com/folsomintel/fuse/issues/49).
-</Callout>
+:::
 
 ## Read next
 

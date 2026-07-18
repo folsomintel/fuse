@@ -1,6 +1,0 @@
-{
-  "title": "Docs",
-  "icon": "FileCode",
-  "root": true,
-  "pages": ["index", "auth", "sdks", "cli", "api"]
-}

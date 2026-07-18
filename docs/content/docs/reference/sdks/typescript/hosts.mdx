@@ -1,7 +1,7 @@
 ---
 title: Hosts
 description: Registering and managing the compute hosts the scheduler places VMs onto
-icon: HardDrive
+icon: hard-drive
 ---
 
 `client.hosts` registers and manages the compute hosts the scheduler places
@@ -55,14 +55,14 @@ for (const w of host.warnings ?? []) {
 | `cordon(hostId)` / `uncordon(hostId)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
 | `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `status === 500` and `code === "internal"` if environments are still assigned to it. |
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Deregistering a host that still has environments assigned returns
 `500`/`internal`, not the `409`/`conflict` the condition deserves. It is a
 permanent property of the request rather than a server fault, so the status
 should be a 4xx. Until that is fixed, match on the error message (`host <id>
 still has vm <id> assigned`) rather than on `status` or `isConflict()`, and
 drain the host's environments before removing it.
-</Callout>
+:::
 
 `Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
 is set once at registration and never refreshed, it is not a liveness

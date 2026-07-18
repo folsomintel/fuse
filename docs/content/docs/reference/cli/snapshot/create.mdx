@@ -1,7 +1,7 @@
 ---
 title: fuse snapshot create
 description: Snapshot a running environment
-icon: CirclePlus
+icon: circle-plus
 ---
 
 ```bash
@@ -20,14 +20,14 @@ A quota rejection returns 409 / `conflict`. The GPU and unsupported-provider
 rejections return HTTP 500 / `internal`, because neither wraps a sentinel
 error.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 A GPU environment is permanently unsnapshottable, so that 500 describes a
 property of the request rather than a server fault and the status should be a
 4xx. Match on the error message
 (`snapshots are not supported for gpu environments`,
 `provider does not support snapshots for vm <id>`) rather than the status until
 this is fixed.
-</Callout>
+:::
 
 ## Flags
 

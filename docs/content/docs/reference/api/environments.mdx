@@ -1,7 +1,7 @@
 ---
 title: Environments
 description: "/v1/environments: create, list, inspect, drain, fork, destroy"
-icon: Boxes
+icon: boxes
 ---
 
 | Method | Path | Purpose |
@@ -138,13 +138,13 @@ first; otherwise it reuses the named snapshot. Returns `201` with the new
 VFIO-passed-through device can't be checkpointed. MIG environments are covered
 too, a slice still reports a non-zero `gpus`.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 The GPU fork and snapshot guardrails currently return `500` `internal` with the
 message `vm ... has a gpu passthrough device: fork is not supported for gpu
 environments`. The condition is a permanent property of the environment rather
 than a server fault, so the status should be a `4xx`; treat the message, not the
 code, as the contract until this is fixed.
-</Callout>
+:::
 
 ## Drain
 

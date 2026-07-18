@@ -1,7 +1,7 @@
 ---
 title: State and recovery
 description: Why the orchestrator runs as a single replica, and what survives a restart
-icon: DatabaseZap
+icon: database-zap
 ---
 
 The orchestrator keeps the fleet's authoritative state in memory, guarded by a
@@ -53,11 +53,11 @@ to dispatch correctly, then walks the persisted VMs and triages them:
 - Still-running VMs have their secrets re-uploaded, which is cheap, idempotent,
   and covers the case where the guest rebooted on its own.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 The provisioning demotion does not check the provider first. A VM that was
 mid-boot and actually succeeded is torn down anyway, so a crash-looping
 orchestrator destroys healthy environments on each restart.
-</Callout>
+:::
 
 Some state is deliberately never persisted and resets on every restart: orphan
 retry budgets, stuck-task strike counters, live provider handles, and SSE
@@ -106,12 +106,12 @@ never recorded, and the VM comes back at its previous persisted state. The
 healers described above exist precisely because this drift is expected rather
 than exceptional.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Shutdown does not wait for in-flight background writes. Stopping the
 orchestrator cancels the reconcile loop and returns without draining the
 writers, so even a graceful shutdown can lose the most recent transitions. This
 is a known gap rather than intended behavior.
-</Callout>
+:::
 
 ## Read next
 

@@ -1,7 +1,7 @@
 ---
 title: Hosts
 description: Registering and managing the compute hosts the scheduler places VMs onto
-icon: HardDrive
+icon: hard-drive
 ---
 
 `client.hosts` registers and manages the compute hosts the scheduler places
@@ -61,11 +61,11 @@ for w in host.warnings:
 is set once at registration and never refreshed, it is not a liveness
 signal. These mirror the [HTTP API](/docs/reference/api/hosts) one to one.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Deregistering a host that still has environments assigned raises
 `fuse.ApiError` with `status == 500` and `code == "internal"`, whose message
 names the blocking VM (`host prod-east-1 still has vm vm-abc assigned`). This
 is a permanent property of the request rather than a server fault, so the
 status should be a 4xx and the code `conflict`. Match on the error message,
 not the status, until it is fixed.
-</Callout>
+:::

@@ -1,5 +1,0 @@
-{
-  "title": "Contexts",
-  "icon": "Plug",
-  "pages": ["index", "connect", "list", "use", "remove", "current"]
-}

@@ -1,7 +1,7 @@
 ---
 title: Hosts
 description: Registering and managing the compute hosts the scheduler places VMs onto
-icon: HardDrive
+icon: hard-drive
 ---
 
 `client.Hosts` registers and manages the compute hosts the scheduler places
@@ -62,14 +62,14 @@ for _, w := range host.Warnings {
 | `Cordon(ctx, hostID)` / `Uncordon(ctx, hostID)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
 | `Deregister(ctx, hostID)` | Remove the host. Fails with a `500` `internal` `*APIError` if environments are still assigned to it. |
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Deregistering a host that still has environments assigned to it returns a `500`
 `internal` `*APIError`, not a `409`. The precondition is a permanent property of
 the request (the host really is still busy) rather than a server fault, so the
 status ought to be a 4xx. Until that is fixed, `fuse.IsConflict(err)` will never
 report `true` here, match on the error message (`still has vm ... assigned`)
 rather than on the status.
-</Callout>
+:::
 
 `Host.State` is one of `active`, `cordoned`, or `draining`. `Host.LastSeen` is
 set once at registration and never refreshed, it is not a liveness signal.

@@ -1,10 +1,8 @@
 ---
 title: Overview
 description: What Fuse is and how its pieces fit together
-icon: BookOpen
+icon: book-open
 ---
-
-import { Rocket, Layers, FileCode, Cloud, Sparkles } from 'lucide-react';
 
 Fuse is a control plane for agents: it deploys Firecracker microVMs onto your own
 hosts and drives their full lifecycle — provision, running, drain, destroy — through
@@ -48,35 +46,10 @@ straight to the [Quickstart](/docs/learn/quickstart) to get a microVM running.
 
 ## Where to go next
 
-<Cards>
-  <Card
-    icon={<Rocket />}
-    title="Quickstart"
-    description="Get a microVM running in a few commands, no real host required."
-    href="/docs/learn/quickstart"
-  />
-  <Card
-    icon={<Sparkles />}
-    title="Guides"
-    description="Agent sandboxes, ephemeral CI runners, GPU batch jobs, and interactive debugging."
-    href="/docs/guides/agent-sandboxes"
-  />
-  <Card
-    icon={<Layers />}
-    title="Concepts"
-    description="The full mental model: Fusefile, providers, hosts, environments, snapshots, artifacts."
-    href="/docs/concepts/fusefile"
-  />
-  <Card
-    icon={<FileCode />}
-    title="Docs"
-    description="SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator."
-    href="/docs/reference"
-  />
-  <Card
-    icon={<Cloud />}
-    title="Cloud"
-    description="Bring up a real Firecracker or GPU host and deploy the orchestrator."
-    href="/docs/cloud"
-  />
-</Cards>
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/docs/learn/quickstart" icon="rocket">Get a microVM running in a few commands, no real host required.</Card>
+  <Card title="Guides" href="/docs/guides/agent-sandboxes" icon="sparkles">Agent sandboxes, ephemeral CI runners, GPU batch jobs, and interactive debugging.</Card>
+  <Card title="Concepts" href="/docs/concepts/fusefile" icon="layers">The full mental model: Fusefile, providers, hosts, environments, snapshots, artifacts.</Card>
+  <Card title="Docs" href="/docs/reference" icon="file-code">SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator.</Card>
+  <Card title="Cloud" href="/docs/cloud" icon="cloud">Bring up a real Firecracker or GPU host and deploy the orchestrator.</Card>
+</CardGroup>

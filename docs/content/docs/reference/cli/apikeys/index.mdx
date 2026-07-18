@@ -1,7 +1,7 @@
 ---
 title: Overview
 description: Managing orchestrator-global API keys
-icon: BookOpen
+icon: book-open
 ---
 
 `fuse apikeys` (aliases `apikey`, `keys`) manages revocable API keys.
@@ -11,14 +11,14 @@ Orchestrator-global and all-or-nothing, these commands require the master token
 gates nothing, a context connected without it but holding the real master token
 works. See [Authentication](/docs/reference/auth) for the full token model.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 API keys are Postgres-backed. Against an orchestrator started without
 `DATABASE_URL` the `/v1/api-keys` routes are not mounted at all, so these
 commands fail with the server's message followed by the suffix
 `(is this the orchestrator? the url may be wrong, or point at a different service)`,
 which points at the wrong problem entirely. The suffix is appended to whatever
 the server returned, so match on it rather than on the whole line.
-</Callout>
+:::
 
 ## Commands
 

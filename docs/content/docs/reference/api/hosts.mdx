@@ -1,7 +1,7 @@
 ---
 title: Hosts
 description: "/v1/hosts: register, list, inspect, cordon, remove"
-icon: HardDrive
+icon: hard-drive
 ---
 
 | Method | Path | Purpose |
@@ -118,12 +118,12 @@ Each `GPUDevice` is:
 | `cuda_version` | string | Reserved, not currently populated by the host agent. |
 | `iommu_group` | string | Reserved, not currently populated by the host agent. |
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 `gpus` and the length of `gpu_devices` can legitimately disagree. The host agent
 emits at most one device entry per IOMMU group, so a group containing several
 GPUs contributes one entry while still counting each card toward `gpus`. Treat
 `gpus` as the schedulable count and `gpu_devices` as best-effort detail.
-</Callout>
+:::
 
 ### Errors
 
@@ -180,8 +180,8 @@ vm <id> assigned`, drain or destroy them first. The named VM is one of the
 assigned set rather than a count, and because the check walks a map it can differ
 between identical calls.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 That failure returns `500` `internal`, not the `409` `conflict` you would expect.
 The orchestrator returns a bare error with no sentinel, so it falls through to the
 generic handler. Match on the message rather than the status until this is fixed.
-</Callout>
+:::
