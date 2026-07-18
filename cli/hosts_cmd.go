@@ -319,11 +319,12 @@ func newHostRegisterCmd() *cobra.Command {
 			"free-form operator-supplied string and is the host's primary key, so use a\n" +
 			"readable one (e.g. prod-east-1). pass details via flags, or omit --url to\n" +
 			"fill them in interactively.\n\n" +
-			"--cpus/--ram-mb/--storage-gb are optional: omit one (or leave it at 0) and\n" +
-			"the orchestrator probes the host agent for the real value instead of trusting\n" +
-			"a guess. pass one explicitly to override the probe (e.g. a deliberate\n" +
-			"overcommit or carve-out); a declared value above what was probed still\n" +
-			"registers, with a warning. --max-vms is a scheduling policy, not a hardware\n" +
+			"--cpus/--ram-mb/--storage-gb/--gpus/--gpu-kind are optional: omit one (or\n" +
+			"leave it at 0/empty) and the orchestrator probes the host agent for the real\n" +
+			"value instead of trusting a guess. pass one explicitly to override the probe\n" +
+			"(e.g. a deliberate overcommit or carve-out); a declared value above what was\n" +
+			"probed still registers, with a warning. gpus are probed on qemu hosts;\n" +
+			"a host with no gpus is fine. --max-vms is a scheduling policy, not a hardware\n" +
 			"fact, so it is always required.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -412,8 +413,8 @@ func newHostRegisterCmd() *cobra.Command {
 	cmd.Flags().IntVar(&ramMB, "ram-mb", 0, "ram capacity in MB override (0 = probe from host agent)")
 	cmd.Flags().IntVar(&storageGB, "storage-gb", 0, "storage capacity in GB override (0 = probe from host agent)")
 	cmd.Flags().IntVar(&maxVMs, "max-vms", 0, "max vm count (required; not probed, it's a scheduling policy)")
-	cmd.Flags().IntVar(&gpus, "gpus", 0, "gpu device count (requires --backend qemu)")
-	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label (e.g. a100)")
+	cmd.Flags().IntVar(&gpus, "gpus", 0, "gpu capacity override (0 = probe from host agent; requires --backend qemu)")
+	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label override, e.g. a100 (empty = probe from host agent)")
 	cmd.Flags().StringArrayVar(&migProfiles, "mig-profile", nil,
 		"MIG instance capacity as profile=count (e.g. 1g.10gb=4); repeatable, requires --backend qemu")
 	return cmd
