@@ -299,10 +299,10 @@ func newHostMetricsCmd() *cobra.Command {
 
 func newHostRegisterCmd() *cobra.Command {
 	var (
-		hostURL   string
-		region    string
-		token     string
-		backend   string
+		hostURL     string
+		region      string
+		token       string
+		backend     string
 		cpus        int
 		ramMB       int
 		storageGB   int
@@ -310,13 +310,7 @@ func newHostRegisterCmd() *cobra.Command {
 		gpus        int
 		gpuKind     string
 		migProfiles []string
-		cpus      int
-		ramMB     int
-		storageGB int
-		maxVMs    int
-		gpus      int
-		gpuKind   string
-		noVerify  bool
+		noVerify    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "register <id>",
@@ -362,6 +356,7 @@ func newHostRegisterCmd() *cobra.Command {
 			migMap, err := parseMIGProfiles(migProfiles)
 			if err != nil {
 				return err
+			}
 			// The firecracker host agent authenticates the orchestrator with
 			// its FC_AGENT_TOKEN. An empty token is almost always a mistake
 			// that only surfaces at the first `environment create` as an
