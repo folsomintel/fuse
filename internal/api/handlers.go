@@ -298,6 +298,9 @@ func validateGPUSpec(s ResourceSpec) error {
 		if s.GPUs == 0 {
 			return errors.New("spec.gpu_profile requires spec.gpus >= 1 (the count of MIG instances)")
 		}
+		if !fusefile.KindSupportsMIG(s.GPUKind) {
+			return fmt.Errorf("spec.gpu_profile %q is not valid for gpu_kind %q (that gpu does not support MIG)", s.GPUProfile, s.GPUKind)
+		}
 	}
 	return nil
 }
