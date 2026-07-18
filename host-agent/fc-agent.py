@@ -1055,7 +1055,15 @@ def host_capacity() -> dict:
     except OSError:
         pass
     free_bytes = shutil.disk_usage(FC_DIR).free
-    return {"cpus": cpus, "ram_mb": ram_mb, "storage_gb": free_bytes // (1024 ** 3)}
+    # firecracker hosts have no gpu passthrough; report zero for parity with
+    # qemu-agent's capacity shape so the wire payload matches.
+    return {
+        "cpus": cpus,
+        "ram_mb": ram_mb,
+        "storage_gb": free_bytes // (1024 ** 3),
+        "gpus": 0,
+        "gpu_devices": [],
+    }
 
 
 class Handler(BaseHTTPRequestHandler):

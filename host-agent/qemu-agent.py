@@ -270,6 +270,89 @@ def pick_mig_devices(count: int, profile: str, kind: str | None) -> list[str]:
         f"{kind_desc}, {len(selected)} free")
 
 
+def _normalize_pci_bus_id(bus_id: str) -> str:
+    """Reduce nvidia-smi's extended pci id to lspci's domain:bus:dev.func form.
+
+    nvidia-smi reports "00000000:17:00.0" (8-digit domain); lspci and the vfio
+    inventory use "0000:17:00.0" (4-digit domain). Trim to the low 16 bits so
+    ids match across sources.
+    """
+    bus_id = bus_id.strip().lower()
+    head, sep, rest = bus_id.partition(":")
+    if sep and len(head) > 4:
+        head = head[-4:]
+        return f"{head}:{rest}"
+    return bus_id
+
+
+def _probe_gpu_devices_nvidia_smi() -> list[dict]:
+    """Best-effort per-gpu probe via nvidia-smi CSV. Returns [] on any failure.
+
+    nvidia-smi is blind once devices are bound to vfio-pci, and may be absent
+    entirely, so this is only a fallback when the inventory has no per-device
+    metadata. Never raises.
+    """
+    fields = [
+        "index", "uuid", "name", "pci.bus_id", "memory.total",
+        "driver_version", "compute_cap", "mig.mode.current", "mig.mode.pending",
+    ]
+    try:
+        cp = subprocess.run(
+            ["nvidia-smi", f"--query-gpu={','.join(fields)}",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, check=True,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+
+    devices: list[dict] = []
+    for line in cp.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        cols = [c.strip() for c in line.split(",")]
+        if len(cols) < len(fields):
+            continue
+        index, uuid_s, model, bus_id, mem_s, driver, cap, mig_cur, _mig_pend = cols[:9]
+        try:
+            memory_mb = int(mem_s)
+        except ValueError:
+            memory_mb = 0
+        try:
+            idx = int(index)
+        except ValueError:
+            idx = 0
+        devices.append({
+            "index": idx,
+            "uuid": uuid_s,
+            "model": model,
+            "pci_bus_id": _normalize_pci_bus_id(bus_id),
+            "memory_mb": memory_mb,
+            "driver_version": driver,
+            "compute_cap": cap,
+            "mig_capable": mig_cur != "N/A",
+            "mig_mode": mig_cur,
+        })
+    return devices
+
+
+def probe_gpu_devices() -> list[dict]:
+    """Return a list of per-gpu dicts describing this host's GPUs.
+
+    Primary source is VFIO_INVENTORY (read_vfio_inventory), the post-bind truth
+    written pre-bind by qemu-vfio-bind.sh. When the inventory carries no
+    per-device metadata (older format, or before #34's enrichment lands), fall
+    back to a live nvidia-smi probe, which only works while devices are still on
+    the nvidia driver. Never raises.
+    """
+    devices: list[dict] = []
+    for group in read_vfio_inventory():
+        devices.extend(group.get("devices", []))
+    if devices:
+        return devices
+    return _probe_gpu_devices_nvidia_smi()
+
+
 # -- Networking ---------------------------------------------------------------
 # Mirrors fc-agent.py's tap + DNAT model: one tap per vm, a host port DNATed to
 # the guest's fused port, plus optional expose forwards.
@@ -1116,8 +1199,8 @@ def host_capacity() -> dict:
     disk on the filesystem backing QEMU_DIR (where rootfs images and vm
     state live). Fuse's orchestrator probes this at registration time
     instead of trusting operator-declared --cpus/--ram-mb/--storage-gb
-    flags. GPU count/kind are not probed here (see VFIO_INVENTORY);
-    capacity.gpus stays operator-declared.
+    flags. GPUs are probed too: count and kind come from VFIO_INVENTORY
+    (matching pick_gpu_slots), and gpu_devices carries per-device detail.
     """
     cpus = os.cpu_count() or 1
     ram_mb = 0
@@ -1130,7 +1213,20 @@ def host_capacity() -> dict:
     except OSError:
         pass
     free_bytes = shutil.disk_usage(QEMU_DIR).free
-    return {"cpus": cpus, "ram_mb": ram_mb, "storage_gb": free_bytes // (1024 ** 3)}
+
+    groups = read_vfio_inventory()
+    gpus = sum(g["count"] for g in groups)
+    kinds = {g["kind"] for g in groups}
+    gpu_kind = next(iter(kinds)) if len(kinds) == 1 else ""
+
+    return {
+        "cpus": cpus,
+        "ram_mb": ram_mb,
+        "storage_gb": free_bytes // (1024 ** 3),
+        "gpus": gpus,
+        "gpu_kind": gpu_kind,
+        "gpu_devices": probe_gpu_devices(),
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
