@@ -134,6 +134,29 @@ func TestCompileGPUProfile(t *testing.T) {
 	}
 }
 
+func TestKindSupportsMIG(t *testing.T) {
+	cases := []struct {
+		kind string
+		want bool
+	}{
+		{"", true},                      // unknown at request time, defer to scheduler
+		{"a100", true},                  // known mig-capable
+		{"NVIDIA A100-SXM4-40GB", true}, // full model string still resolves
+		{"h100", true},
+		{"someunreleasedgpu", true}, // unrecognized passes (no stale allowlist block)
+		{"v100", false},             // known non-mig-capable
+		{"NVIDIA V100-SXM2", false}, // substring match, case-insensitive
+		{"t4", false},
+		{"rtx4090", false},
+		{"l40s", false},
+	}
+	for _, tc := range cases {
+		if got := KindSupportsMIG(tc.kind); got != tc.want {
+			t.Errorf("KindSupportsMIG(%q) = %v, want %v", tc.kind, got, tc.want)
+		}
+	}
+}
+
 func TestCompileGPUAbsentIsZero(t *testing.T) {
 	f := &Fusefile{Version: 1, Resources: Resources{CPUs: 2}}
 	c, err := Compile(f)
@@ -217,6 +240,11 @@ func TestCompileInvalid(t *testing.T) {
 			name:        "gpu profile without count",
 			resources:   Resources{GPUProfile: "1g.10gb"},
 			wantContain: `resources.gpu_profile: requires resources.gpu >= 1`,
+		},
+		{
+			name:        "gpu profile on non-mig-capable kind",
+			resources:   Resources{GPU: 1, GPUKind: "v100", GPUProfile: "1g.10gb"},
+			wantContain: `does not support MIG`,
 		},
 	}
 
