@@ -73,8 +73,12 @@ cancel early. See the full walkthrough in
 | `list({ taskId, state, hostId })` | List environments, all filters optional. |
 | `get(vmId)` | Fetch one environment by ID. |
 | `drain(vmId)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
-| `fork(vmId, { reuseSnapshotId, comment })` | Create a new environment seeded from a snapshot of this one. |
+| `fork(vmId, { reuse_snapshot_id, comment })` | Create a new environment seeded from a snapshot of this one. |
 | `rotateToken(vmId)` | Re-issue the guest's credentials without recreating the VM. |
+
+The two option bags differ in case on purpose. `list` takes a client-side
+filter object, so it is camelCase; `fork` sends its object straight through as
+the JSON request body, so it uses the snake_case wire names.
 
 Every method accepts a trailing `{ signal }` for cancellation. Fork is
 unavailable wherever snapshotting is, GPU/QEMU-backed environments can't be

@@ -13,6 +13,15 @@ spec, manifest, and startup script, then creates an environment from the
 result. Streams provisioning events until a terminal state unless `--no-wait`
 is set.
 
+<Callout type="warn" title="Known limitation">
+Only `destroyed` and `failed` count as terminal, so a successful `up` does not
+exit when the environment reaches `running`, it keeps streaming. Interactively
+you can press `q`; when stdout is not a TTY the plain renderer is selected and
+there is no exit path, so scripted callers should pass `--no-wait` and poll
+[`fuse environment get`](/docs/reference/cli/environment/get). Tracked as
+[issue #50](https://github.com/folsomintel/fuse/issues/50).
+</Callout>
+
 ## Flags
 
 | Flag | Purpose |

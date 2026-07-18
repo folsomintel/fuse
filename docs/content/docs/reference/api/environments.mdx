@@ -13,7 +13,7 @@ icon: Boxes
 | `POST` | `/v1/environments/{vmId}?action=rotate-token` | Re-issue guest credentials. Returns `204`. |
 | `POST` | `/v1/environments/{vmId}?action=drain` | Graceful phase-1 teardown (running only). Returns `200` with the updated environment (`state: draining`). |
 | `POST` | `/v1/environments/{vmId}?action=exec` | Run one command in the guest. Returns `200` with the guest's exit code, stdout, and stderr. Master token only. |
-| `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
+| `DELETE` | `/v1/environments/{vmId}` | Destroy. Not idempotent: destroying an already-gone VM returns `404` `not_found`. |
 | `GET` | `/v1/environments/{vmId}/events` | Server-Sent Events stream of state transitions. |
 | `GET` | `/v1/environments/{vmId}/attach` | Interactive pty stream over an HTTP/1.1 upgrade. Master token only. |
 
@@ -74,7 +74,7 @@ internal manifest.
   "state": "running",
   "task_id": "t-1",
   "host_id": "prod-east-1",
-  "url": "https://10.0.0.5:9550",
+  "url": "10.0.0.5:19551",
   "spec": { "cpus": 2, "ram_mb": 2048, "storage_gb": 10 },
   "created_at": "2026-01-15T10:00:00Z",
   "updated_at": "2026-01-15T10:01:00Z",
@@ -175,9 +175,11 @@ Generates fresh per-VM credentials and pushes them to the guest. Returns
 DELETE /v1/environments/{vmId}
 ```
 
-Forcefully destroys the VM and marks its task failed. Idempotent: a second
-call on an already-gone VM returns `404`, not an error. Returns `204` on
-success.
+Forcefully destroys the VM and marks its task failed. Returns `204` on success.
+Destroy is **not** idempotent: a second call on an already-gone VM returns
+`404` `not_found` in the usual error envelope, and the SDKs raise on it like
+any other `4xx`. A caller that retries should treat `404` as success itself,
+rather than expecting the server to absorb the repeat.
 
 ## Environment states
 

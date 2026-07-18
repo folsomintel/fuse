@@ -27,6 +27,7 @@ vms           1 / 20
 last seen     2026-01-15 10:00 (3m)
 created       2026-01-15 10:00
 updated       2026-01-15 10:00
+note: last_seen is set at registration and not refreshed; it is not a liveness signal
 ```
 
 A GPU host adds a `gpus` row, and a MIG host a `mig` row listing each declared
@@ -48,6 +49,7 @@ mig           1g.10gb 2 / 4, 2g.20gb 0 / 2
 last seen     2026-01-15 10:00 (3m)
 created       2026-01-15 10:00
 updated       2026-01-15 10:00
+note: last_seen is set at registration and not refreshed; it is not a liveness signal
 ```
 
 The `gpus` row appears only when the host has whole-device GPU capacity, and the

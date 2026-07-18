@@ -96,7 +96,7 @@ GB, with an optional `+me` suffix for a profile with a dedicated media engine.
 `1g.10gb`, `3g.20gb`, and `1g.10gb+me` all parse. Matching is case-insensitive and
 the compiled value is lowercased, so `1G.10GB` is accepted and sent as `1g.10gb`.
 
-Three rules are enforced before the request ever leaves your machine, so a malformed
+Four rules are enforced before the request ever leaves your machine, so a malformed
 GPU request fails at `fuse up` rather than being scheduled and failing on a host:
 
 | Rule | Error |
@@ -118,9 +118,12 @@ the `rtx` entry.
 
 <Callout type="warn" title="Known limitation">
 A MIG request cannot be pinned to a GPU model. When `gpu_profile` is set the
-scheduler matches on the profile alone and ignores `gpu_kind`, so on a host with
-mixed GPUs you may land on any card offering that profile. `gpu_kind` is still
-validated for MIG capability, it just doesn't constrain placement.
+scheduler matches on the profile pool alone and ignores `gpu_kind`, so a request
+can be routed to a host whose free instances are all the wrong card. The qemu
+agent does filter instances by kind, so such a placement fails there with
+`insufficient free mig instances` rather than silently attaching the wrong GPU.
+`gpu_kind` is still validated for MIG capability, it just doesn't narrow host
+selection. See [GPU workloads](/docs/learn/use-cases/gpu-workloads).
 </Callout>
 
 ## Scaffolding one

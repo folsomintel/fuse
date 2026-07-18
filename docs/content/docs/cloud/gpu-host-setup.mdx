@@ -50,7 +50,7 @@ represents one indivisible IOMMU group, with an optional metadata suffix after a
 ```text
 <count> <kind> <pci_slot> [<pci_slot> ...] [| key=val;key=val;...]
 1 a100 0000:17:00.0 0000:17:00.1
-1 a100 0000:17:00.0 0000:17:00.1 | uuid=GPU-abc123;model=NVIDIA A100-SXM4-40GB;memory_mb=40960;driver_version=550.54.15;mig_mode=Enabled
+1 a100 0000:17:00.0 0000:17:00.1 | bus_id=0000:17:00.0;uuid=GPU-abc123;model=NVIDIA A100-SXM4-40GB;memory_mb=40960;mig_mode=Enabled
 ```
 
 The count includes GPU display functions only. The PCI list includes every function
@@ -60,13 +60,19 @@ comments are skipped.
 
 The recognized metadata keys are `bus_id`, `uuid`, `model`, `memory_mb`,
 `driver_version`, `compute_cap`, and `mig_mode`. Unknown keys are ignored, so the
-format can grow without breaking older agents.
+format can grow without breaking older agents. `qemu-vfio-bind.sh` writes only
+five of them (`bus_id`, `uuid`, `model`, `memory_mb`, `mig_mode`), since that is
+what its pre-bind `nvidia-smi` query captures; `driver_version` and
+`compute_cap` are parsed if present but come from the live probe rather than
+the inventory file.
 
 The metadata exists because of an ordering constraint: `qemu-vfio-bind.sh` takes an
 `nvidia-smi` snapshot **before** binding devices to `vfio-pci`, since once a card is
 bound to `vfio-pci` the NVIDIA driver can no longer report on it. Capturing the
-details up front is the only way to keep them. If a line carries no metadata, the
-agent falls back to probing `nvidia-smi` live.
+details up front is the only way to keep them. If no line in the inventory
+carries metadata, the agent falls back to probing `nvidia-smi` live. The
+fallback is all-or-nothing across the whole file, a single enriched line
+suppresses it for every other line, rather than being decided per line.
 
 <Callout type="warn" title="Known limitation">
 There is one metadata blob per line, so an IOMMU group with a count above 1
@@ -175,4 +181,8 @@ Open at your cloud / external firewall:
 
 - `8091/tcp`: the `qemu-agent` HTTP API. GPU hosts listen on `8091`, not the `8090`
   that `fc-agent` uses on Firecracker hosts.
-- `19551-19799/tcp`: the per-VM guest-agent DNAT range.
+- `19651-19899/tcp`: the per-VM guest-agent DNAT range. This is **not** the
+  `19551-19799` that Firecracker hosts use: `qemu-agent` defaults
+  `FUSE_HOST_PORT_BASE` to `19650` where `fc-agent` defaults it to `19550`, and
+  each allocates one port per VM index from 1 to 249. Opening the Firecracker
+  range on a GPU host blocks every GPU VM's guest agent.

@@ -130,6 +130,7 @@ GPUs contributes one entry while still counting each card toward `gpus`. Treat
 | Status | Code | When |
 | --- | --- | --- |
 | `400` | `invalid_argument` | Missing `id`/`url`, `gpus > 0` or `mig_profiles` on a non-`qemu` backend, a negative `gpus`, a malformed `mig_profiles` key or non-positive count, or `cpus`/`ram_mb`/`storage_gb`/`vm_count` resolve to non-positive after probing. |
+| `502` | `unauthorized` | The host agent rejected the supplied token. It must be the agent's own `FC_AGENT_TOKEN` or `QEMU_AGENT_TOKEN`, not the orchestrator token. Message: `host agent at <url> rejected the token. this must be its FC_AGENT_TOKEN, not the orchestrator token`. |
 | `502` | `internal` | `cpus`/`ram_mb`/`storage_gb` were left at `0` and the capacity probe itself failed, for example nothing is listening at `url`. |
 | `500` | `internal` | Unexpected server error. |
 

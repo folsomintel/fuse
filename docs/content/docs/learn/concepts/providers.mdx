@@ -54,13 +54,24 @@ at boot.
 Backend selection happens once, at host registration time:
 
 ```bash
-fuse host register my-host --url http://10.0.0.5:8090 --backend firecracker   # default
-fuse host register gpu-1   --url http://10.0.0.9:8091 --backend qemu --gpus 1 --gpu-kind a100
+# firecracker, the default backend
+fuse host register my-host --url http://10.0.0.5:8090 \
+  --token "$FC_AGENT_TOKEN" --backend firecracker --max-vms 20
+
+# qemu, for GPU hosts
+fuse host register gpu-1 --url http://10.0.0.9:8091 \
+  --token "$QEMU_AGENT_TOKEN" --backend qemu --gpus 1 --gpu-kind a100 --max-vms 4
 ```
+
+`--token` is the host agent's own token, and `--max-vms` is a scheduling ceiling
+that is never probed, so both are required on every registration.
 
 A Fusefile's `resources.gpu` / `resources.gpu_kind` / `resources.gpu_profile` fields
 don't name a backend directly; a non-zero `gpu` count is what routes the environment
 to a host with matching free GPU inventory (necessarily QEMU-backed, since only QEMU
 hosts report GPU capacity). CPU-only requests schedule onto Firecracker hosts. A GPU
-request with no GPU host registered fails with `gpu workloads require a registered
-gpu host` rather than waiting for capacity that may never appear.
+request fails fast rather than waiting for capacity that may never appear. With no
+hosts registered at all the error is `gpu workloads require a registered gpu host`;
+with hosts registered but none offering free matching GPU inventory, including a
+fleet of only CPU-only Firecracker hosts, it is `no host has sufficient capacity`
+followed by the requested figures. Both return 503.

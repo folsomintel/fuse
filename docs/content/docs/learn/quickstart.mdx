@@ -62,6 +62,15 @@ fuse up --secret pg_password=devpassword
 provisioning events until the environment reaches a terminal state (or pass
 `--no-wait` to return immediately).
 
+<Callout type="warn" title="Known limitation">
+"Terminal" means `destroyed` or `failed`, and `running` is neither, so a
+successful `up` keeps streaming instead of exiting. On a terminal you can press
+`q` once the environment reaches `running`. When output is piped or scripted
+there is no exit path at all, so pass `--no-wait` and check the result with
+`fuse environment get` instead. Tracked as
+[issue #50](https://github.com/folsomintel/fuse/issues/50).
+</Callout>
+
 The scaffold from step 4 declares `pg_password` under `secrets`, so `up` refuses to
 create anything until you supply a value for it, either with `--secret` as above or
 with `--secrets-file`. Values live outside the Fusefile by design, the file names the

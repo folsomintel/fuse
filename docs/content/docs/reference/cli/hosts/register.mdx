@@ -39,10 +39,23 @@ unauthenticated dev agent with no token.
 
 At registration the orchestrator makes its first call to the host agent (the
 same call that probes capacity). If the agent rejects the token, registration is
-refused with `host agent at <url> rejected the token. this must be its
-FC_AGENT_TOKEN, not the orchestrator token` rather than persisting a host that
-can never be scheduled onto. If the agent is merely unreachable but you declared
-full capacity, the host still registers, with a warning.
+refused rather than persisting a host that can never be scheduled onto:
+
+```
+unauthorized: host agent at http://10.0.0.5:8090 rejected the token. this must be its FC_AGENT_TOKEN, not the orchestrator token
+  re-run `fuse connect <url> --token <token>` with a valid token
+```
+
+If the agent is merely unreachable but you declared full capacity, the host
+still registers, with a warning.
+
+<Callout type="warn" title="Known limitation">
+The second line is generic remediation the CLI appends to every `unauthorized`
+error, and it is wrong for this one. The token at fault is the host agent's
+`FC_AGENT_TOKEN` passed via `--token`, not the orchestrator token that
+`fuse connect` stores, so re-running `fuse connect` fixes nothing here. Fix the
+`--token` value instead.
+</Callout>
 
 ## Capacity probing
 
@@ -114,12 +127,22 @@ fuse host register gpu-1 \
   --max-vms 8
 ```
 
-Each profile is validated against the mig-parted grammar and must carry a positive
-count, so a typo fails at registration rather than silently advertising capacity
-that can never be filled. Malformed values are rejected with
-`invalid --mig-profile "...": expected profile=count (e.g. 1g.10gb=4)`, and a
-non-positive count with `invalid --mig-profile "...": count must be a positive
-number`. Profile keys are lowercased.
+Each profile is validated in two places, so a typo fails at registration rather
+than silently advertising capacity that can never be filled. The CLI checks only
+the `profile=count` shape and the count itself: a value with no `=` or an empty
+key is rejected with `invalid --mig-profile "...": expected profile=count (e.g.
+1g.10gb=4)`, and a non-numeric or non-positive count with
+`invalid --mig-profile "...": count must be a positive number`.
+
+The mig-parted grammar is checked server-side, not by the CLI, so a
+well-formed-but-meaningless profile such as `--mig-profile foo=4` passes the
+client and is refused by the orchestrator:
+
+```
+invalid argument: mig_profiles: invalid MIG profile "foo" (expected mig-parted form like "1g.10gb")
+```
+
+Profile keys are lowercased.
 
 A host may declare both `--gpus` and `--mig-profile`; the two are separate
 inventories and a MIG placement never consumes a whole device. See
@@ -151,8 +174,12 @@ ram mb        0 / 65536
 storage gb    0 / 500
 vms           0 / 20
 last seen     ... (just now)
+created       2026-01-15 10:00
+updated       2026-01-15 10:00
 warning: declared cpus (32) exceeds probed host capacity (16)
+note: last_seen is set at registration and not refreshed; it is not a liveness signal
 ```
 
 (The warning line only appears when a declared value actually exceeded the
-probe; a plain probe-everything registration prints no warnings.)
+probe; a plain probe-everything registration prints no warnings. The `note:`
+line is unconditional and prints on every registration.)

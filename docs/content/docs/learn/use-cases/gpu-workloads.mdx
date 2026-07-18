@@ -94,10 +94,14 @@ passthrough pool, so slice workloads and whole-card workloads don't contend for 
 same inventory.
 
 <Callout type="warn" title="Known limitation">
-MIG placement ignores `gpu_kind`. The profile alone selects the host, so on a host
-with mixed MIG-capable cards a request may land on any GPU offering that profile.
-`gpu_kind` is still validated (a profile on a non-MIG card like `v100` or `l40s` is
-rejected), it just doesn't narrow placement.
+MIG placement ignores `gpu_kind` when picking a host. The scheduler matches on the
+profile pool alone, so a request can be routed to a host whose free MIG instances
+are all the wrong card. The qemu agent does filter instances by kind, so such a
+placement fails there with `insufficient free mig instances` rather than silently
+attaching the wrong GPU. If you omit `gpu_kind` entirely, any card offering the
+profile is eligible and no such mismatch arises. `gpu_kind` is still validated at
+request time (a profile on a non-MIG card like `v100` or `l40s` is rejected), it
+just doesn't narrow host selection.
 </Callout>
 
 ## The tradeoff: no snapshots

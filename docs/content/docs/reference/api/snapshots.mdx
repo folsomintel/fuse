@@ -60,16 +60,17 @@ optional, an empty body is a valid request.
 | Status | Code | When |
 | --- | --- | --- |
 | `404` | `not_found` | `vmId` doesn't exist. |
-| `409` | `conflict` | The VM isn't `running`. |
-| `500` | `internal` | Unexpected server error, or the environment doesn't support snapshots (GPU, or any QEMU-backed VM). See the note below. |
+| `500` | `internal` | The VM isn't `running`, the environment doesn't support snapshots (GPU, or any QEMU-backed VM), or an unexpected server error. See the note below. |
 
 <Callout type="warn" title="Known limitation">
-An unsupported-backend snapshot returns `500` `internal` rather than a `4xx`. A
-GPU environment reports `vm ... has a gpu passthrough device: snapshots are not
-supported for gpu environments`, and any other non-snapshotting backend reports
-`provider does not support snapshots for vm ...`. Both are permanent properties
-of the environment, not server faults, so match on the message rather than the
-status until this is fixed.
+Two permanent request conditions currently return `500` `internal` rather than
+a `4xx`. A snapshot of a VM that isn't `running` reports `vm ... in state ...:
+snapshots require running`. An unsupported-backend snapshot reports `vm ... has
+a gpu passthrough device: snapshots are not supported for gpu environments` for
+a GPU environment, and `provider does not support snapshots for vm ...` for any
+other non-snapshotting backend. Each is a permanent property of the request
+rather than a server fault, so the status should be a `4xx`; match on the
+message rather than the status until this is fixed.
 </Callout>
 
 ## List
@@ -141,5 +142,6 @@ DELETE /v1/snapshots/{snapshotId}
 
 Leaf-only: also removes the underlying provider artifact. There is no
 soft-delete. Returns `204` on success, `404` `not_found` if it doesn't exist,
-or `409` `conflict` if the snapshot has a dependent fork or export still
-referencing it.
+or `409` `conflict` if another snapshot lists this one as its parent, which is
+the lineage record a fork writes. Exports are not consulted and do not block
+deletion.
