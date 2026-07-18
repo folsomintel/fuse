@@ -23,6 +23,62 @@ func gpuFleetHost(id string, gpus int, kind string) Host {
 	}
 }
 
+func deviceFleetHost(id string, devices ...GPUDevice) Host {
+	h := gpuFleetHost(id, len(devices), "")
+	h.Capacity.GPUDevices = devices
+	if len(devices) > 0 {
+		h.Capacity.GPUKind = devices[0].Model
+	}
+	return h
+}
+
+func TestAllocateOnHost_bindsConcreteUUIDsAndReleasesThem(t *testing.T) {
+	stub := newStubProvider()
+	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	host := deviceFleetHost("h1",
+		GPUDevice{UUID: "gpu-a", Model: "a100"},
+		GPUDevice{UUID: "gpu-b", Model: "a100"},
+	)
+	if err := fm.RegisterHost(context.Background(), host, stub); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100"}}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", v)
+	fm.mu.Unlock()
+
+	if len(v.spec.GPUUUIDs) != 1 {
+		t.Fatalf("v.spec.GPUUUIDs = %v, want one bound uuid", v.spec.GPUUUIDs)
+	}
+	bound := v.spec.GPUUUIDs[0]
+	if bound != "gpu-a" && bound != "gpu-b" {
+		t.Errorf("bound uuid %q not one of the host devices", bound)
+	}
+	h := findHost(t, fm, "h1")
+	if h.Allocated.GPUs != 1 || len(h.Allocated.GPUDeviceUUIDs) != 1 || h.Allocated.GPUDeviceUUIDs[0] != bound {
+		t.Errorf("host allocated = %+v, want the single bound uuid", h.Allocated)
+	}
+
+	// a second env must bind the OTHER device, not reuse the taken one.
+	v2 := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100"}}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", v2)
+	fm.mu.Unlock()
+	if len(v2.spec.GPUUUIDs) != 1 || v2.spec.GPUUUIDs[0] == bound {
+		t.Errorf("second bind = %v, want the other device (not %q)", v2.spec.GPUUUIDs, bound)
+	}
+
+	// deallocate the first vm: only its uuid is released.
+	fm.mu.Lock()
+	fm.deallocateOnHost("h1", v.spec)
+	fm.mu.Unlock()
+	h = findHost(t, fm, "h1")
+	if h.Allocated.GPUs != 1 || len(h.Allocated.GPUDeviceUUIDs) != 1 || h.Allocated.GPUDeviceUUIDs[0] != v2.spec.GPUUUIDs[0] {
+		t.Errorf("after dealloc host allocated = %+v, want only the second uuid", h.Allocated)
+	}
+}
+
 func findHost(t *testing.T, fm *FleetManager, id string) Host {
 	t.Helper()
 	for _, h := range fm.ListHosts() {
@@ -42,7 +98,7 @@ func TestAllocateOnHost_incrementsGPUCounter(t *testing.T) {
 	}
 
 	fm.mu.Lock()
-	fm.allocateOnHost("h1", Spec{CPUs: 1, RamMB: 256, GPUs: 1})
+	fm.allocateOnHost("h1", &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1}})
 	fm.mu.Unlock()
 
 	if got := findHost(t, fm, "h1").Allocated.GPUs; got != 1 {
@@ -58,7 +114,7 @@ func TestDeallocateOnHost_decrementsGPUCounter(t *testing.T) {
 	}
 
 	fm.mu.Lock()
-	fm.allocateOnHost("h1", Spec{CPUs: 1, RamMB: 256, GPUs: 2})
+	fm.allocateOnHost("h1", &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 2}})
 	fm.deallocateOnHost("h1", Spec{CPUs: 1, RamMB: 256, GPUs: 1})
 	fm.mu.Unlock()
 
@@ -94,7 +150,7 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 
 	// first env takes the only device
 	fm.mu.Lock()
-	fm.allocateOnHost("h1", Spec{CPUs: 1, RamMB: 256, GPUs: 1})
+	fm.allocateOnHost("h1", &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1}})
 	fm.mu.Unlock()
 
 	// second gpu env must not fit on the same host

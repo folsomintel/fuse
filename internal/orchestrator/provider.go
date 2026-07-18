@@ -52,6 +52,13 @@ type Spec struct {
 	// allocation.
 	GPUProfile string
 
+	// GPUUUIDs are the concrete device uuids this VM is bound to. Populated
+	// by allocation on hosts that report per-device inventory
+	// (Capacity.GPUDevices non-empty) and persisted per-VM so the binding
+	// survives an orchestrator restart. Empty on legacy homogeneous hosts
+	// that only track a scalar GPU count.
+	GPUUUIDs []string `json:"gpu_uuids,omitempty"`
+
 	// MaxRuntime overrides FleetConfig.TaskStuckTimeout for this task.
 	// Zero means "use the fleet default". This is a leak-detection ceiling,
 	// not a liveness check — set it higher than any plausible healthy runtime.
@@ -191,10 +198,11 @@ type SnapshotDeleter interface {
 
 // CapacityProber is implemented by providers that can report the real
 // hardware capacity of the host they front (CPU count, total RAM, free
-// disk) instead of trusting operator-declared numbers. RegisterHost type-
-// asserts to this interface at registration time to source capacity for any
-// field the operator left unset; providers that cannot probe (e.g. a stub
-// with no real hardware behind it) simply return an error.
+// disk, GPU inventory) instead of trusting operator-declared numbers. The
+// registerHost API handler type-asserts the provider to this interface at
+// registration time to source capacity for any field the operator left
+// unset; providers that cannot probe (e.g. a stub with no real hardware
+// behind it) simply return an error.
 type CapacityProber interface {
 	Capacity(ctx context.Context) (HostCapacity, error)
 }

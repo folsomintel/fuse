@@ -1303,6 +1303,20 @@ func TestCreateEnvironment_GPUProfileWithoutCountReturns400(t *testing.T) {
 	}
 }
 
+func TestCreateEnvironment_GPUProfileOnNonMIGKindReturns400(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-profile-bad-kind",
+		Spec:           ResourceSpec{GPUs: 1, GPUKind: "v100", GPUProfile: "1g.10gb"},
+		ManifestInline: encodeManifest(t),
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestCreateEnvironment_GPUProfileRoundTrip(t *testing.T) {
 	h, fm, provider := newTestHandler(t)
 	if err := fm.RegisterHost(context.Background(), orchestrator.Host{

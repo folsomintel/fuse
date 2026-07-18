@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -50,12 +51,43 @@ type HostCapacity struct {
 	// whole-device GPUs pool — the two counters are independent (D5).
 	// Only qemu-backed hosts may advertise MIG profiles.
 	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+
+	// GPUDevices is the per-device detail probed from the host agent
+	// (one entry per whole GPU). It rides the capacity wire alongside the
+	// scalar GPUs/GPUKind counters. In-memory + wire only in this PR; the
+	// durable per-device schema is issue #37.
+	GPUDevices []GPUDevice `json:"gpu_devices,omitempty"`
+
+	// GPUDeviceUUIDs is the set of device uuids currently bound to VMs. It
+	// is populated only on a host's Allocated struct (never on Capacity),
+	// and only for hosts that report per-device inventory. fits() derives
+	// the free-device set as Capacity.GPUDevices minus this set. It is
+	// in-memory only: allocation/deallocation maintain it, and recovery
+	// recomputes it from live VM bindings, so it is never persisted as its
+	// own column (the durable source of truth is the per-VM gpu_uuids).
+	GPUDeviceUUIDs []string `json:"gpu_device_uuids,omitempty"`
 }
 
 // freeMIG returns the free instance count for a MIG profile given the
 // host's capacity and allocated maps.
 func freeMIG(capacity, allocated HostCapacity, profile string) int {
 	return capacity.MIGProfiles[profile] - allocated.MIGProfiles[profile]
+}
+
+// GPUDevice is the per-device detail the host agent probes for a single
+// whole GPU. Field names mirror the agent's gpu_devices payload. All fields
+// are best-effort: the agent omits any it cannot determine.
+type GPUDevice struct {
+	UUID          string `json:"uuid,omitempty"`
+	Model         string `json:"model,omitempty"`
+	PCIBusID      string `json:"pci_bus_id,omitempty"`
+	MemoryMB      int    `json:"memory_mb,omitempty"`
+	DriverVersion string `json:"driver_version,omitempty"`
+	CUDAVersion   string `json:"cuda_version,omitempty"`
+	ComputeCap    string `json:"compute_cap,omitempty"`
+	MIGCapable    bool   `json:"mig_capable,omitempty"`
+	MIGMode       string `json:"mig_mode,omitempty"`
+	IOMMUGroup    string `json:"iommu_group,omitempty"`
 }
 
 // HostBackend identifies the virtualization backend a host agent runs.
@@ -85,10 +117,18 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 		if spec.GPUProfile != "" {
 			// Fractional request: spec.GPUs counts MIG instances of the
 			// requested profile, allocated from the host's MIG pool (D5).
-			if freeMIG(capacity, allocated, spec.GPUProfile) < int(spec.GPUs) {
-				return false
-			}
-		} else if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
+			// This pool is independent of the whole-device GPUs pool.
+			return freeMIG(capacity, allocated, spec.GPUProfile) >= int(spec.GPUs)
+		}
+		if len(capacity.GPUDevices) > 0 {
+			// per-device host: count free devices whose kind matches the
+			// request. free = all capacity devices minus the allocated-uuid
+			// set. this makes heterogeneous hosts (mixed models) schedule
+			// correctly where scalar subtraction cannot.
+			return len(freeMatchingDevices(capacity, allocated, spec.GPUKind)) >= int(spec.GPUs)
+		}
+		// legacy homogeneous host: scalar count + exact gpu_kind string.
+		if capacity.GPUs-allocated.GPUs < int(spec.GPUs) {
 			return false
 		}
 		if spec.GPUKind != "" && spec.GPUKind != capacity.GPUKind {
@@ -96,6 +136,51 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 		}
 	}
 	return true
+}
+
+// freeMatchingDevices returns the uuids of capacity devices that are not in
+// the allocated-uuid set and whose kind matches gpuKind. An empty gpuKind
+// matches any device. Matching is case-insensitive against both the device
+// Model and the derived host GPUKind so requests like "a100" match a device
+// whose Model is "NVIDIA A100-SXM4-40GB".
+func freeMatchingDevices(capacity, allocated HostCapacity, gpuKind string) []string {
+	used := make(map[string]struct{}, len(allocated.GPUDeviceUUIDs))
+	for _, u := range allocated.GPUDeviceUUIDs {
+		used[u] = struct{}{}
+	}
+	var free []string
+	for _, d := range capacity.GPUDevices {
+		if d.UUID == "" {
+			continue
+		}
+		if _, taken := used[d.UUID]; taken {
+			continue
+		}
+		if !gpuKindMatches(gpuKind, d, capacity.GPUKind) {
+			continue
+		}
+		free = append(free, d.UUID)
+	}
+	return free
+}
+
+// gpuKindMatches reports whether a requested gpu kind matches a device. An
+// empty request matches anything. Otherwise the request must be a
+// case-insensitive substring of the device Model, or equal to the host's
+// derived GPUKind (also case-insensitive), so both "a100" and a full model
+// string resolve.
+func gpuKindMatches(gpuKind string, d GPUDevice, hostKind string) bool {
+	if gpuKind == "" {
+		return true
+	}
+	want := strings.ToLower(gpuKind)
+	if d.Model != "" && strings.Contains(strings.ToLower(d.Model), want) {
+		return true
+	}
+	if hostKind != "" && strings.EqualFold(gpuKind, hostKind) {
+		return true
+	}
+	return false
 }
 
 // Host is a registered compute host in the fleet. It represents a

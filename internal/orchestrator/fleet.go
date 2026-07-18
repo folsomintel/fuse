@@ -524,7 +524,11 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 			return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
 		}
 		bootProvider = hp
-		fm.allocateOnHost(selectedHost.ID, spec)
+		fm.allocateOnHost(selectedHost.ID, v)
+		// allocateOnHost binds concrete gpu device uuids onto v.spec; mirror
+		// them onto the local spec so Boot and the reservation-release path
+		// see the same binding.
+		spec.GPUUUIDs = v.spec.GPUUUIDs
 		reservedHost = true
 		fm.mu.Unlock()
 		fm.logger.Info("scheduled vm",
@@ -1194,6 +1198,17 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	}
 	fm.mu.Unlock()
 
+	// Heal any drift in the persisted host Allocated counters by re-deriving
+	// them from the live VM bindings. This must run after the Destroying
+	// demotions above and after fm.vms is populated, so demoted VMs are
+	// excluded from the sums (#39).
+	recomputedHosts := fm.recomputeHostAllocations()
+
+	// Persist the healed host counters so the durable view matches memory.
+	for _, h := range recomputedHosts {
+		fm.persistHostRecordBackground(fm.hostToRecord(h))
+	}
+
 	for id, recoveredVM := range recovered {
 		if err := fm.persistVM(ctx, recoveredVM); err != nil {
 			fm.logger.Warn("persist recovered vm failed", "vm", id, "err", err)
@@ -1254,6 +1269,58 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// recomputeHostAllocations re-derives every host's Allocated capacity from
+// the live VMs currently tracked in fm.vms, rather than trusting the
+// persisted Allocated counter, and returns a snapshot of the corrected
+// hosts so the caller can persist them. Persisted counters can drift if a
+// crash interleaves an allocate/deallocate with the async write-behind;
+// summing the surviving specs/bindings heals that drift (#39).
+//
+// VMs in the Destroying state (missing from the provider, or interrupted
+// mid provision) have already released their resources conceptually, so
+// they are excluded from the sums. Callers must have populated fm.vms and
+// applied any Destroying demotions before calling.
+func (fm *FleetManager) recomputeHostAllocations() []Host {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+
+	// group live VMs by host so each host is summed in a single pass.
+	live := make(map[string][]*vm, len(fm.hosts))
+	for _, v := range fm.vms {
+		if v.state == VMStateDestroying {
+			continue
+		}
+		live[v.hostID] = append(live[v.hostID], v)
+	}
+
+	recomputed := make([]Host, 0, len(fm.hosts))
+	for _, h := range fm.hosts {
+		var alloc HostCapacity
+		var boundUUIDs []string
+		perDevice := len(h.Capacity.GPUDevices) > 0
+		for _, v := range live[h.ID] {
+			alloc.CPUs += v.spec.CPUs
+			alloc.RamMB += v.spec.RamMB
+			alloc.StorageGB += v.spec.StorageGB
+			alloc.VMCount++
+			if perDevice && len(v.spec.GPUUUIDs) > 0 {
+				boundUUIDs = append(boundUUIDs, v.spec.GPUUUIDs...)
+			} else {
+				alloc.GPUs += int(v.spec.GPUs)
+			}
+		}
+		if perDevice {
+			// per-device host: the scalar count is the number of bound uuids.
+			alloc.GPUDeviceUUIDs = boundUUIDs
+			alloc.GPUs = len(boundUUIDs)
+		}
+		h.Allocated = alloc
+		h.UpdatedAt = time.Now()
+		recomputed = append(recomputed, *h)
+	}
+	return recomputed
 }
 
 func (fm *FleetManager) persistVM(ctx context.Context, v *vm) error {

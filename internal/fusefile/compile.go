@@ -98,6 +98,37 @@ func ValidGPUProfile(s string) bool {
 	return gpuProfilePattern.MatchString(strings.ToLower(s))
 }
 
+// nonMIGCapableKinds are GPU model families that are known NOT to support
+// MIG. Requesting a gpu_profile alongside one of these is a definite mistake,
+// so it is rejected at request time. The list is deliberately a denylist of
+// well-known consumer/older parts rather than an allowlist of MIG-capable
+// datacenter parts: an unrecognized kind passes here and is enforced at
+// scheduling time against the host's per-device MIGCapable flag, so a valid
+// future GPU is never blocked by a stale allowlist.
+var nonMIGCapableKinds = map[string]bool{
+	"v100": true, "t4": true, "p100": true, "p40": true, "k80": true,
+	"rtx": true, "gtx": true, "titan": true, "l4": true, "l40": true, "l40s": true,
+}
+
+// KindSupportsMIG reports whether a GPU kind can plausibly run a MIG profile.
+// An empty kind (unknown at request time) and any unrecognized kind return
+// true so the scheduler's per-device MIGCapable flag remains the source of
+// truth; only a kind on the known non-MIG denylist returns false. Matching is
+// case-insensitive and substring-based so "NVIDIA V100" and "v100-sxm2" both
+// resolve.
+func KindSupportsMIG(kind string) bool {
+	if kind == "" {
+		return true
+	}
+	k := strings.ToLower(kind)
+	for bad := range nonMIGCapableKinds {
+		if strings.Contains(k, bad) {
+			return false
+		}
+	}
+	return true
+}
+
 // Compile turns the human-friendly Fusefile.Resources into a ResourceSpec.
 func Compile(f *Fusefile) (*Compiled, error) {
 	var errs []error
@@ -135,6 +166,11 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		if f.Resources.GPU == 0 {
 			errs = append(errs, fmt.Errorf(
 				"resources.gpu_profile: requires resources.gpu >= 1 (the count of MIG instances)"))
+		}
+		if !KindSupportsMIG(f.Resources.GPUKind) {
+			errs = append(errs, fmt.Errorf(
+				"resources.gpu_profile: %q does not support MIG (gpu_kind %q)",
+				f.Resources.GPUProfile, f.Resources.GPUKind))
 		}
 	}
 

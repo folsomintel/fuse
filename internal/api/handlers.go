@@ -298,6 +298,9 @@ func validateGPUSpec(s ResourceSpec) error {
 		if s.GPUs == 0 {
 			return errors.New("spec.gpu_profile requires spec.gpus >= 1 (the count of MIG instances)")
 		}
+		if !fusefile.KindSupportsMIG(s.GPUKind) {
+			return fmt.Errorf("spec.gpu_profile %q is not valid for gpu_kind %q (that gpu does not support MIG)", s.GPUProfile, s.GPUKind)
+		}
 	}
 	return nil
 }
@@ -786,6 +789,12 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 			capacity.CPUs, warnings = resolveCapacityField("cpus", capacity.CPUs, probed.CPUs, warnings)
 			capacity.RamMB, warnings = resolveCapacityField("ram_mb", capacity.RamMB, probed.RamMB, warnings)
 			capacity.StorageGB, warnings = resolveCapacityField("storage_gb", capacity.StorageGB, probed.StorageGB, warnings)
+			// GPUs are probed too: zero declared means "not set", so the
+			// probed count wins. A qemu host may legitimately have none.
+			capacity.GPUs, warnings = resolveCapacityField("gpus", capacity.GPUs, probed.GPUs, warnings)
+			capacity.GPUKind, warnings = resolveCapacityKind(capacity.GPUKind, probed.GPUKind, warnings)
+			// the probe is the source of truth for the per-device list.
+			capacity.GPUDevices = probed.GPUDevices
 		case isAgentUnauthorized(err):
 			_ = provider.Close()
 			writeError(w, http.StatusBadGateway, CodeUnauthorized,
@@ -844,6 +853,20 @@ func resolveCapacityField(name string, declared, probed int, warnings []string) 
 	}
 	if probed > 0 && declared > probed {
 		warnings = append(warnings, fmt.Sprintf("declared %s (%d) exceeds probed host capacity (%d)", name, declared, probed))
+	}
+	return declared, warnings
+}
+
+// resolveCapacityKind is the string sibling of resolveCapacityField for the
+// gpu_kind label: an empty declared value means "not set", so the probed
+// kind wins. When both are set and differ we keep the operator's declared
+// value but append a warning so the mismatch doesn't pass silently.
+func resolveCapacityKind(declared, probed string, warnings []string) (string, []string) {
+	if declared == "" {
+		return probed, warnings
+	}
+	if probed != "" && declared != probed {
+		warnings = append(warnings, fmt.Sprintf("declared gpu_kind (%q) differs from probed host gpu_kind (%q)", declared, probed))
 	}
 	return declared, warnings
 }

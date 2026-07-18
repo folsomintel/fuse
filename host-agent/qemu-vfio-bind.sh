@@ -10,12 +10,19 @@
 # (intel_iommu=on or amd_iommu=on on the kernel cmdline + reboot).
 #
 # Inventory format (--list), one line per IOMMU group containing an NVIDIA GPU:
-#   <count> <kind> <pci_slot> [<pci_slot> ...]
-# Example: 1 a100 0000:17:00.0
+#   <count> <kind> <pci_slot> [<pci_slot> ...] [| key=val;key=val;...]
+# Example: 1 a100 0000:17:00.0 | uuid=GPU-abc;model=NVIDIA A100-SXM4-80GB;memory_mb=81920;mig_mode=Disabled
 #
-# The operator sums lines to populate capacity.gpus and sets capacity.gpu_kind
-# when homogeneous. qemu-agent.py reads this file (VFIO_INVENTORY) to pick
-# free devices at VM create time.
+# The " | key=val;..." suffix is optional per-device metadata (uuid, model,
+# memory_mb, mig_mode) captured from a PRE-bind nvidia-smi probe; nvidia-smi is
+# blind once devices sit on vfio-pci, so do_bind snapshots it before binding and
+# do_list reads that snapshot (VFIO_SMI_SNAPSHOT). When nvidia-smi is absent or
+# the group slot is not in the snapshot the suffix is omitted (old format).
+#
+# qemu-agent.py reads this file (VFIO_INVENTORY): capacity.gpus is the sum of
+# counts, capacity.gpu_kind the single kind when homogeneous, and per-device
+# metadata surfaces as capacity.gpu_devices. It also picks free devices here at
+# VM create time.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VFIO_INVENTORY="${VFIO_INVENTORY:-$SCRIPT_DIR/vfio-inventory.txt}"
@@ -64,6 +71,59 @@ current_driver() {
   basename "$link"
 }
 
+# -- gpu metadata (pre-bind nvidia-smi snapshot) -----------------------------
+
+# nvidia-smi goes blind once GPUs are bound to vfio-pci, so metadata must be
+# captured before the bind loop. snapshot_smi() writes a CSV to VFIO_SMI_SNAPSHOT
+# and do_list reads it via smi_meta_for_slot(). Both degrade to no-op / empty
+# when nvidia-smi is missing so the listing never fails.
+
+normalize_bus_id() {
+  # trim nvidia-smi's 8-digit domain (00000000:17:00.0) to lspci's 0000:17:00.0
+  local id="$1"
+  id=$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')
+  local head="${id%%:*}" rest="${id#*:}"
+  if [ "${#head}" -gt 4 ]; then
+    head="${head: -4}"
+  fi
+  printf '%s:%s' "$head" "$rest"
+}
+
+snapshot_smi() {
+  # capture per-gpu metadata to $1 (pci_bus_id,uuid,name,memory_mb,mig_mode).
+  # never fails: a missing nvidia-smi just leaves an empty file.
+  local out="$1"
+  : > "$out"
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  nvidia-smi --query-gpu=pci.bus_id,uuid,name,memory.total,mig.mode.current \
+    --format=csv,noheader,nounits > "$out" 2>/dev/null || : > "$out"
+}
+
+smi_meta_for_slot() {
+  # print "bus_id=...;uuid=...;model=...;memory_mb=...;mig_mode=..." for the
+  # group's GPU slot from the snapshot, or nothing when unavailable. bus_id is
+  # the GPU's own slot (the argument), not the group's first slot, which may be
+  # a bridge. Consults the file named by VFIO_SMI_SNAPSHOT; matches on
+  # normalized pci bus id.
+  local want="$1" snapshot="${VFIO_SMI_SNAPSHOT:-}"
+  [ -n "$snapshot" ] && [ -f "$snapshot" ] || return 0
+  want=$(normalize_bus_id "$want")
+  local line bus uuid model mem mig
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    # split the 5 csv fields; model names have no embedded commas
+    IFS=',' read -r bus uuid model mem mig <<< "$line"
+    bus=$(normalize_bus_id "$(printf '%s' "$bus" | tr -d ' ')")
+    [ "$bus" = "$want" ] || continue
+    uuid=$(printf '%s' "$uuid" | sed 's/^ *//;s/ *$//')
+    model=$(printf '%s' "$model" | sed 's/^ *//;s/ *$//')
+    mem=$(printf '%s' "$mem" | sed 's/^ *//;s/ *$//')
+    mig=$(printf '%s' "$mig" | sed 's/^ *//;s/ *$//')
+    printf 'bus_id=%s;uuid=%s;model=%s;memory_mb=%s;mig_mode=%s' "$bus" "$uuid" "$model" "$mem" "$mig"
+    return 0
+  done < "$snapshot"
+}
+
 # -- commands ----------------------------------------------------------------
 
 do_list() {
@@ -73,6 +133,7 @@ do_list() {
   [ -n "$slots" ] || { warn "no NVIDIA GPUs detected"; exit 0; }
 
   declare -A seen
+  local meta
   for slot in $slots; do
     group=$(iommu_group_of "$slot")
     [ -n "$group" ] || continue
@@ -92,7 +153,13 @@ do_list() {
         count=$((count + 1))
       fi
     done
-    printf '%s %s %s\n' "$count" "$kind" "${group_slots[*]}"
+    # $slot is the group's primary NVIDIA GPU; look up its pre-bind metadata
+    meta=$(smi_meta_for_slot "$slot")
+    if [ -n "$meta" ]; then
+      printf '%s %s %s | %s\n' "$count" "$kind" "${group_slots[*]}" "$meta"
+    else
+      printf '%s %s %s\n' "$count" "$kind" "${group_slots[*]}"
+    fi
   done
 }
 
@@ -100,9 +167,14 @@ do_bind() {
   iommu_enabled || die "IOMMU not enabled. Add intel_iommu=on or amd_iommu=on to kernel cmdline and reboot."
   modprobe vfio-pci 2>/dev/null || sudo modprobe vfio-pci
 
-  local slots slot group group_slot driver inventory_tmp
+  local slots slot group group_slot driver inventory_tmp smi_snapshot
   slots=$(nvidia_gpu_slots)
   [ -n "$slots" ] || die "no NVIDIA GPUs detected by lspci"
+
+  # capture nvidia-smi metadata BEFORE binding: once devices sit on vfio-pci
+  # nvidia-smi can no longer see them. do_list reads this snapshot below.
+  smi_snapshot=$(mktemp "${VFIO_INVENTORY}.smi.XXXXXX")
+  snapshot_smi "$smi_snapshot"
 
   declare -A seen
   for slot in $slots; do
@@ -126,8 +198,10 @@ do_bind() {
   done
 
   inventory_tmp=$(mktemp "${VFIO_INVENTORY}.XXXXXX")
-  do_list > "$inventory_tmp"
+  # do_list reads the pre-bind snapshot to enrich each line with device metadata
+  VFIO_SMI_SNAPSHOT="$smi_snapshot" do_list > "$inventory_tmp"
   mv "$inventory_tmp" "$VFIO_INVENTORY"
+  rm -f "$smi_snapshot"
   log "done. Inventory written to $VFIO_INVENTORY:"
   cat "$VFIO_INVENTORY"
 }

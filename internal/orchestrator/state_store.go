@@ -236,10 +236,24 @@ func NewMemoryStateStore() *MemoryStateStore {
 	}
 }
 
+// cloneVMRecord deep-copies the slice fields on a VMRecord so a caller that
+// mutates them (before Upsert or on a returned record) cannot corrupt the
+// stored view. Only Spec.GPUUUIDs and Endpoints share a backing array under
+// a shallow value copy.
+func cloneVMRecord(v VMRecord) VMRecord {
+	if v.Spec.GPUUUIDs != nil {
+		v.Spec.GPUUUIDs = append([]string(nil), v.Spec.GPUUUIDs...)
+	}
+	if v.Endpoints != nil {
+		v.Endpoints = append([]Endpoint(nil), v.Endpoints...)
+	}
+	return v
+}
+
 func (s *MemoryStateStore) UpsertVM(_ context.Context, vm VMRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.vms[vm.ID] = vm
+	s.vms[vm.ID] = cloneVMRecord(vm)
 	return nil
 }
 
@@ -256,7 +270,7 @@ func (s *MemoryStateStore) ListVMs(_ context.Context) ([]VMRecord, error) {
 
 	out := make([]VMRecord, 0, len(s.vms))
 	for _, v := range s.vms {
-		out = append(out, v)
+		out = append(out, cloneVMRecord(v))
 	}
 	return out, nil
 }
@@ -369,10 +383,23 @@ func (s *MemoryStateStore) ListDeadLetters(_ context.Context) ([]DeadLetterRecor
 	return out, nil
 }
 
+// cloneHostRecord deep-copies the per-device GPU inventory so a caller that
+// mutates the GPUDevices slice (before Upsert or on a returned record) cannot
+// corrupt the stored view. HostRecord is otherwise a flat value; only the
+// GPUDevices slice shares a backing array under a shallow copy.
+func cloneHostRecord(h HostRecord) HostRecord {
+	if h.Capacity.GPUDevices != nil {
+		devices := make([]GPUDevice, len(h.Capacity.GPUDevices))
+		copy(devices, h.Capacity.GPUDevices)
+		h.Capacity.GPUDevices = devices
+	}
+	return h
+}
+
 func (s *MemoryStateStore) UpsertHost(_ context.Context, host HostRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.hosts[host.ID] = host
+	s.hosts[host.ID] = cloneHostRecord(host)
 	return nil
 }
 
@@ -389,7 +416,7 @@ func (s *MemoryStateStore) ListHosts(_ context.Context) ([]HostRecord, error) {
 
 	out := make([]HostRecord, 0, len(s.hosts))
 	for _, h := range s.hosts {
-		out = append(out, h)
+		out = append(out, cloneHostRecord(h))
 	}
 	return out, nil
 }
@@ -402,5 +429,5 @@ func (s *MemoryStateStore) GetHost(_ context.Context, hostID string) (HostRecord
 	if !ok {
 		return HostRecord{}, fmt.Errorf("host %s not found", hostID)
 	}
-	return h, nil
+	return cloneHostRecord(h), nil
 }

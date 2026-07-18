@@ -239,10 +239,32 @@ type HostCapacity struct {
 	VMCount   int    `json:"vm_count"`
 	GPUs      int    `json:"gpus,omitempty"`
 	GPUKind   string `json:"gpu_kind,omitempty"`
+
 	// MIGProfiles advertises fractional GPU capacity: MIG instance count
 	// by profile name (e.g. {"1g.10gb": 4}). Like GPUs, it requires
 	// backend "qemu" and is declared by the operator, never probed.
 	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+
+	// GPUDevices is the per-device GPU detail probed from the host agent,
+	// carried alongside the scalar GPUs/GPUKind counters. Only populated on
+	// capacity (not allocated) for qemu hosts.
+	GPUDevices []GPUDevice `json:"gpu_devices,omitempty"`
+}
+
+// GPUDevice is the wire shape of a single probed GPU. It mirrors
+// orchestrator.GPUDevice; every field is best-effort and omitted when the
+// host agent could not determine it.
+type GPUDevice struct {
+	UUID          string `json:"uuid,omitempty"`
+	Model         string `json:"model,omitempty"`
+	PCIBusID      string `json:"pci_bus_id,omitempty"`
+	MemoryMB      int    `json:"memory_mb,omitempty"`
+	DriverVersion string `json:"driver_version,omitempty"`
+	CUDAVersion   string `json:"cuda_version,omitempty"`
+	ComputeCap    string `json:"compute_cap,omitempty"`
+	MIGCapable    bool   `json:"mig_capable,omitempty"`
+	MIGMode       string `json:"mig_mode,omitempty"`
+	IOMMUGroup    string `json:"iommu_group,omitempty"`
 }
 
 // RegisterHostRequest is the JSON body accepted by POST /v1/hosts.
