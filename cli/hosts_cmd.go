@@ -299,10 +299,10 @@ func newHostMetricsCmd() *cobra.Command {
 
 func newHostRegisterCmd() *cobra.Command {
 	var (
-		hostURL   string
-		region    string
-		token     string
-		backend   string
+		hostURL     string
+		region      string
+		token       string
+		backend     string
 		cpus        int
 		ramMB       int
 		storageGB   int
@@ -310,13 +310,7 @@ func newHostRegisterCmd() *cobra.Command {
 		gpus        int
 		gpuKind     string
 		migProfiles []string
-		cpus      int
-		ramMB     int
-		storageGB int
-		maxVMs    int
-		gpus      int
-		gpuKind   string
-		noVerify  bool
+		noVerify    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "register <id>",
@@ -338,7 +332,7 @@ func newHostRegisterCmd() *cobra.Command {
 				if !isInteractive() {
 					return fmt.Errorf("host url is required: pass --url (or run interactively)")
 				}
-				cpusS, ramS, storS, vmsS := strconv.Itoa(cpus), strconv.Itoa(ramMB), strconv.Itoa(storageGB), strconv.Itoa(maxVMs)
+				cpusS, ramS, storS, vmsS, gpusS := strconv.Itoa(cpus), strconv.Itoa(ramMB), strconv.Itoa(storageGB), strconv.Itoa(maxVMs), strconv.Itoa(gpus)
 				err := runForm(huh.NewGroup(
 					huh.NewInput().Title("Host URL").Description("agent base url, e.g. http://10.0.0.5:9000").Value(&hostURL),
 					huh.NewInput().Title("Host agent token").Description("the agent's FC_AGENT_TOKEN (not the orchestrator token)").EchoMode(huh.EchoModePassword).Value(&token),
@@ -347,6 +341,8 @@ func newHostRegisterCmd() *cobra.Command {
 					huh.NewInput().Title("RAM MB (capacity)").Description("0 = probe from host agent").Value(&ramS).Validate(validateInt),
 					huh.NewInput().Title("Storage GB (capacity)").Description("0 = probe from host agent").Value(&storS).Validate(validateInt),
 					huh.NewInput().Title("Max VMs (capacity)").Description("required; scheduling policy, not probed").Value(&vmsS).Validate(validateInt),
+					huh.NewInput().Title("GPUs (capacity)").Description("0 = probe from host agent").Value(&gpusS).Validate(validateInt),
+					huh.NewInput().Title("GPU kind (capacity)").Description("empty = probe from host agent").Value(&gpuKind),
 				))
 				if err != nil {
 					return err
@@ -355,6 +351,7 @@ func newHostRegisterCmd() *cobra.Command {
 				ramMB, _ = strconv.Atoi(ramS)
 				storageGB, _ = strconv.Atoi(storS)
 				maxVMs, _ = strconv.Atoi(vmsS)
+				gpus, _ = strconv.Atoi(gpusS)
 			}
 			if hostURL == "" {
 				return fmt.Errorf("host url is required: pass --url")
@@ -362,6 +359,7 @@ func newHostRegisterCmd() *cobra.Command {
 			migMap, err := parseMIGProfiles(migProfiles)
 			if err != nil {
 				return err
+			}
 			// The firecracker host agent authenticates the orchestrator with
 			// its FC_AGENT_TOKEN. An empty token is almost always a mistake
 			// that only surfaces at the first `environment create` as an

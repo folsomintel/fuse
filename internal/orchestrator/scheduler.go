@@ -50,12 +50,34 @@ type HostCapacity struct {
 	// whole-device GPUs pool — the two counters are independent (D5).
 	// Only qemu-backed hosts may advertise MIG profiles.
 	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+
+	// GPUDevices is the per-device detail probed from the host agent
+	// (one entry per whole GPU). It rides the capacity wire alongside the
+	// scalar GPUs/GPUKind counters. In-memory + wire only in this PR; the
+	// durable per-device schema is issue #37.
+	GPUDevices []GPUDevice `json:"gpu_devices,omitempty"`
 }
 
 // freeMIG returns the free instance count for a MIG profile given the
 // host's capacity and allocated maps.
 func freeMIG(capacity, allocated HostCapacity, profile string) int {
 	return capacity.MIGProfiles[profile] - allocated.MIGProfiles[profile]
+}
+
+// GPUDevice is the per-device detail the host agent probes for a single
+// whole GPU. Field names mirror the agent's gpu_devices payload. All fields
+// are best-effort: the agent omits any it cannot determine.
+type GPUDevice struct {
+	UUID          string `json:"uuid,omitempty"`
+	Model         string `json:"model,omitempty"`
+	PCIBusID      string `json:"pci_bus_id,omitempty"`
+	MemoryMB      int    `json:"memory_mb,omitempty"`
+	DriverVersion string `json:"driver_version,omitempty"`
+	CUDAVersion   string `json:"cuda_version,omitempty"`
+	ComputeCap    string `json:"compute_cap,omitempty"`
+	MIGCapable    bool   `json:"mig_capable,omitempty"`
+	MIGMode       string `json:"mig_mode,omitempty"`
+	IOMMUGroup    string `json:"iommu_group,omitempty"`
 }
 
 // HostBackend identifies the virtualization backend a host agent runs.

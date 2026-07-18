@@ -171,9 +171,12 @@ func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, err
 		return orchestrator.HostCapacity{}, fmt.Errorf("qemu capacity: %w", err)
 	}
 	return orchestrator.HostCapacity{
-		CPUs:      resp.CPUs,
-		RamMB:     resp.RamMB,
-		StorageGB: resp.StorageGB,
+		CPUs:       resp.CPUs,
+		RamMB:      resp.RamMB,
+		StorageGB:  resp.StorageGB,
+		GPUs:       resp.GPUs,
+		GPUKind:    resp.GPUKind,
+		GPUDevices: resp.GPUDevices,
 	}, nil
 }
 
@@ -341,11 +344,14 @@ type getVMResponse struct {
 }
 
 // capacityResponse is the GET /v1/capacity response: the host agent's real
-// CPU count, total RAM, and free disk.
+// CPU count, total RAM, free disk, and probed GPU inventory.
 type capacityResponse struct {
-	CPUs      int `json:"cpus"`
-	RamMB     int `json:"ram_mb"`
-	StorageGB int `json:"storage_gb"`
+	CPUs       int                      `json:"cpus"`
+	RamMB      int                      `json:"ram_mb"`
+	StorageGB  int                      `json:"storage_gb"`
+	GPUs       int                      `json:"gpus"`
+	GPUKind    string                   `json:"gpu_kind"`
+	GPUDevices []orchestrator.GPUDevice `json:"gpu_devices"`
 }
 
 type listVMResponse struct {

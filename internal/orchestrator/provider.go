@@ -191,10 +191,11 @@ type SnapshotDeleter interface {
 
 // CapacityProber is implemented by providers that can report the real
 // hardware capacity of the host they front (CPU count, total RAM, free
-// disk) instead of trusting operator-declared numbers. RegisterHost type-
-// asserts to this interface at registration time to source capacity for any
-// field the operator left unset; providers that cannot probe (e.g. a stub
-// with no real hardware behind it) simply return an error.
+// disk, GPU inventory) instead of trusting operator-declared numbers. The
+// registerHost API handler type-asserts the provider to this interface at
+// registration time to source capacity for any field the operator left
+// unset; providers that cannot probe (e.g. a stub with no real hardware
+// behind it) simply return an error.
 type CapacityProber interface {
 	Capacity(ctx context.Context) (HostCapacity, error)
 }

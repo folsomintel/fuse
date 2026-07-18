@@ -213,9 +213,12 @@ func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, err
 		return orchestrator.HostCapacity{}, fmt.Errorf("firecracker capacity: %w", err)
 	}
 	return orchestrator.HostCapacity{
-		CPUs:      resp.CPUs,
-		RamMB:     resp.RamMB,
-		StorageGB: resp.StorageGB,
+		CPUs:       resp.CPUs,
+		RamMB:      resp.RamMB,
+		StorageGB:  resp.StorageGB,
+		GPUs:       resp.GPUs,
+		GPUKind:    resp.GPUKind,
+		GPUDevices: resp.GPUDevices,
 	}, nil
 }
 
@@ -478,11 +481,16 @@ type getVMResponse struct {
 }
 
 // capacityResponse is the GET /v1/capacity response: the host agent's real
-// CPU count, total RAM, and free disk.
+// CPU count, total RAM, and free disk. Firecracker hosts have no GPU
+// passthrough, so the GPU fields are always zero/empty; they are present for
+// parity with the qemu wire shape.
 type capacityResponse struct {
-	CPUs      int `json:"cpus"`
-	RamMB     int `json:"ram_mb"`
-	StorageGB int `json:"storage_gb"`
+	CPUs       int                      `json:"cpus"`
+	RamMB      int                      `json:"ram_mb"`
+	StorageGB  int                      `json:"storage_gb"`
+	GPUs       int                      `json:"gpus"`
+	GPUKind    string                   `json:"gpu_kind"`
+	GPUDevices []orchestrator.GPUDevice `json:"gpu_devices"`
 }
 
 type listVMResponse struct {

@@ -97,6 +97,7 @@ func toAPIHost(h orchestrator.Host) HostInfo {
 			GPUs:        h.Capacity.GPUs,
 			GPUKind:     h.Capacity.GPUKind,
 			MIGProfiles: copyMIGProfiles(h.Capacity.MIGProfiles),
+			GPUDevices:  toAPIGPUDevices(h.Capacity.GPUDevices),
 		},
 		Allocated: HostCapacity{
 			CPUs:        h.Allocated.CPUs,
@@ -123,6 +124,30 @@ func copyMIGProfiles(in map[string]int) map[string]int {
 	out := make(map[string]int, len(in))
 	for k, v := range in {
 		out[k] = v
+	}
+	return out
+}
+
+// toAPIGPUDevices maps the orchestrator's per-device GPU list to the wire
+// shape. Returns nil for an empty input so the field is omitted from JSON.
+func toAPIGPUDevices(devs []orchestrator.GPUDevice) []GPUDevice {
+	if len(devs) == 0 {
+		return nil
+	}
+	out := make([]GPUDevice, len(devs))
+	for i, d := range devs {
+		out[i] = GPUDevice{
+			UUID:          d.UUID,
+			Model:         d.Model,
+			PCIBusID:      d.PCIBusID,
+			MemoryMB:      d.MemoryMB,
+			DriverVersion: d.DriverVersion,
+			CUDAVersion:   d.CUDAVersion,
+			ComputeCap:    d.ComputeCap,
+			MIGCapable:    d.MIGCapable,
+			MIGMode:       d.MIGMode,
+			IOMMUGroup:    d.IOMMUGroup,
+		}
 	}
 	return out
 }
