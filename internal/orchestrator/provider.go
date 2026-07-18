@@ -52,6 +52,13 @@ type Spec struct {
 	// allocation.
 	GPUProfile string
 
+	// GPUUUIDs are the concrete device uuids this VM is bound to. Populated
+	// by allocation on hosts that report per-device inventory
+	// (Capacity.GPUDevices non-empty) and persisted per-VM so the binding
+	// survives an orchestrator restart. Empty on legacy homogeneous hosts
+	// that only track a scalar GPU count.
+	GPUUUIDs []string `json:"gpu_uuids,omitempty"`
+
 	// MaxRuntime overrides FleetConfig.TaskStuckTimeout for this task.
 	// Zero means "use the fleet default". This is a leak-detection ceiling,
 	// not a liveness check — set it higher than any plausible healthy runtime.

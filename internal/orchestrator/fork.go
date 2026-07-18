@@ -160,9 +160,12 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	// destroy, credit back its (source-sized) cpu/ram to a host that never
 	// charged for it. the counters clamp at zero, making the drift permanent
 	// and leaving the scheduler to overcommit that host from then on.
+	// allocateOnHost binds by *vm; forks are gpu-free (rejected above), so a
+	// throwaway wrapper carrying only the spec charges cpu/ram/storage with no
+	// per-device gpu binding to record.
 	fm.mu.Lock()
 	if srcHostID != "" {
-		fm.allocateOnHost(srcHostID, spec)
+		fm.allocateOnHost(srcHostID, &vm{spec: spec})
 	}
 	fm.mu.Unlock()
 

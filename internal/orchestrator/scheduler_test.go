@@ -460,3 +460,76 @@ func TestFits_gpuCombinations(t *testing.T) {
 		})
 	}
 }
+
+// deviceHost builds a per-device host (Capacity.GPUDevices populated). The
+// scalar GPUs count and GPUKind are derived as back-compat aggregates.
+func deviceHost(id string, backend HostBackend, devices ...GPUDevice) *Host {
+	h := host(id, 8, 4096, 100, 10, HostActive)
+	h.Backend = backend
+	h.Capacity.GPUDevices = devices
+	h.Capacity.GPUs = len(devices)
+	if len(devices) > 0 {
+		h.Capacity.GPUKind = devices[0].Model
+	}
+	return h
+}
+
+func TestFits_perDeviceCountsFreeMatchingDevices(t *testing.T) {
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5, GPUs: 2,
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "NVIDIA A100-SXM4-40GB"},
+			{UUID: "gpu-b", Model: "NVIDIA A100-SXM4-40GB"},
+		},
+	}
+	// one device already bound: only one free, so a 2-gpu request fails but a
+	// 1-gpu request fits.
+	alloc := HostCapacity{GPUDeviceUUIDs: []string{"gpu-a"}}
+	if fits(cap, alloc, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 2}) {
+		t.Error("fits = true, want false (only one free device)")
+	}
+	if !fits(cap, alloc, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}) {
+		t.Error("fits = false, want true (one free device)")
+	}
+}
+
+func TestFits_heterogeneousHostMatchesByModel(t *testing.T) {
+	// mixed-model host: an a100 request must only count the a100 device, even
+	// though the scalar free count is 2.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5, GPUs: 2,
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "NVIDIA A100-SXM4-40GB"},
+			{UUID: "gpu-h", Model: "NVIDIA H100-SXM5-80GB"},
+		},
+	}
+	if !fits(cap, HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUKind: "a100"}) {
+		t.Error("fits = false, want true (one a100 free)")
+	}
+	if fits(cap, HostCapacity{}, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 2, GPUKind: "a100"}) {
+		t.Error("fits = true, want false (only one a100 on a mixed host)")
+	}
+	// once the a100 is bound, no a100 is free.
+	alloc := HostCapacity{GPUDeviceUUIDs: []string{"gpu-a"}}
+	if fits(cap, alloc, Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1, GPUKind: "a100"}) {
+		t.Error("fits = true, want false (the only a100 is allocated)")
+	}
+}
+
+func TestSchedule_heterogeneousHostPlacesByKind(t *testing.T) {
+	h := deviceHost("gpu-1", BackendQEMU,
+		GPUDevice{UUID: "gpu-a", Model: "NVIDIA A100-SXM4-40GB"},
+		GPUDevice{UUID: "gpu-h", Model: "NVIDIA H100-SXM5-80GB"},
+	)
+	picked, _, err := Schedule(gpuSpec(1, "h100"), []*Host{h}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "gpu-1" {
+		t.Errorf("picked %s, want gpu-1", picked.ID)
+	}
+	// a kind the host does not carry must not fit.
+	if _, _, err := Schedule(gpuSpec(1, "v100"), []*Host{h}, PlacementSpread); !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (no v100 device)", err)
+	}
+}

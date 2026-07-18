@@ -166,6 +166,10 @@ func (fm *FleetManager) activeHostsLocked() []*Host {
 	out := make([]*Host, 0, len(fm.hosts))
 	for _, h := range fm.hosts {
 		hc := *h // copy the Host (Capacity/Allocated are value structs)
+		// deep-copy the GPU slices: the value copy above shares their backing
+		// arrays with the live host, and allocate/deallocate mutate them.
+		hc.Capacity.GPUDevices = append([]GPUDevice(nil), h.Capacity.GPUDevices...)
+		hc.Allocated.GPUDeviceUUIDs = append([]string(nil), h.Allocated.GPUDeviceUUIDs...)
 		out = append(out, &hc)
 	}
 	return out
@@ -175,24 +179,45 @@ func (fm *FleetManager) activeHostsLocked() []*Host {
 // a successful placement and persists the new totals asynchronously
 // so they survive an orchestrator restart. Must be called under
 // fm.mu.Lock.
-func (fm *FleetManager) allocateOnHost(hostID string, spec Spec) {
+//
+// When the host reports per-device GPU inventory (Capacity.GPUDevices
+// non-empty), it binds spec.GPUs concrete free device uuids to the VM:
+// the uuids are recorded on v.spec.GPUUUIDs (durable per-VM binding) and
+// added to the host's Allocated.GPUDeviceUUIDs set, and Allocated.GPUs is
+// kept equal to the number of bound uuids. On legacy homogeneous hosts
+// (no per-device inventory) it falls back to the scalar counter.
+func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 	h, ok := fm.hosts[hostID]
 	if !ok {
 		return
 	}
+	spec := v.spec
 	h.Allocated.CPUs += spec.CPUs
 	h.Allocated.RamMB += spec.RamMB
 	h.Allocated.StorageGB += spec.StorageGB
-	if spec.GPUProfile != "" {
+	h.Allocated.VMCount++
+	switch {
+	case spec.GPUProfile != "":
 		// Fractional allocation: consume MIG instances, not whole devices.
 		if h.Allocated.MIGProfiles == nil {
 			h.Allocated.MIGProfiles = make(map[string]int)
 		}
 		h.Allocated.MIGProfiles[spec.GPUProfile] += int(spec.GPUs)
-	} else {
+	case spec.GPUs > 0 && len(h.Capacity.GPUDevices) > 0:
+		free := freeMatchingDevices(h.Capacity, h.Allocated, spec.GPUKind)
+		n := int(spec.GPUs)
+		if n > len(free) {
+			// scheduler admitted this placement, so free should be
+			// sufficient; clamp defensively rather than index out of range.
+			n = len(free)
+		}
+		bound := free[:n]
+		v.spec.GPUUUIDs = append([]string(nil), bound...)
+		h.Allocated.GPUDeviceUUIDs = append(h.Allocated.GPUDeviceUUIDs, bound...)
+		h.Allocated.GPUs = len(h.Allocated.GPUDeviceUUIDs)
+	default:
 		h.Allocated.GPUs += int(spec.GPUs)
 	}
-	h.Allocated.VMCount++
 	h.UpdatedAt = time.Now()
 	fm.persistHostRecordBackground(fm.hostToRecord(*h))
 }
@@ -217,13 +242,33 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	if h.Allocated.StorageGB < 0 {
 		h.Allocated.StorageGB = 0
 	}
-	if spec.GPUProfile != "" {
+	switch {
+	case spec.GPUProfile != "":
 		if n := h.Allocated.MIGProfiles[spec.GPUProfile] - int(spec.GPUs); n > 0 {
 			h.Allocated.MIGProfiles[spec.GPUProfile] = n
 		} else if h.Allocated.MIGProfiles != nil {
 			delete(h.Allocated.MIGProfiles, spec.GPUProfile)
 		}
-	} else {
+	case len(h.Capacity.GPUDevices) > 0 && len(spec.GPUUUIDs) > 0:
+		// per-device host: release exactly the uuids this vm held and keep
+		// the scalar counter equal to the remaining bound-uuid count.
+		release := make(map[string]struct{}, len(spec.GPUUUIDs))
+		for _, u := range spec.GPUUUIDs {
+			release[u] = struct{}{}
+		}
+		// build a fresh slice rather than truncating in place: host copies
+		// handed to the scheduler share this backing array, so reusing it
+		// could corrupt a concurrently-held snapshot.
+		var kept []string
+		for _, u := range h.Allocated.GPUDeviceUUIDs {
+			if _, drop := release[u]; drop {
+				continue
+			}
+			kept = append(kept, u)
+		}
+		h.Allocated.GPUDeviceUUIDs = kept
+		h.Allocated.GPUs = len(h.Allocated.GPUDeviceUUIDs)
+	default:
 		h.Allocated.GPUs -= int(spec.GPUs)
 		if h.Allocated.GPUs < 0 {
 			h.Allocated.GPUs = 0

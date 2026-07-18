@@ -58,12 +58,18 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 	})
 
 	host := HostRecord{
-		ID:       hostID,
-		URL:      "https://qemu-host.local",
-		Region:   "us-east-1",
-		State:    HostActive,
-		Backend:  BackendQEMU,
-		Capacity: HostCapacity{CPUs: 8, RamMB: 32768, StorageGB: 200, VMCount: 4, GPUs: 2, GPUKind: "a100"},
+		ID:      hostID,
+		URL:     "https://qemu-host.local",
+		Region:  "us-east-1",
+		State:   HostActive,
+		Backend: BackendQEMU,
+		Capacity: HostCapacity{
+			CPUs: 8, RamMB: 32768, StorageGB: 200, VMCount: 4, GPUs: 2, GPUKind: "a100",
+			GPUDevices: []GPUDevice{
+				{UUID: "gpu-a", Model: "NVIDIA A100-SXM4-40GB", MemoryMB: 40960},
+				{UUID: "gpu-b", Model: "NVIDIA A100-SXM4-40GB", MemoryMB: 40960},
+			},
+		},
 		Allocated: HostCapacity{
 			GPUs: 1,
 		},
@@ -86,6 +92,7 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 			StorageGB: 20,
 			GPUs:      1,
 			GPUKind:   "a100",
+			GPUUUIDs:  []string{"gpu-a"},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -110,6 +117,13 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 	if gotHost.Allocated.GPUs != 1 {
 		t.Errorf("host allocated gpus = %d, want 1", gotHost.Allocated.GPUs)
 	}
+	if len(gotHost.Capacity.GPUDevices) != 2 {
+		t.Fatalf("host capacity gpu_devices = %v, want 2 devices", gotHost.Capacity.GPUDevices)
+	}
+	if gotHost.Capacity.GPUDevices[0].UUID != "gpu-a" || gotHost.Capacity.GPUDevices[1].UUID != "gpu-b" {
+		t.Errorf("host gpu device uuids = %q,%q, want gpu-a,gpu-b",
+			gotHost.Capacity.GPUDevices[0].UUID, gotHost.Capacity.GPUDevices[1].UUID)
+	}
 
 	vms, err := store.ListVMs(ctx)
 	if err != nil {
@@ -130,6 +144,9 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 	}
 	if gotVM.Spec.GPUKind != "a100" {
 		t.Errorf("vm spec gpu_kind = %q, want %q", gotVM.Spec.GPUKind, "a100")
+	}
+	if len(gotVM.Spec.GPUUUIDs) != 1 || gotVM.Spec.GPUUUIDs[0] != "gpu-a" {
+		t.Errorf("vm spec gpu_uuids = %v, want [gpu-a]", gotVM.Spec.GPUUUIDs)
 	}
 }
 

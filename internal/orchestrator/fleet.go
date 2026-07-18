@@ -524,7 +524,11 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 			return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
 		}
 		bootProvider = hp
-		fm.allocateOnHost(selectedHost.ID, spec)
+		fm.allocateOnHost(selectedHost.ID, v)
+		// allocateOnHost binds concrete gpu device uuids onto v.spec; mirror
+		// them onto the local spec so Boot and the reservation-release path
+		// see the same binding.
+		spec.GPUUUIDs = v.spec.GPUUUIDs
 		reservedHost = true
 		fm.mu.Unlock()
 		fm.logger.Info("scheduled vm",
