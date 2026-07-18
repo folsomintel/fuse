@@ -60,8 +60,17 @@ optional, an empty body is a valid request.
 | Status | Code | When |
 | --- | --- | --- |
 | `404` | `not_found` | `vmId` doesn't exist. |
-| `409` | `conflict` | The VM isn't `running`, or the backend doesn't support snapshots (GPU/QEMU). |
-| `500` | `internal` | Unexpected server error. |
+| `409` | `conflict` | The VM isn't `running`. |
+| `500` | `internal` | Unexpected server error, or the environment doesn't support snapshots (GPU, or any QEMU-backed VM). See the note below. |
+
+<Callout type="warn" title="Known limitation">
+An unsupported-backend snapshot returns `500` `internal` rather than a `4xx`. A
+GPU environment reports `vm ... has a gpu passthrough device: snapshots are not
+supported for gpu environments`, and any other non-snapshotting backend reports
+`provider does not support snapshots for vm ...`. Both are permanent properties
+of the environment, not server faults, so match on the message rather than the
+status until this is fixed.
+</Callout>
 
 ## List
 

@@ -25,8 +25,9 @@ operator-supplied string and is the host's primary key, use a readable one
 | `--ram-mb` | RAM capacity in MB, override. `0` (default) probes the host agent. |
 | `--storage-gb` | Storage capacity in GB, override. `0` (default) probes the host agent. |
 | `--max-vms` | Max concurrent VMs. Always required, this is scheduling policy, not a hardware fact, so it is never probed. |
-| `--gpus` | GPU device count. Requires `--backend qemu`. |
-| `--gpu-kind` | GPU model label, for example `a100`. |
+| `--gpus` | GPU device count, override. `0` (default) probes the host agent. Requires `--backend qemu`. |
+| `--gpu-kind` | GPU model label, for example `a100`, override. Empty (default) probes the host agent. |
+| `--mig-profile` | MIG instance capacity as `profile=count`, for example `1g.10gb=4`. Repeatable. Requires `--backend qemu`. |
 
 ## Token verification
 
@@ -45,12 +46,23 @@ full capacity, the host still registers, with a warning.
 
 ## Capacity probing
 
-`--cpus`, `--ram-mb`, and `--storage-gb` are optional. Leave any of them at `0`
-(the default) and the orchestrator probes the host agent for the real value
-instead of trusting an operator-declared guess. Pass one explicitly to override
-the probe, for a deliberate overcommit or a carve-out reserving part of the
-host for something else, a declared value above what the probe reports still
-registers successfully, with a warning printed rather than a rejection.
+`--cpus`, `--ram-mb`, `--storage-gb`, `--gpus`, and `--gpu-kind` are optional.
+Leave any of them at its zero value (`0`, or empty for `--gpu-kind`) and the
+orchestrator probes the host agent for the real value instead of trusting an
+operator-declared guess. Pass one explicitly to override the probe, for a
+deliberate overcommit or a carve-out reserving part of the host for something
+else, a declared value above what the probe reports still registers successfully,
+with a warning printed rather than a rejection. A declared `--gpu-kind` that
+disagrees with the probe warns the same way.
+
+Two things are never probed. `--max-vms` is scheduling policy rather than a
+hardware fact, so you always declare it. `--mig-profile` is operator-declared
+because MIG instances must be created on the host ahead of time, the agent
+reports whole devices but not the slices you carved out of them.
+
+Per-device GPU inventory is the reverse case: it is probe-only. The agent reports
+each GPU's UUID, model, PCI address, memory, driver version, and MIG mode, and
+there is no flag to declare or override that list.
 
 If the host agent's provider doesn't support capacity probing and any of those
 three flags were left at `0`, registration fails outright: declare them
@@ -87,7 +99,30 @@ fuse host register gpu-1 \
 ```
 
 `--gpus` requires `--backend qemu`; registering with `--gpus` set on a
-`firecracker`-backend host is rejected. See
+`firecracker`-backend host is rejected with `gpus > 0 requires backend "qemu"`.
+The same applies to `--mig-profile`.
+
+To offer fractional GPUs, declare the MIG instances you created on the host:
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --mig-profile 1g.10gb=4 \
+  --mig-profile 2g.20gb=2 \
+  --max-vms 8
+```
+
+Each profile is validated against the mig-parted grammar and must carry a positive
+count, so a typo fails at registration rather than silently advertising capacity
+that can never be filled. Malformed values are rejected with
+`invalid --mig-profile "...": expected profile=count (e.g. 1g.10gb=4)`, and a
+non-positive count with `invalid --mig-profile "...": count must be a positive
+number`. Profile keys are lowercased.
+
+A host may declare both `--gpus` and `--mig-profile`; the two are separate
+inventories and a MIG placement never consumes a whole device. See
 [GPU host setup](/docs/cloud/gpu-host-setup) for the full VFIO/IOMMU bring-up.
 
 ## Interactive mode
@@ -95,7 +130,8 @@ fuse host register gpu-1 \
 Omit `--url` in an interactive terminal to fill in the required fields via a
 form instead of flags. The form marks `--cpus`/`--ram-mb`/`--storage-gb` as
 "0 = probe from host agent" and `--max-vms` as "required, not probed" to match
-the flag behavior above.
+the flag behavior above. It prompts for GPU count and kind, but not for MIG
+profiles, register a MIG host with `--mig-profile` on the command line.
 
 ## Output
 

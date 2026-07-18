@@ -23,8 +23,9 @@ image: ghcr.io/acme/worker:latest
 
 resources:
   cpus: 2
-  gpu: 1              # whole-device count; omit or 0 for no GPU
+  gpu: 1              # device count; whole GPUs, or MIG instances if gpu_profile is set
   gpu_kind: a100      # optional match, e.g. "a100"; empty matches any kind
+  gpu_profile: 1g.10gb # optional MIG profile; omit for whole devices
   memory: 2GB         # accepts MB/GB suffixes, compiles to ram_mb
   storage: 10GB       # compiles to storage_gb
   max_runtime: 1h     # accepts go duration, compiles to max_runtime_seconds
@@ -68,8 +69,9 @@ secrets:
 | `version` | int | Currently always `1`. |
 | `image` | string | OCI image ref. Omit to use the baked base rootfs. |
 | `resources.cpus` | int | vCPU count. |
-| `resources.gpu` | int | Whole GPU device count. Requires a host registered with the `qemu` backend. |
+| `resources.gpu` | int | Device count. Whole GPUs by default, or MIG instances when `gpu_profile` is set. Requires a host registered with the `qemu` backend. |
 | `resources.gpu_kind` | string | Optional GPU model match, e.g. `a100`. See [Providers](/docs/learn/concepts/providers). |
+| `resources.gpu_profile` | string | Optional MIG profile, e.g. `1g.10gb`. Requests a fractional slice of a GPU instead of whole devices. See [GPU workloads](/docs/learn/use-cases/gpu-workloads). |
 | `resources.memory` | string | Accepts `MB`/`GB` suffixes; compiles to `ram_mb`. |
 | `resources.storage` | string | Accepts `MB`/`GB` suffixes; compiles to `storage_gb`. |
 | `resources.max_runtime` | string | Go duration (`1h`, `30m`); compiles to `max_runtime_seconds`. |
@@ -81,14 +83,55 @@ secrets:
 | `expose` | list of `{port, as}` | Guest ports published externally. |
 | `secrets` | list of strings | Secret *names* this environment requires. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
+## GPU fields
+
+`gpu` is always a device *count*, never a fraction. What it counts depends on
+whether `gpu_profile` is set: without a profile it counts whole physical GPUs, with
+one it counts MIG instances of that profile. `gpu: 2` with `gpu_profile: 1g.10gb`
+asks for two 1g.10gb slices, not two whole cards.
+
+A `gpu_profile` is validated client-side, at compile time, against the mig-parted
+profile grammar: a slice count of `1` through `7`, then `g.`, then a memory size in
+GB, with an optional `+me` suffix for a profile with a dedicated media engine.
+`1g.10gb`, `3g.20gb`, and `1g.10gb+me` all parse. Matching is case-insensitive and
+the compiled value is lowercased, so `1G.10GB` is accepted and sent as `1g.10gb`.
+
+Three rules are enforced before the request ever leaves your machine, so a malformed
+GPU request fails at `fuse up` rather than being scheduled and failing on a host:
+
+| Rule | Error |
+| --- | --- |
+| `gpu` must not be negative | `resources.gpu: must not be negative` |
+| `gpu_profile` must parse | `resources.gpu_profile: invalid MIG profile "..." (expected mig-parted form like "1g.10gb")` |
+| `gpu_profile` needs a count | `resources.gpu_profile: requires resources.gpu >= 1 (the count of MIG instances)` |
+| `gpu_profile` needs a MIG-capable `gpu_kind` | `resources.gpu_profile: "..." does not support MIG (gpu_kind "...")` |
+
+These are accumulated rather than short-circuited, so a Fusefile with several GPU
+mistakes reports all of them at once.
+
+The last rule is a **denylist**, not an allowlist. Kinds known not to support MIG
+(`v100`, `t4`, `p100`, `p40`, `k80`, `rtx`, `gtx`, `titan`, `l4`, `l40`, `l40s`) are
+rejected outright; an empty or unrecognized `gpu_kind` is allowed through, on the
+assumption that the host's reported per-device inventory is the better authority.
+Matching is a case-insensitive substring test, so `gpu_kind: rtx4090` is rejected by
+the `rtx` entry.
+
+<Callout type="warn" title="Known limitation">
+A MIG request cannot be pinned to a GPU model. When `gpu_profile` is set the
+scheduler matches on the profile alone and ignores `gpu_kind`, so on a host with
+mixed GPUs you may land on any card offering that profile. `gpu_kind` is still
+validated for MIG capability, it just doesn't constrain placement.
+</Callout>
+
 ## Scaffolding one
 
 ```bash
 fuse init
 ```
 
-writes exactly the annotated example above to `./Fusefile` (or a path passed via
-`-f`/`--file`). Pass `--force` to overwrite an existing file.
+writes a commented starter Fusefile to `./Fusefile` (or a path passed via
+`-f`/`--file`). Pass `--force` to overwrite an existing file. The scaffold covers the
+common CPU case and omits the GPU fields, add them by hand from the reference above.
 
 ## Bringing it up
 

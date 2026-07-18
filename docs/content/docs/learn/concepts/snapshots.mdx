@@ -46,8 +46,9 @@ soft-delete.
 
 ## The QEMU/GPU exception
 
-Environments running on the QEMU backend (whole-GPU passthrough) **cannot be
-snapshotted or forked at all**: a VFIO-passed-through GPU device can't be
-checkpointed the way a Firecracker microVM's disk can. Snapshot and fork requests
-against a GPU environment fail cleanly rather than silently doing nothing. See
-[Providers](/docs/learn/concepts/providers).
+Environments running on the QEMU backend **cannot be snapshotted or forked at
+all**: a VFIO-passed-through GPU device can't be checkpointed the way a
+Firecracker microVM's disk can. This covers both whole-device passthrough and
+fractional MIG instances, a slice is still passthrough hardware. Snapshot and
+fork requests against a GPU environment fail cleanly rather than silently doing
+nothing. See [Providers](/docs/learn/concepts/providers).

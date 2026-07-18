@@ -34,22 +34,34 @@ POST /v1/hosts
     "storage_gb": 0,
     "vm_count": 20,
     "gpus": 0,
-    "gpu_kind": ""
+    "gpu_kind": "",
+    "mig_profiles": { "1g.10gb": 4 }
   }
 }
 ```
 
 `id`, `url`, and `capacity.vm_count` are required. `backend` defaults to
 `firecracker` if omitted; only `qemu` hosts may register with
-`capacity.gpus > 0`.
+`capacity.gpus > 0` or a non-empty `capacity.mig_profiles`.
 
-`capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts: a
-value of `0` (or omitted) means "probe the host agent for the real value"
-instead of trusting an operator-declared guess. A positive value overrides the
-probe; if it exceeds what was actually probed, registration still succeeds and
-the response's `warnings` array notes it rather than rejecting the request.
-`capacity.vm_count` is scheduling policy, not a hardware fact: it is always
-required and never probed.
+`capacity.cpus`, `ram_mb`, `storage_gb`, `gpus`, and `gpu_kind` are optional
+hardware facts: a zero value (`0`, or `""` for `gpu_kind`, or omitted) means
+"probe the host agent for the real value" instead of trusting an
+operator-declared guess. A positive value overrides the probe; if it exceeds
+what was actually probed, registration still succeeds and the response's
+`warnings` array notes it rather than rejecting the request. A declared
+`gpu_kind` that disagrees with the probe warns the same way.
+
+Two fields are never probed. `capacity.vm_count` is scheduling policy, not a
+hardware fact, so it is always required. `capacity.mig_profiles` is a map of
+MIG profile to instance count that the operator declares, because MIG instances
+must be created on the host ahead of time and the agent reports whole devices
+rather than the slices carved from them. Profile keys are lowercased on the way
+in, and each must parse as a mig-parted profile with a positive count.
+
+`capacity.gpu_devices` is the reverse case, it is probe-only. Whatever the host
+agent reports is authoritative and there is no way to declare or override it;
+any `gpu_devices` you send is discarded.
 
 ### Response
 
@@ -76,11 +88,48 @@ array) everywhere else `HostInfo` appears. `capacity.cpus`/`ram_mb`/
 `storage_gb` in the response always reflect the resolved values (probed or
 overridden), never the raw `0` you may have sent.
 
+### GPU capacity
+
+A QEMU host carries four additional capacity fields, all omitted when empty:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `gpus` | int | Whole GPU device count. Probed, or declared as an override. |
+| `gpu_kind` | string | GPU model label, e.g. `a100`. Probed, or declared. Empty on a host with mixed GPU kinds. |
+| `mig_profiles` | map of string to int | Declared MIG capacity, profile to instance count. Never probed. |
+| `gpu_devices` | array of `GPUDevice` | Per-device inventory. Probe-only. |
+
+`capacity` and `allocated` are not symmetric here. `allocated` reports `gpus`,
+`gpu_kind`, and `mig_profiles`, but never `gpu_devices`, the set of bound device
+UUIDs is orchestrator-internal and is not exposed on the wire.
+
+Each `GPUDevice` is:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `uuid` | string | Device UUID, what the scheduler binds a VM to. |
+| `model` | string | Full model string, e.g. `NVIDIA A100-SXM4-40GB`. |
+| `pci_bus_id` | string | PCI address. |
+| `memory_mb` | int | Device memory. |
+| `driver_version` | string | NVIDIA driver version. |
+| `compute_cap` | string | CUDA compute capability. |
+| `mig_capable` | bool | Whether the device reports a MIG mode. |
+| `mig_mode` | string | Current MIG mode, e.g. `Enabled`. |
+| `cuda_version` | string | Reserved, not currently populated by the host agent. |
+| `iommu_group` | string | Reserved, not currently populated by the host agent. |
+
+<Callout type="warn" title="Known limitation">
+`gpus` and the length of `gpu_devices` can legitimately disagree. The host agent
+emits at most one device entry per IOMMU group, so a group containing several
+GPUs contributes one entry while still counting each card toward `gpus`. Treat
+`gpus` as the schedulable count and `gpu_devices` as best-effort detail.
+</Callout>
+
 ### Errors
 
 | Status | Code | When |
 | --- | --- | --- |
-| `400` | `invalid_argument` | Missing `id`/`url`, `gpus > 0` on a non-`qemu` backend, or `cpus`/`ram_mb`/`storage_gb`/`vm_count` resolve to non-positive after probing. |
+| `400` | `invalid_argument` | Missing `id`/`url`, `gpus > 0` or `mig_profiles` on a non-`qemu` backend, a negative `gpus`, a malformed `mig_profiles` key or non-positive count, or `cpus`/`ram_mb`/`storage_gb`/`vm_count` resolve to non-positive after probing. |
 | `502` | `internal` | `cpus`/`ram_mb`/`storage_gb` were left at `0` but the host agent's provider doesn't support capacity probing, or the probe itself failed. |
 | `500` | `internal` | Unexpected server error. |
 

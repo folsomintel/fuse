@@ -1,14 +1,13 @@
 ---
 title: GPU batch and training jobs
-description: Whole-device GPU passthrough for workloads that need real hardware, not a shared slice
+description: Whole-device and fractional MIG GPU passthrough for workloads that need real hardware
 icon: Cpu
 ---
 
-Some workloads (model training, batch inference, anything CUDA-heavy) need a
-real, whole GPU: not a virtualized fraction of one, not a shared slice behind
-someone else's driver stack. Fuse's QEMU/VFIO backend passes an entire GPU
-device (and its full IOMMU group) into the guest, so the workload talks to the
-hardware directly.
+Some workloads (model training, batch inference, anything CUDA-heavy) need real
+GPU hardware, not a virtualized fraction behind someone else's driver stack.
+Fuse's QEMU/VFIO backend passes GPUs into the guest directly, either as an
+entire device with its full IOMMU group, or as a MIG instance carved out of one.
 
 ## The pattern
 
@@ -47,19 +46,67 @@ fuse up
   is what routes the environment onto a QEMU-backed host with matching free
   GPU inventory. CPU-only Fusefiles keep scheduling onto the default
   Firecracker backend, untouched.
-- `gpu_kind` is an optional exact match (`a100`, or whatever label the host
+- `gpu_kind` is an optional model match (`a100`, or whatever label the host
   registered with). Omit it to accept any available GPU kind on a host that
-  has one free.
+  has one free. On a host reporting per-device inventory the match is a
+  case-insensitive substring test against each device's model, so `a100`
+  matches `NVIDIA A100-SXM4-40GB`.
 - The whole GPU (and every PCI function in its IOMMU group, including a
   companion audio device if it has one) passes through to the guest. The
   workload sees real hardware, not an emulated or shared device.
 
+## Fractional GPUs with MIG
+
+A whole A100 or H100 is more card than many jobs need. On MIG-capable hardware you
+can hand out slices instead, each one a hardware-isolated instance with its own
+memory and compute, by naming a profile:
+
+```yaml
+resources:
+  cpus: 4
+  memory: 16GB
+  gpu: 1
+  gpu_kind: a100
+  gpu_profile: 1g.10gb
+
+run: python infer.py
+```
+
+`gpu` stays a count, it just counts MIG instances once `gpu_profile` is set, so
+`gpu: 2` with `gpu_profile: 1g.10gb` asks for two slices rather than two cards.
+
+The operator creates the MIG instances on the host ahead of time and declares them
+at registration with `--mig-profile`, they are not carved on demand:
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --mig-profile 1g.10gb=4 \
+  --mig-profile 2g.20gb=2 \
+  --max-vms 8
+```
+
+MIG capacity and whole-device capacity are tracked as separate pools. A host can
+register both, and a `1g.10gb` request never consumes a whole device from the
+passthrough pool, so slice workloads and whole-card workloads don't contend for the
+same inventory.
+
+<Callout type="warn" title="Known limitation">
+MIG placement ignores `gpu_kind`. The profile alone selects the host, so on a host
+with mixed MIG-capable cards a request may land on any GPU offering that profile.
+`gpu_kind` is still validated (a profile on a non-MIG card like `v100` or `l40s` is
+rejected), it just doesn't narrow placement.
+</Callout>
+
 ## The tradeoff: no snapshots
 
-GPU/QEMU-backed environments cannot be snapshotted or forked at all, a
-VFIO-passed-through device can't be checkpointed the way a Firecracker
-microVM's disk can. Snapshot and fork calls against a GPU environment fail
-cleanly with a `conflict` error rather than silently doing nothing. Design
+GPU environments cannot be snapshotted or forked at all, a VFIO-passed-through
+device can't be checkpointed the way a Firecracker microVM's disk can. This
+applies to MIG environments too, a slice is still passthrough hardware. Snapshot
+and fork calls against a GPU environment fail with an explicit "not supported for
+gpu environments" message rather than silently doing nothing. Design
 long training runs to checkpoint their own progress to durable storage
 (object storage, a mounted volume) from inside the guest, the way you
 normally would for a long job that might restart, rather than relying on

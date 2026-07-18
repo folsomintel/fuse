@@ -12,13 +12,18 @@ foreground process.
 Two things cause most bring-up confusion: which token goes where, and which
 port is which service. State both up front.
 
-There are three distinct tokens, travelling in different directions:
+There are four distinct tokens, travelling in different directions:
 
 | Token | Set on | Used by | Flag / env |
 | --- | --- | --- | --- |
 | Orchestrator bearer | Orchestrator | you → orchestrator | `ORCH_AUTH_TOKEN` / `fuse connect --token` |
 | Host agent token | Host agent (`fc-agent`) | orchestrator → agent | `fuse host register --token` (the agent's `FC_AGENT_TOKEN`) |
+| Host agent token | Host agent (`qemu-agent`) | orchestrator → agent | `fuse host register --token` (the agent's `QEMU_AGENT_TOKEN`) |
 | API key | Orchestrator | apps → orchestrator | `fuse apikeys create` |
+
+Both host agents take a token the same way, only the env var naming differs per
+backend, so a GPU host registers with `$QEMU_AGENT_TOKEN` where a Firecracker
+host registers with `$FC_AGENT_TOKEN`.
 
 The single most common setup mistake is passing the host agent token to
 `fuse connect`, or the orchestrator token to `fuse host register`. They are not
@@ -31,7 +36,9 @@ Default ports:
 | Port | Service |
 | --- | --- |
 | `8080` | Orchestrator (control plane API) |
-| `8090` | Host agent (`fc-agent` / `qemu-agent`) |
+| `8090` | Firecracker host agent (`fc-agent`) |
+| `8091` | GPU/QEMU host agent (`qemu-agent`) |
+| `19551-19799` | Per-VM guest-agent DNAT range |
 
 ## Configuration
 

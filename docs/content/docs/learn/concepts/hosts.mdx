@@ -20,9 +20,10 @@ fuse host register <id> \
 ```
 
 The `<id>` is a free-form, operator-supplied string and is the host's primary key;
-use something readable, like `prod-east-1`. GPU hosts additionally pass `--gpus` and
-`--gpu-kind`, and require `--backend qemu`. See [Providers](/docs/learn/concepts/providers)
-for the backend distinction.
+use something readable, like `prod-east-1`. GPU hosts additionally pass `--gpus`,
+`--gpu-kind`, and (for fractional GPUs) `--mig-profile`, and require
+`--backend qemu`. See [Providers](/docs/learn/concepts/providers) for the backend
+distinction.
 
 ## Capacity and allocation
 
@@ -30,6 +31,20 @@ Every host tracks both a declared **capacity** (what you registered it with) and
 live **allocated** figure (what's currently in use by scheduled environments) across
 CPUs, RAM, storage, VM count, and (for GPU hosts) GPU devices. `fuse host get <id>`
 and `fuse host metrics <id>` both show capacity vs. allocated.
+
+Most of that capacity is **probed** from the host agent at registration time, the
+CPU count, RAM, storage, GPU count, GPU kind, and the per-device GPU list all come
+back from the agent rather than from what you typed. Two values are instead
+**operator-declared**, because they are policy or pre-created state rather than
+hardware facts the agent can observe: `--max-vms` is a ceiling you choose, and
+`--mig-profile profile=count` describes MIG instances that must already have been
+created on the host before Fuse ever sees them.
+
+A GPU host therefore tracks two independent pools: whole devices, and MIG instances
+counted per profile. They do not draw down on each other, a MIG placement never
+consumes a whole device. Because the GPU inventory is per-device rather than a bare
+number, the scheduler binds specific GPU UUIDs to a VM instead of just decrementing
+a count.
 
 ## Cordon and uncordon
 

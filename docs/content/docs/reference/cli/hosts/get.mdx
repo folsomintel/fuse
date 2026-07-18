@@ -10,7 +10,8 @@ fuse host get <id>
 
 No flags beyond the globals. Prints the host's full detail: URL, region,
 backend, state, capacity vs. allocated (CPUs, RAM, storage, VM count, and GPUs
-if the host has any), last seen time, and created/updated timestamps.
+or MIG profiles if the host has any), last seen time, and created/updated
+timestamps.
 
 ```bash
 $ fuse host get prod-east-1
@@ -27,6 +28,33 @@ last seen     3m ago
 created       2026-01-15 10:00
 updated       2026-01-15 10:00
 ```
+
+A GPU host adds a `gpus` row, and a MIG host a `mig` row listing each declared
+profile's allocation, sorted by profile name:
+
+```bash
+$ fuse host get gpu-1
+id            gpu-1
+url           http://gpu-host:8091
+region        -
+backend       qemu
+state         active
+cpus          16 / 64
+ram mb        65536 / 262144
+storage gb    100 / 2000
+vms           2 / 8
+gpus          1 / 4 (a100)
+mig           1g.10gb 2 / 4, 2g.20gb 0 / 2
+last seen     2026-01-15 10:00 (3m ago)
+created       2026-01-15 10:00
+updated       2026-01-15 10:00
+```
+
+The `gpus` row appears only when the host has whole-device GPU capacity, and the
+`mig` row only when it declared MIG profiles; a host offering just one of the two
+shows just that row. Per-device inventory (each GPU's UUID, model, PCI address,
+memory, driver version, and MIG mode) is not rendered in the table, read it with
+`-o json`.
 
 `last seen` is set once at registration and is never refreshed afterward, it is
 not a liveness signal, don't use it to detect a dead host agent.

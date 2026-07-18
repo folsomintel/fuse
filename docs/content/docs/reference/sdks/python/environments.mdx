@@ -23,7 +23,11 @@ client.environments.destroy(env.id)
 - `create` provisions from a `Spec` (CPUs, RAM, storage, and optionally GPU)
   and blocks server-side until the environment is `running` or provisioning
   fails, so the returned `EnvironmentInfo` already reflects the outcome. No
-  separate poll-until-ready step is needed for the common case.
+  separate poll-until-ready step is needed for the common case. `Spec` carries
+  `gpus`, `gpu_kind`, and `gpu_profile`, so fractional MIG environments can be
+  requested from this SDK. `HostCapacity` does not yet expose `gpu_devices`,
+  read per-device inventory over the [HTTP API](/docs/reference/api/hosts) if
+  you need it.
 - `exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `exit_code` is a successful call**,
   not a raised exception, the command ran and failed, which is the answer you

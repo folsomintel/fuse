@@ -34,6 +34,7 @@ POST /v1/environments
     "storage_gb": 10,
     "gpus": 0,
     "gpu_kind": "",
+    "gpu_profile": "",
     "region": "us-east",
     "max_runtime_seconds": 3600,
     "image": ""
@@ -48,9 +49,16 @@ POST /v1/environments
 ```
 
 `task_id` and `spec` are required; every other field is optional. `gpus` is a
-whole-device count; a non-zero value routes the environment to a host with
-matching free GPU inventory (necessarily QEMU-backed, see
-[Providers](/docs/learn/concepts/providers)). `max_runtime_seconds` is a
+device count; a non-zero value routes the environment to a host with matching
+free GPU inventory (necessarily QEMU-backed, see
+[Providers](/docs/learn/concepts/providers)).
+
+Setting `gpu_profile` (a mig-parted profile such as `1g.10gb`) switches the
+request from whole devices to MIG instances, and `gpus` then counts instances of
+that profile rather than cards. The value is lowercased on the way in. The two
+draw on separate host inventories, so a MIG request never consumes a whole
+device. `gpu_profile` is validated at the API boundary, not just in the CLI, so
+raw HTTP callers get the same guardrails a `Fusefile` does. `max_runtime_seconds` is a
 leak-detection ceiling; `0` uses the fleet default, and the orchestrator tears
 down tasks that exceed it with no state transitions. `manifest_inline` is raw
 manifest JSON, base64-encoded; when omitted, the orchestrator uses a minimal
@@ -79,9 +87,20 @@ internal manifest.
 | Status | Code | When |
 | --- | --- | --- |
 | `400` | `invalid_argument` | Missing `task_id`/`spec`, or a malformed body. |
+| `400` | `invalid_argument` | A negative `gpus`, a `gpu_profile` that doesn't parse, a `gpu_profile` with `gpus < 1`, or a `gpu_profile` on a `gpu_kind` that doesn't support MIG. |
 | `409` | `conflict` | `task_id` collides with an existing environment. |
 | `500` | `internal` | Unexpected server error. |
-| `503` | `unavailable` | The orchestrator is rejecting work (for example, shutting down). |
+| `503` | `unavailable` | The orchestrator is rejecting work (for example, shutting down), or no host has capacity. A GPU request with no GPU host registered fails here with `gpu workloads require a registered gpu host`. |
+
+GPU validation returns on the first failure rather than accumulating, so a spec
+with several GPU mistakes reports one at a time. The messages are:
+
+```
+spec.gpus must not be negative
+spec.gpu_profile: invalid MIG profile "..." (expected mig-parted form like "1g.10gb")
+spec.gpu_profile requires spec.gpus >= 1 (the count of MIG instances)
+spec.gpu_profile "..." is not valid for gpu_kind "..." (that gpu does not support MIG)
+```
 
 ## List
 
@@ -114,8 +133,18 @@ POST /v1/environments/{vmId}?action=fork
 
 With `reuse_snapshot_id` empty, the server takes a fresh snapshot of `vmId`
 first; otherwise it reuses the named snapshot. Returns `201` with the new
-`Environment`. Unavailable wherever snapshotting is, GPU/QEMU-backed
-environments cannot be forked (`409` `conflict`).
+`Environment`. Unavailable wherever snapshotting is, an environment with
+`spec.gpus > 0` cannot be forked, and neither can one on a QEMU host, since a
+VFIO-passed-through device can't be checkpointed. MIG environments are covered
+too, a slice still reports a non-zero `gpus`.
+
+<Callout type="warn" title="Known limitation">
+The GPU fork and snapshot guardrails currently return `500` `internal` with the
+message `vm ... has a gpu passthrough device: fork is not supported for gpu
+environments`. The condition is a permanent property of the environment rather
+than a server fault, so the status should be a `4xx`; treat the message, not the
+code, as the contract until this is fixed.
+</Callout>
 
 ## Drain
 

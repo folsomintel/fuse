@@ -21,9 +21,16 @@ for bringing one up.
 
 ## QEMU (GPU passthrough)
 
-QEMU is the backend for whole-GPU environments. It mirrors the Firecracker provider's
-shape but drives QEMU/KVM with VFIO passthrough of entire IOMMU groups instead of
-Firecracker microVMs. A host opts into it at registration time with `--backend qemu`.
+QEMU is the backend for GPU environments. It mirrors the Firecracker provider's
+shape but drives QEMU/KVM with VFIO passthrough instead of Firecracker microVMs. A
+host opts into it at registration time with `--backend qemu`.
+
+It serves GPUs two ways. **Whole-device passthrough** attaches every PCI function in
+a GPU's IOMMU group to the guest, which is what a Fusefile requests with `gpu: 1` and
+no profile. **Fractional passthrough** attaches a pre-created MIG instance as an mdev
+device, which is what `gpu_profile: 1g.10gb` requests. The two draw on separate
+inventories on the host, a MIG request never consumes a whole device from the
+passthrough pool and vice versa, so a host can serve both at once.
 
 The key limitation: **QEMU environments cannot snapshot or fork.** A GPU passed
 through via VFIO can't be checkpointed the way a Firecracker microVM's disk can, so
@@ -51,7 +58,9 @@ fuse host register my-host --url http://10.0.0.5:9000 --backend firecracker   # 
 fuse host register gpu-1   --url http://10.0.0.9:8091 --backend qemu --gpus 1 --gpu-kind a100
 ```
 
-A Fusefile's `resources.gpu` / `resources.gpu_kind` fields don't name a backend
-directly; a non-zero `gpu` count is what routes the environment to a host with
-matching free GPU inventory (necessarily QEMU-backed, since only QEMU hosts report
-GPU capacity). CPU-only requests schedule onto Firecracker hosts.
+A Fusefile's `resources.gpu` / `resources.gpu_kind` / `resources.gpu_profile` fields
+don't name a backend directly; a non-zero `gpu` count is what routes the environment
+to a host with matching free GPU inventory (necessarily QEMU-backed, since only QEMU
+hosts report GPU capacity). CPU-only requests schedule onto Firecracker hosts. A GPU
+request with no GPU host registered fails with `gpu workloads require a registered
+gpu host` rather than waiting for capacity that may never appear.
