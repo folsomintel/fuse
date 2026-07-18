@@ -15,7 +15,7 @@ each backend can and can't do.
 Firecracker is the default backend for ordinary CPU workloads. It talks to
 `fc-agent`, a per-host Python process that drives one Firecracker process per VM,
 over an HTTP contract (`POST /v1/vm`, upload/exec, `start-agent`, snapshot/restore).
-See [Artifacts](/docs/learn/concepts/artifacts) for how the guest rootfs and agent
+See [Artifacts](/docs/concepts/artifacts) for how the guest rootfs and agent
 get onto a Firecracker host, and [Firecracker host setup](/docs/cloud/firecracker-host-setup)
 for bringing one up.
 
@@ -35,7 +35,7 @@ passthrough pool and vice versa, so a host can serve both at once.
 The key limitation: **QEMU environments cannot snapshot or fork.** A GPU passed
 through via VFIO can't be checkpointed the way a Firecracker microVM's disk can, so
 snapshot and fork requests against a QEMU-backed environment fail cleanly rather than
-silently no-op. See [Snapshots](/docs/learn/concepts/snapshots) for the full snapshot
+silently no-op. See [Snapshots](/docs/concepts/snapshots) for the full snapshot
 model and this exception.
 
 See [GPU host setup](/docs/cloud/gpu-host-setup) for IOMMU/VFIO bring-up.

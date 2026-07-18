@@ -83,7 +83,7 @@ an orchestrator instance.
 
 ## What gets baked into the rootfs
 
-See [Artifacts](/docs/learn/concepts/artifacts) for the conceptual explanation.
+See [Artifacts](/docs/concepts/artifacts) for the conceptual explanation.
 Concretely, `fc-bake-rootfs.sh` builds `rootfs-fused.ext4` on top of the Firecracker
 CI Ubuntu 22.04 rootfs, injecting `/usr/local/bin/fused`, podman-static and its
 runtime dependencies, iptables (symlinked to `xtables-legacy-multi`, the CI kernel

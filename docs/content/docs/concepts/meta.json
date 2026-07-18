@@ -1,6 +1,7 @@
 {
-  "title": "Foundations",
+  "title": "Concepts",
   "icon": "Layers",
+  "root": true,
   "pages": [
     "fusefile",
     "providers",

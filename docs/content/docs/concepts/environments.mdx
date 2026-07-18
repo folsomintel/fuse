@@ -37,7 +37,7 @@ Draining does not auto-destroy. A subsequent explicit destroy call removes the V
 
 ## Creating one
 
-Two paths: compile a [Fusefile](/docs/learn/concepts/fusefile) with `fuse up`, or
+Two paths: compile a [Fusefile](/docs/concepts/fusefile) with `fuse up`, or
 create one directly with a raw resource spec:
 
 ```bash
@@ -91,7 +91,7 @@ control to stop you.
 Snapshots are disk-only, so a fork cold-boots the snapshot's disk rather than
 resuming the source's memory: expect a normal boot, not a sub-second resume.
 
-See [Snapshots](/docs/learn/concepts/snapshots): forking is unavailable wherever
+See [Snapshots](/docs/concepts/snapshots): forking is unavailable wherever
 snapshotting is (i.e. QEMU/GPU environments).
 
 ## Rotating guest credentials

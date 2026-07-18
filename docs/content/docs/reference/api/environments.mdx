@@ -51,7 +51,7 @@ POST /v1/environments
 `task_id` and `spec` are required; every other field is optional. `gpus` is a
 device count; a non-zero value routes the environment to a host with matching
 free GPU inventory (necessarily QEMU-backed, see
-[Providers](/docs/learn/concepts/providers)).
+[Providers](/docs/concepts/providers)).
 
 Setting `gpu_profile` (a mig-parted profile such as `1g.10gb`) switches the
 request from whole devices to MIG instances, and `gpus` then counts instances of
@@ -205,7 +205,7 @@ Replaces polling for state transitions with a Server-Sent Events stream:
 - This is single-process pub/sub: a subscriber connected to a different
   orchestrator replica than the publishing one will not see events.
   Acceptable today since the orchestrator runs as a single process. See
-  [State and recovery](/docs/learn/concepts/state-and-recovery) for why that is
+  [State and recovery](/docs/concepts/state-and-recovery) for why that is
   a design constraint rather than a deployment accident.
 
 Wire format is standard SSE:

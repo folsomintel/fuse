@@ -6,7 +6,7 @@ icon: Camera
 
 A **snapshot** captures a running microVM's state so you can restore it later,
 useful for fast cold starts, checkpointing long-running tasks, or branching from a
-known-good point via [fork](/docs/learn/concepts/environments#forking).
+known-good point via [fork](/docs/concepts/environments#forking).
 
 ## What's captured
 
@@ -32,7 +32,7 @@ fuse snapshot restore <id>
 
 Restore is **in-place only**: it restores the snapshot onto its original VM, which
 must still be running. There is no cross-host restore, clone, or standalone restore
-into a new VM; use [fork](/docs/learn/concepts/environments#forking) if you want a
+into a new VM; use [fork](/docs/concepts/environments#forking) if you want a
 new environment from a snapshot instead.
 
 ## Deleting
@@ -51,4 +51,4 @@ all**: a VFIO-passed-through GPU device can't be checkpointed the way a
 Firecracker microVM's disk can. This covers both whole-device passthrough and
 fractional MIG instances, a slice is still passthrough hardware. Snapshot and
 fork requests against a GPU environment fail cleanly rather than silently doing
-nothing. See [Providers](/docs/learn/concepts/providers).
+nothing. See [Providers](/docs/concepts/providers).

@@ -14,7 +14,7 @@ easily-confused "agent" processes. This page disambiguates them.
   Firecracker provider speaks. It's the thing you start with `fc-agent.sh start` on
   a host you're bringing up. GPU hosts run a separate process, `qemu-agent`, which
   mirrors the same contract for QEMU/VFIO instead of Firecracker; see
-  [Providers](/docs/learn/concepts/providers) and
+  [Providers](/docs/concepts/providers) and
   [GPU host setup](/docs/cloud/gpu-host-setup).
 - **`fused`**: runs **inside the guest**, as the reference in-guest agent. A small
   Go daemon (built from `cmd/fused`) that reads the manifest and secrets Fuse

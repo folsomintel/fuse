@@ -48,4 +48,4 @@ These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 Environments running on the QEMU backend (whole-GPU passthrough) cannot be
 snapshotted or forked at all, `create` and `restore` against a GPU
 environment throw a `FuseApiError` with `code === "conflict"` rather than
-silently no-op-ing. See [Providers](/docs/learn/concepts/providers).
+silently no-op-ing. See [Providers](/docs/concepts/providers).

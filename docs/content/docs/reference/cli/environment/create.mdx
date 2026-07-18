@@ -9,7 +9,7 @@ fuse environment create [flags]
 ```
 
 Provisions a new environment directly from flags, without a
-[Fusefile](/docs/learn/concepts/fusefile). For most workflows,
+[Fusefile](/docs/concepts/fusefile). For most workflows,
 [`fuse up`](/docs/reference/cli/up) (which compiles a Fusefile into this same
 underlying call) is the higher-level, more maintainable path; use `create`
 directly for scripting, one-off environments, or when you don't want a Fusefile
@@ -72,7 +72,7 @@ An environment left at `--max-runtime 0` is not exempt from teardown, the
 reconcile loop treats the orchestrator's `TaskStuckTimeout` (2h by default) as
 its ceiling, fails the task, and destroys the VM after two consecutive cycles
 past it. Set an explicit `--max-runtime` for anything legitimately long-running.
-See [Environments](/docs/learn/concepts/environments).
+See [Environments](/docs/concepts/environments).
 
 ## Interactive mode
 

@@ -13,7 +13,7 @@ Creates a snapshot of the given environment (VM). Three preconditions apply:
 - the VM must be `running`
 - the provider must support snapshots, GPU environments have no snapshot
   support at all (a vfio passthrough device cannot be checkpointed), see
-  [Snapshots](/docs/learn/concepts/snapshots)
+  [Snapshots](/docs/concepts/snapshots)
 - the tenant must be under both its snapshot count and byte quotas
 
 A quota rejection returns 409 / `conflict`. The GPU and unsupported-provider

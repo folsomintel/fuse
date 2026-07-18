@@ -70,8 +70,8 @@ secrets:
 | `image` | string | OCI image ref. Omit to use the baked base rootfs. |
 | `resources.cpus` | int | vCPU count. |
 | `resources.gpu` | int | Device count. Whole GPUs by default, or MIG instances when `gpu_profile` is set. Requires a host registered with the `qemu` backend. |
-| `resources.gpu_kind` | string | Optional GPU model match, e.g. `a100`. See [Providers](/docs/learn/concepts/providers). |
-| `resources.gpu_profile` | string | Optional MIG profile, e.g. `1g.10gb`. Requests a fractional slice of a GPU instead of whole devices. See [GPU workloads](/docs/learn/use-cases/gpu-workloads). |
+| `resources.gpu_kind` | string | Optional GPU model match, e.g. `a100`. See [Providers](/docs/concepts/providers). |
+| `resources.gpu_profile` | string | Optional MIG profile, e.g. `1g.10gb`. Requests a fractional slice of a GPU instead of whole devices. See [GPU workloads](/docs/guides/gpu-workloads). |
 | `resources.memory` | string | Accepts `MB`/`GB` suffixes; compiles to `ram_mb`. |
 | `resources.storage` | string | Accepts `MB`/`GB` suffixes; compiles to `storage_gb`. |
 | `resources.max_runtime` | string | Go duration (`1h`, `30m`); compiles to `max_runtime_seconds`. |
@@ -123,7 +123,7 @@ can be routed to a host whose free instances are all the wrong card. The qemu
 agent does filter instances by kind, so such a placement fails there with
 `insufficient free mig instances` rather than silently attaching the wrong GPU.
 `gpu_kind` is still validated for MIG capability, it just doesn't narrow host
-selection. See [GPU workloads](/docs/learn/use-cases/gpu-workloads).
+selection. See [GPU workloads](/docs/guides/gpu-workloads).
 </Callout>
 
 ## Scaffolding one

@@ -56,7 +56,7 @@ paths reach that outcome differently: fork checks the requested GPU count up
 front, before the provider is consulted, whereas snapshot is gated by the
 backend, and the GPU count only selects which error message you get once the
 backend has already declined. See
-[Providers](/docs/learn/concepts/providers).
+[Providers](/docs/concepts/providers).
 
 A zero-GPU environment that landed on a qemu host also cannot be snapshotted,
 but it surfaces the generic provider-unsupported error (`provider does not

@@ -49,7 +49,7 @@ snapshotted or forked at all, `Snapshots.Create` and `Environments.Fork` against
 a GPU environment fail with a `500` `internal` `*APIError` rather than silently
 no-op-ing. `Restore` carries no GPU check of its own, it is simply unreachable
 for a GPU environment because no snapshot of one can exist. See
-[Providers](/docs/learn/concepts/providers).
+[Providers](/docs/concepts/providers).
 
 <Callout type="warn" title="Known limitation">
 The GPU guardrail returns a `500` `internal` `*APIError`, not a `409`. It is a

@@ -82,7 +82,7 @@ uses elsewhere). This is general Postgres operational guidance, not something
 specific to Fuse, there's no Fuse-side hook or lifecycle event tied to it.
 
 Snapshot restore (`fuse snapshot restore`, see
-[Snapshots](/docs/learn/concepts/snapshots)) is an entirely different, VM-level
+[Snapshots](/docs/concepts/snapshots)) is an entirely different, VM-level
 concept, restoring a Firecracker microVM's disk from a checkpoint. It has no
 relationship to Postgres backup and doesn't substitute for one.
 
