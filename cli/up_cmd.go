@@ -96,7 +96,7 @@ func newUpCmd() *cobra.Command {
 			}
 			successf("creating environment %s (task %s)", e.ID, e.TaskID)
 			if !noWait {
-				return streamEnvironment(cmd.Context(), cl, e.ID)
+				return waitForEnvironmentReady(cmd.Context(), cl, e.ID)
 			}
 			if app.isJSON() {
 				return printJSON(e)

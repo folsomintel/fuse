@@ -76,6 +76,14 @@ func IsTerminalState(state string) bool {
 	return state == StateDestroyed || state == StateFailed
 }
 
+// IsSettledState reports whether state is one an environment can settle in at
+// the end of provisioning: running, or either terminal state. Callers that
+// wait for an environment to come up should use this, since a healthy
+// environment stops at running and never becomes terminal.
+func IsSettledState(state string) bool {
+	return state == StateRunning || IsTerminalState(state)
+}
+
 // Event is one item from env.Events. It matches the server's wire
 // payload. Err is set only on a stream-level failure, as the final
 // event before the channel closes.

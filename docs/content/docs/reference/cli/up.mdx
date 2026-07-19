@@ -10,17 +10,14 @@ fuse up [path] [flags]
 
 Reads a [Fusefile](/docs/concepts/fusefile), compiles it into a resource
 spec, manifest, and startup script, then creates an environment from the
-result. Streams provisioning events until a terminal state unless `--no-wait`
-is set.
+result. Streams provisioning events until the environment settles, unless
+`--no-wait` is set.
 
-:::warning[Known limitation]
-Only `destroyed` and `failed` count as terminal, so a successful `up` does not
-exit when the environment reaches `running`, it keeps streaming. Interactively
-you can press `q`; when stdout is not a TTY the plain renderer is selected and
-there is no exit path, so scripted callers should pass `--no-wait` and poll
-[`fuse environment get`](/docs/reference/cli/environment/get). Tracked as
-[issue #50](https://github.com/folsomintel/fuse/issues/50).
-:::
+`up` returns as soon as the environment reaches `running`, so it is safe to
+use in scripts and CI. If the environment reaches `failed` or is destroyed
+before it comes up, `up` exits non-zero. To keep watching an environment after
+it is up, use [`fuse environment watch`](/docs/reference/cli/environment/watch),
+which streams until the environment is destroyed or fails.
 
 ## Flags
 
