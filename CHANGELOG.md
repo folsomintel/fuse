@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.0](https://github.com/folsomintel/fuse/compare/v0.7.0...v0.8.0) (2026-07-19)
+
+
+### Features
+
+* **cli:** expose gpu allocation in environment create, hosts list, and host metrics ([7a70b59](https://github.com/folsomintel/fuse/commit/7a70b59e3ec64201d6ef4895529fa93e1329629e))
+* **cli:** expose GPU allocation in environment create, hosts list, and host metrics ([5ce4b49](https://github.com/folsomintel/fuse/commit/5ce4b49a6be8d100bc12d36cab2210eb45d29f3b))
+* **docs:** re-write ([38f1244](https://github.com/folsomintel/fuse/commit/38f12443d35bc9a108cb5fda8f536a89abe2a1a6))
+* **sdks:** bring typescript and python sdks to gpu parity with go ([c637018](https://github.com/folsomintel/fuse/commit/c6370182baf2bba15020900c7916c4f4696c8d47))
+* **sdks:** bring TypeScript and Python SDKs to GPU parity with Go ([64a7265](https://github.com/folsomintel/fuse/commit/64a72655699b3c64130cd94d0031334217985806))
+
+
+### Bug Fixes
+
+* **cli:** make fuse up return once the environment is running ([c1ce30b](https://github.com/folsomintel/fuse/commit/c1ce30bcb2580813fcb4eb3a80aac0561793caf2))
+* **cli:** make fuse up return once the environment is running ([56c052c](https://github.com/folsomintel/fuse/commit/56c052c26b8a880695723f434a0deaf149d22645))
+* **cli:** treat a dropped event stream as a failure, not a ready environment ([1e3b900](https://github.com/folsomintel/fuse/commit/1e3b900dadc498cdb441a4a637110121a342ed20))
+* **docs:** redirect / and /docs to the learn landing, align worker name with workers builds ([8218238](https://github.com/folsomintel/fuse/commit/82182387e84bc64af80bb04cbab1e2890023730e))
+* **docs:** redirect / and /docs to the learn landing, align worker name with workers builds ([2b10bea](https://github.com/folsomintel/fuse/commit/2b10bea290515f2d02c2432b49a352a2f9ff1f9f))
+* **orchestrator:** enforce MIGCapable and honor gpu_kind on MIG placement ([1ad63ee](https://github.com/folsomintel/fuse/commit/1ad63ee49751f0d9c864c47c933bda863639318f))
+* **orchestrator:** enforce MIGCapable and honor gpu_kind on MIG placement ([ab5e0fb](https://github.com/folsomintel/fuse/commit/ab5e0fb030e1629b2ed43e6a844827524c8f1da3))
+* **orchestrator:** gate the host-kind fallback on a device reporting no model ([adefd8c](https://github.com/folsomintel/fuse/commit/adefd8ccd30c7bfb4f28ac6a1a44a7c1ad766dcc))
+* **orchestrator:** return 4xx instead of 500 for six permanent preconditions ([e1510d1](https://github.com/folsomintel/fuse/commit/e1510d1190428e09d51f9ca54d70bb6865bcfc6f))
+* **orchestrator:** return 4xx instead of 500 for six permanent preconditions ([84d7ab7](https://github.com/folsomintel/fuse/commit/84d7ab7c3a4267272301c2d288f816c34377be9a))
+
 ## [0.7.0](https://github.com/folsomintel/fuse/compare/v0.6.0...v0.7.0) (2026-07-19)
 
 
