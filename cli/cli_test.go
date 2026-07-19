@@ -231,3 +231,161 @@ func TestConnectAndContextCurrent(t *testing.T) {
 		t.Errorf("context current json wrong (token must not leak): %s", out)
 	}
 }
+
+func TestEnvCreateGPUFlags(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"fuse-1","state":"provisioning","task_id":"t1","spec":{"gpus":2,"gpu_kind":"a100","gpu_profile":"1g.10gb"}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	_, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "create",
+			"--task-id", "t1", "--gpus", "2", "--gpu-kind", "a100", "--gpu-profile", "1g.10gb"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, want := range []string{`"gpus":2`, `"gpu_kind":"a100"`, `"gpu_profile":"1g.10gb"`} {
+		if !strings.Contains(gotBody, want) {
+			t.Errorf("request body missing %s: %s", want, gotBody)
+		}
+	}
+}
+
+// a create with no gpu flags must not send gpu fields at all, so the server
+// keeps treating it as a plain cpu request.
+func TestEnvCreateOmitsGPUWhenUnset(t *testing.T) {
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"fuse-1","state":"provisioning","task_id":"t1","spec":{}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	_, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "create", "--task-id", "t1"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for _, unwanted := range []string{"gpus", "gpu_kind", "gpu_profile"} {
+		if strings.Contains(gotBody, unwanted) {
+			t.Errorf("request body should omit %s: %s", unwanted, gotBody)
+		}
+	}
+}
+
+// the gpu column carries counts for gpu hosts and a dash for cpu-only ones.
+func TestHostsListGPUColumn(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"hosts":[
+			{"id":"gpu-1","url":"http://g1","state":"active","capacity":{"cpus":16,"ram_mb":65536,"vm_count":20,"gpus":4,"gpu_kind":"a100"},"allocated":{"cpus":4,"ram_mb":8192,"vm_count":1,"gpus":2}},
+			{"id":"cpu-1","url":"http://c1","state":"active","capacity":{"cpus":16,"ram_mb":65536,"vm_count":20},"allocated":{"cpus":0,"ram_mb":0,"vm_count":0}}
+		]}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "hosts", "list"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "GPUS") {
+		t.Errorf("output missing GPUS header: %s", out)
+	}
+	if !strings.Contains(out, "2/4 (a100)") {
+		t.Errorf("output missing gpu allocation: %s", out)
+	}
+	// the cpu-only row must render a dash, not 0/0.
+	if strings.Contains(out, "0/0") {
+		t.Errorf("cpu-only host should render a dash, not 0/0: %s", out)
+	}
+}
+
+func TestHostsListGPUCell(t *testing.T) {
+	cases := []struct {
+		name string
+		host fuse.Host
+		want string
+	}{
+		{"no gpus", fuse.Host{}, "-"},
+		{"gpus without kind", fuse.Host{
+			Capacity:  fuse.HostCapacity{GPUs: 4},
+			Allocated: fuse.HostCapacity{GPUs: 1},
+		}, "1/4"},
+		{"gpus with kind", fuse.Host{
+			Capacity:  fuse.HostCapacity{GPUs: 8, GPUKind: "h100"},
+			Allocated: fuse.HostCapacity{GPUs: 8},
+		}, "8/8 (h100)"},
+	}
+	for _, c := range cases {
+		if got := gpuCell(c.host); got != c.want {
+			t.Errorf("%s: gpuCell = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestHostMetricsGPURows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"gpu-1","url":"http://g1","state":"active","backend":"qemu",
+			"capacity":{"cpus":16,"ram_mb":65536,"storage_gb":500,"vm_count":20,"gpus":4,"gpu_kind":"a100","mig_profiles":{"2g.20gb":2,"1g.10gb":4}},
+			"allocated":{"cpus":4,"ram_mb":8192,"storage_gb":100,"vm_count":1,"gpus":2,"mig_profiles":{"1g.10gb":1}}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "host", "metrics", "gpu-1"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "2 / 4 (2 free, a100)") {
+		t.Errorf("output missing gpu row: %s", out)
+	}
+	// profiles render in sorted order regardless of map iteration order.
+	if !strings.Contains(out, "1g.10gb 1 / 4 (3 free), 2g.20gb 0 / 2 (2 free)") {
+		t.Errorf("output missing mig row: %s", out)
+	}
+}
+
+// a cpu-only host must not grow empty gpu/mig rows.
+func TestHostMetricsOmitsGPURowsForCPUHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"cpu-1","url":"http://c1","state":"active",
+			"capacity":{"cpus":16,"ram_mb":65536,"storage_gb":500,"vm_count":20},
+			"allocated":{"cpus":4,"ram_mb":8192,"storage_gb":100,"vm_count":1}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "host", "metrics", "cpu-1"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if strings.Contains(out, "gpus") || strings.Contains(out, "mig") {
+		t.Errorf("cpu-only metrics should omit gpu/mig rows: %s", out)
+	}
+}
