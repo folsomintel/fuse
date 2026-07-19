@@ -46,15 +46,11 @@ These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 
 Environments running on the QEMU backend (whole-GPU passthrough) cannot be
 snapshotted or forked at all, `Snapshots.Create` and `Environments.Fork` against
-a GPU environment fail with a `500` `internal` `*APIError` rather than silently
+a GPU environment fail with a `409` `conflict` `*APIError` rather than silently
 no-op-ing. `Restore` carries no GPU check of its own, it is simply unreachable
 for a GPU environment because no snapshot of one can exist. See
 [Providers](/docs/concepts/providers).
 
-:::warning[Known limitation]
-The GPU guardrail returns a `500` `internal` `*APIError`, not a `409`. It is a
-permanent property of the request (that environment can never be snapshotted)
-rather than a server fault, so the status ought to be a 4xx. Until that is fixed,
-`fuse.IsConflict(err)` will never report `true` here, match on the error message
-(`gpu passthrough device`) rather than on the status.
-:::
+`fuse.IsConflict(err)` reports `true` for the GPU guardrail, so branch on that
+rather than on the error message. A backend with no snapshot support at all
+returns `501` `unimplemented` instead, which `IsConflict` does not match.

@@ -105,7 +105,7 @@ func (fm *FleetManager) RemoveHost(ctx context.Context, hostID string) error {
 	for _, v := range fm.vms {
 		if v.hostID == hostID {
 			fm.mu.Unlock()
-			return fmt.Errorf("host %s still has vm %s assigned", hostID, v.id)
+			return fmt.Errorf("%w: host %s still has vm %s assigned", ErrHostHasVMs, hostID, v.id)
 		}
 	}
 

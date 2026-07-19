@@ -30,13 +30,9 @@ fuse environment destroy <id>                  # for each one
 fuse host remove prod-east-1
 ```
 
-:::warning[Known limitation]
-That rejection arrives as HTTP 500 / `internal`, not a 409, because it does not
-wrap a sentinel error. A host with VMs still assigned is a permanent property
-of the request rather than a server fault, so the status should be a 4xx. Match
-on the error message (`still has vm ... assigned`) rather than the status until
-this is fixed.
-:::
+That rejection arrives as HTTP 409 / `conflict`. A host with VMs still assigned
+is a permanent property of the request, so the call should not be retried until
+the environments have been drained or destroyed.
 
 If the removed host was the active host selection for the current context, the
 selection is cleared automatically, you'll need to

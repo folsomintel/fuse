@@ -201,6 +201,11 @@ paths:
           drained — any other state returns 409 Conflict. If the agent's
           Down RPC fails the VM remains in `draining` so the caller
           can still proceed with DELETE; the error is returned as 5xx.
+        - `fork` — snapshot the source VM and provision a copy from
+          that seed. Returns 201 with the new Environment. A VM that
+          holds a GPU passthrough device cannot be forked (a vfio
+          device cannot be checkpointed) and returns 409 Conflict;
+          this is permanent and must not be retried.
         - `exec` — run a single command inside the guest and return its
           exit code, stdout, and stderr. Takes an
           ExecEnvironmentRequest body and returns an
@@ -239,7 +244,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [rotate-token, drain, exec]
+            enum: [rotate-token, drain, fork, exec]
           description: The action to perform.
       responses:
         "200":
@@ -254,6 +259,12 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/Environment"
                   - $ref: "#/components/schemas/ExecEnvironmentResponse"
+        "201":
+          description: Fork succeeded; body is the new Environment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Environment"
         "204":
           description: Action succeeded (rotate-token).
         "400":
@@ -502,6 +513,19 @@ paths:
       tags: [snapshots]
       operationId: createSnapshot
       summary: Snapshot a running VM.
+      description: |
+        Quiesces the VM and records a first-class snapshot resource.
+
+        Preconditions are reported as 4xx, not 5xx:
+
+        - 404 `not_found` — unknown VM.
+        - 409 `conflict` — the VM is not running (e.g. draining), the
+          snapshot quota is exhausted, or the VM holds a GPU
+          passthrough device. A vfio device cannot be checkpointed, so
+          GPU environments can never be snapshotted; this is permanent
+          and must not be retried.
+        - 501 `unimplemented` — the provider has no snapshot support
+          (e.g. the in-memory stub).
       requestBody:
         required: false
         content:
@@ -521,6 +545,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
 
   /v1/snapshots:
     get:
@@ -577,6 +603,17 @@ paths:
       tags: [snapshots]
       operationId: snapshotAction
       summary: Perform an action on a snapshot.
+      description: |
+        Rolls the snapshot's VM back to the recorded checkpoint.
+
+        Preconditions are reported as 4xx, not 5xx:
+
+        - 400 `invalid_argument` — missing or unknown action.
+        - 404 `not_found` — unknown snapshot, or the snapshot no longer
+          exists on the provider.
+        - 409 `conflict` — the target VM is not running (e.g.
+          draining), or the snapshot is not in the `ready` state.
+        - 501 `unimplemented` — the provider has no snapshot support.
       parameters:
         - name: action
           in: query
@@ -596,6 +633,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
     delete:
       tags: [snapshots]
       operationId: deleteSnapshot
@@ -688,6 +727,11 @@ paths:
       tags: [hosts]
       operationId: removeHost
       summary: Remove a host from the scheduler.
+      description: |
+        Removes the host from the registry. The host must have no VMs
+        assigned; cordon it, drain the VMs, and wait for them to leave
+        first. Removing a host that still has VMs assigned returns
+        409 `conflict`.
       responses:
         "204":
           description: Host removed.

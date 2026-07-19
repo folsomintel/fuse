@@ -97,7 +97,7 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	// SnapshotForkable; the firecracker provider now does, so keying the
 	// guardrail off the type assertion would silently stop protecting gpu vms.
 	if srcSpec.GPUs > 0 {
-		return "", fmt.Errorf("vm %s has a gpu passthrough device: fork is not supported for gpu environments", srcVMID)
+		return "", fmt.Errorf("%w: vm %s has a gpu passthrough device: fork is not supported for gpu environments", ErrGPUUnsupported, srcVMID)
 	}
 
 	// obtain the seed snapshot: snapshot the source when no existing

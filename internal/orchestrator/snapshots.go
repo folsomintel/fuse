@@ -58,7 +58,7 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 	fm.mu.RUnlock()
 
 	if state != VMStateRunning {
-		return SnapshotRecord{}, fmt.Errorf("vm %s in state %s: snapshots require running", vmID, state)
+		return SnapshotRecord{}, fmt.Errorf("%w: vm %s in state %s: snapshots require running", ErrVMNotRunning, vmID, state)
 	}
 	if env == nil {
 		return SnapshotRecord{}, fmt.Errorf("vm %s has no active environment handle", vmID)
@@ -96,9 +96,9 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 		// via vfio, which cannot be checkpointed (d4). the env deliberately
 		// omits SnapshotCapable; surface that reason rather than a generic one.
 		if gpus > 0 {
-			return SnapshotRecord{}, fmt.Errorf("vm %s has a gpu passthrough device: snapshots are not supported for gpu environments", vmID)
+			return SnapshotRecord{}, fmt.Errorf("%w: vm %s has a gpu passthrough device: snapshots are not supported for gpu environments", ErrGPUUnsupported, vmID)
 		}
-		return SnapshotRecord{}, fmt.Errorf("provider does not support snapshots for vm %s", vmID)
+		return SnapshotRecord{}, fmt.Errorf("%w: provider does not support snapshots for vm %s", ErrSnapshotUnsupported, vmID)
 	}
 	snapshotID, err := sc.Checkpoint(ctx, opts.Comment)
 	if err != nil {
@@ -298,7 +298,7 @@ func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID st
 	fm.mu.RUnlock()
 
 	if state != VMStateRunning {
-		return fmt.Errorf("vm %s in state %s: restore requires running", vmID, state)
+		return fmt.Errorf("%w: vm %s in state %s: restore requires running", ErrVMNotRunning, vmID, state)
 	}
 	if env == nil {
 		return fmt.Errorf("vm %s has no active environment handle", vmID)
@@ -335,7 +335,7 @@ func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID st
 		record.LastError = "provider does not support snapshots"
 		record.UpdatedAt = time.Now()
 		_ = fm.upsertSnapshotRecord(ctx, record)
-		return fmt.Errorf("restore %s on vm %s: provider does not support snapshots", snapshotID, vmID)
+		return fmt.Errorf("%w: restore %s on vm %s: provider does not support snapshots", ErrSnapshotUnsupported, snapshotID, vmID)
 	}
 	if err := sc.Restore(ctx, snapshotID); err != nil {
 		record.State = SnapshotStateError

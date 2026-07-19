@@ -53,16 +53,12 @@ for (const w of host.warnings ?? []) {
 | `list()` | List every registered host with its declared `capacity` and live `allocated` figures. |
 | `get(hostId)` | Fetch one host by ID. |
 | `cordon(hostId)` / `uncordon(hostId)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
-| `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `status === 500` and `code === "internal"` if environments are still assigned to it. |
+| `deregister(hostId)` | Remove the host. Throws a `FuseApiError` with `status === 409` and `code === "conflict"` if environments are still assigned to it. |
 
-:::warning[Known limitation]
 Deregistering a host that still has environments assigned returns
-`500`/`internal`, not the `409`/`conflict` the condition deserves. It is a
-permanent property of the request rather than a server fault, so the status
-should be a 4xx. Until that is fixed, match on the error message (`host <id>
-still has vm <id> assigned`) rather than on `status` or `isConflict()`, and
-drain the host's environments before removing it.
-:::
+`409`/`conflict`, so `isConflict(err)` reports `true` and you can branch on it
+rather than on the error message (`host <id> still has vm <id> assigned`).
+Drain the host's environments before removing it.
 
 `Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
 is set once at registration and never refreshed, it is not a liveness

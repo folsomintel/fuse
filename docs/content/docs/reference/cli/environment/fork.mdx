@@ -42,16 +42,15 @@ cannot be forked. See [Snapshots](/docs/concepts/snapshots) and
 | Status | Code | When |
 | --- | --- | --- |
 | 404 | `not_found` | `--reuse-snapshot` names a snapshot that belongs to a different environment. |
-| 409 | `conflict` | The reused snapshot is not in the `ready` state. |
-| 500 | `internal` | The source environment is not `running`, or it holds a GPU passthrough device. |
+| 409 | `conflict` | The reused snapshot is not in the `ready` state, or the source environment holds a GPU passthrough device. |
+| 500 | `internal` | The source environment is not `running`. |
 
 The 404 reads confusingly when the snapshot plainly exists: a snapshot of
 another environment is rejected as not-found rather than as a mismatch.
 
 :::warning[Known limitation]
-The not-running and GPU rejections return HTTP 500 because neither wraps a
-sentinel error. Both are permanent properties of the request rather than a
+The not-running rejection still returns HTTP 500 because that path does not
+wrap a sentinel error. It is a permanent property of the request rather than a
 server fault, so the status should be a 4xx. Match on the error message
-(`fork requires running`, `fork is not supported for gpu environments`) rather
-than the status until this is fixed.
+(`fork requires running`) rather than the status until this is fixed.
 :::

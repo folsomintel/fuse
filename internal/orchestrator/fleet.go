@@ -64,6 +64,23 @@ var (
 	// ErrAttachUnsupported is returned by Attach when the environment does
 	// not implement Attacher.
 	ErrAttachUnsupported = errors.New("attach not supported by provider")
+
+	// ErrSnapshotUnsupported is returned by CreateSnapshot and
+	// RestoreSnapshot when the environment does not implement
+	// SnapshotCapable. Like ErrExecUnsupported this is a provider
+	// capability gap, not a server fault.
+	ErrSnapshotUnsupported = errors.New("snapshot not supported by provider")
+
+	// ErrGPUUnsupported is returned by CreateSnapshot and ForkEnvironment
+	// when the target vm holds a gpu passthrough device. A vfio device
+	// cannot be checkpointed (d4), so this is a permanent property of the
+	// environment rather than a transient failure.
+	ErrGPUUnsupported = errors.New("operation not supported for gpu environments")
+
+	// ErrHostHasVMs is returned by RemoveHost when VMs are still assigned
+	// to the host. Callers should cordon/drain and wait for the VMs to
+	// leave before retrying.
+	ErrHostHasVMs = errors.New("host still has vms assigned")
 )
 
 // VMState represents the lifecycle state of a managed VM.

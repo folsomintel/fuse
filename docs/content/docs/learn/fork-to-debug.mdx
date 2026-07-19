@@ -89,8 +89,7 @@ guest token, not a clone that shares the original's identity.
 :::warning[Known limitation]
 Fork bypasses the scheduler and performs no capacity check, so a fork can
 overcommit a host that is already full. It also cannot be used on GPU
-environments at all, and that failure currently surfaces as a `500` rather than
-a `4xx`, see [issue #49](https://github.com/folsomintel/fuse/issues/49).
+environments at all; that failure surfaces as a `409` `conflict`.
 :::
 
 ## Read next

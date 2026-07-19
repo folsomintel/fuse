@@ -16,18 +16,10 @@ Creates a snapshot of the given environment (VM). Three preconditions apply:
   [Snapshots](/docs/concepts/snapshots)
 - the tenant must be under both its snapshot count and byte quotas
 
-A quota rejection returns 409 / `conflict`. The GPU and unsupported-provider
-rejections return HTTP 500 / `internal`, because neither wraps a sentinel
-error.
-
-:::warning[Known limitation]
-A GPU environment is permanently unsnapshottable, so that 500 describes a
-property of the request rather than a server fault and the status should be a
-4xx. Match on the error message
-(`snapshots are not supported for gpu environments`,
-`provider does not support snapshots for vm <id>`) rather than the status until
-this is fixed.
-:::
+A quota rejection, a not-running VM, and the GPU guardrail all return 409 /
+`conflict`. A provider with no snapshot support at all returns 501 /
+`unimplemented`. All of these are permanent properties of the request, so none
+of them should be retried.
 
 ## Flags
 
