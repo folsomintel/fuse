@@ -26,7 +26,9 @@ cd host-agent
 ./fc-build-agent.sh
 ./qemu-bake-cuda-rootfs.sh 550
 
-# inspect groups, then bind every member of each gpu group to vfio-pci
+# inspect IOMMU groups and bind every member of each gpu group to vfio-pci.
+# bind also snapshots nvidia-smi into vfio-inventory.txt -- see "IOMMU groups"
+# below for why the snapshot must happen before the bind.
 ./qemu-vfio-bind.sh --list
 sudo ./qemu-vfio-bind.sh
 
@@ -39,6 +41,25 @@ sudo systemctl enable --now qemu-agent
 The reference bake produces `rootfs-cuda.qcow2`: a CUDA-capable qcow2 image with the
 generated SSH public key installed as root's `authorized_keys`, plus `vmlinuz.bin`
 extracted for QEMU.
+
+:::warning[Ordering constraint: probe before bind]
+`nvidia-smi` is blind to a GPU once it is bound to `vfio-pci`, because the
+NVIDIA driver no longer owns the device. So the probe **must** run before the
+bind:
+
+1. `./qemu-vfio-bind.sh --list` (or any `nvidia-smi` invocation) while devices
+   are still on `nvidia`.
+2. `sudo ./qemu-vfio-bind.sh` to move them to `vfio-pci`.
+
+`qemu-vfio-bind.sh` enforces this internally: `do_bind` calls
+`snapshot_smi` *before* it touches any `/sys/bus/pci/.../driver_override`, and
+`do_list` reads that snapshot (`VFIO_SMI_SNAPSHOT`) to enrich each inventory
+line. If you bind first and then try to recover the metadata, the live probe
+returns nothing and you lose per-device detail (`uuid`, `model`,
+`memory_mb`, `mig_mode`) for the orchestrator's `gpu_devices` list. The summary
+count survives (it comes from `lspci`, not `nvidia-smi`), but the rich
+per-device data does not.
+:::
 
 ## IOMMU groups
 
@@ -74,6 +95,10 @@ carries metadata, the agent falls back to probing `nvidia-smi` live. The
 fallback is all-or-nothing across the whole file, a single enriched line
 suppresses it for every other line, rather than being decided per line.
 
+The agent serves this captured inventory from `host_capacity()` / `GET /v1/capacity`
+as a summary (`gpus`, `gpu_kind`) plus a per-device `gpu_devices` list, which is
+what the orchestrator probes at registration time. See the next section.
+
 :::warning[Known limitation]
 There is one metadata blob per line, so an IOMMU group with a count above 1
 contributes only a single per-device entry. On such hosts the reported GPU count can
@@ -82,15 +107,48 @@ exceed the number of per-device entries.
 
 ## Registering the host
 
-Set `QEMU_AGENT_TOKEN` in the service environment, then register using the
-inventory's exact count and kind:
+Set `QEMU_AGENT_TOKEN` in the service environment, then register. GPU capacity
+(count and kind) is **probed from the host agent** the same way `cpus`, `ram-mb`,
+and `storage-gb` are: omit `--gpus` / `--gpu-kind` (or leave them at `0` / empty)
+and the orchestrator pulls them from the inventory the bind step produced. No
+manual line-summing, no copy-pasted count:
 
 ```bash
 fuse host register gpu-1 \
   --url http://gpu-host:8091 \
   --token "$QEMU_AGENT_TOKEN" \
   --backend qemu \
-  --gpus 1 \
+  --cpus 16 \
+  --ram-mb 65536 \
+  --storage-gb 500 \
+  --max-vms 4
+```
+
+`--max-vms` is always required: it is a scheduling policy, not a hardware fact,
+so it is never probed. A host with zero GPUs is valid — register it the same way
+and the probe reports an empty GPU pool.
+
+### Overriding the probe
+
+Pass `--gpus` and/or `--gpu-kind` to override the probed value. This is the
+escape hatch for a deliberate carve-out (e.g. reserving one card for the host)
+or a known overcommit. The orchestrator reconciles declared vs. probed:
+
+- **Declared below or equal to probe**: accepted silently. Useful for reserving
+  a GPU you don't want scheduled.
+- **Declared above probe**: still registers, with a warning surfaced in
+  `fuse host get` (and the register response). Scheduling will then fight for
+  capacity that isn't really there — only do this intentionally.
+- **Declared `--gpu-kind` that differs from the probe**: kept as-declared, with
+  a mismatch warning.
+
+```bash
+# reserve one GPU for the host: declare one fewer than probed
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --gpus 3 \
   --gpu-kind a100 \
   --cpus 16 \
   --ram-mb 65536 \
@@ -98,7 +156,28 @@ fuse host register gpu-1 \
   --max-vms 4
 ```
 
+### When the probe fails
+
+A probe failure on a QEMU host with no declared `--gpus` becomes a **warning,
+not a hard failure**, because zero GPUs is a legitimate configuration. If the
+host agent is unreachable or its `/v1/capacity` errors, the host still
+registers with `gpus=0` and the warning is attached to the host record. A
+QEMU host that *should* have GPUs but probes zero usually means the inventory
+file is empty or stale — re-run `sudo ./qemu-vfio-bind.sh` and check
+`vfio-inventory.txt` before re-registering.
+
 ## Fractional GPUs with MIG
+
+:::warning[Stub: phase 3 work]
+This section describes the **current manual** MIG model: you create instances
+on the host with NVIDIA's tooling and declare them with `--mig-profile` at
+registration. Auto-probe and first-class MIG allocation (umbrella issue
+[#41](https://github.com/folsomintel/fuse/issues/41)) are phase 3 and will
+replace the manual `mig-inventory.txt` step. The pieces documented here
+(enabling MIG, profiles, requesting `gpu_profile` from a Fusefile) are the
+contract those changes build on, so the rest of this section is stable even
+though the registration flow will get simpler.
+:::
 
 A host can also serve **MIG** (Multi-Instance GPU) slices, fractions of a physical
 card exposed as separate mdev devices. Creating those instances is a prerequisite
@@ -132,9 +211,11 @@ fuse host register gpu-1 \
   --max-vms 4
 ```
 
-Unlike whole-device capacity, MIG capacity is never probed, it is declared by you.
-The agent cannot infer it, because MIG instances have to be pre-created on the host
-before registration.
+Unlike whole-device capacity, MIG capacity is never probed today, it is declared
+by you. The agent cannot infer it, because MIG instances have to be pre-created
+on the host before registration. Phase 3 ([#41](https://github.com/folsomintel/fuse/issues/41))
+will relax this by reading the live `mig-inventory.txt` the same way the bind
+script writes `vfio-inventory.txt`.
 
 The MIG pool and the whole-device pool are separate inventories. A MIG placement
 never consumes a whole device, so a host registered with both `--gpus` and
