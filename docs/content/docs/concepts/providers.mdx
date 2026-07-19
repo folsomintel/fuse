@@ -1,0 +1,77 @@
+---
+title: "Providers: Firecracker vs QEMU"
+description: The two virtualization backends Fuse schedules onto, and how they differ
+icon: server
+---
+
+A **provider** is what actually creates and manages microVMs on a host. Fuse ships
+two: **Firecracker**, the default CPU backend, and **QEMU**, the optional
+GPU-passthrough backend. Both implement the same internal `Provider` interface, so
+the orchestrator schedules onto either uniformly. The difference shows up in what
+each backend can and can't do.
+
+## Firecracker (default)
+
+Firecracker is the default backend for ordinary CPU workloads. It talks to
+`fc-agent`, a per-host Python process that drives one Firecracker process per VM,
+over an HTTP contract (`POST /v1/vm`, upload/exec, `start-agent`, snapshot/restore).
+See [Artifacts](/docs/concepts/artifacts) for how the guest rootfs and agent
+get onto a Firecracker host, and [Firecracker host setup](/docs/cloud/firecracker-host-setup)
+for bringing one up.
+
+## QEMU (GPU passthrough)
+
+QEMU is the backend for GPU environments. It mirrors the Firecracker provider's
+shape but drives QEMU/KVM with VFIO passthrough instead of Firecracker microVMs. A
+host opts into it at registration time with `--backend qemu`.
+
+It serves GPUs two ways. **Whole-device passthrough** attaches every PCI function in
+a GPU's IOMMU group to the guest, which is what a Fusefile requests with `gpu: 1` and
+no profile. **Fractional passthrough** attaches a pre-created MIG instance as an mdev
+device, which is what `gpu_profile: 1g.10gb` requests. The two draw on separate
+inventories on the host, a MIG request never consumes a whole device from the
+passthrough pool and vice versa, so a host can serve both at once.
+
+The key limitation: **QEMU environments cannot snapshot or fork.** A GPU passed
+through via VFIO can't be checkpointed the way a Firecracker microVM's disk can, so
+snapshot and fork requests against a QEMU-backed environment fail cleanly rather than
+silently no-op. See [Snapshots](/docs/concepts/snapshots) for the full snapshot
+model and this exception.
+
+See [GPU host setup](/docs/cloud/gpu-host-setup) for IOMMU/VFIO bring-up.
+
+## Stub mode
+
+Both providers fall back to an in-memory stub implementation when no real host is
+configured (empty `FIRECRACKER_BASE_URL`, or explicit stub mode in tests); it
+simulates provider behavior without booting real microVMs. This is what the
+[Quickstart](/docs/learn/quickstart) uses, and it's the default for local dev and
+the orchestrator's own test suite. The orchestrator logs which mode it's running in
+at boot.
+
+## Choosing a backend
+
+Backend selection happens once, at host registration time:
+
+```bash
+# firecracker, the default backend
+fuse host register my-host --url http://10.0.0.5:8090 \
+  --token "$FC_AGENT_TOKEN" --backend firecracker --max-vms 20
+
+# qemu, for GPU hosts
+fuse host register gpu-1 --url http://10.0.0.9:8091 \
+  --token "$QEMU_AGENT_TOKEN" --backend qemu --gpus 1 --gpu-kind a100 --max-vms 4
+```
+
+`--token` is the host agent's own token, and `--max-vms` is a scheduling ceiling
+that is never probed, so both are required on every registration.
+
+A Fusefile's `resources.gpu` / `resources.gpu_kind` / `resources.gpu_profile` fields
+don't name a backend directly; a non-zero `gpu` count is what routes the environment
+to a host with matching free GPU inventory (necessarily QEMU-backed, since only QEMU
+hosts report GPU capacity). CPU-only requests schedule onto Firecracker hosts. A GPU
+request fails fast rather than waiting for capacity that may never appear. With no
+hosts registered at all the error is `gpu workloads require a registered gpu host`;
+with hosts registered but none offering free matching GPU inventory, including a
+fleet of only CPU-only Firecracker hosts, it is `no host has sufficient capacity`
+followed by the requested figures. Both return 503.

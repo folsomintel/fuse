@@ -1,7 +1,7 @@
 ---
 title: fuse environment get
 description: Show one environment's details
-icon: Search
+icon: search
 ---
 
 ```bash
@@ -10,7 +10,9 @@ fuse environment get <id>
 
 No flags beyond the globals. Prints the environment's full detail: state, task
 ID, host ID, URL, resource spec (CPUs, RAM, storage, region, max runtime), and,
-if the environment is in a `failed` state, the last error message.
+whenever the environment carries an error message (a failed drain command, say,
+or a stuck-task teardown), an `error` row. `failed` is not a state `get` can
+return, it appears only in the event stream.
 
 ```bash
 $ fuse environment get fuse-abc123
@@ -18,7 +20,7 @@ id             fuse-abc123
 state          running
 task id        my-task
 host id        prod-east-1
-url            http://10.0.0.5:9550
+url            10.0.0.5:19551
 cpus           2
 ram mb         2048
 storage gb     10
@@ -27,3 +29,7 @@ max runtime s  3600
 created        2026-01-15 10:00
 updated        2026-01-15 10:01
 ```
+
+The `url` is the host-side DNAT address for the guest agent
+(`FUSE_HOST_PORT_BASE` plus the VM's slot index), not the in-guest port, and it
+carries no scheme.

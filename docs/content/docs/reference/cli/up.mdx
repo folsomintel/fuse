@@ -1,17 +1,26 @@
 ---
 title: fuse up
 description: Compile a Fusefile and create an environment from it
-icon: Rocket
+icon: rocket
 ---
 
 ```bash
 fuse up [path] [flags]
 ```
 
-Reads a [Fusefile](/docs/learn/concepts/fusefile), compiles it into a resource
+Reads a [Fusefile](/docs/concepts/fusefile), compiles it into a resource
 spec, manifest, and startup script, then creates an environment from the
 result. Streams provisioning events until a terminal state unless `--no-wait`
 is set.
+
+:::warning[Known limitation]
+Only `destroyed` and `failed` count as terminal, so a successful `up` does not
+exit when the environment reaches `running`, it keeps streaming. Interactively
+you can press `q`; when stdout is not a TTY the plain renderer is selected and
+there is no exit path, so scripted callers should pass `--no-wait` and poll
+[`fuse environment get`](/docs/reference/cli/environment/get). Tracked as
+[issue #50](https://github.com/folsomintel/fuse/issues/50).
+:::
 
 ## Flags
 
@@ -26,11 +35,15 @@ is set.
 ## Path resolution
 
 The Fusefile path is resolved in this priority order: `-f/--file` if set, then
-a positional argument, then `./Fusefile` as the default.
+a positional argument, then `./Fusefile` as the default. Both `-f` and the
+positional argument name the **file** itself, neither appends `Fusefile` to a
+directory, so pointing either at a directory fails with
+`read ./services/api: read ./services/api: is a directory` (the operation and
+path appear twice because the CLI prefixes an error that already names them).
 
 ```bash
-fuse up                          # ./Fusefile
-fuse up ./services/api           # ./services/api/Fusefile
+fuse up                                 # ./Fusefile
+fuse up ./services/api/Fusefile
 fuse up -f custom.fusefile.yaml
 ```
 
@@ -61,5 +74,5 @@ fuse up --no-wait
 # `fuse environment watch <id>`
 ```
 
-See [Fusefile](/docs/learn/concepts/fusefile) for the full field reference and
+See [Fusefile](/docs/concepts/fusefile) for the full field reference and
 [`fuse init`](/docs/reference/cli/init) to scaffold one.

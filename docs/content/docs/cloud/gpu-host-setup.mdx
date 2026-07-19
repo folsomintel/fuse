@@ -1,18 +1,18 @@
 ---
 title: GPU (QEMU) host setup
 description: Whole-GPU passthrough via QEMU/VFIO
-icon: Cpu
+icon: cpu
 ---
 
 GPU environments use QEMU/KVM with whole IOMMU groups passed through via VFIO. This
 requires bare-metal Linux, IOMMU enabled, `/dev/kvm`, and a GPU that can be detached
 from its host driver.
 
-<Callout type="warn" title="No snapshots or forks">
+:::warning[No snapshots or forks]
 GPU environments do not support snapshots or forks: a VFIO-passed-through GPU can't
-be checkpointed. See [Providers](/docs/learn/concepts/providers) and
-[Snapshots](/docs/learn/concepts/snapshots).
-</Callout>
+be checkpointed. See [Providers](/docs/concepts/providers) and
+[Snapshots](/docs/concepts/snapshots).
+:::
 
 ## Setup
 
@@ -42,17 +42,43 @@ extracted for QEMU.
 
 ## IOMMU groups
 
-The bind step writes `vfio-inventory.txt`, which `qemu-agent.py` consumes. Each line
-represents one indivisible IOMMU group:
+The bind step writes `vfio-inventory.txt` (default `$QEMU_DIR/vfio-inventory.txt`,
+override with `VFIO_INVENTORY`), which `qemu-agent.py` consumes. Each line
+represents one indivisible IOMMU group, with an optional metadata suffix after a
+`|`:
 
 ```text
-<gpu_count> <gpu_kind> <pci_slot> [<pci_slot> ...]
+<count> <kind> <pci_slot> [<pci_slot> ...] [| key=val;key=val;...]
 1 a100 0000:17:00.0 0000:17:00.1
+1 a100 0000:17:00.0 0000:17:00.1 | bus_id=0000:17:00.0;uuid=GPU-abc123;model=NVIDIA A100-SXM4-40GB;memory_mb=40960;mig_mode=Enabled
 ```
 
 The count includes GPU display functions only. The PCI list includes every function
 in the group, such as a GPU's companion audio function, because QEMU must attach
-the complete group.
+the complete group. `kind` is lowercased when parsed, and blank lines and `#`
+comments are skipped.
+
+The recognized metadata keys are `bus_id`, `uuid`, `model`, `memory_mb`,
+`driver_version`, `compute_cap`, and `mig_mode`. Unknown keys are ignored, so the
+format can grow without breaking older agents. `qemu-vfio-bind.sh` writes only
+five of them (`bus_id`, `uuid`, `model`, `memory_mb`, `mig_mode`), since that is
+what its pre-bind `nvidia-smi` query captures; `driver_version` and
+`compute_cap` are parsed if present but come from the live probe rather than
+the inventory file.
+
+The metadata exists because of an ordering constraint: `qemu-vfio-bind.sh` takes an
+`nvidia-smi` snapshot **before** binding devices to `vfio-pci`, since once a card is
+bound to `vfio-pci` the NVIDIA driver can no longer report on it. Capturing the
+details up front is the only way to keep them. If no line in the inventory
+carries metadata, the agent falls back to probing `nvidia-smi` live. The
+fallback is all-or-nothing across the whole file, a single enriched line
+suppresses it for every other line, rather than being decided per line.
+
+:::warning[Known limitation]
+There is one metadata blob per line, so an IOMMU group with a count above 1
+contributes only a single per-device entry. On such hosts the reported GPU count can
+exceed the number of per-device entries.
+:::
 
 ## Registering the host
 
@@ -72,6 +98,48 @@ fuse host register gpu-1 \
   --max-vms 4
 ```
 
+## Fractional GPUs with MIG
+
+A host can also serve **MIG** (Multi-Instance GPU) slices, fractions of a physical
+card exposed as separate mdev devices. Creating those instances is a prerequisite
+you handle on the host with NVIDIA's own tooling, outside Fuse. Fuse consumes MIG
+instances, it never creates them.
+
+Once the instances exist, list them in `mig-inventory.txt` (default
+`$QEMU_DIR/mig-inventory.txt`, override with `MIG_INVENTORY`). Each line is exactly
+three fields:
+
+```text
+<profile> <kind> <mdev_uuid>
+1g.10gb a100 3f8e1a2b-0000-4000-8000-000000000001
+```
+
+Both `profile` and `kind` are lowercased when parsed.
+
+Register the MIG capacity with a repeatable `--mig-profile profile=count` flag,
+which also requires `--backend qemu`:
+
+```bash
+fuse host register gpu-1 \
+  --url http://gpu-host:8091 \
+  --token "$QEMU_AGENT_TOKEN" \
+  --backend qemu \
+  --gpu-kind a100 \
+  --mig-profile 1g.10gb=4 \
+  --cpus 16 \
+  --ram-mb 65536 \
+  --storage-gb 500 \
+  --max-vms 4
+```
+
+Unlike whole-device capacity, MIG capacity is never probed, it is declared by you.
+The agent cannot infer it, because MIG instances have to be pre-created on the host
+before registration.
+
+The MIG pool and the whole-device pool are separate inventories. A MIG placement
+never consumes a whole device, so a host registered with both `--gpus` and
+`--mig-profile` serves the two request shapes independently.
+
 ## Requesting a GPU
 
 A Fusefile requests the device without naming a virtualization backend directly:
@@ -83,7 +151,17 @@ resources:
   gpu_kind: a100
 ```
 
-See [Fusefile](/docs/learn/concepts/fusefile) for the full field reference.
+Adding `gpu_profile` switches the request to a MIG instance. The `gpu` field then
+counts MIG instances rather than whole cards:
+
+```yaml
+resources:
+  gpu: 1
+  gpu_kind: a100
+  gpu_profile: 1g.10gb
+```
+
+See [Fusefile](/docs/concepts/fusefile) for the full field reference.
 
 ## Validating the setup
 
@@ -101,7 +179,10 @@ removes the QEMU VM. Without `FUSE_GPU_E2E=1` and a reachable GPU agent, it repo
 
 Open at your cloud / external firewall:
 
-- `8090/tcp`: the agent's HTTP API (same convention as Firecracker hosts, though
-  the example above registers on `8091`, use whatever port your `qemu-agent.service`
-  actually binds).
-- `19551–19799/tcp`: the per-VM guest-agent DNAT range.
+- `8091/tcp`: the `qemu-agent` HTTP API. GPU hosts listen on `8091`, not the `8090`
+  that `fc-agent` uses on Firecracker hosts.
+- `19651-19899/tcp`: the per-VM guest-agent DNAT range. This is **not** the
+  `19551-19799` that Firecracker hosts use: `qemu-agent` defaults
+  `FUSE_HOST_PORT_BASE` to `19650` where `fc-agent` defaults it to `19550`, and
+  each allocates one port per VM index from 1 to 249. Opening the Firecracker
+  range on a GPU host blocks every GPU VM's guest agent.

@@ -1,10 +1,8 @@
 ---
 title: Overview
 description: "Deploying Fuse for real workloads: orchestrator, hosts, and GPU hosts"
-icon: Cloud
+icon: cloud
 ---
-
-import { Server, Router, Cpu, Wrench, Gauge, ShieldCheck } from 'lucide-react';
 
 Fuse is self-hosted: you run the orchestrator (the control plane) and one or more
 hosts (each running a host agent) yourself. This section covers bringing all of that
@@ -12,44 +10,14 @@ up for real workloads, beyond the in-memory stub used in the [Quickstart](/docs/
 
 ## What runs where
 
-<Cards>
-  <Card
-    icon={<Server />}
-    title="Deploying the orchestrator"
-    description="One HTTP API process, the scheduler, and the source of truth: Postgres, or in-memory for small/local deployments."
-    href="/docs/cloud/orchestrator-deploy"
-  />
-  <Card
-    icon={<Router />}
-    title="Firecracker host setup"
-    description="Bring up a host running fc-agent, which drives Firecracker microVMs."
-    href="/docs/cloud/firecracker-host-setup"
-  />
-  <Card
-    icon={<Cpu />}
-    title="GPU host setup"
-    description="Bring up a host running qemu-agent, driving QEMU/VFIO whole-GPU-passthrough environments."
-    href="/docs/cloud/gpu-host-setup"
-  />
-  <Card
-    icon={<Gauge />}
-    title="Monitoring"
-    description="Prometheus metrics, health checks, and what to alert on."
-    href="/docs/cloud/monitoring"
-  />
-  <Card
-    icon={<ShieldCheck />}
-    title="Security hardening"
-    description="TLS, CIDR allowlisting, fail-closed mode, and secrets encryption."
-    href="/docs/cloud/security"
-  />
-  <Card
-    icon={<Wrench />}
-    title="Troubleshooting"
-    description="Common install and setup problems, and known limitations, with workarounds."
-    href="/docs/cloud/troubleshooting"
-  />
-</Cards>
+<CardGroup cols={2}>
+  <Card title="Deploying the orchestrator" href="/docs/cloud/orchestrator-deploy" icon="server">One HTTP API process, the scheduler, and the source of truth: Postgres, or in-memory for small/local deployments.</Card>
+  <Card title="Firecracker host setup" href="/docs/cloud/firecracker-host-setup" icon="router">Bring up a host running fc-agent, which drives Firecracker microVMs.</Card>
+  <Card title="GPU host setup" href="/docs/cloud/gpu-host-setup" icon="cpu">Bring up a host running qemu-agent, driving QEMU/VFIO GPU passthrough: whole cards or MIG slices.</Card>
+  <Card title="Monitoring" href="/docs/cloud/monitoring" icon="gauge">Prometheus metrics, health checks, and what to alert on.</Card>
+  <Card title="Security hardening" href="/docs/cloud/security" icon="shield-check">TLS, CIDR allowlisting, fail-closed mode, and secrets encryption.</Card>
+  <Card title="Troubleshooting" href="/docs/cloud/troubleshooting" icon="wrench">Common install and setup problems, and known limitations, with workarounds.</Card>
+</CardGroup>
 
 The simplest production topology co-locates the orchestrator on a Firecracker host
 and talks to `fc-agent` over loopback: a single command installs both as systemd

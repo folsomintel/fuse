@@ -1,7 +1,7 @@
 ---
 title: fuse environment drain
 description: Gracefully drain (phase one of teardown)
-icon: LogOut
+icon: log-out
 ---
 
 ```bash
@@ -25,3 +25,15 @@ fuse environment drain fuse-abc123
 
 fuse environment destroy fuse-abc123
 ```
+
+## When the drain command fails
+
+The state transition to `draining` is persisted *before* the in-guest drain
+command runs, so a failing drain command leaves the environment in `draining`
+and returns an error. Draining is one-way, `DELETE` is the only supported
+transition out of it, so there is no way back to `running` and re-draining the
+same environment returns a conflict error. The only recovery is
+[`fuse environment destroy`](/docs/reference/cli/environment/destroy).
+
+The failure reason is stamped onto the environment's error field, visible via
+[`fuse environment get`](/docs/reference/cli/environment/get).

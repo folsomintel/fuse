@@ -1,7 +1,7 @@
 ---
 title: Security hardening
 description: TLS, CIDR allowlisting, fail-closed mode, and secrets encryption
-icon: ShieldCheck
+icon: shield-check
 ---
 
 Fuse's auth model is deliberately simple: a single shared bearer token, no
@@ -19,6 +19,10 @@ export ORCH_TLS_KEY=/path/to/key.pem
 Both unset (the default) serves plain HTTP. Setting both switches to HTTPS and
 flips the session cookie's `Secure` attribute on, an HttpOnly cookie without
 `Secure` would otherwise be sendable over an accidental plaintext connection.
+Setting only one of the two is treated as **unset**: the orchestrator serves
+plain HTTP and the session cookie loses its `Secure` attribute, with no startup
+error. Confirm the `scheme=https` field on the listening line the orchestrator
+logs at boot rather than assuming TLS came up.
 There is no built-in certificate rotation, mutual TLS, or cipher-suite
 configuration, terminate TLS at a reverse proxy in front of the orchestrator
 if you need any of that.
@@ -34,6 +38,12 @@ rejected with `403`, before bearer auth even runs. Empty (the default) means
 no IP restriction. Invalid CIDR syntax fails the orchestrator at startup
 rather than silently ignoring the bad entry, so a typo here is caught
 immediately, not discovered later as an unexpected open door.
+
+`/metrics`, `/health`, `/ready`, and `/v1/version` are mounted outside the
+allowlist (on the outer mux, alongside but not behind the router that installs
+the CIDR middleware), so they stay reachable from any source address. `/metrics`
+in particular exposes fleet size and route names, restrict these four at the
+reverse proxy or the host firewall if that matters to you.
 
 ## Fail-closed production mode
 
@@ -57,12 +67,15 @@ export TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 Must be exactly 64 hex characters (32 bytes); anything else fails at boot with
 a specific error rather than silently truncating or padding. Used to encrypt
-per-VM guest-agent tokens at rest with AES-256-GCM before they're written to
-the state store. Losing this key doesn't lock you out of the orchestrator
-itself, but it does mean previously-issued per-VM tokens can no longer be
-decrypted, rotate every environment's token afterward via
-[`fuse environment rotate-token`](/docs/reference/cli/environment/rotate-token)
-if you ever have to regenerate it.
+three things at rest with AES-256-GCM before they're written to the state store:
+per-VM guest-agent tokens, per-host agent bearer tokens, and per-VM secrets.
+Losing this key doesn't lock you out of the orchestrator itself, but nothing it
+encrypted can be decrypted afterward. If you ever have to regenerate it, rotate
+every environment's token via
+[`fuse environment rotate-token`](/docs/reference/cli/environment/rotate-token),
+re-register every host (its stored agent token is unreadable, which surfaces
+later as a `firecracker create vm: http 401` at environment-create time rather
+than as an error at boot), and re-supply any per-VM secrets.
 
 ## Master token vs. API keys
 

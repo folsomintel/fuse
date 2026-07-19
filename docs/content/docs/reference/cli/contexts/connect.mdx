@@ -1,7 +1,7 @@
 ---
 title: fuse connect
 description: Add an orchestrator context and make it active
-icon: Plug
+icon: plug
 ---
 
 ```bash
@@ -18,7 +18,7 @@ it active. `<url>` is the orchestrator root (`scheme://host:port`), without a
 | --- | --- |
 | `--token` | Bearer token for the orchestrator. |
 | `--name` | Context name. Defaults to the URL's hostname if omitted. |
-| `--master` | Mark this token as the master token, required for `fuse apikeys` commands. Informational client-side; the server enforces whether the token actually has master privileges. |
+| `--master` | Mark this token as the master token, required for `fuse apikeys`. See below. |
 | `--no-verify` | Skip the pre-save probe (for offline or scripted setup). |
 
 ## Examples
@@ -38,11 +38,20 @@ orchestrator (via the unauthenticated `GET /v1/version`) and, if you passed a
 `--token`, that the orchestrator accepts it. Each failure names the layer that
 failed rather than surfacing an opaque error one command later:
 
-- nothing listening: `no orchestrator at <url> (connection refused). is it running?`
-- wrong service or port: `<url> is not a fuse orchestrator (got Server: fc-agent/0.1). the orchestrator default port is 8080; 8090 is the host agent`
-- wrong token: `orchestrator at <url> rejected the token. this must be ORCH_AUTH_TOKEN, not the host-agent token`
+- nothing listening: `no orchestrator at <url> (connection refused). is it
+  running? the orchestrator default port is 8080. pass --no-verify to skip
+  this check`
+- wrong service or port: `<url> is not a fuse orchestrator (got Server:
+  fc-agent/0.1). the orchestrator default port is 8080; 8090 is the host agent`
+- wrong token: `orchestrator at <url> rejected the token. this must be
+  ORCH_AUTH_TOKEN, not the host-agent token`
 
 Pass `--no-verify` to skip the probe for offline or scripted setup.
+
+`--master` is informational on the client side, it only records how the context was
+created so `fuse apikeys` can warn you early. The server is what actually enforces
+whether the token carries master privileges, so marking a non-master token does not
+grant it anything.
 
 With no `--token`, connecting only works against an orchestrator running in
 insecure/dev mode (no `ORCH_AUTH_TOKEN` set), the CLI prints a warning when you

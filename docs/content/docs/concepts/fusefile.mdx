@@ -1,0 +1,153 @@
+---
+title: Fusefile
+description: The declarative spec format for a Fuse environment
+icon: file-code
+---
+
+A **Fusefile** is the canonical, human-authored way to describe a Fuse environment:
+what image or rootfs to use, how much CPU/memory/storage/GPU it needs, what setup
+and run commands to execute, what services to bring up alongside it, and what ports
+to expose.
+
+A Fusefile is parsed and compiled entirely client-side (by the CLI) into the
+orchestrator's wire format. The orchestrator itself never sees a Fusefile, only the
+compiled `CreateEnvironmentRequest`.
+
+## Full field reference
+
+```yaml
+version: 1
+
+# base environment. an oci image ref, or omitted to use the baked base rootfs.
+image: ghcr.io/acme/worker:latest
+
+resources:
+  cpus: 2
+  gpu: 1              # device count; whole GPUs, or MIG instances if gpu_profile is set
+  gpu_kind: a100      # optional match, e.g. "a100"; empty matches any kind
+  gpu_profile: 1g.10gb # optional MIG profile; omit for whole devices
+  memory: 2GB         # accepts MB/GB suffixes, compiles to ram_mb
+  storage: 10GB       # compiles to storage_gb
+  max_runtime: 1h     # accepts go duration, compiles to max_runtime_seconds
+
+# convenience layer run once at boot, before run. compiles into startup_script.
+setup:
+  - apt-get update -qq
+  - apt-get install -y --no-install-recommends ripgrep
+
+# services brought up inside the vm. compiles to manifest.services then a compose project.
+services:
+  postgres:
+    image: postgres:16
+    ports: [5432]
+    env:
+      POSTGRES_PASSWORD: { secret: pg_password }
+  redis:
+    image: redis:7
+    ports: [6379]
+
+# the main task entrypoint. compiles into startup_script (after setup).
+run: ./start.sh
+
+workspace: /workspace
+
+# ports published to the outside world (ingress).
+expose:
+  - port: 8080
+    as: http
+
+# secret names this environment requires. values are supplied out-of-band
+# (cli flag / env / secret store), never written in the Fusefile.
+secrets:
+  - pg_password
+```
+
+## Field notes
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `version` | int | Currently always `1`. |
+| `image` | string | OCI image ref. Omit to use the baked base rootfs. |
+| `resources.cpus` | int | vCPU count. |
+| `resources.gpu` | int | Device count. Whole GPUs by default, or MIG instances when `gpu_profile` is set. Requires a host registered with the `qemu` backend. |
+| `resources.gpu_kind` | string | Optional GPU model match, e.g. `a100`. See [Providers](/docs/concepts/providers). |
+| `resources.gpu_profile` | string | Optional MIG profile, e.g. `1g.10gb`. Requests a fractional slice of a GPU instead of whole devices. See [GPU workloads](/docs/guides/gpu-workloads). |
+| `resources.memory` | string | Accepts `MB`/`GB` suffixes; compiles to `ram_mb`. |
+| `resources.storage` | string | Accepts `MB`/`GB` suffixes; compiles to `storage_gb`. |
+| `resources.max_runtime` | string | Go duration (`1h`, `30m`); compiles to `max_runtime_seconds`. |
+| `setup` | list of strings | Commands run once at boot, before `run`. Compiled into `startup_script`. |
+| `services` | map | In-VM services, each with `image`, `ports`, and `env`. Compiles to `manifest.services` plus a compose project. |
+| `services.*.env.*` | literal or secret ref | Exactly one of `value` or `secret` must be set per entry. `{ secret: name }` resolves from the `secrets` you supply at `up` time. |
+| `run` | string | The main entrypoint, compiled into `startup_script` after `setup`. |
+| `workspace` | string | Working directory inside the guest. |
+| `expose` | list of `{port, as}` | Guest ports published externally. |
+| `secrets` | list of strings | Secret *names* this environment requires. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
+
+## GPU fields
+
+`gpu` is always a device *count*, never a fraction. What it counts depends on
+whether `gpu_profile` is set: without a profile it counts whole physical GPUs, with
+one it counts MIG instances of that profile. `gpu: 2` with `gpu_profile: 1g.10gb`
+asks for two 1g.10gb slices, not two whole cards.
+
+A `gpu_profile` is validated client-side, at compile time, against the mig-parted
+profile grammar: a slice count of `1` through `7`, then `g.`, then a memory size in
+GB, with an optional `+me` suffix for a profile with a dedicated media engine.
+`1g.10gb`, `3g.20gb`, and `1g.10gb+me` all parse. Matching is case-insensitive and
+the compiled value is lowercased, so `1G.10GB` is accepted and sent as `1g.10gb`.
+
+Four rules are enforced before the request ever leaves your machine, so a malformed
+GPU request fails at `fuse up` rather than being scheduled and failing on a host:
+
+| Rule | Error |
+| --- | --- |
+| `gpu` must not be negative | `resources.gpu: must not be negative` |
+| `gpu_profile` must parse | `resources.gpu_profile: invalid MIG profile "..." (expected mig-parted form like "1g.10gb")` |
+| `gpu_profile` needs a count | `resources.gpu_profile: requires resources.gpu >= 1 (the count of MIG instances)` |
+| `gpu_profile` needs a MIG-capable `gpu_kind` | `resources.gpu_profile: "..." does not support MIG (gpu_kind "...")` |
+
+These are accumulated rather than short-circuited, so a Fusefile with several GPU
+mistakes reports all of them at once.
+
+The last rule is a **denylist**, not an allowlist. Kinds known not to support MIG
+(`v100`, `t4`, `p100`, `p40`, `k80`, `rtx`, `gtx`, `titan`, `l4`, `l40`, `l40s`) are
+rejected outright; an empty or unrecognized `gpu_kind` is allowed through, on the
+assumption that the host's reported per-device inventory is the better authority.
+Matching is a case-insensitive substring test, so `gpu_kind: rtx4090` is rejected by
+the `rtx` entry.
+
+:::warning[Known limitation]
+A MIG request cannot be pinned to a GPU model. When `gpu_profile` is set the
+scheduler matches on the profile pool alone and ignores `gpu_kind`, so a request
+can be routed to a host whose free instances are all the wrong card. The qemu
+agent does filter instances by kind, so such a placement fails there with
+`insufficient free mig instances` rather than silently attaching the wrong GPU.
+`gpu_kind` is still validated for MIG capability, it just doesn't narrow host
+selection. See [GPU workloads](/docs/guides/gpu-workloads).
+:::
+
+## Scaffolding one
+
+```bash
+fuse init
+```
+
+writes a commented starter Fusefile to `./Fusefile` (or a path passed via
+`-f`/`--file`). Pass `--force` to overwrite an existing file. The scaffold covers the
+common CPU case and omits the GPU fields, add them by hand from the reference above.
+
+## Bringing it up
+
+```bash
+fuse up
+```
+
+reads a Fusefile (default `./Fusefile`, or a positional path, or `-f/--file`),
+compiles it, resolves required secrets from `--secret key=value` flags and/or a
+`--secrets-file`, and creates an environment from the result, streaming
+provisioning events until a terminal state, unless `--no-wait` is passed. If any
+secret named in `secrets` is missing from the resolved set, `up` fails fast with the
+list of missing names rather than creating a broken environment.
+
+See [`fuse up`](/docs/reference/cli/up) and [`fuse init`](/docs/reference/cli/init)
+for the full flag reference.

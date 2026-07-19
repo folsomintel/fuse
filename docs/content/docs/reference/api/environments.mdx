@@ -1,7 +1,7 @@
 ---
 title: Environments
 description: "/v1/environments: create, list, inspect, drain, fork, destroy"
-icon: Boxes
+icon: boxes
 ---
 
 | Method | Path | Purpose |
@@ -13,7 +13,7 @@ icon: Boxes
 | `POST` | `/v1/environments/{vmId}?action=rotate-token` | Re-issue guest credentials. Returns `204`. |
 | `POST` | `/v1/environments/{vmId}?action=drain` | Graceful phase-1 teardown (running only). Returns `200` with the updated environment (`state: draining`). |
 | `POST` | `/v1/environments/{vmId}?action=exec` | Run one command in the guest. Returns `200` with the guest's exit code, stdout, and stderr. Master token only. |
-| `DELETE` | `/v1/environments/{vmId}` | Destroy. Idempotent: destroying an already-gone VM returns `404`, not an error. |
+| `DELETE` | `/v1/environments/{vmId}` | Destroy. Not idempotent: destroying an already-gone VM returns `404` `not_found`. |
 | `GET` | `/v1/environments/{vmId}/events` | Server-Sent Events stream of state transitions. |
 | `GET` | `/v1/environments/{vmId}/attach` | Interactive pty stream over an HTTP/1.1 upgrade. Master token only. |
 
@@ -34,6 +34,7 @@ POST /v1/environments
     "storage_gb": 10,
     "gpus": 0,
     "gpu_kind": "",
+    "gpu_profile": "",
     "region": "us-east",
     "max_runtime_seconds": 3600,
     "image": ""
@@ -48,9 +49,16 @@ POST /v1/environments
 ```
 
 `task_id` and `spec` are required; every other field is optional. `gpus` is a
-whole-device count; a non-zero value routes the environment to a host with
-matching free GPU inventory (necessarily QEMU-backed, see
-[Providers](/docs/learn/concepts/providers)). `max_runtime_seconds` is a
+device count; a non-zero value routes the environment to a host with matching
+free GPU inventory (necessarily QEMU-backed, see
+[Providers](/docs/concepts/providers)).
+
+Setting `gpu_profile` (a mig-parted profile such as `1g.10gb`) switches the
+request from whole devices to MIG instances, and `gpus` then counts instances of
+that profile rather than cards. The value is lowercased on the way in. The two
+draw on separate host inventories, so a MIG request never consumes a whole
+device. `gpu_profile` is validated at the API boundary, not just in the CLI, so
+raw HTTP callers get the same guardrails a `Fusefile` does. `max_runtime_seconds` is a
 leak-detection ceiling; `0` uses the fleet default, and the orchestrator tears
 down tasks that exceed it with no state transitions. `manifest_inline` is raw
 manifest JSON, base64-encoded; when omitted, the orchestrator uses a minimal
@@ -66,7 +74,7 @@ internal manifest.
   "state": "running",
   "task_id": "t-1",
   "host_id": "prod-east-1",
-  "url": "https://10.0.0.5:9550",
+  "url": "10.0.0.5:19551",
   "spec": { "cpus": 2, "ram_mb": 2048, "storage_gb": 10 },
   "created_at": "2026-01-15T10:00:00Z",
   "updated_at": "2026-01-15T10:01:00Z",
@@ -79,9 +87,20 @@ internal manifest.
 | Status | Code | When |
 | --- | --- | --- |
 | `400` | `invalid_argument` | Missing `task_id`/`spec`, or a malformed body. |
+| `400` | `invalid_argument` | A negative `gpus`, a `gpu_profile` that doesn't parse, a `gpu_profile` with `gpus < 1`, or a `gpu_profile` on a `gpu_kind` that doesn't support MIG. |
 | `409` | `conflict` | `task_id` collides with an existing environment. |
 | `500` | `internal` | Unexpected server error. |
-| `503` | `unavailable` | The orchestrator is rejecting work (for example, shutting down). |
+| `503` | `unavailable` | The orchestrator is rejecting work (for example, shutting down), or no host has capacity. A GPU request with no GPU host registered fails here with `gpu workloads require a registered gpu host`. |
+
+GPU validation returns on the first failure rather than accumulating, so a spec
+with several GPU mistakes reports one at a time. The messages are:
+
+```
+spec.gpus must not be negative
+spec.gpu_profile: invalid MIG profile "..." (expected mig-parted form like "1g.10gb")
+spec.gpu_profile requires spec.gpus >= 1 (the count of MIG instances)
+spec.gpu_profile "..." is not valid for gpu_kind "..." (that gpu does not support MIG)
+```
 
 ## List
 
@@ -114,8 +133,18 @@ POST /v1/environments/{vmId}?action=fork
 
 With `reuse_snapshot_id` empty, the server takes a fresh snapshot of `vmId`
 first; otherwise it reuses the named snapshot. Returns `201` with the new
-`Environment`. Unavailable wherever snapshotting is, GPU/QEMU-backed
-environments cannot be forked (`409` `conflict`).
+`Environment`. Unavailable wherever snapshotting is, an environment with
+`spec.gpus > 0` cannot be forked, and neither can one on a QEMU host, since a
+VFIO-passed-through device can't be checkpointed. MIG environments are covered
+too, a slice still reports a non-zero `gpus`.
+
+:::warning[Known limitation]
+The GPU fork and snapshot guardrails currently return `500` `internal` with the
+message `vm ... has a gpu passthrough device: fork is not supported for gpu
+environments`. The condition is a permanent property of the environment rather
+than a server fault, so the status should be a `4xx`; treat the message, not the
+code, as the contract until this is fixed.
+:::
 
 ## Drain
 
@@ -146,9 +175,11 @@ Generates fresh per-VM credentials and pushes them to the guest. Returns
 DELETE /v1/environments/{vmId}
 ```
 
-Forcefully destroys the VM and marks its task failed. Idempotent: a second
-call on an already-gone VM returns `404`, not an error. Returns `204` on
-success.
+Forcefully destroys the VM and marks its task failed. Returns `204` on success.
+Destroy is **not** idempotent: a second call on an already-gone VM returns
+`404` `not_found` in the usual error envelope, and the SDKs raise on it like
+any other `4xx`. A caller that retries should treat `404` as success itself,
+rather than expecting the server to absorb the repeat.
 
 ## Environment states
 
@@ -174,7 +205,8 @@ Replaces polling for state transitions with a Server-Sent Events stream:
 - This is single-process pub/sub: a subscriber connected to a different
   orchestrator replica than the publishing one will not see events.
   Acceptable today since the orchestrator runs as a single process. See
-  [Scaling](/docs/cloud/scaling) for what this means operationally.
+  [State and recovery](/docs/concepts/state-and-recovery) for why that is
+  a design constraint rather than a deployment accident.
 
 Wire format is standard SSE:
 

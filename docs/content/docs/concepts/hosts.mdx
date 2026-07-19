@@ -1,0 +1,93 @@
+---
+title: Hosts
+description: The machines Fuse schedules microVMs onto
+icon: hard-drive
+---
+
+A **host** is a machine running a host agent (`fc-agent` for Firecracker, or
+`qemu-agent` for GPU/QEMU), registered with the orchestrator. Register your hosts
+and Fuse's scheduler places microVMs across them based on declared capacity and
+current allocation.
+
+## Registering a host
+
+```bash
+fuse host register <id> \
+  --url http://10.0.0.5:8090 \
+  --token "$FC_AGENT_TOKEN" \
+  --region us-east \
+  --backend firecracker \
+  --cpus 16 --ram-mb 65536 --storage-gb 500 --max-vms 20
+```
+
+`--token` is the host agent's own token, not the orchestrator token, and the CLI
+refuses a Firecracker registration without one, since an empty token would
+otherwise surface as an opaque 401 at the first environment create. Pass
+`--no-verify` instead if you are registering a genuinely unauthenticated dev agent.
+
+The `<id>` is a free-form, operator-supplied string and is the host's primary key;
+use something readable, like `prod-east-1`. GPU hosts additionally pass `--gpus`,
+`--gpu-kind`, and (for fractional GPUs) `--mig-profile`, and require
+`--backend qemu`. See [Providers](/docs/concepts/providers) for the backend
+distinction.
+
+## Capacity and allocation
+
+Every host tracks both a declared **capacity** (what you registered it with) and a
+live **allocated** figure (what's currently in use by scheduled environments) across
+CPUs, RAM, storage, VM count, and (for GPU hosts) GPU devices. `fuse host get <id>`
+shows all of these, including the GPU and MIG pools. `fuse host metrics <id>` shows
+the CPU, RAM, storage, and VM-count figures with free headroom; its `--json` output
+carries the full capacity and allocated objects, GPU and MIG counts included.
+
+Most of that capacity is **probed** from the host agent at registration time. The
+CPU count, RAM, storage, GPU count, and GPU kind come back from the agent whenever
+you leave them at 0 or empty, and passing an explicit value overrides the probe
+instead, so a deliberate overcommit or carve-out still registers (with a warning
+when the declared value exceeds what was probed). The per-device GPU list is always
+taken from the probe. The example above declares CPUs, RAM, and storage, so those
+three override the probe rather than being read from the agent. Two values are
+instead **operator-declared**, because they are policy or pre-created state rather
+than hardware facts the agent can observe: `--max-vms` is a ceiling you choose, and
+`--mig-profile profile=count` describes MIG instances that must already have been
+created on the host before Fuse ever sees them.
+
+A GPU host therefore tracks two independent pools: whole devices, and MIG instances
+counted per profile. They do not draw down on each other, a MIG placement never
+consumes a whole device. Because the GPU inventory is per-device rather than a bare
+number, the scheduler binds specific GPU UUIDs to a VM instead of just decrementing
+a count.
+
+## Cordon and uncordon
+
+Cordoning a host marks it unschedulable. The scheduler stops placing new
+environments there, without touching what's already running. This is the standard
+move before maintenance:
+
+```bash
+fuse host cordon <id>     # stop new placements
+fuse host uncordon <id>   # resume scheduling
+```
+
+## Removing a host
+
+```bash
+fuse host remove <id>
+```
+
+Deregistering a host is refused if any environments are still assigned to it; drain
+or destroy them first.
+
+## Selecting an active host in the CLI
+
+Many CLI commands (like `fuse environment list`) scope themselves to an **active
+host** for convenience:
+
+```bash
+fuse host <id>       # select
+fuse host            # show current selection
+```
+
+This is a CLI-local convenience, not an API concept: `fuse environment create`
+schedules orchestrator-wide regardless of the active host selection (use
+`--region` on create to influence placement instead).

@@ -1,7 +1,7 @@
 ---
 title: Advanced usage
 description: Custom transports, retries, request correlation, and testing
-icon: Wrench
+icon: wrench
 ---
 
 ## Custom HTTP client
@@ -73,6 +73,12 @@ client, _ := fuse.New(baseURL, token,
 An empty return value from the generator omits the header entirely rather than
 sending a blank one.
 
+The orchestrator echoes the supplied ID only if it is 1 to 128 characters of
+`[A-Za-z0-9_-]`, anything else is silently replaced with a server-generated
+`req_<hex>` ID rather than rejected. Trace formats containing `.`, `:`, or `/`
+are therefore dropped without any error, normalize them before returning them
+from the generator.
+
 ## Testing against the stub
 
 The orchestrator itself, not the SDK, has a built-in in-memory stub provider: run
@@ -81,15 +87,25 @@ without booting real microVMs. This is the fastest way to test SDK-driven code
 end to end without a real Firecracker host:
 
 ```bash
-go build -o bin/fuse ./cmd/orchestrator
-./bin/fuse   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
+go build -o bin/orchestrator ./cmd/orchestrator
+./bin/orchestrator   # FIRECRACKER_BASE_URL unset -> stub mode, listens on :8080
 ```
 
 Point a `fuse.New` client at `http://localhost:8080` with no token (the
-orchestrator also runs without auth when `ORCH_AUTH_TOKEN` is unset), and every
-SDK call behaves exactly as it would against a real deployment, states
-transition, events stream, snapshots and forks work (Firecracker-backed stub
-VMs support both), just nothing is actually virtualized underneath.
+orchestrator also runs without auth when `ORCH_AUTH_TOKEN` is unset), and
+`Environments` and `Snapshots` behave exactly as they would against a real
+deployment, states transition, events stream, snapshots and forks work
+(Firecracker-backed stub VMs support both), just nothing is actually virtualized
+underneath.
+
+Two services do **not**. `client.APIKeys.*` returns a `404` `route_not_found`
+unless the orchestrator was started with `DATABASE_URL`, since the
+`/v1/api-keys` routes are registered only with a Postgres-backed key store. And
+`Hosts.Register` never uses the stub: it always builds a real provider against
+the `url` you pass, so with no host agent actually listening there the capacity
+probe fails and registration returns a `502` if you left
+`cpus`/`ram_mb`/`storage_gb` at `0`. Declare all three explicitly to register a
+host in stub mode.
 
 For unit-testing your own code that calls the SDK, `httptest.Server` is the
 pattern the SDK's own test suite uses, point `fuse.New` at the test server's URL

@@ -1,6 +1,0 @@
-{
-  "title": "Learn",
-  "icon": "BookOpen",
-  "root": true,
-  "pages": ["index", "quickstart", "use-cases", "concepts"]
-}

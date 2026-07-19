@@ -1,10 +1,8 @@
 ---
 title: Overview
 description: What Fuse is and how its pieces fit together
-icon: BookOpen
+icon: book-open
 ---
-
-import { Rocket, Layers, FileCode, Cloud, Sparkles } from 'lucide-react';
 
 Fuse is a control plane for agents: it deploys Firecracker microVMs onto your own
 hosts and drives their full lifecycle — provision, running, drain, destroy — through
@@ -20,12 +18,15 @@ one command brings up a host with the agent installed and a rootfs baked and rea
 
 - **One-script Firecracker setup** — host, agent, and a baked rootfs, ready to boot.
 - **Scheduling across hosts** — register hosts, and Fuse places microVMs for you.
-- **Optional whole-GPU environments** — route GPU requests to QEMU/VFIO hosts.
+- **Optional GPU environments** — whole GPUs or fractional MIG instances, routed
+  to QEMU/VFIO hosts.
 - **Full VM lifecycle** — provision, running, drain, destroy, tracked and reconciled.
 - **Snapshots** — capture a running microVM and restore from it.
 - **Live event streams** — tail a microVM's events over SSE.
 - **Durable state** — backed by Postgres, or in-memory for local runs.
-- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at rest.
+- **Per-VM secrets** — credentials generated per microVM, tokens encrypted at
+  rest, when `TOKEN_ENCRYPTION_KEY` is set. Without it the orchestrator skips
+  credential generation entirely (insecure mode).
 - **REST API and Prometheus metrics** — drive everything over HTTP, observe it out of the box.
 
 ## How the pieces fit together
@@ -40,40 +41,15 @@ one command brings up a host with the agent installed and a rootfs baked and rea
   host, boots the VM, and tracks it through its lifecycle.
 - **A snapshot** captures a running microVM so you can restore it later.
 
-Read [Foundations](/docs/learn/concepts/fusefile) for the full mental model, or jump
+Read [Concepts](/docs/concepts/fusefile) for the full mental model, or jump
 straight to the [Quickstart](/docs/learn/quickstart) to get a microVM running.
 
 ## Where to go next
 
-<Cards>
-  <Card
-    icon={<Rocket />}
-    title="Quickstart"
-    description="Get a microVM running in a few commands, no real host required."
-    href="/docs/learn/quickstart"
-  />
-  <Card
-    icon={<Sparkles />}
-    title="Use Cases"
-    description="Agent sandboxes, ephemeral CI runners, GPU batch jobs, and interactive debugging."
-    href="/docs/learn/use-cases/agent-sandboxes"
-  />
-  <Card
-    icon={<Layers />}
-    title="Foundations"
-    description="The full mental model: Fusefile, providers, hosts, environments, snapshots, artifacts."
-    href="/docs/learn/concepts/fusefile"
-  />
-  <Card
-    icon={<FileCode />}
-    title="Docs"
-    description="SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator."
-    href="/docs/reference"
-  />
-  <Card
-    icon={<Cloud />}
-    title="Cloud"
-    description="Bring up a real Firecracker or GPU host and deploy the orchestrator."
-    href="/docs/cloud"
-  />
-</Cards>
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/docs/learn/quickstart" icon="rocket">Get a microVM running in a few commands, no real host required.</Card>
+  <Card title="Guides" href="/docs/guides/agent-sandboxes" icon="sparkles">Agent sandboxes, ephemeral CI runners, GPU batch jobs, and interactive debugging.</Card>
+  <Card title="Concepts" href="/docs/concepts/fusefile" icon="layers">The full mental model: Fusefile, providers, hosts, environments, snapshots, artifacts.</Card>
+  <Card title="Docs" href="/docs/reference" icon="file-code">SDKs, CLI, and HTTP API reference for driving a Fuse orchestrator.</Card>
+  <Card title="Cloud" href="/docs/cloud" icon="cloud">Bring up a real Firecracker or GPU host and deploy the orchestrator.</Card>
+</CardGroup>

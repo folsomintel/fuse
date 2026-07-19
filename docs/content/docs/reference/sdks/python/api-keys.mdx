@@ -1,12 +1,17 @@
 ---
 title: API keys
 description: Issuing and revoking orchestrator-global API keys
-icon: KeySquare
+icon: key-square
 ---
 
 `client.api_keys` mints and revokes API keys. All three methods require the
 master token, the server enforces this regardless of what token the client
-was constructed with.
+was constructed with. They also require the orchestrator to be running with
+`DATABASE_URL` set: without a Postgres-backed key store the routes are never
+mounted, so these calls raise `fuse.ApiError` with `status == 404` and an
+empty `code` (`fuse.is_not_found` returns `False`) rather than a structured
+`not_found`. The stub setup in
+[Advanced usage](/docs/reference/sdks/python/advanced) is exactly that case.
 
 ```python
 key = client.api_keys.create("ci-runner")

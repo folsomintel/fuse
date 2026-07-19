@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 description: Capturing and restoring a running microVM's state
-icon: Camera
+icon: camera
 ---
 
 `client.Snapshots` captures and restores the state of a running microVM. Take
@@ -32,12 +32,6 @@ if err := client.Snapshots.Restore(ctx, snap.ID); err != nil {
   [`EnvironmentsService`](/docs/reference/sdks/go/environments) for that
   instead.
 
-<Callout type="warn" title="Known limitation">
-Restoring while the guest has unsynced writes can corrupt the restored data. See
-[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
-for the workaround.
-</Callout>
-
 ## Everything else
 
 | Method | Purpose |
@@ -51,6 +45,16 @@ These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 ## The QEMU/GPU exception
 
 Environments running on the QEMU backend (whole-GPU passthrough) cannot be
-snapshotted or forked at all, `Create` and `Restore` against a GPU environment
-fail with a `conflict` `*APIError` rather than silently no-op-ing. See
-[Providers](/docs/learn/concepts/providers).
+snapshotted or forked at all, `Snapshots.Create` and `Environments.Fork` against
+a GPU environment fail with a `500` `internal` `*APIError` rather than silently
+no-op-ing. `Restore` carries no GPU check of its own, it is simply unreachable
+for a GPU environment because no snapshot of one can exist. See
+[Providers](/docs/concepts/providers).
+
+:::warning[Known limitation]
+The GPU guardrail returns a `500` `internal` `*APIError`, not a `409`. It is a
+permanent property of the request (that environment can never be snapshotted)
+rather than a server fault, so the status ought to be a 4xx. Until that is fixed,
+`fuse.IsConflict(err)` will never report `true` here, match on the error message
+(`gpu passthrough device`) rather than on the status.
+:::

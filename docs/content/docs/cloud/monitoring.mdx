@@ -1,7 +1,7 @@
 ---
 title: Monitoring
 description: Prometheus metrics, health checks, and what to alert on
-icon: Gauge
+icon: gauge
 ---
 
 The orchestrator exposes Prometheus metrics on `/metrics` (unauthenticated, the
@@ -24,23 +24,36 @@ If the orchestrator is behind a reverse proxy that does require auth for
 everything else, carve out an exception for `/metrics` (and `/health`,
 `/ready`) at the proxy layer.
 
+For a one-off look without a Prometheus in front of you,
+[`fuse metrics`](/docs/reference/cli/metrics) scrapes the same endpoint and
+prints the raw exposition. It sends the context's token even though `/metrics`
+doesn't require one.
+
 ## What to watch
 
 **Reconcile health** is the single most important signal, the reconcile loop
 is what keeps the state store and the real provider fleet in sync:
 
 - `orchestrator_reconcile_cycles_total` should be increasing steadily (every
-  30 seconds by default). A flat rate means the loop has stopped, usually a
-  panic or a wedged dependency.
+  30 seconds by default). A flat rate with the scrape target still up means the
+  loop is blocked inside a provider `List` or a state-store call: the loop has
+  no panic recovery, so a panic would take the whole process down and the target
+  with it rather than leaving the counter flat. A provider list that merely
+  fails still completes the cycle and increments the counter, so flat means
+  blocked, not erroring.
 - `orchestrator_reconcile_duration_seconds` climbing over time suggests the
   fleet has grown past what a single reconcile pass handles comfortably, or a
   provider call is slow.
 - `orchestrator_reconcile_orphans_dead_lettered_total` increasing means VMs
   are being given up on after repeated cleanup failures, worth a look at
   orchestrator logs for the specific VM IDs.
-- `orchestrator_reconcile_stuck_tasks_failed_total` increasing means a task
-  exceeded its `max_runtime_seconds` ceiling and the orchestrator couldn't
-  tear it down cleanly.
+- `orchestrator_reconcile_stuck_tasks_failed_total` increasing means a running
+  VM exceeded its runtime ceiling on two consecutive reconcile cycles and was
+  forcibly torn down, its task failed and dead-lettered. The ceiling is the
+  environment's `max_runtime_seconds`, falling back to the fleet-wide
+  `TaskStuckTimeout` (2 hours) when it isn't set.
+  `orchestrator_reconcile_stuck_tasks_suspected_total` is the first-strike
+  leading indicator, it fires one cycle earlier on the same condition.
 
 **Fleet size drift**: `orchestrator_fleet_tracked_vms` (what the state store
 thinks exists) versus `orchestrator_fleet_provider_vms` (what the provider
@@ -56,9 +69,12 @@ for the specific failure mode.
   for p99 latency, grouped by `route`.
 - `orchestrator_http_requests_in_flight` as a saturation signal.
 
-All three HTTP metrics are labeled by the chi route **pattern**
-(`/v1/environments/{vmId}`), not the raw path, so cardinality stays bounded
-even under a flood of requests to nonexistent IDs.
+`orchestrator_http_requests_total` is labeled `route`/`method`/`code` and
+`orchestrator_http_request_duration_seconds` is labeled `route`/`method`, both
+using the chi route **pattern** (`/v1/environments/{vmId}`) rather than the raw
+path, so cardinality stays bounded even under a flood of requests to nonexistent
+IDs. `orchestrator_http_requests_in_flight` is a single unlabeled gauge, so
+saturation cannot be broken down by route.
 
 ## Suggested alerts
 

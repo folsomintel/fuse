@@ -1,7 +1,7 @@
 ---
 title: fuse environment create
 description: Provision a new environment from a raw resource spec
-icon: CirclePlus
+icon: circle-plus
 ---
 
 ```bash
@@ -9,7 +9,7 @@ fuse environment create [flags]
 ```
 
 Provisions a new environment directly from flags, without a
-[Fusefile](/docs/learn/concepts/fusefile). For most workflows,
+[Fusefile](/docs/concepts/fusefile). For most workflows,
 [`fuse up`](/docs/reference/cli/up) (which compiles a Fusefile into this same
 underlying call) is the higher-level, more maintainable path; use `create`
 directly for scripting, one-off environments, or when you don't want a Fusefile
@@ -24,8 +24,8 @@ on disk at all.
 | `--ram-mb` | RAM in MB. |
 | `--storage-gb` | Storage in GB. |
 | `--region` | Region, influences scheduling (does not pin to the active host). |
-| `--max-runtime` | Max runtime in seconds. `0` means unlimited. |
-| `--manifest` | Inline manifest JSON, or `@path` to read from a file. |
+| `--max-runtime` | Max runtime in seconds. `0` is **not** unlimited, see below. |
+| `--manifest` | Base64-encoded manifest JSON, or `@path`. See below. |
 | `--startup-script` | Inline startup script, or `@path` to read from a file. |
 | `--gateway-url` | Gateway URL. |
 | `--gateway-token` | Gateway token. |
@@ -46,6 +46,33 @@ fuse environment create \
 ```bash
 fuse environment create --task-id my-task --startup-script @./start.sh --secret pg_password=hunter2
 ```
+
+## Manifest encoding
+
+`--manifest` is sent verbatim as `manifest_inline`, which the orchestrator
+base64-decodes. Passing raw JSON fails with
+`invalid argument: decode manifest_inline: illegal base64 data` rather than
+being accepted, so encode it first. The `@path` form reads a file that already
+contains base64, it does not encode a raw JSON file for you:
+
+```bash
+fuse environment create --task-id my-task \
+  --manifest "$(base64 < ./manifest.json | tr -d '\n')"
+```
+
+The `tr -d '\n'` is not optional on Linux. GNU coreutils `base64` wraps its
+output at 76 columns, and the orchestrator's decoder rejects whitespace, so any
+manifest over 57 bytes fails with the same `decode manifest_inline` error
+without it. GNU `base64 -w0` also works, but it is not portable, it is
+unsupported on macOS and BSD.
+
+## Runtime ceiling
+
+An environment left at `--max-runtime 0` is not exempt from teardown, the
+reconcile loop treats the orchestrator's `TaskStuckTimeout` (2h by default) as
+its ceiling, fails the task, and destroys the VM after two consecutive cycles
+past it. Set an explicit `--max-runtime` for anything legitimately long-running.
+See [Environments](/docs/concepts/environments).
 
 ## Interactive mode
 

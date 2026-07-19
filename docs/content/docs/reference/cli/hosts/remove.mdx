@@ -1,7 +1,7 @@
 ---
 title: fuse host remove
 description: Deregister a host
-icon: Trash2
+icon: trash2
 ---
 
 ```bash
@@ -18,8 +18,11 @@ Aliases: `rm`, `deregister`. Deregisters the host from the scheduler.
 
 ## Behavior
 
-Fails with a conflict error if any environments are still assigned to the host,
-drain or destroy them first:
+Fails with a server error naming one of the still-assigned VMs
+(`host prod-east-1 still has vm fuse-abc123 assigned`) if any environments are
+still assigned to the host, drain or destroy them first. Which VM gets named is
+arbitrary and can differ between identical calls, so treat it as a sample
+rather than a count:
 
 ```bash
 fuse environment list --host-id prod-east-1   # see what's still there
@@ -27,9 +30,20 @@ fuse environment destroy <id>                  # for each one
 fuse host remove prod-east-1
 ```
 
+:::warning[Known limitation]
+That rejection arrives as HTTP 500 / `internal`, not a 409, because it does not
+wrap a sentinel error. A host with VMs still assigned is a permanent property
+of the request rather than a server fault, so the status should be a 4xx. Match
+on the error message (`still has vm ... assigned`) rather than the status until
+this is fixed.
+:::
+
 If the removed host was the active host selection for the current context, the
 selection is cleared automatically, you'll need to
 [select](/docs/reference/cli/hosts/list#select) a new one before running
 host-scoped commands again.
 
 Without `--yes` in an interactive terminal, prompts for confirmation first.
+Outside a terminal (CI, or any invocation whose stdout is piped) it aborts with
+`aborted (use --yes to skip confirmation)` rather than proceeding, so scripts
+must pass `--yes`.

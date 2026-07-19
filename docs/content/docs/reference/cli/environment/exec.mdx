@@ -1,7 +1,7 @@
 ---
 title: fuse environment exec
 description: Run a command inside a running environment's guest and print its output
-icon: Terminal
+icon: terminal
 ---
 
 ```bash
@@ -9,6 +9,8 @@ fuse environment exec <id> -- ls -l /var/log
 fuse environment exec <id> --shell 'ls /var/log | wc -l'
 fuse environment exec <id> --timeout 30s -- ./slow-job
 ```
+
+## Flags
 
 | Flag | Purpose |
 | --- | --- |

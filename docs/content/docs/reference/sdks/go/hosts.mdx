@@ -1,7 +1,7 @@
 ---
 title: Hosts
 description: Registering and managing the compute hosts the scheduler places VMs onto
-icon: HardDrive
+icon: hard-drive
 ---
 
 `client.Hosts` registers and manages the compute hosts the scheduler places
@@ -11,7 +11,7 @@ hardware capacity rather than trusting a guess:
 ```go
 host, err := client.Hosts.Register(ctx, fuse.RegisterHostRequest{
 	ID:      "prod-east-1",
-	URL:     "http://10.0.0.5:9000",
+	URL:     "http://10.0.0.5:8090",
 	Token:   agentToken,
 	Region:  "us-east",
 	Backend: "firecracker",
@@ -35,11 +35,21 @@ for _, w := range host.Warnings {
   the real value instead of trusting a guess. Pass one explicitly to override
   the probe, for a deliberate overcommit or carve-out, a declared value above
   what the probe reports still registers, with a warning rather than a
-  rejection. If the host's provider doesn't support probing and a value was
-  left at `0`, registration fails with a `502` `*APIError` instead, declare
-  it explicitly in that case.
+  rejection. If the orchestrator cannot reach or probe the host agent and
+  `cpus`/`ram_mb`/`storage_gb` were not all declared, registration fails with a
+  `502` `*APIError` instead, declare them explicitly in that case.
+- `Token` must be the host agent's own `FC_AGENT_TOKEN`, **not** the
+  orchestrator token. The capacity probe doubles as an auth probe, so a wrong
+  token fails registration with a `502` `*APIError` carrying code
+  `unauthorized`, even when capacity was fully declared.
 - `Capacity.VMCount` is scheduling policy, not something a host can report on
   its own, so it's never probed and is always required.
+- `Capacity.MIGProfiles` advertises fractional GPU capacity as a map of MIG
+  profile name to instance count (`{"1g.10gb": 4}`). Like `GPUs` it requires
+  `Backend: "qemu"`, and profile names must be in mig-parted form, either
+  violation is a `400` `invalid_argument`. Keys are lowercased server-side
+  before scheduling, so declared casing doesn't have to match a Fusefile's
+  `gpu_profile`.
 - `host.Warnings` is only ever populated on this call's response, non-fatal
   notices like a declared value exceeding what was probed.
 
@@ -50,7 +60,16 @@ for _, w := range host.Warnings {
 | `List(ctx)` | List every registered host with its declared `Capacity` and live `Allocated` figures. |
 | `Get(ctx, hostID)` | Fetch one host by ID. |
 | `Cordon(ctx, hostID)` / `Uncordon(ctx, hostID)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
-| `Deregister(ctx, hostID)` | Remove the host. Fails with a `conflict` `*APIError` if environments are still assigned to it. |
+| `Deregister(ctx, hostID)` | Remove the host. Fails with a `500` `internal` `*APIError` if environments are still assigned to it. |
+
+:::warning[Known limitation]
+Deregistering a host that still has environments assigned to it returns a `500`
+`internal` `*APIError`, not a `409`. The precondition is a permanent property of
+the request (the host really is still busy) rather than a server fault, so the
+status ought to be a 4xx. Until that is fixed, `fuse.IsConflict(err)` will never
+report `true` here, match on the error message (`still has vm ... assigned`)
+rather than on the status.
+:::
 
 `Host.State` is one of `active`, `cordoned`, or `draining`. `Host.LastSeen` is
 set once at registration and never refreshed, it is not a liveness signal.

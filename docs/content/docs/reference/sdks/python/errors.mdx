@@ -1,7 +1,7 @@
 ---
 title: Errors
 description: ApiError, error codes, and the is_* predicates
-icon: TriangleAlert
+icon: triangle-alert
 ---
 
 Every SDK method that talks to the orchestrator can raise. Non-2xx responses
@@ -69,10 +69,15 @@ class ApiError(Exception):
 | `CODE_NOT_FOUND` | `not_found` | `404` |
 | `CODE_CONFLICT` | `conflict` | `409` |
 | `CODE_INVALID_ARGUMENT` | `invalid_argument` | `400` |
-| `CODE_UNAUTHORIZED` | `unauthorized` | `401` or `403` |
+| `CODE_UNAUTHORIZED` | `unauthorized` | `401`, `403`, or `502` |
 | `CODE_UNAVAILABLE` | `unavailable` | `503` |
 | `CODE_INTERNAL` | `internal` | `500` or `502` |
 | (none yet) | `unimplemented` | `501` |
+
+A `502` with code `unauthorized` is the one case that isn't about your own
+token: it means the host agent rejected the per-host token during
+[host registration](/docs/reference/sdks/python/hosts), so the value to fix is
+that host's `FC_AGENT_TOKEN`, not the token the client was constructed with.
 
 ## check_response and parse_api_error
 

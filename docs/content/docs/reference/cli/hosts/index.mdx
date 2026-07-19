@@ -1,7 +1,7 @@
 ---
 title: Overview
 description: Managing compute hosts
-icon: BookOpen
+icon: book-open
 ---
 
 The `fuse hosts`/`fuse host` commands manage the compute hosts the scheduler
@@ -22,6 +22,11 @@ register, inspect, and manage individual hosts.
 | [`fuse host remove`](/docs/reference/cli/hosts/remove) | Deregister a host. |
 | [`fuse host metrics`](/docs/reference/cli/hosts/metrics) | Show capacity vs. allocated for a host. |
 
+The split is not strict: `register`, `get`, `cordon`, `uncordon`, `remove`, and
+`metrics` are registered under both names, so `fuse hosts register` works
+exactly as `fuse host register` does. Only the bare forms differ, `fuse hosts`
+lists and `fuse host <id>` selects.
+
 ## Active host selection
 
 Many other commands (`fuse environment list`'s default filter, for example)
@@ -29,4 +34,4 @@ scope themselves to whichever host is currently selected for the active
 context. This is a CLI-local convenience, not an API concept, `fuse environment
 create` schedules orchestrator-wide regardless of the selection; use `--region`
 on create to influence placement instead. See
-[Hosts](/docs/learn/concepts/hosts) for the concept-level model.
+[Hosts](/docs/concepts/hosts) for the concept-level model.

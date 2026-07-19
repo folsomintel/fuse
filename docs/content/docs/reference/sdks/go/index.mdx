@@ -1,7 +1,7 @@
 ---
 title: Overview
 description: Install the Go SDK and construct a client
-icon: BookOpen
+icon: book-open
 ---
 
 `github.com/folsomintel/fuse/sdks/go` is the Go client for the Fuse control plane.
@@ -85,6 +85,30 @@ type Client struct {
 | `client.Hosts` | [Hosts](/docs/reference/sdks/go/hosts) |
 | `client.Snapshots` | [Snapshots](/docs/reference/sdks/go/snapshots) |
 | `client.APIKeys` | [API keys](/docs/reference/sdks/go/api-keys) |
+
+## Probing what you're pointed at
+
+```go
+func (c *Client) Version(ctx context.Context) (*VersionInfo, error)
+```
+
+`Version` is the only method on `Client` itself rather than on a service. It
+probes `GET /v1/version` unauthenticated and reports what answered: `Service`
+and `Version` from the body, plus the raw `ServerHeader` and `StatusCode` from
+the response. A transport-level failure (connection refused, DNS, timeout) comes
+back as `err`; a reachable-but-wrong service comes back as a non-nil
+`*VersionInfo` whose `IsOrchestrator()` reports `false`, so you can tell "nothing
+there" from "wrong thing there".
+
+```go
+info, err := client.Version(ctx)
+if err != nil {
+	log.Fatal(err) // nothing reachable at that URL
+}
+if !info.IsOrchestrator() {
+	log.Fatalf("not a fuse orchestrator: server=%q", info.ServerHeader)
+}
+```
 
 See [Quickstart](/docs/reference/sdks/go/quickstart) for a complete working
 example, and [Errors](/docs/reference/sdks/go/errors) for how failures surface.

@@ -1,7 +1,7 @@
 ---
 title: Environments
 description: Provisioning, running commands in, and tearing down microVMs
-icon: Boxes
+icon: boxes
 ---
 
 `client.environments` provisions, inspects, drives, and tears down microVMs.
@@ -28,6 +28,15 @@ await client.environments.destroy(env.id);
   separate poll-until-ready step is needed for the common case. Wire field
   names are snake_case throughout, `task_id`/`ram_mb`, not
   `taskId`/`ramMb`.
+
+:::warning[Known limitation]
+The TypeScript `Spec` interface types only `gpus` and `gpu_kind`. It has no
+`gpu_profile`, so fractional MIG environments cannot be requested type-safely
+from this SDK yet; the server accepts the field, the binding just doesn't
+declare it. `HostCapacity` is likewise missing `mig_profiles` and `gpu_devices`.
+Use the [Go SDK](/docs/reference/sdks/go) or a raw
+[HTTP call](/docs/reference/api/environments) for MIG until the types catch up.
+:::
 - `exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `exit_code` is a resolved call**,
   not a thrown error, the command ran and failed, which is the answer you
@@ -64,12 +73,16 @@ cancel early. See the full walkthrough in
 | `list({ taskId, state, hostId })` | List environments, all filters optional. |
 | `get(vmId)` | Fetch one environment by ID. |
 | `drain(vmId)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
-| `fork(vmId, { reuseSnapshotId, comment })` | Create a new environment seeded from a snapshot of this one. |
+| `fork(vmId, { reuse_snapshot_id, comment })` | Create a new environment seeded from a snapshot of this one. |
 | `rotateToken(vmId)` | Re-issue the guest's credentials without recreating the VM. |
+
+The two option bags differ in case on purpose. `list` takes a client-side
+filter object, so it is camelCase; `fork` sends its object straight through as
+the JSON request body, so it uses the snake_case wire names.
 
 Every method accepts a trailing `{ signal }` for cancellation. Fork is
 unavailable wherever snapshotting is, GPU/QEMU-backed environments can't be
-forked, see [Providers](/docs/learn/concepts/providers). These mirror the
+forked, see [Providers](/docs/concepts/providers). These mirror the
 [HTTP API](/docs/reference/api/environments) one to one.
 
 ## Lifecycle states

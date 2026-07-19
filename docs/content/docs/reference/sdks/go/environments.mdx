@@ -1,7 +1,7 @@
 ---
 title: Environments
 description: Provisioning, running commands in, and tearing down microVMs
-icon: Boxes
+icon: boxes
 ---
 
 `client.Environments` provisions, inspects, drives, and tears down microVMs.
@@ -35,7 +35,11 @@ if err := client.Environments.Destroy(ctx, env.ID); err != nil {
 - `Create` provisions from a `Spec` (CPUs, RAM, storage, and optionally GPU)
   and blocks server-side until the environment is `running` or provisioning
   fails, so the returned `*EnvironmentInfo` already reflects the outcome. No
-  separate poll-until-ready step is needed for the common case.
+  separate poll-until-ready step is needed for the common case. `Spec` carries
+  `GPUs`, `GPUKind`, and `GPUProfile`; set `GPUProfile` to a mig-parted profile
+  such as `1g.10gb` to request MIG instances instead of whole devices. This is
+  the only SDK with the full GPU surface, including `HostCapacity.GPUDevices`
+  and the `GPUDevice` type.
 - `Exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `ExitCode` is a successful call**,
   not an `error`, the command ran and failed, which is the answer you asked
@@ -114,7 +118,7 @@ scripted automation, use `Exec` for that. Also master-token only.
 | `RotateToken(ctx, vmID)` | Re-issue the guest's credentials without recreating the VM. |
 
 Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
-can't be forked, see [Providers](/docs/learn/concepts/providers). Full
+can't be forked, see [Providers](/docs/concepts/providers). Full
 signatures are in the SDK's Go doc comments; the shapes above mirror the
 [HTTP API](/docs/reference/api/environments) one to one.
 

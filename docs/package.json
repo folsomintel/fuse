@@ -3,58 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "build": "opennextjs-cloudflare build",
-    "build:next": "next build",
-    "dev": "next dev",
-    "start": "next start",
-    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
-    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
-    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
-    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
-    "postinstall": "fumadocs-mdx",
+    "dev": "blume dev",
+    "build": "blume build",
+    "doctor": "blume doctor",
+    "deploy": "blume build && wrangler deploy",
     "lint": "biome check",
     "format": "biome format --write"
   },
   "dependencies": {
-    "@opennextjs/cloudflare": "^1.20.1",
-    "@shikijs/langs": "^4.2.0",
-    "@shikijs/themes": "^4.2.0",
-    "shiki": "^4.2.0",
-    "cnfast": "^0.0.8",
-    "fumadocs-core": "16.10.7",
-    "fumadocs-mdx": "15.0.13",
-    "fumadocs-ui": "16.10.7",
-    "lucide-react": "^1.21.0",
-    "next": "16.2.9",
-    "react": "^19.2.7",
-    "react-dom": "^19.2.7",
-    "flexsearch": "^0.8.212",
-    "@openrouter/ai-sdk-provider": "^2.9.1",
-    "ai": "^6.0.209",
-    "zod": "^4.4.3",
-    "@ai-sdk/react": "^3.0.211",
-    "@radix-ui/react-presence": "^1.1.6",
-    "class-variance-authority": "^0.7.1",
-    "remark": "^15.0.1",
-    "remark-gfm": "^4.0.1",
-    "remark-rehype": "^11.1.2",
-    "hast-util-to-jsx-runtime": "^2.3.6",
-    "unist-util-visit": "^5.1.0"
+    "blume": "^1.0.4"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.1",
-    "@types/mdx": "^2.0.14",
-    "@types/node": "^26.0.0",
-    "@types/react": "^19.2.17",
-    "@types/react-dom": "^19.2.3",
-    "postcss": "^8.5.15",
-    "tailwindcss": "^4.3.1",
     "typescript": "^6.0.3",
     "@biomejs/biome": "^2.5.1",
-    "@types/hast": "^3.0.4",
     "wrangler": "^4.111.0"
   },
-  "patchedDependencies": {
-    "@opennextjs/aws@4.0.2": "patches/@opennextjs%2Faws@4.0.2.patch"
-  }
+  "type": "module"
 }

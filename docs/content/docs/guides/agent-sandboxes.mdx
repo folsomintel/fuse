@@ -1,0 +1,81 @@
+---
+title: AI agent sandboxes
+description: Give an autonomous agent a disposable, isolated place to run code
+icon: bot
+---
+
+An agent that writes and runs its own code (a coding assistant, a data-analysis
+agent, anything that executes arbitrary or untrusted commands) needs somewhere
+to run that isn't your own machine or a shared container host. A microVM is
+the right isolation boundary: hardware-virtualized, one per task, cheap to
+throw away.
+
+## The pattern
+
+Provision one environment per agent task, run the agent's commands inside it
+with [`exec`](/docs/reference/sdks/typescript/environments), then destroy it
+when the task ends:
+
+```ts
+const env = await client.environments.create({
+  task_id: `agent-task-${taskId}`,
+  spec: { cpus: 2, ram_mb: 2048, storage_gb: 10 },
+});
+
+const result = await client.environments.exec(env.id, {
+  cmd: ["python3", "solve.py", "--input", inputPath],
+  timeout_ms: 30_000,
+});
+
+if (result.exit_code !== 0) {
+  // the agent's code ran and failed; feed stderr back to the agent as context
+  console.error(result.stderr);
+}
+
+await client.environments.destroy(env.id);
+```
+
+`exec` (and `shell`) require the orchestrator's master token. A Postgres-backed API
+key is rejected on both, so an agent service driving environments this way has to
+hold the master token rather than a scoped key. See
+[Authentication](/docs/reference/auth).
+
+- Each task gets its own VM, so one agent's runaway process or malicious
+  output can't touch another task's environment or the host.
+- `exec` returns whatever the guest command exited with, `exit_code`,
+  `stdout`, `stderr`, as a normal response, not an exception. Feed a non-zero
+  exit and stderr straight back to the agent as its next turn of context, the
+  same way a human would read a failed command's output.
+- Tear the environment down the moment the task finishes. There's no reason
+  to keep hardware allocated for an agent that's done, and a fresh VM per
+  task means no state leaks between runs by accident.
+
+## When you need a real terminal instead
+
+Some agent frameworks want an interactive shell rather than one-shot
+commands, for a long-running REPL, or a human occasionally stepping in.
+[`fuse environment shell`](/docs/reference/cli/environment/shell) attaches a
+real pty to the guest, the same mechanism a human would use to debug the same
+box by hand.
+
+## Checkpointing long-running agent work
+
+If an agent's task runs for a while and you want to save progress
+periodically, snapshot the environment at checkpoints and fork from the last
+good one when a step goes wrong, see
+[Ephemeral CI runners](/docs/guides/ci-runners) for the same pattern
+applied to build caching.
+
+Snapshot, fork, and restore all require the source environment to still be
+**running**, so this recovers from a failed agent *step* (the VM is fine, the
+work went wrong) rather than from a VM crash. Fork reaches its seed snapshot
+through the source environment, so once that environment is gone there is no
+running source left to fork from, and checkpointing is **not** a crash-recovery
+mechanism.
+
+## Read next
+
+- [Fusefile](/docs/concepts/fusefile) if the agent's task needs more
+  than a bare VM, background services, secrets, exposed ports.
+- [Environments](/docs/concepts/environments) for the full lifecycle
+  model.

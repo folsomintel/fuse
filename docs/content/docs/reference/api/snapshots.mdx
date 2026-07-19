@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 description: "/v1/snapshots: create, list, inspect, restore, delete"
-icon: Camera
+icon: camera
 ---
 
 | Method | Path | Purpose |
@@ -12,7 +12,7 @@ icon: Camera
 | `POST` | `/v1/snapshots/{snapshotId}?action=restore` | Restore in place onto the original VM. |
 | `DELETE` | `/v1/snapshots/{snapshotId}` | Delete (also removes the provider artifact). |
 
-See [Snapshots](/docs/learn/concepts/snapshots) for the concept-level model,
+See [Snapshots](/docs/concepts/snapshots) for the concept-level model,
 including the QEMU/GPU exception (no snapshot support at all).
 
 ## Create
@@ -60,8 +60,18 @@ optional, an empty body is a valid request.
 | Status | Code | When |
 | --- | --- | --- |
 | `404` | `not_found` | `vmId` doesn't exist. |
-| `409` | `conflict` | The VM isn't `running`, or the backend doesn't support snapshots (GPU/QEMU). |
-| `500` | `internal` | Unexpected server error. |
+| `500` | `internal` | The VM isn't `running`, the environment doesn't support snapshots (GPU, or any QEMU-backed VM), or an unexpected server error. See the note below. |
+
+:::warning[Known limitation]
+Two permanent request conditions currently return `500` `internal` rather than
+a `4xx`. A snapshot of a VM that isn't `running` reports `vm ... in state ...:
+snapshots require running`. An unsupported-backend snapshot reports `vm ... has
+a gpu passthrough device: snapshots are not supported for gpu environments` for
+a GPU environment, and `provider does not support snapshots for vm ...` for any
+other non-snapshotting backend. Each is a permanent property of the request
+rather than a server fault, so the status should be a `4xx`; match on the
+message rather than the status until this is fixed.
+:::
 
 ## List
 
@@ -117,12 +127,12 @@ new VM, use the fork action on
 [Environments](/docs/reference/api/environments#fork) for that instead.
 Returns `204` on success.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data.
 See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
 for the workaround.
-</Callout>
+:::
 
 ## Delete
 
@@ -132,5 +142,6 @@ DELETE /v1/snapshots/{snapshotId}
 
 Leaf-only: also removes the underlying provider artifact. There is no
 soft-delete. Returns `204` on success, `404` `not_found` if it doesn't exist,
-or `409` `conflict` if the snapshot has a dependent fork or export still
-referencing it.
+or `409` `conflict` if another snapshot lists this one as its parent, which is
+the lineage record a fork writes. Exports are not consulted and do not block
+deletion.

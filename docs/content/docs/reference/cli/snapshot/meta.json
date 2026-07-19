@@ -1,5 +1,0 @@
-{
-  "title": "Snapshots",
-  "icon": "Camera",
-  "pages": ["index", "create", "list", "get", "delete", "restore"]
-}

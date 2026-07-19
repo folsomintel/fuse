@@ -1,0 +1,116 @@
+---
+title: Environments
+description: "The VM lifecycle: one microVM and the task running inside it"
+icon: boxes
+---
+
+An **environment** is a single microVM and the task running inside it. You create
+one with a resource spec (CPU/memory/storage, and optionally GPU), an optional
+manifest and secrets, and an optional startup script. Fuse picks a host, boots the
+VM, uploads your files, starts the in-guest agent, and tracks it through its
+lifecycle. A background reconcile loop catches orphans and stuck VMs.
+
+## Lifecycle states
+
+```
+provisioning -> running -> draining -> destroying -> destroyed
+                                                    -> failed
+```
+
+- **provisioning**: a host has been picked and the VM is booting.
+- **running**: the VM is up and the in-guest agent is reachable.
+- **draining**: a graceful two-phase teardown has started: the agent's drain
+  command has been invoked so the workload can flush/stop cleanly, but the VM is
+  **not yet destroyed**. Only running environments can be drained; any other state
+  returns a conflict.
+- **destroying / destroyed**: the VM is being (or has been) torn down.
+- **failed**: provisioning or an operation failed.
+
+`destroyed` and `failed` are terminal states you only ever observe on the event
+stream: by the time either is published the environment record has already been
+removed, so a follow-up `fuse environment get <id>` returns 404 rather than a record
+carrying the failure. The error text survives on the task record, and `--follow` (or
+`fuse environment watch`) prints it inline, so read it there rather than expecting it
+on the environment.
+
+Draining does not auto-destroy. A subsequent explicit destroy call removes the VM.
+
+## Creating one
+
+Two paths: compile a [Fusefile](/docs/concepts/fusefile) with `fuse up`, or
+create one directly with a raw resource spec:
+
+```bash
+fuse environment create --task-id my-task --cpus 2 --ram-mb 2048 --storage-gb 10
+```
+
+`create` schedules orchestrator-wide. The CLI's active host selection does not pin
+placement; use `--region` to influence it.
+
+## Watching progress
+
+```bash
+fuse environment watch <id>     # stream state transitions until terminal
+fuse environment create --follow ...  # same, inline with create
+```
+
+Both are backed by the same mechanism as the HTTP API's live event stream (Server-Sent
+Events), no polling loop involved.
+
+## Draining and destroying
+
+```bash
+fuse environment drain <id>      # running -> draining (graceful, phase 1)
+fuse environment destroy <id>    # tear down (phase 2, or from any state)
+```
+
+## Forking
+
+```bash
+fuse environment fork <id> --comment "branch for experiment"
+```
+
+Forking creates a new environment from an existing one's state, either by taking a
+fresh snapshot or reusing an existing one via `--reuse-snapshot`. The source keeps
+running and is not modified.
+
+The fork is a full environment of its own: its own ID, its own IP and ports, and its
+own guest credentials. Because it boots a copy of the source's disk, it starts out
+with the source's filesystem contents, but it is re-issued a fresh auth token on
+creation, so the two environments never share a secret.
+
+The source must be **running**; forking an environment in any other state fails.
+
+A fork always lands on the **same host** as its source (the seed snapshot lives on
+that host's disk), and it is charged against that host's capacity like any other
+environment. It does **not** go through the scheduler, though, and no capacity check
+runs on that host: forking onto a host with nothing left succeeds and overcommits it,
+so keep an eye on the source host's headroom rather than relying on admission
+control to stop you.
+
+Snapshots are disk-only, so a fork cold-boots the snapshot's disk rather than
+resuming the source's memory: expect a normal boot, not a sub-second resume.
+
+See [Snapshots](/docs/concepts/snapshots): forking is unavailable wherever
+snapshotting is (i.e. QEMU/GPU environments).
+
+## Rotating guest credentials
+
+```bash
+fuse environment rotate-token <id>
+```
+
+Generates fresh TLS credentials and an auth token for a running environment, writes
+them into the guest's credential files, and persists the new encrypted token on the
+orchestrator, all without recreating the VM.
+
+Rotation requires the environment to be **running**, and it requires an orchestrator
+started with a 32-byte `TOKEN_ENCRYPTION_KEY`, a dev-mode orchestrator without one
+generates no per-VM credentials in the first place and so has nothing to rotate.
+
+:::warning[Known limitation]
+Rotation does **not** take effect inside a running guest. `fused` reads its auth
+token exactly once at process start and has no credential poller, so it keeps serving
+the old token until it is restarted. Treat rotate-token as updating the stored and
+on-disk copies, not as a way to revoke a leaked token.
+:::

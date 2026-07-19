@@ -1,5 +1,0 @@
-{
-  "title": "API keys",
-  "icon": "KeySquare",
-  "pages": ["index", "create", "list", "revoke"]
-}

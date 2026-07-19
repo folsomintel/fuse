@@ -1,0 +1,95 @@
+---
+title: Ephemeral CI runners
+description: A clean, isolated VM per build, with snapshots to skip the slow parts
+icon: git-branch
+---
+
+CI runners have a well-known tension: you want a completely clean environment
+per build (no state leaking between runs, no "works on this runner but not
+that one"), but a clean environment means reinstalling dependencies every
+single time. A microVM plus a snapshot gives you both: full isolation per
+build, without paying the setup cost on every run.
+
+## The pattern
+
+Describe the build environment in a [Fusefile](/docs/concepts/fusefile),
+bring it up, install dependencies once, and snapshot that state as your
+baseline:
+
+```yaml
+version: 1
+image: ghcr.io/acme/ci-base:latest
+
+resources:
+  cpus: 4
+  memory: 8GB
+  storage: 20GB
+
+setup:
+  - npm ci
+  - bun install --frozen-lockfile
+```
+
+The baseline only installs dependencies, there is deliberately no `run:` here. A fork
+cold-boots the snapshot's disk, so neither `setup` nor `run` executes again on it,
+which is why the test command comes from `fuse environment exec` further down instead.
+
+```bash
+fuse up                      # build the "warm" environment once
+fuse snapshot create <id> --comment "warm deps, main branch" --mode manual
+```
+
+For every actual CI run after that, fork from the snapshot instead of
+rebuilding from scratch:
+
+```bash
+fuse environment fork <id> --reuse-snapshot <snapshot-id>
+```
+
+- Forking from a snapshot skips `setup` entirely, dependencies are already
+  installed on disk. Only your actual test command runs fresh.
+- Each fork is a genuinely separate environment: no filesystem or process
+  state is shared between builds, so one flaky build can't corrupt another's
+  working tree the way it can on a shared CI runner. Placement is a separate
+  question, see the bullet below.
+- Every fork lands on the host its source lives on, and it never goes through
+  the scheduler, so parallel build capacity is bounded by that one host rather
+  than by the fleet. There is no capacity check on the fork path either, so
+  enough concurrent forks will overcommit that host rather than being refused.
+- The baseline environment has to stay up. Fork snapshots the source's
+  host-local state and requires the source to be in the **running** state, so
+  destroying the warm VM (or losing its host) invalidates every snapshot you
+  were forking from and you have to re-cut the baseline.
+- `--comment` is **ignored** when you pass `--reuse-snapshot`, it only lands on
+  the seed snapshot that a plain `fork` creates, so keep build labels in the
+  task id or in your CI system instead.
+- Re-cut the baseline snapshot whenever your lockfile changes (a new
+  dependency install step in your pipeline that only runs on a cache miss),
+  everything else keeps forking from the same warm state.
+
+## Running the actual test command
+
+Once the fork is up, run your test suite the same way you'd run any command
+in a guest:
+
+```bash
+fuse environment exec <forked-id> -- npm test
+```
+
+`exec` exits with the guest command's exit code, so it composes with your
+CI system's normal pass/fail detection, no extra parsing needed. See
+[`fuse environment exec`](/docs/reference/cli/environment/exec).
+
+## Why not just restore instead of fork
+
+[Restore](/docs/concepts/snapshots) is in-place only: it overwrites the
+*original* VM the snapshot came from, so every CI run would fight over the
+same environment instead of running in parallel. Fork is the right primitive
+here because it creates an independent new environment from the snapshot each
+time, which is exactly what concurrent CI builds need.
+
+## Read next
+
+- [Snapshots](/docs/concepts/snapshots) for the full capture/restore/fork
+  model and its GPU exception.
+- [Fusefile](/docs/concepts/fusefile) for the full field reference.

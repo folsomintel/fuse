@@ -1,16 +1,16 @@
 ---
 title: Overview
 description: REST surface, auth, and error format
-icon: BookOpen
+icon: book-open
 ---
 
 The orchestrator exposes a REST API on [chi](https://github.com/go-chi/chi). Every
 SDK and the CLI itself are built on this surface. The OpenAPI spec ships in the
-repo at `internal/api/openapi.yaml` and covers the 18 `/v1/*` operations across
+repo at `internal/api/openapi.yaml` and covers the 17 `/v1/*` operations across
 environments, snapshots, and hosts; the pages in this section additionally
-document six real, live endpoints (`/v1/api-keys` and its two children, `/login`,
-`/logout`, and `/metrics`) that exist in the router but aren't in the spec file,
-sourced directly from the handler code.
+document seven real, live endpoints (`/v1/api-keys` and its two children,
+`/login`, `/logout`, `/metrics`, and `/v1/version`) that exist in the router but
+aren't in the spec file, sourced directly from the handler code.
 
 ## Base URL and path prefix
 
@@ -31,18 +31,21 @@ this prefix.
 ## Auth
 
 Every `/v1/*` route requires a bearer token (or, for browser callers, the session
-cookie); see [Authentication](/docs/reference/auth). `/login`, `/logout`,
-`/health`, `/ready`, and `/metrics` are mounted outside auth entirely, the first
-two so an unauthenticated browser can reach them, the last three for load
-balancer/Kubernetes probes and Prometheus scraping.
+cookie), with one exception: `/v1/version`. See
+[Authentication](/docs/reference/auth). `/login`, `/logout`, `/health`, `/ready`,
+`/metrics`, and `/v1/version` are mounted outside auth entirely, the first two so
+an unauthenticated browser can reach them, the next three for load
+balancer/Kubernetes probes and Prometheus scraping, and the last so
+`fuse connect` can identify the process before saving a context.
 
 ## Request correlation
 
 Every response carries an `X-Request-ID` header: either the value the client
 supplied (if it matches `[A-Za-z0-9_-]{1,128}`) or a freshly generated
 `req_<32hex>` identifier. The same value threads through audit events and server
-logs. Probe endpoints (`/health`, `/ready`, `/metrics`) don't carry a request ID,
-they're mounted outside the middleware that generates it.
+logs. The endpoints mounted outside the router (`/health`, `/ready`, `/metrics`,
+and `/v1/version`) don't carry a request ID, they sit outside the middleware
+that generates it.
 
 ## Error envelope
 
@@ -63,11 +66,18 @@ All non-2xx responses share one shape:
 | Code | Typical status |
 | --- | --- |
 | `not_found` | `404` |
+| `route_not_found` | `404` |
 | `conflict` | `409` |
+| `forbidden` | `403` |
 | `invalid_argument` | `400` |
-| `unauthorized` | `401` or `403` |
+| `unauthorized` | `401`, `403`, or `502` |
 | `unavailable` | `503` |
 | `unimplemented` | `501` |
 | `internal` | `500` or `502` |
+
+Two of these are narrower than they look. `route_not_found` means no such route
+rather than a missing resource, so the CLI can tell a wrong host or port from a
+resource that isn't there, and `forbidden` means the request was rejected by the
+CIDR allowlist.
 
 `details` is optional and free-form.

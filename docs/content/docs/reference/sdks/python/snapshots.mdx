@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 description: Capturing and restoring a running microVM's state
-icon: Camera
+icon: camera
 ---
 
 `client.snapshots` captures and restores the state of a running microVM. Take
@@ -26,11 +26,16 @@ client.snapshots.restore(snap.id)
   [the environments service](/docs/reference/sdks/python/environments) for
   that instead.
 
-<Callout type="warn" title="Known limitation">
-Restoring while the guest has unsynced writes can corrupt the restored data. See
-[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
-for the workaround.
-</Callout>
+:::warning[Known limitation]
+Creating or restoring a snapshot against a VM in any state other than
+`running` raises `fuse.ApiError` with `status == 500` and `code == "internal"`,
+whose message names the offending state. The two paths word it differently:
+create emits `vm vm-abc in state destroyed: snapshots require running`, restore
+emits `vm vm-abc in state destroyed: restore requires running`. This is a
+permanent property of the request rather than a server fault, so the status
+should be a 4xx and the code `conflict`. Match on the error message, not the
+status, until it is fixed.
+:::
 
 ## Everything else
 
@@ -42,9 +47,25 @@ for the workaround.
 
 These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 
-## The QEMU/GPU exception
+## The GPU exception
 
-Environments running on the QEMU backend (whole-GPU passthrough) cannot be
-snapshotted or forked at all, `create` and `restore` against a GPU
-environment raise `fuse.ApiError` with `code == "conflict"` rather than
-silently no-op-ing. See [Providers](/docs/learn/concepts/providers).
+Any environment that requested `spec.gpus > 0` cannot be snapshotted or forked
+at all, whether those GPUs are whole devices or MIG instances, because the
+qemu backend deliberately omits snapshot support for VFIO passthrough. The two
+paths reach that outcome differently: fork checks the requested GPU count up
+front, before the provider is consulted, whereas snapshot is gated by the
+backend, and the GPU count only selects which error message you get once the
+backend has already declined. See
+[Providers](/docs/concepts/providers).
+
+A zero-GPU environment that landed on a qemu host also cannot be snapshotted,
+but it surfaces the generic provider-unsupported error (`provider does not
+support snapshots for vm ...`) rather than the GPU one.
+
+:::warning[Known limitation]
+Both of these raise `fuse.ApiError` with `status == 500` and
+`code == "internal"`, not the `conflict` you would expect. The condition is a
+permanent property of the environment rather than a server fault, so the
+status should be a 4xx. Match on the error message, not the status, until it
+is fixed.
+:::

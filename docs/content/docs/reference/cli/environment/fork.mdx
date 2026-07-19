@@ -1,7 +1,7 @@
 ---
 title: fuse environment fork
 description: Fork an environment into a new one
-icon: GitFork
+icon: git-fork
 ---
 
 ```bash
@@ -15,13 +15,14 @@ Creates a new environment seeded from an existing one's state.
 | Flag | Purpose |
 | --- | --- |
 | `--reuse-snapshot` | Reuse an existing snapshot ID instead of taking a new one. |
-| `--comment` | Comment to attach to the fork. |
+| `--comment` | Comment recorded on the seed snapshot the fork creates. |
 
 ## Behavior
 
 With no `--reuse-snapshot`, the server takes a fresh snapshot of `<id>` first,
 then forks from it. With `--reuse-snapshot`, it skips that step and forks
-directly from the named snapshot instead.
+directly from the named snapshot instead, which also makes `--comment` a no-op,
+there is no new snapshot for it to be recorded on.
 
 ```bash
 fuse environment fork fuse-abc123 --comment "branch for experiment"
@@ -33,5 +34,24 @@ fuse environment fork fuse-abc123 --reuse-snapshot snap-1
 ```
 
 Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
-cannot be forked. See [Snapshots](/docs/learn/concepts/snapshots) and
-[Providers](/docs/learn/concepts/providers).
+cannot be forked. See [Snapshots](/docs/concepts/snapshots) and
+[Providers](/docs/concepts/providers).
+
+## Errors
+
+| Status | Code | When |
+| --- | --- | --- |
+| 404 | `not_found` | `--reuse-snapshot` names a snapshot that belongs to a different environment. |
+| 409 | `conflict` | The reused snapshot is not in the `ready` state. |
+| 500 | `internal` | The source environment is not `running`, or it holds a GPU passthrough device. |
+
+The 404 reads confusingly when the snapshot plainly exists: a snapshot of
+another environment is rejected as not-found rather than as a mismatch.
+
+:::warning[Known limitation]
+The not-running and GPU rejections return HTTP 500 because neither wraps a
+sentinel error. Both are permanent properties of the request rather than a
+server fault, so the status should be a 4xx. Match on the error message
+(`fork requires running`, `fork is not supported for gpu environments`) rather
+than the status until this is fixed.
+:::

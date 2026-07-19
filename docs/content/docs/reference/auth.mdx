@@ -1,7 +1,7 @@
 ---
 title: Authentication
 description: How the orchestrator authenticates callers, across the CLI, SDKs, and browser
-icon: KeySquare
+icon: key-square
 ---
 
 Fuse's orchestrator uses a **single shared bearer token** model. Self-hosted,
@@ -18,8 +18,12 @@ Authorization: Bearer <token>
 ```
 
 The server compares it with a constant-time comparison (no timing leak). An empty
-token is a deliberate no-op pass-through (insecure/dev mode, useful for local
-exploration only). This is what the [Quickstart](/docs/learn/quickstart) relies on.
+token is a no-op pass-through (insecure/dev mode, useful for local exploration
+only) **only when no API key store is configured** (no `DATABASE_URL`). This is
+what the [Quickstart](/docs/learn/quickstart) relies on. With Postgres wired up,
+an empty `ORCH_AUTH_TOKEN` does not disable auth, it leaves API keys as the only
+accepted credential and there is no bootstrap path to mint one. Set
+`ORCH_REQUIRE_AUTH=true` in production to fail fast on this.
 
 ## Revocable API keys
 
@@ -41,7 +45,9 @@ fuse connect http://orchestrator:8080 --token <master-token> --master
 
 Keys are shown once at creation (`fuse apikeys create` prints the raw secret) and
 are unrecoverable afterward; they're stored hashed. Both the master token and any
-API key are accepted interchangeably as a bearer token on every `/v1/*` route.
+API key are accepted interchangeably as a bearer token on every `/v1/*` route
+except `/v1/api-keys`, which returns `403` for an API-key principal, key
+management is master-only.
 
 ## Browser / session auth
 
@@ -64,8 +70,11 @@ origin than the API) isn't supported yet. It would need credentialed CORS plus
 The tokens above authenticate *callers of the orchestrator*. A completely separate
 token pair authenticates the *orchestrator to each host agent*:
 
-- `FIRECRACKER_TOKEN`: bearer token the orchestrator uses to call `fc-agent`.
-- `QEMU_AGENT_TOKEN`: same, for `qemu-agent` on GPU hosts.
+- `FIRECRACKER_TOKEN`: read by the orchestrator as the default `fc-agent` token.
+- `QEMU_AGENT_TOKEN`: set on the GPU host itself, the orchestrator **never** reads
+  it, it receives the per-host token at registration time via
+  `fuse host register --token`. A stored per-host token that drifts from the
+  agent's env produces `http 401` at env-create time.
 
 These never reach the CLI, SDKs, or browser. They're purely orchestrator-to-host.
 See [Firecracker host setup](/docs/cloud/firecracker-host-setup) and
@@ -76,5 +85,5 @@ See [Firecracker host setup](/docs/cloud/firecracker-host-setup) and
 Secrets you pass to `fuse up --secret key=value` or `fuse environment create --secret
 ...` are yet another layer: per-VM credentials, generated and encrypted at rest
 (`TOKEN_ENCRYPTION_KEY`), scoped to a single environment. Not an auth mechanism for
-the API itself. See [Fusefile](/docs/learn/concepts/fusefile#field-notes) for how
+the API itself. See [Fusefile](/docs/concepts/fusefile#field-notes) for how
 they're declared and resolved.

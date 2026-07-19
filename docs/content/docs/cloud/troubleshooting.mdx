@@ -1,7 +1,7 @@
 ---
 title: Troubleshooting and known issues
 description: Common install/setup problems and known limitations, with workarounds
-icon: Wrench
+icon: wrench
 ---
 
 ## KVM not available
@@ -32,6 +32,23 @@ accident when moving from local dev to a real host. Check the orchestrator's sta
 logs; it logs which mode it's running in, and confirm `FIRECRACKER_BASE_URL` and
 `FIRECRACKER_TOKEN` are set to the values `fc-agent.sh start` printed. See
 [Deploying the orchestrator](/docs/cloud/orchestrator-deploy).
+
+## `firecracker create vm: http 401`
+
+Symptom: `fuse up` or `fuse environment create` fails with
+`firecracker create vm: http 401`. The orchestrator is healthy and the host agent
+is running, only environment creation fails.
+
+Cause: the per-host agent token the orchestrator has stored no longer matches the
+agent's `FC_AGENT_TOKEN`. The agent authenticates every route, so the very first
+call the provider makes is rejected. This usually follows the agent's `.env` being
+regenerated, or `TOKEN_ENCRYPTION_KEY` changing (which leaves the stored token
+undecryptable). The two are stored separately, so re-running the agent never
+updates the orchestrator's copy on its own.
+
+Fix: print the current value with `./fc-agent.sh env` on the host, then re-register
+the host with it, `fuse host register <id> --token <FIRECRACKER_TOKEN> ...`.
+Registration overwrites the stored token.
 
 ## Rootfs bake fails or produces an incomplete guest
 
@@ -75,10 +92,10 @@ rootfs by mounting the ext4 file from the host and modifying it there (the same 
 
 ## Snapshot restore can corrupt unsynced writes
 
-<Callout type="info" title="Fixed">
+:::info[Fixed]
 This was a real data-corruption bug in earlier host agents. It is fixed. If you are
 running a host agent from before the fix, update it.
-</Callout>
+:::
 
 **Symptom (on an un-updated host):** a clean snapshot-then-restore cycle (no writes
 in between) round-trips correctly. But if the guest had written data that hadn't been
@@ -103,6 +120,6 @@ agent that predates the fix. Update it and restart `fc-agent`.
 
 - [Firecracker host setup](/docs/cloud/firecracker-host-setup): full bring-up
   walkthrough and the host agent's HTTP contract.
-- [Artifacts](/docs/learn/concepts/artifacts): what the rootfs bake actually builds
+- [Artifacts](/docs/concepts/artifacts): what the rootfs bake actually builds
   and why.
-- [Snapshots](/docs/learn/concepts/snapshots): the snapshot/restore model.
+- [Snapshots](/docs/concepts/snapshots): the snapshot/restore model.

@@ -1,0 +1,54 @@
+---
+title: Snapshots
+description: Capturing and restoring a running microVM's state
+icon: camera
+---
+
+A **snapshot** captures a running microVM's state so you can restore it later,
+useful for fast cold starts, checkpointing long-running tasks, or branching from a
+known-good point via [fork](/docs/concepts/environments#forking).
+
+## What's captured
+
+Snapshots are disk-only today. The host-agent wire format has an `include_ram`
+field, but it is currently ignored; memory state is not captured. Each snapshot is
+a persisted record that can carry a `comment`, a `mode` (`manual` or `auto`),
+`retention_seconds`, arbitrary `metadata`, and an optional `export_ref` for pushing
+the artifact somewhere external.
+
+## Creating one
+
+```bash
+fuse snapshot create <vm-id> --comment "before risky migration" --mode manual
+```
+
+The VM must be `running` at snapshot time.
+
+## Restoring
+
+```bash
+fuse snapshot restore <id>
+```
+
+Restore is **in-place only**: it restores the snapshot onto its original VM, which
+must still be running. There is no cross-host restore, clone, or standalone restore
+into a new VM; use [fork](/docs/concepts/environments#forking) if you want a
+new environment from a snapshot instead.
+
+## Deleting
+
+```bash
+fuse snapshot delete <id>
+```
+
+Deletion is leaf-only and also removes the underlying provider artifact; there's no
+soft-delete.
+
+## The QEMU/GPU exception
+
+Environments running on the QEMU backend **cannot be snapshotted or forked at
+all**: a VFIO-passed-through GPU device can't be checkpointed the way a
+Firecracker microVM's disk can. This covers both whole-device passthrough and
+fractional MIG instances, a slice is still passthrough hardware. Snapshot and
+fork requests against a GPU environment fail cleanly rather than silently doing
+nothing. See [Providers](/docs/concepts/providers).

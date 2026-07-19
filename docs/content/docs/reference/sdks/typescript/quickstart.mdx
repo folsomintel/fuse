@@ -1,7 +1,7 @@
 ---
 title: Quickstart
 description: Provision a microVM, tail its lifecycle, and tear it down
-icon: Rocket
+icon: rocket
 ---
 
 This walks through the full lifecycle of an environment using the TypeScript SDK:
@@ -23,8 +23,11 @@ const env = await client.environments.create({
 });
 console.log("created:", env.id, env.state);
 
-for await (const event of await client.environments.events(env.id)) {
+const ac = new AbortController();
+const stream = await client.environments.events(env.id, { signal: ac.signal });
+for await (const event of stream) {
   console.log("state:", event.state);
+  if (event.state === "running") ac.abort();
 }
 
 await client.environments.destroy(env.id);
@@ -42,20 +45,16 @@ environment reached. Note the wire field names: `task_id` and `ram_mb`, not
 **`events`** returns a promise that resolves to an `AsyncIterable<Event>`. It
 rejects immediately on a connect-time error (for example `not_found`); once
 connected, the stream yields the current state first, then each transition, and
-ends on its own after a terminal-state event (`destroyed`/`failed`). There is no
-built-in timeout on the stream itself, pass `{ signal }` to cancel it early:
+ends on its own after a terminal-state event (`destroyed`/`failed`). Because
+`create` has already blocked until the environment is running, the stream above
+yields that `running` snapshot and would then sit on keepalives until the
+environment dies, the `AbortController` is what ends it. There is no built-in
+timeout on the stream itself, and an abort is treated as a clean end rather than
+an error, so the loop exits without throwing.
 
-```ts
-const ac = new AbortController();
-const stream = await client.environments.events(env.id, { signal: ac.signal });
-for await (const event of stream) {
-  if (event.state === "running") ac.abort();
-}
-```
-
-**`destroy`** tears the environment down. It is idempotent: destroying an
-already-gone environment throws a `FuseApiError` with `code === "not_found"`, not
-an unrelated exception.
+**`destroy`** tears the environment down. It is **not** idempotent: destroying
+an already-gone environment throws a `FuseApiError` with `code === "not_found"`,
+so guard repeat calls with `isNotFound(err)` rather than calling blind.
 
 ## Next steps
 

@@ -1,14 +1,33 @@
 ---
 title: fuse snapshot create
 description: Snapshot a running environment
-icon: CirclePlus
+icon: circle-plus
 ---
 
 ```bash
 fuse snapshot create <vm-id> [flags]
 ```
 
-Creates a snapshot of the given environment (VM). The VM must be `running`.
+Creates a snapshot of the given environment (VM). Three preconditions apply:
+
+- the VM must be `running`
+- the provider must support snapshots, GPU environments have no snapshot
+  support at all (a vfio passthrough device cannot be checkpointed), see
+  [Snapshots](/docs/concepts/snapshots)
+- the tenant must be under both its snapshot count and byte quotas
+
+A quota rejection returns 409 / `conflict`. The GPU and unsupported-provider
+rejections return HTTP 500 / `internal`, because neither wraps a sentinel
+error.
+
+:::warning[Known limitation]
+A GPU environment is permanently unsnapshottable, so that 500 describes a
+property of the request rather than a server fault and the status should be a
+4xx. Match on the error message
+(`snapshots are not supported for gpu environments`,
+`provider does not support snapshots for vm <id>`) rather than the status until
+this is fixed.
+:::
 
 ## Flags
 
@@ -28,5 +47,7 @@ fuse snapshot create fuse-abc123 --comment "before risky migration" --mode manua
 
 ## Interactive mode
 
-With a TTY and no flags set, comment/mode/retention are collected via a form
-instead of flags.
+With a TTY and none of `--comment`, `--mode`, `--retention`, or `--export-ref`
+set, comment/mode/retention are collected via a form instead of flags.
+`--metadata` is not part of that check, passing it alone does not suppress the
+form.

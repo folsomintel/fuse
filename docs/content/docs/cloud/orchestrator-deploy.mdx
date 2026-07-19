@@ -1,7 +1,7 @@
 ---
 title: Deploying the orchestrator
 description: Running the control plane as a long-lived service
-icon: Server
+icon: server
 ---
 
 For anything past local dev, run the orchestrator as a service rather than a
@@ -12,13 +12,18 @@ foreground process.
 Two things cause most bring-up confusion: which token goes where, and which
 port is which service. State both up front.
 
-There are three distinct tokens, travelling in different directions:
+There are four distinct tokens, travelling in different directions:
 
 | Token | Set on | Used by | Flag / env |
 | --- | --- | --- | --- |
 | Orchestrator bearer | Orchestrator | you → orchestrator | `ORCH_AUTH_TOKEN` / `fuse connect --token` |
 | Host agent token | Host agent (`fc-agent`) | orchestrator → agent | `fuse host register --token` (the agent's `FC_AGENT_TOKEN`) |
+| Host agent token | Host agent (`qemu-agent`) | orchestrator → agent | `fuse host register --token` (the agent's `QEMU_AGENT_TOKEN`) |
 | API key | Orchestrator | apps → orchestrator | `fuse apikeys create` |
+
+Both host agents take a token the same way, only the env var naming differs per
+backend, so a GPU host registers with `$QEMU_AGENT_TOKEN` where a Firecracker
+host registers with `$FC_AGENT_TOKEN`.
 
 The single most common setup mistake is passing the host agent token to
 `fuse connect`, or the orchestrator token to `fuse host register`. They are not
@@ -31,7 +36,16 @@ Default ports:
 | Port | Service |
 | --- | --- |
 | `8080` | Orchestrator (control plane API) |
-| `8090` | Host agent (`fc-agent` / `qemu-agent`) |
+| `8090` | Firecracker host agent (`fc-agent`) |
+| `8091` | GPU/QEMU host agent (`qemu-agent`) |
+| `19551-19799` | Per-VM guest-agent DNAT range, Firecracker hosts (`fc-agent`) |
+| `19651-19899` | Per-VM guest-agent DNAT range, GPU/QEMU hosts (`qemu-agent`) |
+
+The two DNAT ranges differ because each agent has its own
+`FUSE_HOST_PORT_BASE` default, `19550` for `fc-agent` and `19650` for
+`qemu-agent`, and each allocates one port per VM index from 1 to 249. Open the
+range that matches the backend the host actually runs, rather than assuming one
+range covers the fleet.
 
 ## Configuration
 
@@ -39,11 +53,11 @@ Default ports:
 | --- | --- | --- | --- |
 | `ORCH_LISTEN` | `--listen` | `:8080` | API listen address. |
 | `FIRECRACKER_BASE_URL` | `--firecracker-url` | empty → stub | Firecracker host agent URL. |
-| `FIRECRACKER_TOKEN` | | | Bearer token for the host agent. |
+| `FIRECRACKER_TOKEN` | `--firecracker-token` | | Bearer token for the host agent. |
 | `DATABASE_URL` | `--database-url` | empty → in-memory | Postgres state store connection string. |
 | `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption at rest. |
 | `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot (alternative to baking it in). |
-| `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | | | Serve the API over TLS. |
+| `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | `--tls-cert` / `--tls-key` | | Serve the API over TLS. |
 | `ORCH_REQUIRE_AUTH` | | `false` | Fail-closed strict mode: refuses to boot unless `ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are all set. |
 | `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/docs/reference/auth). |
 | `ORCH_ALLOWED_CIDRS` | `--allowed-cidrs` | empty → open | Comma-separated CIDR allowlist. |
@@ -59,7 +73,7 @@ in-memory and does not survive a restart.
 Fuse doesn't ship any backup or disaster-recovery tooling of its own, no
 `pg_dump` wrapper, no export/import command, no point-in-time-recovery
 integration. Everything durable (environment records, snapshot metadata, API
-keys, host registrations) lives in the four migrations under
+keys, host registrations) lives in the migrations under
 `internal/orchestrator/migrations/`, applied automatically at boot. Treat this
 Postgres database the same way you'd treat any other production database: standard
 backup practices apply (`pg_dump`/`pg_restore`, WAL archiving, a managed
@@ -68,7 +82,7 @@ uses elsewhere). This is general Postgres operational guidance, not something
 specific to Fuse, there's no Fuse-side hook or lifecycle event tied to it.
 
 Snapshot restore (`fuse snapshot restore`, see
-[Snapshots](/docs/learn/concepts/snapshots)) is an entirely different, VM-level
+[Snapshots](/docs/concepts/snapshots)) is an entirely different, VM-level
 concept, restoring a Firecracker microVM's disk from a checkpoint. It has no
 relationship to Postgres backup and doesn't substitute for one.
 

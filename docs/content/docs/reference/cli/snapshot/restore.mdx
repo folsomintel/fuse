@@ -1,7 +1,7 @@
 ---
 title: fuse snapshot restore
 description: Restore a snapshot in place
-icon: RotateCcw
+icon: rotate-ccw
 ---
 
 ```bash
@@ -20,12 +20,12 @@ instead.
 | --- | --- |
 | `--yes` | Skip the confirmation prompt. |
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data.
 See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
 for the workaround.
-</Callout>
+:::
 
 Without `--yes` in an interactive terminal, prompts for confirmation and warns
 that this overwrites the running VM.

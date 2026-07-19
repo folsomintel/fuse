@@ -1,7 +1,7 @@
 ---
 title: Snapshots
 description: Capturing and restoring a running microVM's state
-icon: Camera
+icon: camera
 ---
 
 `client.snapshots` captures and restores the state of a running microVM.
@@ -27,11 +27,11 @@ await client.snapshots.restore(snap.id);
   [the environments service](/docs/reference/sdks/typescript/environments)
   for that instead.
 
-<Callout type="warn" title="Known limitation">
+:::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data. See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
 for the workaround.
-</Callout>
+:::
 
 ## Everything else
 
@@ -48,4 +48,4 @@ These mirror the [HTTP API](/docs/reference/api/snapshots) one to one.
 Environments running on the QEMU backend (whole-GPU passthrough) cannot be
 snapshotted or forked at all, `create` and `restore` against a GPU
 environment throw a `FuseApiError` with `code === "conflict"` rather than
-silently no-op-ing. See [Providers](/docs/learn/concepts/providers).
+silently no-op-ing. See [Providers](/docs/concepts/providers).

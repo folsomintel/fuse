@@ -1,7 +1,7 @@
 ---
 title: Firecracker host setup
 description: Bringing up a bare-metal or nested-virt host to run Firecracker microVMs
-icon: Router
+icon: router
 ---
 
 ## Requirements
@@ -20,8 +20,13 @@ Firecracker needs hardware virtualization (KVM). The host must expose `/dev/kvm`
   If `/dev/kvm` is missing, the host can't run Firecracker.
 - Linux only, `x86_64` today (the baked rootfs pulls `amd64` podman/iptables). The
   agent shells out to `ip`, `iptables`, `firecracker`, and SSH.
-- Needs `sudo` (TAP devices, iptables, mounting the rootfs to bake), plus `curl`,
-  `tar`, `ssh`, and `iptables` on the host.
+- Needs `sudo` (TAP devices, iptables, mounting the rootfs to bake), plus `python3`
+  (the agent itself), `podman` (the bake extracts the iptables bundle with it),
+  `curl`, `tar`, `ssh`, `iptables`, and `e2fsck`/`resize2fs`/`truncate` from
+  `e2fsprogs` and `util-linux`.
+- Rather than installing that list by hand, run `./fc-deps.sh` first, it installs
+  the whole set on apt or dnf and then verifies every tool the scripts shell out
+  to.
 
 ## One-command bootstrap
 
@@ -44,6 +49,9 @@ step-by-step equivalent, use it when you want to run or skip individual stages.
 
 ```bash
 git clone <this repo> ~/fc && cd ~/fc/host-agent
+
+# 0. Install host dependencies (podman, python3, e2fsprogs, ...) and verify them.
+./fc-deps.sh
 
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
 ./fc-install.sh
@@ -75,7 +83,7 @@ an orchestrator instance.
 
 ## What gets baked into the rootfs
 
-See [Artifacts](/docs/learn/concepts/artifacts) for the conceptual explanation.
+See [Artifacts](/docs/concepts/artifacts) for the conceptual explanation.
 Concretely, `fc-bake-rootfs.sh` builds `rootfs-fused.ext4` on top of the Firecracker
 CI Ubuntu 22.04 rootfs, injecting `/usr/local/bin/fused`, podman-static and its
 runtime dependencies, iptables (symlinked to `xtables-legacy-multi`, the CI kernel
@@ -90,22 +98,41 @@ nftables support.
 
 ## The host agent's HTTP contract
 
-All routes are under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON
-in/out:
+VM routes are under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON
+in/out. Auth applies to every route including the health and capacity probes,
+there is no unauthenticated path on this agent:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `POST` | `/v1/vm` | Create a microVM. Body: `{name,cpus,memory_mb,storage_gb,region}`. Returns `{vm_id,url}`. |
+| `POST` | `/v1/vm` | Create a microVM. Body: `{name,cpus,memory_mb,storage_gb,region,image}`. Returns `{vm_id,url}`. |
 | `GET` | `/v1/vm/{id}` | `{vm_id,url}` |
 | `GET` | `/v1/vm?prefix=` | `{vms:[{vm_id,url}]}`, prefix match on name. |
 | `DELETE` | `/v1/vm/{id}` | Tear down, free TAP + DNAT. |
 | `POST` | `/v1/vm/{id}/upload` | `{path, content_b64}`, writes into the guest. |
-| `POST` | `/v1/vm/{id}/exec` | `{cmd:[...]}`, returns `{exit_code, stdout, stderr}` (base64). |
+| `POST` | `/v1/vm/{id}/exec` | `{cmd:[...], timeout_ms}`, returns `{exit_code, stdout, stderr}` (base64). |
 | `POST` | `/v1/vm/{id}/start-agent` | Preferred. Optionally fetches the agent binary via `download_url`, writes a systemd drop-in, starts it. |
 | `POST` | `/v1/vm/{id}/start-surfd` | Frozen legacy wire, same as `start-agent` with `fused` defaults. Fuse falls back to this on a 404 from `start-agent`. |
 | `POST` | `/v1/vm/{id}/snapshot` | `{comment, include_ram}`, disk-only (`include_ram` currently ignored). |
 | `GET` | `/v1/vm/{id}/snapshots` | `{snapshots:[...]}` |
-| `POST` | `/v1/vm/{id}/restore` | `{snapshot_id, include_ram}`, stops fc, swaps rootfs, reboots the VM. |
+| `POST` | `/v1/vm/{id}/restore` | `{snapshot_id, include_ram}`, stops fc, swaps rootfs, reboots the VM (`include_ram` currently ignored here too, restore is disk-only). |
+| `POST` | `/v1/vm/{id}/fork` | Seeds a brand-new VM from this VM's snapshot. Returns the new VM's `{vm_id,url}`. |
+| `GET` | `/v1/vm/{id}/attach` | Hijacks the connection for an interactive pty session, `fuse-attach/1` framing. |
+| `GET` | `/v1/capacity` | Host CPU count, total RAM, and free disk. Probed once at host registration, not polled. |
+| `GET` | `/healthz` | `{ok:true, app_name:"fc-agent"}`. `GET /` is the same handler. |
+
+`image` on create is optional: a base-image name resolved to
+`$IMAGES_DIR/<image>.ext4`, defaulting to the baked `rootfs-fused.ext4` when
+unset. A name that resolves outside `IMAGES_DIR` and a name with no matching file
+both return `400`, so bake and place the rootfs before referencing it.
+
+`timeout_ms` on exec is clamped to a 600-second ceiling, and the ceiling applies
+when the field is omitted or zero.
+
+A bring-your-own host agent has to serve `fork` and `attach` too. `fuse environment
+fork` is implemented on top of the former, and the API's attach endpoint on top of
+the latter, rather than on any orchestrator-side fallback. Attach has no CLI
+command, it is reachable only over
+[the HTTP API](/docs/reference/api/environments).
 
 `url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port is
 `19550 + vm_index`. Public host is auto-detected; override with `PUBLIC_HOST=...` in
@@ -143,12 +170,16 @@ and host reboots don't lose VMs, as long as the systemd unit is installed.
 
 ## Auto-update
 
-`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It compares the
-baked `fused --version` to the newest tag and, if newer, pulls the repo, downloads
-the new `fused`, re-bakes the rootfs, and restarts the agent:
+`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It pulls the
+checkout first, resolves the latest release tag, then compares that tag against the
+`.fc-version` marker file next to the script. If they differ it downloads the new
+`fused`, re-bakes the rootfs, and restarts the agent. The comparison is **string
+equality, not a version ordering**, so re-tagging or rolling back to an older
+release also triggers an update, and `FC_FORCE=1` re-applies the current one. It
+never shells out to `fused --version` to make that decision:
 
 ```bash
-./fc-update.sh                 # one-shot: update now if a newer release exists
+./fc-update.sh                 # one-shot: update if the marker != the latest tag
 ./fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
 ./fc-agent.sh uninstall-updater
 ```
