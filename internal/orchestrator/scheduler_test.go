@@ -601,8 +601,17 @@ func TestFits_migRejectsNonMIGCapableDevices(t *testing.T) {
 func TestFits_migMixedHostOnlyMatchesMIGCapableKind(t *testing.T) {
 	// one mig-capable a100 alongside a non-mig-capable l40s. a mig request
 	// pinned to l40s must not land here even though the host carries an l40s.
+	//
+	// GPUKind is set on purpose: the probe leaves it empty on a mixed host, but
+	// an operator's declared --gpu-kind overrides the probe, so a scalar kind
+	// alongside per-device inventory is a real shape. It is also the shape that
+	// exercises the host-kind fallback in gpuKindMatches. Without the fallback
+	// being gated on an empty device Model, the a100's MIGCapable and the host's
+	// l40s label would satisfy the two conjuncts from two different cards and
+	// admit this request.
 	cap := HostCapacity{
 		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "l40s",
 		MIGProfiles: map[string]int{"1g.10gb": 4},
 		GPUDevices: []GPUDevice{
 			migDevice("gpu-a", "NVIDIA A100-SXM4-40GB"),
@@ -614,6 +623,31 @@ func TestFits_migMixedHostOnlyMatchesMIGCapableKind(t *testing.T) {
 	}
 	if fits(cap, HostCapacity{}, migSpec(1, "l40s", "1g.10gb")) {
 		t.Error("fits = true, want false (l40s is not mig capable)")
+	}
+}
+
+func TestFits_migModellessDeviceFallsBackToHostKind(t *testing.T) {
+	// the qemu agent degrades model to "" when the vfio metadata blob omits it,
+	// so a device can be reported with a uuid and mig_capable but no model. the
+	// host scalar kind is then the only kind evidence there is and must still
+	// admit a matching request, otherwise these hosts stop placing entirely.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "a100",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "", MIGCapable: true, MIGMode: "Enabled"},
+		},
+	}
+	if !fits(cap, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (modelless device falls back to host kind)")
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "h100", "1g.10gb")) {
+		t.Error("fits = true, want false (host kind is a100)")
+	}
+	// whole-device requests take the same fallback.
+	if !fits(cap, HostCapacity{}, gpuSpec(1, "a100")) {
+		t.Error("fits = false, want true (whole-device modelless fallback)")
 	}
 }
 
