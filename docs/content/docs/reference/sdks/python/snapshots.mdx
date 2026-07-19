@@ -26,16 +26,12 @@ client.snapshots.restore(snap.id)
   [the environments service](/docs/reference/sdks/python/environments) for
   that instead.
 
-:::warning[Known limitation]
 Creating or restoring a snapshot against a VM in any state other than
-`running` raises `fuse.ApiError` with `status == 500` and `code == "internal"`,
+`running` raises `fuse.ApiError` with `status == 409` and `code == "conflict"`,
 whose message names the offending state. The two paths word it differently:
-create emits `vm vm-abc in state destroyed: snapshots require running`, restore
-emits `vm vm-abc in state destroyed: restore requires running`. This is a
-permanent property of the request rather than a server fault, so the status
-should be a 4xx and the code `conflict`. Match on the error message, not the
-status, until it is fixed.
-:::
+create includes `vm vm-abc in state destroyed: snapshots require running`,
+restore includes `vm vm-abc in state destroyed: restore requires running`. Use
+`fuse.is_conflict(err)` to branch on it rather than matching the message.
 
 ## Everything else
 
@@ -62,10 +58,7 @@ A zero-GPU environment that landed on a qemu host also cannot be snapshotted,
 but it surfaces the generic provider-unsupported error (`provider does not
 support snapshots for vm ...`) rather than the GPU one.
 
-:::warning[Known limitation]
-Both of these raise `fuse.ApiError` with `status == 500` and
-`code == "internal"`, not the `conflict` you would expect. The condition is a
-permanent property of the environment rather than a server fault, so the
-status should be a 4xx. Match on the error message, not the status, until it
-is fixed.
-:::
+The GPU guardrail raises `fuse.ApiError` with `status == 409` and
+`code == "conflict"`, so `fuse.is_conflict(err)` reports `True`. The generic
+provider-unsupported case is distinct: it raises `status == 501` and
+`code == "unimplemented"`. Both are permanent, so neither should be retried.

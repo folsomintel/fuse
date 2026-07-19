@@ -60,18 +60,9 @@ optional, an empty body is a valid request.
 | Status | Code | When |
 | --- | --- | --- |
 | `404` | `not_found` | `vmId` doesn't exist. |
-| `500` | `internal` | The VM isn't `running`, the environment doesn't support snapshots (GPU, or any QEMU-backed VM), or an unexpected server error. See the note below. |
-
-:::warning[Known limitation]
-Two permanent request conditions currently return `500` `internal` rather than
-a `4xx`. A snapshot of a VM that isn't `running` reports `vm ... in state ...:
-snapshots require running`. An unsupported-backend snapshot reports `vm ... has
-a gpu passthrough device: snapshots are not supported for gpu environments` for
-a GPU environment, and `provider does not support snapshots for vm ...` for any
-other non-snapshotting backend. Each is a permanent property of the request
-rather than a server fault, so the status should be a `4xx`; match on the
-message rather than the status until this is fixed.
-:::
+| `409` | `conflict` | The VM isn't `running`, the snapshot quota is exhausted, or the VM holds a GPU passthrough device (GPU environments can never be snapshotted). |
+| `501` | `unimplemented` | The provider has no snapshot support. |
+| `500` | `internal` | Unexpected server error. |
 
 ## List
 
@@ -126,6 +117,13 @@ running. There is no cross-host restore, clone, or standalone restore into a
 new VM, use the fork action on
 [Environments](/docs/reference/api/environments#fork) for that instead.
 Returns `204` on success.
+
+| Status | Code | When |
+| --- | --- | --- |
+| `404` | `not_found` | The snapshot doesn't exist, or is no longer present on the provider. |
+| `409` | `conflict` | The target VM isn't `running`, or the snapshot isn't in the `ready` state. |
+| `501` | `unimplemented` | The provider has no snapshot support. |
+| `500` | `internal` | Unexpected server error. |
 
 :::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data.
