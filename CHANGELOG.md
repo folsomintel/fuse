@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0](https://github.com/folsomintel/fuse/compare/v0.6.0...v0.7.0) (2026-07-19)
+
+
+### Features
+
+* **api:** validate gpu_profile against mig-capable kind for raw callers ([#42](https://github.com/folsomintel/fuse/issues/42)) ([06281d9](https://github.com/folsomintel/fuse/commit/06281d973489309a470950d1f7675167c7de3604))
+* **fusefile:** reject gpu_profile on non-mig-capable gpu kinds ([#42](https://github.com/folsomintel/fuse/issues/42)) ([c53ef8a](https://github.com/folsomintel/fuse/commit/c53ef8a5fd7e647bb81846a5beb05969d3a965e5))
+* **gpu:** fractional MIG passthrough (D5 / [#32](https://github.com/folsomintel/fuse/issues/32)) ([bc94b20](https://github.com/folsomintel/fuse/commit/bc94b202a67f4a0e49539f104ea50c935f42bf10))
+* **gpu:** wire fractional MIG (gpu_profile / mdev) end to end ([771a0df](https://github.com/folsomintel/fuse/commit/771a0df88a523f4b203a1d9f20d0ec498edd2f0d))
+* **host-agent:** enrich vfio-inventory with per-gpu probe data ([#34](https://github.com/folsomintel/fuse/issues/34)) ([bbe4262](https://github.com/folsomintel/fuse/commit/bbe426263c674788229f47a0a287f843e3a46816))
+* **host-agent:** probe per-gpu inventory in host_capacity ([#33](https://github.com/folsomintel/fuse/issues/33)) ([0a74cda](https://github.com/folsomintel/fuse/commit/0a74cda9721edbe64970278b19b85feceb070684))
+* **orchestrator,cli:** probe gpu capacity with operator override ([#36](https://github.com/folsomintel/fuse/issues/36)) ([6552c2f](https://github.com/folsomintel/fuse/commit/6552c2fb8d2708f7d81eccf5571f19dcb3c41743))
+* **orchestrator:** carry probed gpu inventory over the capacity wire ([#35](https://github.com/folsomintel/fuse/issues/35)) ([c5d964c](https://github.com/folsomintel/fuse/commit/c5d964c17088f2dd40546cee60ca9850391d9eba))
+* **orchestrator:** device-aware gpu inventory, fit, and per-vm binding ([#37](https://github.com/folsomintel/fuse/issues/37), [#38](https://github.com/folsomintel/fuse/issues/38)) ([4d41d3d](https://github.com/folsomintel/fuse/commit/4d41d3dfdb56d557206d3d8c84b172d6c9c4fc14))
+* **orchestrator:** recompute gpu allocation from live vms on restart ([#39](https://github.com/folsomintel/fuse/issues/39)) ([f2ca1b0](https://github.com/folsomintel/fuse/commit/f2ca1b04ea8d572f0b51595c164f549403593fac))
+* validate gpu_profile against mig-capable kind (epic [#31](https://github.com/folsomintel/fuse/issues/31), closes [#42](https://github.com/folsomintel/fuse/issues/42)) ([fb81a8b](https://github.com/folsomintel/fuse/commit/fb81a8b9b6460847c3adab45015b6bd45828b13d))
+
+
+### Bug Fixes
+
+* **cli:** repair broken host register command from mig merge ([3e2181b](https://github.com/folsomintel/fuse/commit/3e2181b3ec6a4fcdb840f64cbcd2690bd4782039))
+* **cli:** repair broken host register command from mig merge ([6af73ff](https://github.com/folsomintel/fuse/commit/6af73ff73be5319f2122bbc02664ac3e019ef735))
+
 ## [0.6.0](https://github.com/folsomintel/fuse/compare/v0.5.0...v0.6.0) (2026-07-17)
 
 
