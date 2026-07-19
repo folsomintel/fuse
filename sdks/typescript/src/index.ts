@@ -30,6 +30,7 @@ export type {
   SnapshotExport,
   Snapshot,
   HostCapacity,
+  GPUDevice,
   RegisterHostRequest,
   Host,
   APIKey,
