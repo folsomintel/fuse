@@ -214,7 +214,7 @@ func newEnvCreateCmd() *cobra.Command {
 			}
 			successf("creating environment %s (task %s)", e.ID, e.TaskID)
 			if follow {
-				return streamEnvironment(cmd.Context(), cl, e.ID)
+				return waitForEnvironmentReady(cmd.Context(), cl, e.ID)
 			}
 			if app.isJSON() {
 				return printJSON(e)
@@ -367,7 +367,10 @@ func newEnvWatchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return streamEnvironment(cmd.Context(), cl, args[0])
+			// watch follows the environment all the way to a terminal
+			// state, unlike create --follow which stops once it is up.
+			_, err = streamEnvironment(cmd.Context(), cl, args[0], fuse.IsTerminalState)
+			return err
 		},
 	}
 }

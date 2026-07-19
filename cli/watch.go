@@ -14,32 +14,58 @@ import (
 )
 
 // streamEnvironment subscribes to an environment's SSE event stream and renders
-// transitions until a terminal state. it uses an interactive bubbletea view on
-// a tty, and plain (or ndjson) output otherwise.
-func streamEnvironment(ctx context.Context, cl *fuse.Client, vmID string) error {
+// transitions until until(state) is true. it uses an interactive bubbletea view
+// on a tty, and plain (or ndjson) output otherwise. it returns the last state
+// observed, which is empty if the stream ended before any event arrived.
+func streamEnvironment(ctx context.Context, cl *fuse.Client, vmID string, until func(string) bool) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	ch, err := cl.Environments.Events(ctx, vmID)
 	if err != nil {
-		return friendly(err)
+		return "", friendly(err)
 	}
 	if app.isJSON() || !isInteractive() {
-		return streamPlain(ch)
+		return streamPlain(ch, until)
 	}
-	return streamTUI(ch, vmID)
+	return streamTUI(ch, vmID, until)
+}
+
+// waitForEnvironmentReady streams provisioning events until the environment
+// settles, and reports a failure if it settled anywhere but running. only
+// running is success: the stream can also end without settling at all (the sdk
+// closes the channel with no error on a clean eof), and a stream that dropped
+// mid-provision must not be reported as a ready environment.
+func waitForEnvironmentReady(ctx context.Context, cl *fuse.Client, vmID string) error {
+	state, err := streamEnvironment(ctx, cl, vmID, fuse.IsSettledState)
+	if err != nil {
+		return err
+	}
+	switch state {
+	case fuse.StateRunning:
+		return nil
+	case fuse.StateFailed:
+		return fmt.Errorf("environment %s failed to provision", vmID)
+	case fuse.StateDestroyed:
+		return fmt.Errorf("environment %s was destroyed before it became ready", vmID)
+	case "":
+		return fmt.Errorf("environment %s: event stream ended with no events, so the environment never reached %s", vmID, fuse.StateRunning)
+	default:
+		return fmt.Errorf("environment %s: event stream ended in state %q before the environment reached %s", vmID, state, fuse.StateRunning)
+	}
 }
 
 // streamPlain prints events as they arrive (ndjson in json mode, one line each
-// otherwise) and returns when the stream reaches a terminal state or closes.
-func streamPlain(ch <-chan fuse.Event) error {
+// otherwise) and returns when until(state) is true or the stream closes.
+func streamPlain(ch <-chan fuse.Event, until func(string) bool) (string, error) {
+	last := ""
 	for ev := range ch {
 		if ev.Err != nil {
-			return friendly(ev.Err)
+			return last, friendly(ev.Err)
 		}
 		if app.isJSON() {
 			if err := printJSON(ev); err != nil {
-				return err
+				return last, err
 			}
 		} else {
 			detail := ev.URL
@@ -48,11 +74,12 @@ func streamPlain(ch <-chan fuse.Event) error {
 			}
 			_, _ = fmt.Fprintf(os.Stdout, "%s  %-12s %s\n", shortTime(ev.UpdatedAt), ev.State, detail)
 		}
-		if fuse.IsTerminalState(ev.State) {
-			return nil
+		last = ev.State
+		if until(ev.State) {
+			return last, nil
 		}
 	}
-	return nil
+	return last, nil
 }
 
 // --- bubbletea view ---
@@ -63,16 +90,18 @@ type streamClosedMsg struct{}
 type watchModel struct {
 	vmID    string
 	ch      <-chan fuse.Event
+	until   func(string) bool
 	spinner spinner.Model
 	events  []fuse.Event
+	last    string
 	done    bool
 	err     error
 }
 
-func newWatchModel(vmID string, ch <-chan fuse.Event) watchModel {
+func newWatchModel(vmID string, ch <-chan fuse.Event, until func(string) bool) watchModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return watchModel{vmID: vmID, ch: ch, spinner: sp}
+	return watchModel{vmID: vmID, ch: ch, until: until, spinner: sp}
 }
 
 func (m watchModel) Init() tea.Cmd {
@@ -104,7 +133,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.events = append(m.events, ev)
-		if fuse.IsTerminalState(ev.State) {
+		m.last = ev.State
+		if m.until(ev.State) {
 			m.done = true
 			return m, tea.Quit
 		}
@@ -144,13 +174,17 @@ func (m watchModel) View() string {
 	return b.String()
 }
 
-func streamTUI(ch <-chan fuse.Event, vmID string) error {
-	final, err := tea.NewProgram(newWatchModel(vmID, ch)).Run()
+func streamTUI(ch <-chan fuse.Event, vmID string, until func(string) bool) (string, error) {
+	final, err := tea.NewProgram(newWatchModel(vmID, ch, until)).Run()
 	if err != nil {
-		return err
+		return "", err
 	}
-	if m, ok := final.(watchModel); ok && m.err != nil {
-		return friendly(m.err)
+	m, ok := final.(watchModel)
+	if !ok {
+		return "", nil
 	}
-	return nil
+	if m.err != nil {
+		return m.last, friendly(m.err)
+	}
+	return m.last, nil
 }

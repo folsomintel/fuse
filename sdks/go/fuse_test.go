@@ -392,3 +392,26 @@ func TestEventsStream(t *testing.T) {
 		t.Fatalf("expected channel close after terminal state, got %+v", third)
 	}
 }
+
+func TestStatePredicates(t *testing.T) {
+	cases := []struct {
+		state    string
+		terminal bool
+		settled  bool
+	}{
+		{StateProvisioning, false, false},
+		{StateRunning, false, true},
+		{StateDraining, false, false},
+		{StateDestroying, false, false},
+		{StateDestroyed, true, true},
+		{StateFailed, true, true},
+	}
+	for _, c := range cases {
+		if got := IsTerminalState(c.state); got != c.terminal {
+			t.Errorf("IsTerminalState(%q) = %v, want %v", c.state, got, c.terminal)
+		}
+		if got := IsSettledState(c.state); got != c.settled {
+			t.Errorf("IsSettledState(%q) = %v, want %v", c.state, got, c.settled)
+		}
+	}
+}
