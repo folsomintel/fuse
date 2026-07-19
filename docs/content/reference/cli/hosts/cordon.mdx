@@ -1,0 +1,25 @@
+---
+title: fuse host cordon
+sidebar:
+  label: cordon
+description: Mark a host unschedulable
+icon: ban
+---
+
+```bash
+fuse host cordon <id>
+```
+
+No flags beyond the globals. Marks the host unschedulable: the scheduler stops
+placing new environments there. Existing environments already running on the
+host are untouched, cordoning is not a drain.
+
+The standard move before host maintenance:
+
+```bash
+fuse host cordon prod-east-1
+# ... perform maintenance, existing VMs keep running ...
+fuse host uncordon prod-east-1
+```
+
+See [`fuse host uncordon`](/reference/cli/hosts/uncordon) to reverse it.

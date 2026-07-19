@@ -5,7 +5,7 @@ icon: shield-check
 ---
 
 Fuse's auth model is deliberately simple: a single shared bearer token, no
-users, no roles. See [Authentication](/docs/reference/auth) for the full model.
+users, no roles. See [Authentication](/reference/auth) for the full model.
 This page covers the operational hardening controls available on top of that
 model.
 
@@ -72,14 +72,14 @@ per-VM guest-agent tokens, per-host agent bearer tokens, and per-VM secrets.
 Losing this key doesn't lock you out of the orchestrator itself, but nothing it
 encrypted can be decrypted afterward. If you ever have to regenerate it, rotate
 every environment's token via
-[`fuse environment rotate-token`](/docs/reference/cli/environment/rotate-token),
+[`fuse environment rotate-token`](/reference/cli/environment/rotate-token),
 re-register every host (its stored agent token is unreadable, which surfaces
 later as a `firecracker create vm: http 401` at environment-create time rather
 than as an error at boot), and re-supply any per-VM secrets.
 
 ## Master token vs. API keys
 
-Prefer revocable [API keys](/docs/reference/cli/apikeys) over the master
+Prefer revocable [API keys](/reference/cli/apikeys) over the master
 token for anything automated (CI runners, other services). The master token
 can mint and revoke keys; a compromised API key can only do what its
 holder was scoped to do at the API level (everything an authenticated caller
@@ -95,7 +95,7 @@ different domain than the API) isn't supported today, the browser blocks the
 credentialed `/login` request at the CORS preflight before auth even runs.
 Front any browser-based dashboard through a same-origin reverse proxy rather
 than attempting a cross-origin setup. See
-[Authentication](/docs/reference/auth#browser--session-auth) for the full
+[Authentication](/reference/auth#browser--session-auth) for the full
 cookie model.
 
 ## Host agent tokens are a separate concern

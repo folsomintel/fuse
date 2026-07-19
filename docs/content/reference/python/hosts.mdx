@@ -1,0 +1,68 @@
+---
+title: Hosts
+description: Registering and managing the compute hosts the scheduler places VMs onto
+icon: hard-drive
+---
+
+`client.hosts` registers and manages the compute hosts the scheduler places
+microVMs onto. Register a host, letting the orchestrator probe its real
+hardware capacity rather than trusting a guess:
+
+```python
+host = client.hosts.register(
+    fuse.RegisterHostRequest(
+        id="prod-east-1",
+        url="http://10.0.0.5:8090",
+        token=agent_token,
+        region="us-east",
+        backend="firecracker",
+        capacity=fuse.HostCapacity(vm_count=20),  # cpus/ram_mb/storage_gb left at 0 to probe
+    )
+)
+for w in host.warnings:
+    print("warning:", w)
+```
+
+- `id` is a free-form, operator-supplied string and doubles as the host's
+  primary key. `backend` defaults to `"firecracker"` if left unset; only
+  `"qemu"` hosts may register with `capacity.gpus > 0`.
+- `capacity.cpus`, `ram_mb`, and `storage_gb` are optional hardware facts:
+  leaving any at `0` (as above) has the orchestrator probe the host agent for
+  the real value instead of trusting a guess. Pass one explicitly to override
+  the probe, for a deliberate overcommit or carve-out, a declared value above
+  what the probe reports still registers, with a warning rather than a
+  rejection. Both shipped backends can probe, but if the probe itself fails
+  because the host agent is unreachable and any of the three was left at `0`,
+  registration raises `fuse.ApiError` with `status == 502`, declare them
+  explicitly in that case.
+- `capacity.vm_count` is scheduling policy, not something a host can report
+  on its own, so it's never probed and is always required.
+- `capacity.gpu_kind` is the declared GPU model label. Leaving it empty has
+  the probe fill it in; declaring one that disagrees with what the probe
+  reports registers anyway, with a warning rather than a rejection.
+- `capacity.mig_profiles` declares fractional GPU capacity as an instance
+  count by MIG profile name, for example `{"1g.10gb": 4}`. It is `"qemu"`-only
+  like `gpus`, and an unrecognized profile name (anything not in mig-parted
+  form) or a count of `0` or less raises `fuse.ApiError` with
+  `code == "invalid_argument"`.
+- `host.warnings` is only ever populated on this call's response, non-fatal
+  notices like a declared value exceeding what was probed.
+
+## Everything else
+
+| Method | Purpose |
+| --- | --- |
+| `list()` | List every registered host with its declared `capacity` and live `allocated` figures. |
+| `get(host_id)` | Fetch one host by ID. |
+| `cordon(host_id)` / `uncordon(host_id)` | Stop or resume scheduling new environments onto the host, without touching what's already running. |
+| `deregister(host_id)` | Remove the host. Fails while environments are still assigned to it, see below. |
+
+`Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
+is set once at registration and never refreshed, it is not a liveness
+signal. These mirror the [HTTP API](/reference/api) one to one.
+
+Deregistering a host that still has environments assigned raises
+`fuse.ApiError` with `status == 409` and `code == "conflict"`, whose message
+names the blocking VM (`host prod-east-1 still has vm vm-abc assigned`). Use
+`fuse.is_conflict(err)` to branch on it, then cordon the host and drain its
+environments before retrying.

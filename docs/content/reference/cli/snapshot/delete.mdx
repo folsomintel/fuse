@@ -1,0 +1,26 @@
+---
+title: fuse snapshot delete
+sidebar:
+  label: delete
+description: Delete a snapshot
+icon: trash2
+---
+
+```bash
+fuse snapshot delete <id> [--yes]
+```
+
+Alias: `rm`. Leaf-only: also deletes the underlying provider artifact. There is
+no soft-delete.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--yes` | Skip the confirmation prompt. |
+
+Without `--yes` in an interactive terminal, prompts for confirmation and warns
+that the stored artifact is also being deleted, not just the record. Outside an
+interactive terminal it aborts with
+`aborted (use --yes to skip confirmation)` rather than prompting, so scripted
+deletes must pass `--yes`.

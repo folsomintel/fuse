@@ -1,0 +1,21 @@
+---
+title: fuse context remove
+sidebar:
+  label: remove
+description: Delete a saved context
+icon: trash2
+---
+
+```bash
+fuse context remove <name>
+```
+
+Aliases: `rm`. No flags beyond the globals. Deletes the named context from the
+config file. If it was the active context, the active selection is cleared,
+you'll need to run [`fuse context use`](/reference/cli/contexts/use) or
+[`fuse connect`](/reference/cli/contexts/connect) again before other
+commands will work.
+
+This only removes the local saved credentials, it does not revoke the token on
+the server. To revoke a leaked or unwanted API key, use
+[`fuse apikeys revoke`](/reference/cli/apikeys/revoke) instead.

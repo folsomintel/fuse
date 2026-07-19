@@ -1,0 +1,24 @@
+---
+title: Overview
+description: Managing orchestrator contexts
+icon: book-open
+---
+
+A **context** is a saved orchestrator connection: a name, a base URL, and a
+bearer token. The CLI persists contexts to its config file and tracks which one
+is active. Most other commands (`fuse hosts`, `fuse environment`, and so on)
+operate against whichever context is currently active, or the one named by the
+global `--context` flag for a single invocation.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse connect`](/reference/cli/contexts/connect) | Add a context and make it active. |
+| [`fuse context list`](/reference/cli/contexts/list) | List saved contexts. |
+| [`fuse context use`](/reference/cli/contexts/use) | Switch the active context. |
+| [`fuse context remove`](/reference/cli/contexts/remove) | Delete a saved context. |
+| [`fuse context current`](/reference/cli/contexts/current) | Show the active context's details. |
+
+`fuse context` (aliases `contexts`, `ctx`) is the parent command for the four
+subcommands above; it has no behavior of its own without a subcommand.

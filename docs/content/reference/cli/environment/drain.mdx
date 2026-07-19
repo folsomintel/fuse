@@ -1,0 +1,41 @@
+---
+title: fuse environment drain
+sidebar:
+  label: drain
+description: Gracefully drain (phase one of teardown)
+icon: log-out
+---
+
+```bash
+fuse environment drain <id>
+```
+
+No flags beyond the globals. Signals the guest agent to stop gracefully;
+transitions the environment from `running` to `draining`. Only running
+environments can be drained, any other state returns a conflict error.
+
+Drain is phase one of a two-phase teardown, it does **not** destroy the
+environment. The CLI prints a reminder of this after a successful drain. Follow
+up with [`fuse environment destroy`](/reference/cli/environment/destroy)
+to actually remove it:
+
+```bash
+fuse environment drain fuse-abc123
+# draining environment "fuse-abc123"
+# drain is phase-1 only; it does not auto-destroy. run
+# `fuse environment destroy fuse-abc123` to remove it
+
+fuse environment destroy fuse-abc123
+```
+
+## When the drain command fails
+
+The state transition to `draining` is persisted *before* the in-guest drain
+command runs, so a failing drain command leaves the environment in `draining`
+and returns an error. Draining is one-way, `DELETE` is the only supported
+transition out of it, so there is no way back to `running` and re-draining the
+same environment returns a conflict error. The only recovery is
+[`fuse environment destroy`](/reference/cli/environment/destroy).
+
+The failure reason is stamped onto the environment's error field, visible via
+[`fuse environment get`](/reference/cli/environment/get).

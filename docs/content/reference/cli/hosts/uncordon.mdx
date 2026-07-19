@@ -1,0 +1,15 @@
+---
+title: fuse host uncordon
+sidebar:
+  label: uncordon
+description: Return a host to active scheduling
+icon: circle-check-big
+---
+
+```bash
+fuse host uncordon <id>
+```
+
+No flags beyond the globals. Reverses a previous
+[`fuse host cordon`](/reference/cli/hosts/cordon): the scheduler resumes
+placing new environments on the host.

@@ -59,7 +59,7 @@ range covers the fleet.
 | `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot (alternative to baking it in). |
 | `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | `--tls-cert` / `--tls-key` | | Serve the API over TLS. |
 | `ORCH_REQUIRE_AUTH` | | `false` | Fail-closed strict mode: refuses to boot unless `ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are all set. |
-| `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/docs/reference/auth). |
+| `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/reference/auth). |
 | `ORCH_ALLOWED_CIDRS` | `--allowed-cidrs` | empty → open | Comma-separated CIDR allowlist. |
 | `ORCH_SHUTDOWN_TIMEOUT_SECONDS` | `--shutdown-timeout` | `30` | Graceful shutdown ceiling. |
 | `ORCH_VM_PREFIX` | `--vm-prefix` | `fuse-` | Prefix applied to generated VM names. |
@@ -150,7 +150,7 @@ co-located `install-orchestrator` path above (`orchestrator.service`, config in
 To run one control plane scheduling across many hosts instead of co-locating, skip
 `install-orchestrator` and point `FIRECRACKER_BASE_URL` at each host's agent URL,
 then register the rest via `fuse host register` (see
-[Hosts](/docs/reference/cli/hosts)). Topology is just one env var: loopback
+[Hosts](/reference/cli/hosts)). Topology is just one env var: loopback
 co-locates, a remote URL doesn't.
 
 ## Build and run directly
