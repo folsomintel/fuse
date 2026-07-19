@@ -1,6 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "fuse-docs",
+  // must match the worker connected to cloudflare workers builds, which
+  // deploys this directory on every push to main as the script named "fuse".
+  "name": "fuse",
   "compatibility_date": "2025-03-25",
   "assets": {
     "directory": "dist"

@@ -36,6 +36,11 @@ export default defineConfig({
     dir: "docs",
   },
   redirects: [
+    // no page is authored at / or /docs, so both 404 without these.
+    // temporary (302) so a future real landing page isn't shadowed by
+    // browser-cached permanent redirects.
+    { from: "/", to: "/docs/learn", status: 302 as const },
+    { from: "/docs", to: "/docs/learn", status: 302 as const },
     ...movedGuides.map((slug) => ({
       from: `/docs/learn/use-cases/${slug}`,
       to: `/docs/guides/${slug}`,
