@@ -97,6 +97,20 @@ func TestStreamPlainTerminalPredicateIgnoresRunning(t *testing.T) {
 // for an environment that is up and staying up.
 func sseEnvServer(t *testing.T, states ...string) *httptest.Server {
 	t.Helper()
+	return newSSEEnvServer(t, true, states...)
+}
+
+// sseEnvDropServer emits the given states and then closes the stream, like a
+// proxy timeout or an orchestrator restart mid-provision. the sdk reports a
+// clean eof by closing the channel with no error, so this is the shape that
+// used to look like success.
+func sseEnvDropServer(t *testing.T, states ...string) *httptest.Server {
+	t.Helper()
+	return newSSEEnvServer(t, false, states...)
+}
+
+func newSSEEnvServer(t *testing.T, hold bool, states ...string) *httptest.Server {
+	t.Helper()
 	stop := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -114,6 +128,11 @@ func sseEnvServer(t *testing.T, states ...string) *httptest.Server {
 			for _, st := range states {
 				fmt.Fprintf(w, "data: {\"vm_id\":\"vm1\",\"state\":%q}\n\n", st)
 				flusher.Flush()
+			}
+			if !hold {
+				// returning ends the response body, which the sdk sees as
+				// a clean eof.
+				return
 			}
 			// holding the stream open is what makes the hang reproducible.
 			select {
@@ -157,6 +176,32 @@ func TestUpReturnsOnceRunning(t *testing.T) {
 	}
 	if !strings.Contains(out, `"running"`) {
 		t.Errorf("output missing the running event: %s", out)
+	}
+}
+
+func TestUpFailsWhenStreamDropsMidProvision(t *testing.T) {
+	// the stream ends on provisioning without ever reaching running. a dropped
+	// stream is not a successful provision.
+	srv := sseEnvDropServer(t, fuse.StateProvisioning)
+	_, err := runUp(t, srv)
+	if err == nil {
+		t.Fatal("up returned nil for a dropped stream, want an error")
+	}
+	if !strings.Contains(err.Error(), fuse.StateProvisioning) {
+		t.Errorf("error = %v, want it to name the last observed state", err)
+	}
+}
+
+func TestUpFailsWhenStreamEndsWithNoEvents(t *testing.T) {
+	// the stream closes before a single event arrives, so there is no state to
+	// report at all.
+	srv := sseEnvDropServer(t)
+	_, err := runUp(t, srv)
+	if err == nil {
+		t.Fatal("up returned nil for an empty stream, want an error")
+	}
+	if !strings.Contains(err.Error(), "no events") {
+		t.Errorf("error = %v, want it to say the stream carried no events", err)
 	}
 }
 

@@ -32,19 +32,27 @@ func streamEnvironment(ctx context.Context, cl *fuse.Client, vmID string, until 
 }
 
 // waitForEnvironmentReady streams provisioning events until the environment
-// settles, and reports a failure if it settled anywhere but running.
+// settles, and reports a failure if it settled anywhere but running. only
+// running is success: the stream can also end without settling at all (the sdk
+// closes the channel with no error on a clean eof), and a stream that dropped
+// mid-provision must not be reported as a ready environment.
 func waitForEnvironmentReady(ctx context.Context, cl *fuse.Client, vmID string) error {
 	state, err := streamEnvironment(ctx, cl, vmID, fuse.IsSettledState)
 	if err != nil {
 		return err
 	}
 	switch state {
+	case fuse.StateRunning:
+		return nil
 	case fuse.StateFailed:
 		return fmt.Errorf("environment %s failed to provision", vmID)
 	case fuse.StateDestroyed:
 		return fmt.Errorf("environment %s was destroyed before it became ready", vmID)
+	case "":
+		return fmt.Errorf("environment %s: event stream ended with no events, so the environment never reached %s", vmID, fuse.StateRunning)
+	default:
+		return fmt.Errorf("environment %s: event stream ended in state %q before the environment reached %s", vmID, state, fuse.StateRunning)
 	}
-	return nil
 }
 
 // streamPlain prints events as they arrive (ndjson in json mode, one line each
