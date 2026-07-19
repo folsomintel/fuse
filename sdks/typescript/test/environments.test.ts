@@ -33,6 +33,25 @@ describe("environments", () => {
     expect(env.state).toBe("running");
   });
 
+  it("create serializes spec.gpu_profile for a fractional MIG request", async () => {
+    let body = "";
+    current = await serve(async (req, res) => {
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-1","state":"running","task_id":"task-1","url":"https://x"}`);
+    });
+
+    await current.client.environments.create({
+      task_id: "task-1",
+      spec: { gpus: 2, gpu_kind: "a100", gpu_profile: "1g.10gb" },
+    });
+
+    expect(JSON.parse(body)).toEqual({
+      task_id: "task-1",
+      spec: { gpus: 2, gpu_kind: "a100", gpu_profile: "1g.10gb" },
+    });
+  });
+
   it("create serializes spec.image and expose to snake_case JSON", async () => {
     let body = "";
     current = await serve(async (req, res) => {

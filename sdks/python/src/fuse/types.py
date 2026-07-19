@@ -164,6 +164,21 @@ class Snapshot(_Model):
     exports: list[SnapshotExport] = Field(default_factory=list)
 
 
+class GPUDevice(_Model):
+    # per-device detail probed for a single gpu. every field is best-effort
+    # and omitted when the host agent could not determine it.
+    uuid: str = ""
+    model: str = ""
+    pci_bus_id: str = ""
+    memory_mb: int = 0
+    driver_version: str = ""
+    cuda_version: str = ""
+    compute_cap: str = ""
+    mig_capable: bool = False
+    mig_mode: str = ""
+    iommu_group: str = ""
+
+
 class HostCapacity(_Model):
     # a host's resource envelope.
     cpus: int = 0
@@ -174,6 +189,9 @@ class HostCapacity(_Model):
     gpu_kind: str = ""
     # fractional gpu capacity: mig instance count by profile name.
     mig_profiles: Optional[dict[str, int]] = None
+    # per-device gpu detail probed from the host agent. only populated on
+    # capacity (not allocated) for qemu hosts.
+    gpu_devices: list[GPUDevice] = Field(default_factory=list)
 
 
 class RegisterHostRequest(_Model):

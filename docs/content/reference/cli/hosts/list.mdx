@@ -19,12 +19,22 @@ globals. Both forms are equivalent, `fuse hosts` with no subcommand runs
 
 ```bash
 $ fuse hosts
-   ID           REGION   STATE   CPUS   RAM MB       VMS   LAST SEEN
-*  prod-east-1  us-east  active  4/16   8192/65536   1/20  3m
-   prod-west-1  us-west  active  0/16   0/65536      0/20  1h
+╭───┬─────────────┬─────────┬────────┬──────┬────────────┬────────────┬──────┬───────────╮
+│   │ ID          │ REGION  │ STATE  │ CPUS │ RAM MB     │ GPUS       │ VMS  │ LAST SEEN │
+├───┼─────────────┼─────────┼────────┼──────┼────────────┼────────────┼──────┼───────────┤
+│ * │ prod-east-1 │ us-east │ active │ 4/16 │ 8192/65536 │ 2/4 (a100) │ 1/20 │ 3m        │
+│   │ prod-west-1 │ us-west │ active │ 0/16 │ 0/65536    │ -          │ 0/20 │ 1h        │
+╰───┴─────────────┴─────────┴────────┴──────┴────────────┴────────────┴──────┴───────────╯
 ```
 
 The `*` marks the host currently selected as active for this context.
+
+GPUS shows allocated/capacity with the GPU model in parentheses when the host
+advertises one. A host with no GPU capacity renders `-`, so a CPU-only fleet
+stays readable. GPU capacity is only probed and reported on `qemu` hosts, a
+firecracker host always shows `-`. For per-device detail and MIG instance
+pools, see [`fuse host get`](/docs/reference/cli/hosts/get) and
+[`fuse host metrics`](/docs/reference/cli/hosts/metrics).
 
 LAST SEEN is stamped at registration and never refreshed, it is **not** a
 liveness signal and the scheduler never consults it. Judge reachability from

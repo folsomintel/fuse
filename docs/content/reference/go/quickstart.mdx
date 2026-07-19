@@ -48,7 +48,7 @@ func main() {
 			log.Fatal(ev.Err)
 		}
 		log.Println("state:", ev.State)
-		if ev.State == fuse.StateRunning {
+		if fuse.IsSettledState(ev.State) {
 			break
 		}
 	}
@@ -76,9 +76,12 @@ itself failed. There is no built-in timeout: cancel `ctx` to stop it early.
 
 Because `Create` has already returned by this point, the first event is a
 snapshot of the current state (`running`) and nothing transitions after it until
-something destroys the environment. Break on the state you are actually waiting
-for, as above, rather than on `fuse.IsTerminalState`, which is only ever true for
-`destroyed` or `failed` and would block this loop forever.
+something destroys the environment. Break on `fuse.IsSettledState`, as above,
+which covers `running` plus both terminal states. Do **not** loop on
+`fuse.IsTerminalState`: it is only ever true for `destroyed` or `failed`, so a
+healthy environment never satisfies it and the loop blocks forever.
+`IsTerminalState` is for callers that genuinely want to watch an environment
+until it goes away.
 
 **Destroy** tears the environment down. It is idempotent: destroying an
 already-gone environment returns a `not_found` `*APIError`, not a panic or a

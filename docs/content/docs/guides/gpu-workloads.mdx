@@ -93,15 +93,31 @@ register both, and a `1g.10gb` request never consumes a whole device from the
 passthrough pool, so slice workloads and whole-card workloads don't contend for the
 same inventory.
 
-:::warning[Known limitation]
-MIG placement ignores `gpu_kind` when picking a host. The scheduler matches on the
-profile pool alone, so a request can be routed to a host whose free MIG instances
-are all the wrong card. The qemu agent does filter instances by kind, so such a
-placement fails there with `insufficient free mig instances` rather than silently
-attaching the wrong GPU. If you omit `gpu_kind` entirely, any card offering the
-profile is eligible and no such mismatch arises. `gpu_kind` is still validated at
-request time (a profile on a non-MIG card like `v100` or `l40s` is rejected), it
-just doesn't narrow host selection.
+MIG placement honors `gpu_kind`. A host is only a candidate for a `gpu_profile`
+request when it has free instances of that profile *and* reports a MIG-capable
+device matching the requested kind, so a request pinned to `a100` is not routed to
+a host that carries no MIG-capable `a100` at all. Omit `gpu_kind` and any host
+offering the profile is eligible.
+
+:::warning[The kind gate filters hosts, not instances]
+The MIG pool is counted per profile, not per card: a host advertising
+`1g.10gb=4` reports four instances, with no record of which GPU each was carved
+from. So the check is that the host has *a* MIG-capable device of the requested
+kind, not that the free instances are on that device. On a host carrying both a
+MIG-capable `a100` and a MIG-capable `h100`, a request pinned to `a100` can still
+be handed an instance carved from the `h100`. Pin such workloads with a label or
+keep MIG hosts homogeneous if the distinction matters to you.
+:::
+
+:::warning[Hosts that report no per-device inventory]
+Kind matching uses the per-device inventory the qemu agent probes (`gpu_devices`,
+including each device's `mig_capable` flag). A host that reports none, such as one
+whose MIG pool was declared by hand with `--mig-profile`, falls back to its scalar
+`gpu_kind`; if it declares no kind either, the scheduler cannot rule it out and the
+qemu agent stays the enforcement point, failing the create with `insufficient free
+mig instances` on a mismatch. Conversely, a host whose devices all report
+`mig_capable: false` is never selected for a MIG request, even if it declares a MIG
+pool, since that combination is a misconfiguration.
 :::
 
 ## The tradeoff: no snapshots

@@ -116,15 +116,11 @@ assumption that the host's reported per-device inventory is the better authority
 Matching is a case-insensitive substring test, so `gpu_kind: rtx4090` is rejected by
 the `rtx` entry.
 
-:::warning[Known limitation]
-A MIG request cannot be pinned to a GPU model. When `gpu_profile` is set the
-scheduler matches on the profile pool alone and ignores `gpu_kind`, so a request
-can be routed to a host whose free instances are all the wrong card. The qemu
-agent does filter instances by kind, so such a placement fails there with
-`insufficient free mig instances` rather than silently attaching the wrong GPU.
-`gpu_kind` is still validated for MIG capability, it just doesn't narrow host
-selection. See [GPU workloads](/docs/guides/gpu-workloads).
-:::
+Setting `gpu_kind` alongside `gpu_profile` narrows host selection: the scheduler
+only considers hosts that offer the profile *and* report a MIG-capable device of
+that kind. Hosts that report no per-device inventory fall back to their declared
+`gpu_kind`, and a host that declares neither is left for the qemu agent to accept
+or reject. See [GPU workloads](/docs/guides/gpu-workloads).
 
 ## Scaffolding one
 

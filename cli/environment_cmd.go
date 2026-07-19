@@ -132,6 +132,9 @@ func newEnvCreateCmd() *cobra.Command {
 		cpus          int32
 		ramMB         int32
 		storageGB     int32
+		gpus          int32
+		gpuKind       string
+		gpuProfile    string
 		region        string
 		maxRuntime    int64
 		manifest      string
@@ -194,6 +197,9 @@ func newEnvCreateCmd() *cobra.Command {
 					CPUs:              cpus,
 					RamMB:             ramMB,
 					StorageGB:         storageGB,
+					GPUs:              gpus,
+					GPUKind:           gpuKind,
+					GPUProfile:        gpuProfile,
 					Region:            region,
 					MaxRuntimeSeconds: maxRuntime,
 				},
@@ -208,7 +214,7 @@ func newEnvCreateCmd() *cobra.Command {
 			}
 			successf("creating environment %s (task %s)", e.ID, e.TaskID)
 			if follow {
-				return streamEnvironment(cmd.Context(), cl, e.ID)
+				return waitForEnvironmentReady(cmd.Context(), cl, e.ID)
 			}
 			if app.isJSON() {
 				return printJSON(e)
@@ -222,6 +228,11 @@ func newEnvCreateCmd() *cobra.Command {
 	cmd.Flags().Int32Var(&cpus, "cpus", 0, "cpus")
 	cmd.Flags().Int32Var(&ramMB, "ram-mb", 0, "ram in MB")
 	cmd.Flags().Int32Var(&storageGB, "storage-gb", 0, "storage in GB")
+	// gpu requests are validated server-side (a non-qemu host rejects gpus > 0,
+	// and the profile vocabulary lives in internal/, which cli/ must not import).
+	cmd.Flags().Int32Var(&gpus, "gpus", 0, "gpu device count, or MIG instance count when --gpu-profile is set")
+	cmd.Flags().StringVar(&gpuKind, "gpu-kind", "", "gpu model label, e.g. a100")
+	cmd.Flags().StringVar(&gpuProfile, "gpu-profile", "", "MIG profile for fractional gpus, e.g. 1g.10gb (requires --gpus >= 1)")
 	cmd.Flags().StringVar(&region, "region", "", "region")
 	cmd.Flags().Int64Var(&maxRuntime, "max-runtime", 0, "max runtime in seconds (0 = unlimited)")
 	cmd.Flags().StringVar(&manifest, "manifest", "", "inline manifest, or @path to read from a file")
@@ -356,7 +367,10 @@ func newEnvWatchCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return streamEnvironment(cmd.Context(), cl, args[0])
+			// watch follows the environment all the way to a terminal
+			// state, unlike create --follow which stops once it is up.
+			_, err = streamEnvironment(cmd.Context(), cl, args[0], fuse.IsTerminalState)
+			return err
 		},
 	}
 }

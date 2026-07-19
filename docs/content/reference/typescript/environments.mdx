@@ -27,16 +27,8 @@ await client.environments.destroy(env.id);
   fails, so the returned `EnvironmentInfo` already reflects the outcome. No
   separate poll-until-ready step is needed for the common case. Wire field
   names are snake_case throughout, `task_id`/`ram_mb`, not
-  `taskId`/`ramMb`.
-
-:::warning[Known limitation]
-The TypeScript `Spec` interface types only `gpus` and `gpu_kind`. It has no
-`gpu_profile`, so fractional MIG environments cannot be requested type-safely
-from this SDK yet; the server accepts the field, the binding just doesn't
-declare it. `HostCapacity` is likewise missing `mig_profiles` and `gpu_devices`.
-Use the [Go SDK](/reference/go) or a raw
-[HTTP call](/reference/api) for MIG until the types catch up.
-:::
+  `taskId`/`ramMb`. `Spec` carries `gpus`, `gpu_kind`, and `gpu_profile`, so
+  fractional MIG environments can be requested type-safely from this SDK.
 - `exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `exit_code` is a resolved call**,
   not a thrown error, the command ran and failed, which is the answer you

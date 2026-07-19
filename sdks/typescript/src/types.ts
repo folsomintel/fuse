@@ -11,6 +11,10 @@ export interface Spec {
   storage_gb?: number;
   gpus?: number;
   gpu_kind?: string;
+  /** Requests fractional GPU allocation: a MIG profile in mig-parted
+   * vocabulary (e.g. "1g.10gb"). When set, gpus counts MIG instances of this
+   * profile rather than whole devices. */
+  gpu_profile?: string;
   region?: string;
   max_runtime_seconds?: number;
   image?: string;
@@ -157,6 +161,29 @@ export interface HostCapacity {
   vm_count: number;
   gpus?: number;
   gpu_kind?: string;
+  /** Fractional GPU capacity: MIG instance count by profile name (e.g.
+   * {"1g.10gb": 4}). Like gpus, it requires backend "qemu" and is declared by
+   * the operator, never probed. */
+  mig_profiles?: Record<string, number>;
+  /** Per-device GPU detail probed from the host agent, carried alongside the
+   * scalar gpus/gpu_kind counters. Only populated on capacity (not
+   * allocated) for qemu hosts. */
+  gpu_devices?: GPUDevice[];
+}
+
+/** GPUDevice is the per-device detail probed for a single GPU. Every field is
+ * best-effort and omitted when the host agent could not determine it. */
+export interface GPUDevice {
+  uuid?: string;
+  model?: string;
+  pci_bus_id?: string;
+  memory_mb?: number;
+  driver_version?: string;
+  cuda_version?: string;
+  compute_cap?: string;
+  mig_capable?: boolean;
+  mig_mode?: string;
+  iommu_group?: string;
 }
 
 /** RegisterHostRequest is the body for hosts.register. */

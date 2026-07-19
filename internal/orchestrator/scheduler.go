@@ -118,7 +118,10 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 			// Fractional request: spec.GPUs counts MIG instances of the
 			// requested profile, allocated from the host's MIG pool (D5).
 			// This pool is independent of the whole-device GPUs pool.
-			return freeMIG(capacity, allocated, spec.GPUProfile) >= int(spec.GPUs)
+			if freeMIG(capacity, allocated, spec.GPUProfile) < int(spec.GPUs) {
+				return false
+			}
+			return hostServesMIG(capacity, spec.GPUKind)
 		}
 		if len(capacity.GPUDevices) > 0 {
 			// per-device host: count free devices whose kind matches the
@@ -136,6 +139,38 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 		}
 	}
 	return true
+}
+
+// hostServesMIG reports whether a host can carve MIG instances of the
+// requested kind. MIG instances come off the host's own GPUs, so when the host
+// reports per-device inventory the request must be satisfiable by a SINGLE
+// device that is both MIGCapable and a kind match (gpuKindMatches semantics,
+// same as the whole-device branch). Both conjuncts must hold of the same card,
+// which is why gpuKindMatches must not consult the host scalar kind for a
+// device that reported its own Model.
+//
+// Devices are read from Capacity and not from the free set: a GPU in MIG mode
+// stays on the nvidia driver and is never part of the whole-device pool (D5),
+// so whole-device allocations say nothing about MIG availability.
+//
+// Absence of device data is not evidence of incapability. A host that reports
+// no per-device inventory (legacy scalar hosts, and MIG pools declared by hand
+// with --mig-profile at registration) falls back to the host's scalar GPUKind,
+// and a host that reports no kind either is left to the qemu agent to accept
+// or reject. Only positive evidence filters a host out here: devices that are
+// all non-MIG-capable, or no MIG-capable device of the requested kind.
+func hostServesMIG(capacity HostCapacity, gpuKind string) bool {
+	if len(capacity.GPUDevices) == 0 {
+		// no inventory: ask the same matcher about a device that reports
+		// nothing, which is exactly the host-scalar fallback.
+		return gpuKindMatches(gpuKind, GPUDevice{}, capacity.GPUKind)
+	}
+	for _, d := range capacity.GPUDevices {
+		if d.MIGCapable && gpuKindMatches(gpuKind, d, capacity.GPUKind) {
+			return true
+		}
+	}
+	return false
 }
 
 // freeMatchingDevices returns the uuids of capacity devices that are not in
@@ -166,21 +201,25 @@ func freeMatchingDevices(capacity, allocated HostCapacity, gpuKind string) []str
 
 // gpuKindMatches reports whether a requested gpu kind matches a device. An
 // empty request matches anything. Otherwise the request must be a
-// case-insensitive substring of the device Model, or equal to the host's
-// derived GPUKind (also case-insensitive), so both "a100" and a full model
-// string resolve.
+// case-insensitive substring of the device Model, so both "a100" and a full
+// model string resolve.
+//
+// The host's derived GPUKind is only a fallback for a device that reports no
+// Model of its own (the qemu agent degrades model to "" when the vfio metadata
+// blob omits it). It must never override a Model the device did report: the
+// host kind is a fleet-level scalar, so consulting it for a device that
+// disagrees makes the match device-independent, and a caller asking two
+// questions about one device (this branch and MIGCapable in hostServesMIG)
+// could have them answered by two different cards.
 func gpuKindMatches(gpuKind string, d GPUDevice, hostKind string) bool {
 	if gpuKind == "" {
 		return true
 	}
-	want := strings.ToLower(gpuKind)
-	if d.Model != "" && strings.Contains(strings.ToLower(d.Model), want) {
-		return true
+	if d.Model != "" {
+		return strings.Contains(strings.ToLower(d.Model), strings.ToLower(gpuKind))
 	}
-	if hostKind != "" && strings.EqualFold(gpuKind, hostKind) {
-		return true
-	}
-	return false
+	// no device-level evidence: the host scalar is all we know about this card.
+	return hostKind == "" || strings.EqualFold(gpuKind, hostKind)
 }
 
 // Host is a registered compute host in the fleet. It represents a
