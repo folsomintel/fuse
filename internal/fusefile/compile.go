@@ -103,8 +103,10 @@ func ValidGPUProfile(s string) bool {
 // so it is rejected at request time. The list is deliberately a denylist of
 // well-known consumer/older parts rather than an allowlist of MIG-capable
 // datacenter parts: an unrecognized kind passes here and is enforced at
-// scheduling time against the host's per-device MIGCapable flag, so a valid
-// future GPU is never blocked by a stale allowlist.
+// scheduling time against the host's per-device MIGCapable flag (see
+// orchestrator.hostServesMIG), so a valid future GPU is never blocked by a
+// stale allowlist. That check only fires for hosts that report per-device
+// inventory; a host that reports none is left to the qemu agent.
 var nonMIGCapableKinds = map[string]bool{
 	"v100": true, "t4": true, "p100": true, "p40": true, "k80": true,
 	"rtx": true, "gtx": true, "titan": true, "l4": true, "l40": true, "l40s": true,

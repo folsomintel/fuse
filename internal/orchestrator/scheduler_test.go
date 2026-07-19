@@ -533,3 +533,187 @@ func TestSchedule_heterogeneousHostPlacesByKind(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoCapacity (no v100 device)", err)
 	}
 }
+
+// migDevice builds a MIG-capable per-device entry (mig_mode reported, so the
+// agent flags it mig_capable) for the given model.
+func migDevice(uuid, model string) GPUDevice {
+	return GPUDevice{UUID: uuid, Model: model, MIGCapable: true, MIGMode: "Enabled"}
+}
+
+func migSpec(gpus int32, kind, profile string) Spec {
+	s := gpuSpec(gpus, kind)
+	s.GPUProfile = profile
+	return s
+}
+
+func TestFits_migHonorsGPUKind(t *testing.T) {
+	// per-device mig host carrying only a100s. the mig pool alone is not
+	// enough: the requested kind has to be on the host too.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "a100",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+		GPUDevices:  []GPUDevice{migDevice("gpu-a", "NVIDIA A100-SXM4-40GB")},
+	}
+	tests := []struct {
+		name string
+		spec Spec
+		want bool
+	}{
+		{"matching kind", migSpec(1, "a100", "1g.10gb"), true},
+		{"mismatched kind", migSpec(1, "h100", "1g.10gb"), false},
+		{"empty kind matches any", migSpec(1, "", "1g.10gb"), true},
+		{"matching kind but pool exhausted", migSpec(5, "a100", "1g.10gb"), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fits(cap, HostCapacity{}, tc.spec); got != tc.want {
+				t.Errorf("fits = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFits_migRejectsNonMIGCapableDevices(t *testing.T) {
+	// host advertises a mig pool but every device it reports says
+	// mig_capable=false. the pool is a misconfiguration, so no mig request
+	// may land here, kind or no kind.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "l40s",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "NVIDIA L40S", MIGCapable: false, MIGMode: "N/A"},
+		},
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "l40s", "1g.10gb")) {
+		t.Error("fits = true, want false (device is not mig capable)")
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "", "1g.10gb")) {
+		t.Error("fits = true, want false (no mig capable device, empty kind)")
+	}
+	// the same host still serves whole-device requests.
+	if !fits(cap, HostCapacity{}, gpuSpec(1, "l40s")) {
+		t.Error("fits = false, want true (whole-device request is unaffected)")
+	}
+}
+
+func TestFits_migMixedHostOnlyMatchesMIGCapableKind(t *testing.T) {
+	// one mig-capable a100 alongside a non-mig-capable l40s. a mig request
+	// pinned to l40s must not land here even though the host carries an l40s.
+	//
+	// GPUKind is set on purpose: the probe leaves it empty on a mixed host, but
+	// an operator's declared --gpu-kind overrides the probe, so a scalar kind
+	// alongside per-device inventory is a real shape. It is also the shape that
+	// exercises the host-kind fallback in gpuKindMatches. Without the fallback
+	// being gated on an empty device Model, the a100's MIGCapable and the host's
+	// l40s label would satisfy the two conjuncts from two different cards and
+	// admit this request.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "l40s",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+		GPUDevices: []GPUDevice{
+			migDevice("gpu-a", "NVIDIA A100-SXM4-40GB"),
+			{UUID: "gpu-l", Model: "NVIDIA L40S", MIGCapable: false, MIGMode: "N/A"},
+		},
+	}
+	if !fits(cap, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (mig capable a100 present)")
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "l40s", "1g.10gb")) {
+		t.Error("fits = true, want false (l40s is not mig capable)")
+	}
+}
+
+func TestFits_migModellessDeviceFallsBackToHostKind(t *testing.T) {
+	// the qemu agent degrades model to "" when the vfio metadata blob omits it,
+	// so a device can be reported with a uuid and mig_capable but no model. the
+	// host scalar kind is then the only kind evidence there is and must still
+	// admit a matching request, otherwise these hosts stop placing entirely.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "a100",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "", MIGCapable: true, MIGMode: "Enabled"},
+		},
+	}
+	if !fits(cap, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (modelless device falls back to host kind)")
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "h100", "1g.10gb")) {
+		t.Error("fits = true, want false (host kind is a100)")
+	}
+	// whole-device requests take the same fallback.
+	if !fits(cap, HostCapacity{}, gpuSpec(1, "a100")) {
+		t.Error("fits = false, want true (whole-device modelless fallback)")
+	}
+}
+
+func TestFits_migLegacyHostWithoutDeviceInventoryStillPlaces(t *testing.T) {
+	// legacy/profiles-only host: mig pool declared at registration, no
+	// per-device inventory reported. absence of device data must not read as
+	// "not mig capable", or every currently-working mig host breaks.
+	scalar := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUKind:     "a100",
+		MIGProfiles: map[string]int{"1g.10gb": 4},
+	}
+	if !fits(scalar, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (scalar kind matches)")
+	}
+	if !fits(scalar, HostCapacity{}, migSpec(1, "", "1g.10gb")) {
+		t.Error("fits = false, want true (no kind requested)")
+	}
+	if fits(scalar, HostCapacity{}, migSpec(1, "h100", "1g.10gb")) {
+		t.Error("fits = true, want false (scalar kind mismatch)")
+	}
+
+	// host that reports neither devices nor a kind: nothing to match on, so
+	// the qemu agent stays the enforcement point.
+	kindless := scalar
+	kindless.GPUKind = ""
+	if !fits(kindless, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (unknown host kind must not be ruled out)")
+	}
+}
+
+func TestSchedule_migProfileRoutesToMatchingKind(t *testing.T) {
+	// end to end through Schedule: two mig hosts offering the same profile on
+	// different cards. the request must reach the one carrying the right card
+	// instead of failing later at the qemu agent.
+	a100 := deviceHost("mig-a100", BackendQEMU, migDevice("gpu-a", "NVIDIA A100-SXM4-40GB"))
+	a100.Capacity.GPUs = 0
+	a100.Capacity.MIGProfiles = map[string]int{"1g.10gb": 4}
+
+	h100 := deviceHost("mig-h100", BackendQEMU, migDevice("gpu-h", "NVIDIA H100-SXM5-80GB"))
+	h100.Capacity.GPUs = 0
+	h100.Capacity.MIGProfiles = map[string]int{"1g.10gb": 4}
+
+	picked, _, err := Schedule(migSpec(1, "h100", "1g.10gb"), []*Host{a100, h100}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "mig-h100" {
+		t.Errorf("picked %s, want mig-h100", picked.ID)
+	}
+
+	// a kind neither host carries has nowhere to go.
+	_, _, err = Schedule(migSpec(1, "a40", "1g.10gb"), []*Host{a100, h100}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (no host carries an a40)", err)
+	}
+}
+
+func TestSchedule_migProfileSkipsNonMIGCapableHost(t *testing.T) {
+	bad := deviceHost("mig-l40s", BackendQEMU,
+		GPUDevice{UUID: "gpu-l", Model: "NVIDIA L40S", MIGCapable: false, MIGMode: "N/A"})
+	bad.Capacity.GPUs = 0
+	bad.Capacity.MIGProfiles = map[string]int{"1g.10gb": 4}
+
+	_, _, err := Schedule(migSpec(1, "", "1g.10gb"), []*Host{bad}, PlacementSpread)
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (host reports no mig capable device)", err)
+	}
+}

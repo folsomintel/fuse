@@ -53,19 +53,37 @@ GPUs are only considered when the spec asks for them, and the check takes one of
 three forms depending on what the host reported:
 
 - **A MIG request** (a `gpu_profile` is set) draws from the MIG instance pool for
-  that profile. The MIG pool and the whole-device pool are independent counters,
-  so a slice never consumes a card.
+  that profile, and then applies its own kind gate: the host must also report a
+  device that is MIG-capable *and* a kind match, both of the same card. The MIG
+  pool and the whole-device pool are independent counters, so a slice never
+  consumes a card. A host reporting no per-device inventory falls back to its
+  scalar `gpu_kind`, and one declaring no kind at all cannot be ruled out here.
 - **A host reporting per-device inventory** counts free devices by UUID and
   filters them by kind, which is what lets a host with mixed GPU models answer
   correctly.
 - **A legacy host reporting only a scalar count** subtracts counts and compares
   `gpu_kind` as an exact, case-sensitive string.
 
-That last difference is worth internalizing: on a per-device host, `gpu_kind` is
-matched as a case-insensitive substring of each device's model, so `a100`
-matches `NVIDIA A100-SXM4-40GB`. On a legacy scalar host the same request is an
-exact match and would not. The same Fusefile can therefore place differently
-depending on how the host reports its inventory.
+That last difference is worth internalizing. There are exactly two kind-matching
+rules in the scheduler:
+
+- **Per-device hosts** (and MIG requests, which share the same matcher) match
+  `gpu_kind` as a case-insensitive substring of each device's model, so `a100`
+  matches `NVIDIA A100-SXM4-40GB`. When a device reports no model at all, and
+  only then, the host's scalar `gpu_kind` stands in for it as a
+  case-insensitive equality check. A host that reports neither is not ruled out.
+- **Legacy scalar hosts** compare `gpu_kind` against the host's scalar kind as an
+  exact, case-sensitive string, which `a100` against `NVIDIA A100-SXM4-40GB`
+  would not satisfy.
+
+The same Fusefile can therefore place differently depending on how the host
+reports its inventory.
+
+The host scalar is deliberately only a fallback, never an override. It is a
+single label for the whole machine, so consulting it for a device that reported
+its own model would make the match device-independent, and a MIG request needs
+`mig_capable` and the kind match to hold of *one* card rather than of two
+different ones.
 
 ## Choosing among the survivors
 
