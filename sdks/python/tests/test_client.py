@@ -332,6 +332,79 @@ def test_hosts_register() -> None:
 
 
 @respx.mock
+def test_hosts_register_decodes_gpu_devices() -> None:
+    # gpu_devices is populated on capacity only, never on allocated.
+    route = respx.post(f"{BASE_URL}/v1/hosts").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "gpu-1",
+                "url": "https://h",
+                "state": "active",
+                "backend": "qemu",
+                "capacity": {
+                    "cpus": 64,
+                    "ram_mb": 262144,
+                    "storage_gb": 2000,
+                    "vm_count": 8,
+                    "gpus": 2,
+                    "gpu_kind": "a100",
+                    "mig_profiles": {"1g.10gb": 14},
+                    "gpu_devices": [
+                        {
+                            "uuid": "GPU-abc",
+                            "model": "A100-SXM4-40GB",
+                            "pci_bus_id": "0000:07:00.0",
+                            "memory_mb": 40960,
+                            "driver_version": "550.54.15",
+                            "cuda_version": "12.4",
+                            "compute_cap": "8.0",
+                            "mig_capable": True,
+                            "mig_mode": "enabled",
+                            "iommu_group": "42",
+                        }
+                    ],
+                },
+                "allocated": {"cpus": 0, "ram_mb": 0, "storage_gb": 0, "vm_count": 0},
+            },
+        )
+    )
+    with new_client() as client:
+        host = client.hosts.register(
+            fuse.RegisterHostRequest(
+                id="gpu-1",
+                url="https://h",
+                backend="qemu",
+                capacity=fuse.HostCapacity(
+                    cpus=64,
+                    ram_mb=262144,
+                    storage_gb=2000,
+                    vm_count=8,
+                    gpus=2,
+                    gpu_kind="a100",
+                    mig_profiles={"1g.10gb": 14},
+                ),
+            )
+        )
+
+    assert route.called
+    assert host.capacity.mig_profiles == {"1g.10gb": 14}
+    assert len(host.capacity.gpu_devices) == 1
+    dev = host.capacity.gpu_devices[0]
+    assert dev.uuid == "GPU-abc"
+    assert dev.model == "A100-SXM4-40GB"
+    assert dev.pci_bus_id == "0000:07:00.0"
+    assert dev.memory_mb == 40960
+    assert dev.driver_version == "550.54.15"
+    assert dev.cuda_version == "12.4"
+    assert dev.compute_cap == "8.0"
+    assert dev.mig_capable is True
+    assert dev.mig_mode == "enabled"
+    assert dev.iommu_group == "42"
+    assert host.allocated.gpu_devices == []
+
+
+@respx.mock
 def test_hosts_list() -> None:
     route = respx.get(f"{BASE_URL}/v1/hosts").mock(
         return_value=httpx.Response(
