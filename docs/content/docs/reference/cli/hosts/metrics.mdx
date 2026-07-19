@@ -13,13 +13,34 @@ omitted; fails with a clear error if there's no ID and no active host.
 
 ```bash
 $ fuse host metrics prod-east-1
-host          prod-east-1
-state         active
-cpus          4 / 16 (12 free)
-ram mb        8192 / 65536 (57344 free)
-storage gb    100 / 500 (400 free)
-vms           1 / 20 (19 free)
+host               prod-east-1
+state              active
+cpus               4 / 16 (12 free)
+ram mb             8192 / 65536 (57344 free)
+storage gb         100 / 500 (400 free)
+vms                1 / 20 (19 free)
+gpus               2 / 4 (2 free, a100)
+mig                1g.10gb 1 / 4 (3 free), 2g.20gb 0 / 2 (2 free)
 ```
+
+The `gpus` and `mig` rows are conditional, exactly as in
+[`fuse host get`](/docs/reference/cli/hosts/get): `gpus` appears only when the
+host advertises GPU capacity, and `mig` only when it advertises MIG instance
+pools. A CPU-only host prints neither rather than a row of zeros:
+
+```bash
+$ fuse host metrics cpu-only-1
+host               cpu-only-1
+state              active
+cpus               4 / 16 (12 free)
+ram mb             8192 / 65536 (57344 free)
+storage gb         100 / 500 (400 free)
+vms                1 / 20 (19 free)
+```
+
+MIG profiles are listed in sorted order, and each pool is counted in MIG
+instances rather than whole devices. The `gpus` row counts whole devices, so
+on a MIG-partitioned host the two rows are not expected to agree.
 
 This is per-host capacity accounting, not Prometheus data, for fleet-wide
 metrics see [`fuse metrics`](/docs/reference/cli/metrics). There is no

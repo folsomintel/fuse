@@ -75,12 +75,37 @@ func runHostsList(cmd *cobra.Command, _ []string) error {
 			h.State,
 			fmt.Sprintf("%d/%d", h.Allocated.CPUs, h.Capacity.CPUs),
 			fmt.Sprintf("%d/%d", h.Allocated.RamMB, h.Capacity.RamMB),
+			gpuCell(h),
 			fmt.Sprintf("%d/%d", h.Allocated.VMCount, h.Capacity.VMCount),
 			ago(h.LastSeen),
 		})
 	}
-	renderTable([]string{"", "ID", "REGION", "STATE", "CPUS", "RAM MB", "VMS", "LAST SEEN"}, rows)
+	renderTable([]string{"", "ID", "REGION", "STATE", "CPUS", "RAM MB", "GPUS", "VMS", "LAST SEEN"}, rows)
 	return nil
+}
+
+// gpuCell renders a host's gpu allocation for the list table, or "-" when the
+// host advertises no gpu capacity, so a cpu-only fleet stays readable.
+func gpuCell(h fuse.Host) string {
+	if h.Capacity.GPUs <= 0 {
+		return "-"
+	}
+	cell := fmt.Sprintf("%d/%d", h.Allocated.GPUs, h.Capacity.GPUs)
+	if h.Capacity.GPUKind != "" {
+		cell += " (" + h.Capacity.GPUKind + ")"
+	}
+	return cell
+}
+
+// sortedMIGProfiles returns the profile names advertised by a host's capacity
+// in stable order, so mig lines render deterministically.
+func sortedMIGProfiles(capacity map[string]int) []string {
+	profiles := make([]string, 0, len(capacity))
+	for profile := range capacity {
+		profiles = append(profiles, profile)
+	}
+	sort.Strings(profiles)
+	return profiles
 }
 
 // newHostCmd implements `fuse host <id>` (select) plus host subcommands.
@@ -172,11 +197,7 @@ func renderHostDetail(h *fuse.Host) {
 		rows = append(rows, [2]string{"gpus", gpuLine})
 	}
 	if len(h.Capacity.MIGProfiles) > 0 {
-		profiles := make([]string, 0, len(h.Capacity.MIGProfiles))
-		for profile := range h.Capacity.MIGProfiles {
-			profiles = append(profiles, profile)
-		}
-		sort.Strings(profiles)
+		profiles := sortedMIGProfiles(h.Capacity.MIGProfiles)
 		parts := make([]string, len(profiles))
 		for i, profile := range profiles {
 			parts[i] = fmt.Sprintf("%s %d / %d", profile,
@@ -284,14 +305,34 @@ func newHostMetricsCmd() *cobra.Command {
 				})
 			}
 			free := func(alloc, cap int) string { return fmt.Sprintf("%d / %d (%d free)", alloc, cap, cap-alloc) }
-			renderDetail([][2]string{
+			rows := [][2]string{
 				{"host", h.ID},
 				{"state", stateStyle(h.State)},
 				{"cpus", free(h.Allocated.CPUs, h.Capacity.CPUs)},
 				{"ram mb", free(h.Allocated.RamMB, h.Capacity.RamMB)},
 				{"storage gb", free(h.Allocated.StorageGB, h.Capacity.StorageGB)},
 				{"vms", free(h.Allocated.VMCount, h.Capacity.VMCount)},
-			})
+			}
+			// gpu and mig rows appear only when the host advertises the
+			// capacity, matching how `fuse host get` renders them.
+			if h.Capacity.GPUs > 0 {
+				gpuLine := fmt.Sprintf("%d / %d (%d free", h.Allocated.GPUs,
+					h.Capacity.GPUs, h.Capacity.GPUs-h.Allocated.GPUs)
+				if h.Capacity.GPUKind != "" {
+					gpuLine += ", " + h.Capacity.GPUKind
+				}
+				rows = append(rows, [2]string{"gpus", gpuLine + ")"})
+			}
+			if len(h.Capacity.MIGProfiles) > 0 {
+				profiles := sortedMIGProfiles(h.Capacity.MIGProfiles)
+				parts := make([]string, len(profiles))
+				for i, profile := range profiles {
+					parts[i] = fmt.Sprintf("%s %s", profile,
+						free(h.Allocated.MIGProfiles[profile], h.Capacity.MIGProfiles[profile]))
+				}
+				rows = append(rows, [2]string{"mig", strings.Join(parts, ", ")})
+			}
+			renderDetail(rows)
 			return nil
 		},
 	}
