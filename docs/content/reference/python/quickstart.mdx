@@ -1,0 +1,79 @@
+---
+title: Quickstart
+description: Provision a microVM, tail its lifecycle, and tear it down
+icon: rocket
+---
+
+This walks through the full lifecycle of an environment using the Python SDK:
+create one, wait for it to come up, and destroy it.
+
+## Full example
+
+```python
+import fuse
+
+with fuse.Client("https://orchestrator.example.com", token="...") as client:
+    env = client.environments.create(
+        fuse.CreateRequest(task_id="task-1", spec=fuse.Spec(cpus=1, ram_mb=512))
+    )
+    print("created:", env.id, env.state)  # already "running"
+
+    # ... do work against env.url ...
+
+    client.environments.destroy(env.id)
+    print("destroyed:", env.id)
+```
+
+To tail the environment's lifecycle, consume `events` from a separate thread,
+not inline between `create` and `destroy`:
+
+```python
+import threading
+
+import fuse
+
+def tail(client: fuse.Client, vm_id: str) -> None:
+    for event in client.environments.events(vm_id):
+        if event.err:
+            raise event.err
+        print("state:", event.state)
+
+with fuse.Client("https://orchestrator.example.com", token="...") as client:
+    env = client.environments.create(
+        fuse.CreateRequest(task_id="task-1", spec=fuse.Spec(cpus=1, ram_mb=512))
+    )
+    threading.Thread(target=tail, args=(client, env.id), daemon=True).start()
+
+    # ... do work against env.url ...
+
+    client.environments.destroy(env.id)
+```
+
+## What each step does
+
+**`create`** provisions a microVM from a `Spec` (CPUs, RAM, storage, and
+optionally GPU). It blocks server-side until the environment is running; if
+provisioning fails it raises `fuse.ApiError` rather than returning an
+`EnvironmentInfo` in a failed state, so a returned `EnvironmentInfo` is always
+`running`.
+
+**`events`** opens the SSE event stream for that environment and returns an
+iterator of `Event`. The stream yields the current state immediately on connect,
+then one event per transition. Iteration ends on its own after a terminal state
+(`destroyed` or `failed`), or after a final `Event` with `.err` set if the stream
+itself failed, check `event.err` on every iteration and re-raise it, as shown
+above. Because `create` has already returned `running`, there is no
+intermediate state left to wait for, and nothing else will drive the
+environment to a terminal state on its own, iterate the stream from another
+thread rather than inline ahead of `destroy`, which would block forever.
+
+**`destroy`** tears the environment down. It is idempotent: destroying an
+already-gone environment raises `fuse.ApiError` with `code == "not_found"`, not an
+unrelated exception.
+
+## Next steps
+
+- [Environments](/reference/python/environments) covers every method on
+  the environments service, including drain, fork, and rotate-token.
+- [Errors](/reference/python/errors) covers how to branch on the
+  server's error codes with the `is_*` predicates instead of comparing strings.

@@ -1,0 +1,51 @@
+---
+title: Snapshots
+description: Capturing and restoring a running microVM's state
+icon: camera
+---
+
+`client.snapshots` captures and restores the state of a running microVM.
+Take a snapshot before something risky, and restore if it goes wrong:
+
+```ts
+const snap = await client.snapshots.create(env.id, {
+  comment: "before risky migration",
+  mode: "manual",
+});
+
+// ... do the risky thing ...
+
+await client.snapshots.restore(snap.id);
+```
+
+- `create`'s `vmId` must be a `running` environment. `body` is optional, omit
+  it for a plain snapshot with no metadata; `mode` is `"manual"` or
+  `"auto"`, and `retention_seconds` of `0` keeps it forever.
+- `restore` is **in place only**: it restores onto the snapshot's original
+  VM, which must still be running. There is no cross-host restore, clone, or
+  standalone restore into a new VM, use `fork` on
+  [the environments service](/reference/typescript/environments)
+  for that instead.
+
+:::warning[Known limitation]
+Restoring while the guest has unsynced writes can corrupt the restored data. See
+[Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
+for the workaround.
+:::
+
+## Everything else
+
+| Method | Purpose |
+| --- | --- |
+| `list({ vmId, taskId, tenantId, state })` | List snapshots, all filters optional. |
+| `get(snapshotId)` | Fetch one snapshot's full detail, including `state` (`creating`\|`ready`\|`restoring`\|`deleting`\|`error`) and `exports`. |
+| `delete(snapshotId)` | Leaf-only delete; also removes the underlying provider artifact. No soft-delete. |
+
+These mirror the [HTTP API](/reference/api) one to one.
+
+## The QEMU/GPU exception
+
+Environments running on the QEMU backend (whole-GPU passthrough) cannot be
+snapshotted or forked at all, `create` and `restore` against a GPU
+environment throw a `FuseApiError` with `code === "conflict"` rather than
+silently no-op-ing. See [Providers](/docs/concepts/providers).

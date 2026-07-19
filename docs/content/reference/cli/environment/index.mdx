@@ -1,0 +1,35 @@
+---
+title: Overview
+description: Managing environments (VMs)
+icon: book-open
+---
+
+`fuse environment` (aliases `environments`, `env`, `envs`) manages the VM
+lifecycle: provision, inspect, drain, fork, and destroy. See
+[Environments](/docs/concepts/environments) for the concept-level
+lifecycle model, and [`fuse up`](/reference/cli/up) /
+[`fuse init`](/reference/cli/init) for the [Fusefile](/docs/concepts/fusefile)
+path, a higher-level alternative to `fuse environment create` for most
+workflows.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse environment list`](/reference/cli/environment/list) | List environments, filtered. |
+| [`fuse environment get`](/reference/cli/environment/get) | Show one environment's details. |
+| [`fuse environment create`](/reference/cli/environment/create) | Provision a new environment from a raw resource spec. |
+| [`fuse environment destroy`](/reference/cli/environment/destroy) | Tear down an environment. |
+| [`fuse environment drain`](/reference/cli/environment/drain) | Gracefully drain (phase one of teardown). |
+| [`fuse environment fork`](/reference/cli/environment/fork) | Fork into a new environment. |
+| [`fuse environment rotate-token`](/reference/cli/environment/rotate-token) | Re-issue guest agent credentials. |
+| [`fuse environment watch`](/reference/cli/environment/watch) | Stream state transitions until terminal. |
+| [`fuse environment exec`](/reference/cli/environment/exec) | Run a command inside the guest and print its output. |
+| [`fuse environment shell`](/reference/cli/environment/shell) | Attach an interactive terminal to the guest. |
+
+## Scheduling scope
+
+`create` schedules orchestrator-wide, the active host selection (see
+[Hosts](/reference/cli/hosts)) does not pin placement. Use `--region` on
+`create` to influence which host the scheduler picks, or filter `list` by
+`--host-id` to scope the view without affecting placement.

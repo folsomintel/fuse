@@ -1,0 +1,102 @@
+---
+title: Errors
+description: FuseApiError, FuseError, error codes, and the is* helpers
+icon: triangle-alert
+---
+
+Every SDK method that talks to the orchestrator can reject. Non-2xx
+responses throw a `FuseApiError`, built from the server's structured error
+envelope; anything else (a network failure, a missing global `fetch`, a body
+that fails to decode) throws a `FuseError` instead. Branch on the code, not
+the message:
+
+```ts
+import { isNotFound, isConflict, FuseApiError } from "@folsom/fuse";
+
+try {
+  await client.environments.get("missing");
+} catch (err) {
+  if (isNotFound(err)) {
+    // handle the 404 case
+  } else if (err instanceof FuseApiError) {
+    console.error(err.code, err.status, err.requestId);
+  }
+}
+```
+
+`err.requestId`, `err.status`, and `err.details` give you the full picture
+when you need more than a yes/no check, `requestId` correlates with
+server-side logs.
+
+## Code-checking helpers
+
+```ts
+function isNotFound(err: unknown): boolean
+function isConflict(err: unknown): boolean
+function isUnauthorized(err: unknown): boolean
+function isInvalidArgument(err: unknown): boolean
+function isUnavailable(err: unknown): boolean
+function isFuseApiError(err: unknown): err is FuseApiError
+```
+
+Each reports whether `err` is a `FuseApiError` with the matching code.
+Prefer these over comparing `.code` strings directly, and definitely over
+parsing `err.message`, which is meant for logs, not branching logic.
+`isFuseApiError` is a type guard, narrowing `err` to `FuseApiError` when
+true.
+
+The server also returns a seventh code, `unimplemented` (`501`, when a
+provider has no guest to
+[`exec`](/reference/typescript/environments) into or attach to),
+with no matching `is*` helper yet, check `err.code === "unimplemented"`
+directly until one is added.
+
+## FuseApiError and FuseError
+
+```ts
+class FuseApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly details?: Record<string, string>;
+  readonly requestId?: string;
+  readonly body?: string;
+}
+
+class FuseError extends Error {
+  constructor(message: string, options?: { cause?: unknown });
+}
+```
+
+`FuseError` covers transport, configuration, or decoding failures, not an
+API error: constructing a client with no `baseUrl`, a missing global
+`fetch` with no `fetch` option supplied, or a response body that fails to
+parse.
+
+## Full code list
+
+| Constant | Wire value | Typical status |
+| --- | --- | --- |
+| `ErrorCode.NotFound` | `not_found` | `404` |
+| `ErrorCode.Conflict` | `conflict` | `409` |
+| `ErrorCode.InvalidArgument` | `invalid_argument` | `400` |
+| `ErrorCode.Unauthorized` | `unauthorized` | `401`, `403`, or `502` |
+| `ErrorCode.Unavailable` | `unavailable` | `503` |
+| `ErrorCode.Internal` | `internal` | `500` or `502` |
+| (none yet) | `unimplemented` | `501` |
+| (none yet) | `route_not_found` | `404` |
+| (none yet) | `forbidden` | `403` |
+
+The last two are easy to mistake for a code that has a helper, and neither
+is matched by one: `route_not_found` (a wrong host or port, or an endpoint
+this server does not mount) is **not** matched by `isNotFound()`, and
+`forbidden` (a CIDR-allowlist rejection) is **not** matched by
+`isUnauthorized()`. Check `err.code` directly for both.
+
+## errorFromResponse
+
+```ts
+async function errorFromResponse(res: Response): Promise<FuseApiError>
+```
+
+The lower-level function every service method calls internally on a
+non-2xx response. You won't normally call this directly.

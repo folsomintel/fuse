@@ -1,0 +1,90 @@
+---
+title: Errors
+description: ApiError, error codes, and the is_* predicates
+icon: triangle-alert
+---
+
+Every SDK method that talks to the orchestrator can raise. Non-2xx responses
+raise `fuse.ApiError`, built from the server's structured error envelope;
+anything else (a network failure, a body that fails to validate against a
+`pydantic` model) raises the underlying `httpx`/`pydantic` exception
+directly. Branch on the code, not the message:
+
+```python
+try:
+    client.environments.get("missing")
+except Exception as exc:
+    if fuse.is_not_found(exc):
+        ...  # handle the 404 case
+    else:
+        raise
+```
+
+`fuse.as_api_error(exc)` gets you the full object when you need more than a
+yes/no check, `status`, `code`, `request_id` (for correlating with
+server-side logs), and `body`:
+
+```python
+api_err = fuse.as_api_error(exc)
+if api_err:
+    print(f"status={api_err.status} code={api_err.code} request_id={api_err.request_id}")
+```
+
+## Code-checking predicates
+
+```python
+def is_not_found(err: object) -> bool: ...
+def is_conflict(err: object) -> bool: ...
+def is_unauthorized(err: object) -> bool: ...
+def is_invalid_argument(err: object) -> bool: ...
+def is_unavailable(err: object) -> bool: ...
+```
+
+Each reports whether `err` is (or wraps) an `ApiError` with the matching
+code. Prefer these over comparing `.code` strings directly, and definitely
+over parsing `str(err)`, which is meant for logs, not branching logic.
+
+The server also returns a sixth code, `unimplemented` (`501`, when a
+provider has no guest to
+[`exec`](/reference/python/environments) into), with no matching
+`is_*` predicate yet, check `api_err.code == "unimplemented"` directly until
+one is added.
+
+## ApiError
+
+```python
+class ApiError(Exception):
+    status: int
+    code: str
+    message: str
+    details: dict[str, str]
+    request_id: str
+    body: bytes
+```
+
+## Full code list
+
+| Constant | Wire value | Typical status |
+| --- | --- | --- |
+| `CODE_NOT_FOUND` | `not_found` | `404` |
+| `CODE_CONFLICT` | `conflict` | `409` |
+| `CODE_INVALID_ARGUMENT` | `invalid_argument` | `400` |
+| `CODE_UNAUTHORIZED` | `unauthorized` | `401`, `403`, or `502` |
+| `CODE_UNAVAILABLE` | `unavailable` | `503` |
+| `CODE_INTERNAL` | `internal` | `500` or `502` |
+| (none yet) | `unimplemented` | `501` |
+
+A `502` with code `unauthorized` is the one case that isn't about your own
+token: it means the host agent rejected the per-host token during
+[host registration](/reference/python/hosts), so the value to fix is
+that host's `FC_AGENT_TOKEN`, not the token the client was constructed with.
+
+## check_response and parse_api_error
+
+```python
+def check_response(response: httpx.Response) -> None: ...
+def parse_api_error(status: int, headers: httpx.Headers, body: bytes) -> ApiError: ...
+```
+
+The lower-level functions every service method calls internally. You won't
+normally call these directly.

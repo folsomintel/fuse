@@ -1,0 +1,119 @@
+---
+title: fuse environment create
+sidebar:
+  label: create
+description: Provision a new environment from a raw resource spec
+icon: circle-plus
+---
+
+```bash
+fuse environment create [flags]
+```
+
+Provisions a new environment directly from flags, without a
+[Fusefile](/docs/concepts/fusefile). For most workflows,
+[`fuse up`](/reference/cli/up) (which compiles a Fusefile into this same
+underlying call) is the higher-level, more maintainable path; use `create`
+directly for scripting, one-off environments, or when you don't want a Fusefile
+on disk at all.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--task-id` | Task ID. Required. |
+| `--cpus` | CPU count. |
+| `--ram-mb` | RAM in MB. |
+| `--storage-gb` | Storage in GB. |
+| `--gpus` | GPU device count, or MIG instance count when `--gpu-profile` is set. See below. |
+| `--gpu-kind` | GPU model label, e.g. `a100`. Influences scheduling. |
+| `--gpu-profile` | MIG profile for fractional GPUs, e.g. `1g.10gb`. Requires `--gpus` >= 1. |
+| `--region` | Region, influences scheduling (does not pin to the active host). |
+| `--max-runtime` | Max runtime in seconds. `0` is **not** unlimited, see below. |
+| `--manifest` | Base64-encoded manifest JSON, or `@path`. See below. |
+| `--startup-script` | Inline startup script, or `@path` to read from a file. |
+| `--gateway-url` | Gateway URL. |
+| `--gateway-token` | Gateway token. |
+| `--secret` | Secret as `key=value`. Repeatable. |
+| `--follow` | Stream provisioning events until a terminal state, instead of returning immediately. |
+
+## Examples
+
+```bash
+fuse environment create \
+  --task-id my-task \
+  --cpus 2 \
+  --ram-mb 2048 \
+  --storage-gb 10 \
+  --follow
+```
+
+```bash
+fuse environment create --task-id my-task --startup-script @./start.sh --secret pg_password=hunter2
+```
+
+## GPUs
+
+`--gpus` is a **device count**, not a memory or fraction figure. Without
+`--gpu-profile` it requests whole GPUs; with one it requests that many MIG
+instances of that profile:
+
+```bash
+# two whole a100s
+fuse environment create --task-id train --gpus 2 --gpu-kind a100
+
+# one 1g.10gb MIG slice
+fuse environment create --task-id notebook --gpus 1 --gpu-kind a100 --gpu-profile 1g.10gb
+```
+
+:::warning[GPU requests are validated by the orchestrator, not the CLI]
+Unlike [`fuse up`](/docs/reference/cli/up), which compiles a Fusefile and can
+reject a bad GPU request before any network call, `create` sends the flags as
+given and lets the orchestrator validate them. An invalid profile, a
+`--gpu-profile` without `--gpus`, a profile on a GPU model that does not
+support MIG, or any `--gpus` above 0 scheduled onto a non-`qemu` host all come
+back as an `invalid argument` error from the server rather than a local one.
+:::
+
+Only `qemu` hosts carry GPU capacity, so a fleet with no registered qemu host
+cannot satisfy a GPU request at all. Check what is actually available with
+[`fuse hosts list`](/docs/reference/cli/hosts/list) before requesting.
+
+## Manifest encoding
+
+`--manifest` is sent verbatim as `manifest_inline`, which the orchestrator
+base64-decodes. Passing raw JSON fails with
+`invalid argument: decode manifest_inline: illegal base64 data` rather than
+being accepted, so encode it first. The `@path` form reads a file that already
+contains base64, it does not encode a raw JSON file for you:
+
+```bash
+fuse environment create --task-id my-task \
+  --manifest "$(base64 < ./manifest.json | tr -d '\n')"
+```
+
+The `tr -d '\n'` is not optional on Linux. GNU coreutils `base64` wraps its
+output at 76 columns, and the orchestrator's decoder rejects whitespace, so any
+manifest over 57 bytes fails with the same `decode manifest_inline` error
+without it. GNU `base64 -w0` also works, but it is not portable, it is
+unsupported on macOS and BSD.
+
+## Runtime ceiling
+
+An environment left at `--max-runtime 0` is not exempt from teardown, the
+reconcile loop treats the orchestrator's `TaskStuckTimeout` (2h by default) as
+its ceiling, fails the task, and destroys the VM after two consecutive cycles
+past it. Set an explicit `--max-runtime` for anything legitimately long-running.
+See [Environments](/docs/concepts/environments).
+
+## Interactive mode
+
+With no `--task-id` in an interactive terminal, the required fields are
+collected via a form instead of flags.
+
+## Scheduling note
+
+`create` schedules orchestrator-wide, the active host selection (see
+[Hosts](/reference/cli/hosts)) does not pin placement. If a host is
+currently selected, the CLI prints a reminder of this so it isn't mistaken for
+pinning. Use `--region` to influence which host the scheduler picks.

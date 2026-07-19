@@ -13,7 +13,7 @@ throw away.
 ## The pattern
 
 Provision one environment per agent task, run the agent's commands inside it
-with [`exec`](/docs/reference/sdks/typescript/environments), then destroy it
+with [`exec`](/reference/typescript/environments), then destroy it
 when the task ends:
 
 ```ts
@@ -38,7 +38,7 @@ await client.environments.destroy(env.id);
 `exec` (and `shell`) require the orchestrator's master token. A Postgres-backed API
 key is rejected on both, so an agent service driving environments this way has to
 hold the master token rather than a scoped key. See
-[Authentication](/docs/reference/auth).
+[Authentication](/reference/auth).
 
 - Each task gets its own VM, so one agent's runaway process or malicious
   output can't touch another task's environment or the host.
@@ -54,7 +54,7 @@ hold the master token rather than a scoped key. See
 
 Some agent frameworks want an interactive shell rather than one-shot
 commands, for a long-running REPL, or a human occasionally stepping in.
-[`fuse environment shell`](/docs/reference/cli/environment/shell) attaches a
+[`fuse environment shell`](/reference/cli/environment/shell) attaches a
 real pty to the guest, the same mechanism a human would use to debug the same
 box by hand.
 

@@ -6,7 +6,7 @@ icon: gauge
 
 The orchestrator exposes Prometheus metrics on `/metrics` (unauthenticated, the
 stock `promhttp.Handler()`) and liveness/readiness probes on `/health` and
-`/ready`. See [Health, readiness, and metrics](/docs/reference/api/health) for
+`/ready`. See [Health, readiness, and metrics](/reference/api) for
 the full endpoint reference; this page focuses on what to actually watch.
 
 ## Scraping
@@ -25,7 +25,7 @@ everything else, carve out an exception for `/metrics` (and `/health`,
 `/ready`) at the proxy layer.
 
 For a one-off look without a Prometheus in front of you,
-[`fuse metrics`](/docs/reference/cli/metrics) scrapes the same endpoint and
+[`fuse metrics`](/reference/cli/metrics) scrapes the same endpoint and
 prints the raw exposition. It sends the context's token even though `/metrics`
 doesn't require one.
 
@@ -89,6 +89,6 @@ saturation cannot be broken down by route.
 
 There is no per-VM metrics API, `orchestrator_fleet_tracked_vms` is a fleet
 total, not broken out by task or host. For per-host capacity, poll
-[`GET /v1/hosts/{hostId}`](/docs/reference/api/hosts#get) or use
-[`fuse host metrics`](/docs/reference/cli/hosts/metrics) instead, that data
+[`GET /v1/hosts/{hostId}`](/reference/api#get) or use
+[`fuse host metrics`](/reference/cli/hosts/metrics) instead, that data
 isn't in the Prometheus registry.

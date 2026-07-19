@@ -1,0 +1,88 @@
+---
+title: Environments
+description: Provisioning, running commands in, and tearing down microVMs
+icon: boxes
+---
+
+`client.environments` provisions, inspects, drives, and tears down microVMs.
+Here's a complete flow: create one, run a command inside it, then tear it
+down.
+
+```python
+env = client.environments.create(
+    fuse.CreateRequest(task_id="build-1", spec=fuse.Spec(cpus=2, ram_mb=2048, storage_gb=10))
+)
+
+result = client.environments.exec(env.id, fuse.ExecRequest(cmd=["make", "test"]))
+if result.exit_code != 0:
+    raise RuntimeError(f"tests failed: {result.stderr}")
+
+client.environments.destroy(env.id)
+```
+
+- `create` provisions from a `Spec` (CPUs, RAM, storage, and optionally GPU)
+  and blocks server-side until the environment is `running` or provisioning
+  fails, so the returned `EnvironmentInfo` already reflects the outcome. No
+  separate poll-until-ready step is needed for the common case. `Spec` carries
+  `gpus`, `gpu_kind`, and `gpu_profile`, so fractional MIG environments can be
+  requested from this SDK. `HostCapacity` exposes `mig_profiles` and the
+  probed per-device `gpu_devices` inventory.
+- `exec` runs one command inside the guest and returns its exit code with
+  stdout/stderr kept apart. A **non-zero `exit_code` is a successful call**,
+  not a raised exception, the command ran and failed, which is the answer you
+  asked for. Only a raised `fuse.ApiError` means the command couldn't run at
+  all (VM not found, VM not running, or the provider has no guest to exec
+  into). `exec` requires the master token, see
+  [Errors](/reference/python/errors).
+- `destroy` tears the environment down from any state and is idempotent, a
+  second call on an already-gone environment raises `fuse.ApiError` with
+  `code == "not_found"` rather than hanging or raising something unrelated.
+
+## Watching state instead of exec
+
+If you need to react to lifecycle transitions rather than run a one-shot
+command, `events` returns a live iterator instead of a single call:
+
+```python
+for event in client.environments.events(env.id):
+    if event.err:
+        raise event.err
+    print(event.state)
+    if fuse.is_terminal_state(event.state):
+        break
+```
+
+The stream yields the current state immediately on connect, then one item
+per transition, and ends on its own after a terminal state
+(`destroyed`/`failed`). See the full walkthrough in
+[Quickstart](/reference/python/quickstart).
+
+## Everything else
+
+| Method | Purpose |
+| --- | --- |
+| `list(task_id=..., state=..., host_id=...)` | List environments, all filters optional. |
+| `get(vm_id)` | Fetch one environment by ID. |
+| `drain(vm_id)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
+| `fork(vm_id, options=fuse.ForkOptions(...))` | Create a new environment seeded from a snapshot of this one. |
+| `rotate_token(vm_id)` | Re-issue the guest's credentials without recreating the VM. |
+
+Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
+can't be forked, see [Providers](/docs/concepts/providers). These
+mirror the [HTTP API](/reference/api) one to one.
+
+## Lifecycle states
+
+```python
+STATE_PROVISIONING = "provisioning"
+STATE_RUNNING = "running"
+STATE_DRAINING = "draining"
+STATE_DESTROYING = "destroying"
+STATE_DESTROYED = "destroyed"
+STATE_FAILED = "failed"
+
+def is_terminal_state(state: str) -> bool: ...
+```
+
+`is_terminal_state` reports whether `state` is `destroyed` or `failed`, the
+two states after which an event stream ends.

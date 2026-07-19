@@ -1,0 +1,27 @@
+---
+title: fuse context list
+sidebar:
+  label: list
+description: List saved contexts
+icon: list
+---
+
+```bash
+fuse context list
+```
+
+Aliases: `ls`. No flags beyond the global `-o/--output`, `--context`, `--config`.
+
+Prints every saved context: name, base URL, whether it's marked master, active
+host selection, and which one is current. The stored bearer token is never
+printed, in either table or JSON output.
+
+```bash
+$ fuse context list
+   NAME   BASE URL                        MASTER  ACTIVE HOST
+*  prod   https://orchestrator.example.com  yes     prod-east-1
+   local  http://localhost:8080             -       -
+```
+
+The `*` column (or `"current": true` in JSON) marks the currently active
+context.

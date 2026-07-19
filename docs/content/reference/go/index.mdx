@@ -1,0 +1,114 @@
+---
+title: Overview
+description: Install the Go SDK and construct a client
+icon: book-open
+---
+
+`github.com/folsomintel/fuse/sdks/go` is the Go client for the Fuse control plane.
+It groups four resource services (Environments, Hosts, Snapshots, API Keys) behind
+a single `Client`, all backed by one shared HTTP transport.
+
+## Install
+
+```bash
+go get github.com/folsomintel/fuse/sdks/go
+```
+
+The package name is `fuse`. Import it as:
+
+```go
+import fuse "github.com/folsomintel/fuse/sdks/go"
+```
+
+## Constructing a client
+
+```go
+func New(baseURL, token string, opts ...Option) (*Client, error)
+```
+
+`baseURL` must be a non-empty, parseable URL, the orchestrator's root (no `/v1`
+suffix). `token` is sent as a bearer token on every request and may be empty for an
+orchestrator running without auth.
+
+```go
+client, err := fuse.New("https://orchestrator.example.com", "token")
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+## Client options
+
+`New` accepts a variadic list of functional options:
+
+| Option | Signature | Purpose |
+| --- | --- | --- |
+| `WithHTTPClient` | `func(*http.Client) Option` | Override the HTTP client used for normal (non-streaming) requests. |
+| `WithUserAgent` | `func(string) Option` | Override the `User-Agent` header. Default: `fuse-go/<version>`. |
+| `WithRequestID` | `func(func() string) Option` | Generator called once per request for `X-Request-ID`. An empty return value omits the header. |
+| `WithBaseURL` | `func(string) Option` | Override the base URL passed to `New`. |
+
+```go
+client, err := fuse.New(baseURL, token,
+	fuse.WithHTTPClient(&http.Client{Timeout: 10 * time.Second}),
+	fuse.WithUserAgent("my-service/1.0"),
+)
+```
+
+The default HTTP client for normal requests has a 60-second timeout. A separate,
+no-timeout client is used internally for the SSE event stream, since a long-lived
+stream should not be killed by a per-request deadline; cancel its `context.Context`
+instead.
+
+## The version string
+
+The SDK reports its own version in the default `User-Agent` header, resolved from
+the consuming binary's build info (`go.mod`/`go.sum` for a tagged install). In a
+local, un-tagged checkout, it falls back to `"dev"`.
+
+## Services
+
+`Client` groups four services that share one transport:
+
+```go
+type Client struct {
+	Environments *EnvironmentsService
+	Snapshots    *SnapshotsService
+	Hosts        *HostsService
+	APIKeys      *APIKeysService
+}
+```
+
+| Service | Page |
+| --- | --- |
+| `client.Environments` | [Environments](/reference/go/environments) |
+| `client.Hosts` | [Hosts](/reference/go/hosts) |
+| `client.Snapshots` | [Snapshots](/reference/go/snapshots) |
+| `client.APIKeys` | [API keys](/reference/go/api-keys) |
+
+## Probing what you're pointed at
+
+```go
+func (c *Client) Version(ctx context.Context) (*VersionInfo, error)
+```
+
+`Version` is the only method on `Client` itself rather than on a service. It
+probes `GET /v1/version` unauthenticated and reports what answered: `Service`
+and `Version` from the body, plus the raw `ServerHeader` and `StatusCode` from
+the response. A transport-level failure (connection refused, DNS, timeout) comes
+back as `err`; a reachable-but-wrong service comes back as a non-nil
+`*VersionInfo` whose `IsOrchestrator()` reports `false`, so you can tell "nothing
+there" from "wrong thing there".
+
+```go
+info, err := client.Version(ctx)
+if err != nil {
+	log.Fatal(err) // nothing reachable at that URL
+}
+if !info.IsOrchestrator() {
+	log.Fatalf("not a fuse orchestrator: server=%q", info.ServerHeader)
+}
+```
+
+See [Quickstart](/reference/go/quickstart) for a complete working
+example, and [Errors](/reference/go/errors) for how failures surface.

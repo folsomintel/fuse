@@ -32,12 +32,12 @@ plus the task id, so `up` here prints
 `fuse environment` subcommand takes that environment id, the task id on its
 own is not accepted.
 
-- [`fuse environment shell`](/docs/reference/cli/environment/shell) attaches
+- [`fuse environment shell`](/reference/cli/environment/shell) attaches
   a real pty to the guest, the same terminal experience as SSH, but relayed
   over Fuse's own connection rather than a separate SSH daemon and key setup.
   It needs a real terminal on your end (raw mode, resize handling), it isn't
   meant for scripted use, that's what
-  [`exec`](/docs/reference/cli/environment/exec) is for.
+  [`exec`](/reference/cli/environment/exec) is for.
 - With no trailing command, `shell` opens the guest's login shell. Pass a
   command after `--` (`fuse environment shell fuse-repro-bug-4821 -- top`) to run
   something specific on a terminal instead of the login shell.
@@ -48,7 +48,7 @@ own is not accepted.
 ## Handing off a session
 
 Because `shell` is just an interactive attach over Fuse's own API (master
-token required, see [Authentication](/docs/reference/auth)), anyone on the
+token required, see [Authentication](/reference/auth)), anyone on the
 team with access to the orchestrator can attach to the same running
 environment while you're debugging together, there's no separate SSH key
 distribution to manage for a one-off repro box.
@@ -57,5 +57,5 @@ distribution to manage for a one-off repro box.
 
 - [Environments](/docs/concepts/environments) for the full lifecycle
   model.
-- [`fuse environment exec`](/docs/reference/cli/environment/exec) for
+- [`fuse environment exec`](/reference/cli/environment/exec) for
   scripted, non-interactive commands instead.

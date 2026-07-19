@@ -1,0 +1,27 @@
+---
+title: fuse context current
+sidebar:
+  label: current
+description: Show the active context's details
+icon: info
+---
+
+```bash
+fuse context current
+```
+
+No flags beyond the globals. Prints the active context's name, base URL,
+whether it's marked master, active host selection, and the on-disk path of the
+config file it was loaded from. The bearer token itself is never printed.
+
+```bash
+$ fuse context current
+name          prod
+base url      https://orchestrator.example.com
+master        true
+active host   prod-east-1
+config        /home/you/.config/fuse/config.yaml
+```
+
+Fails with a clear error if no context is active yet, run
+[`fuse connect`](/reference/cli/contexts/connect) first.

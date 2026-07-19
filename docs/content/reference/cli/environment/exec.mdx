@@ -1,0 +1,38 @@
+---
+title: fuse environment exec
+sidebar:
+  label: exec
+description: Run a command inside a running environment's guest and print its output
+icon: terminal
+---
+
+```bash
+fuse environment exec <id> -- ls -l /var/log
+fuse environment exec <id> --shell 'ls /var/log | wc -l'
+fuse environment exec <id> --timeout 30s -- ./slow-job
+```
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--shell` | Run a one-liner under `sh -lc`, for pipelines, redirects, and globs. Mutually exclusive with a command after `--`. |
+| `--timeout` | Bound the command inside the guest (e.g. `30s`, `5m`). Default: the server default of 60s; the server caps at 10m. |
+
+Argv after `--` is the default: it needs no quoting rules and cannot be turned into
+an injection by interpolating a value. `--shell` is the explicit opt-in for what
+argv cannot express.
+
+`exec` exits with the guest command's exit code, so it composes with `&&` and
+`set -e`. A guest command that ran and failed is not a CLI error: stdout and stderr
+are still printed, and only the exit code reports the failure.
+
+With `-o json`, the whole result is printed as one object instead:
+
+```json
+{ "exit_code": 1, "stdout": "", "stderr": "ls: /nope: No such file or directory\n" }
+```
+
+`exec` requires the [master token](/reference/auth). It is root in the guest,
+and API keys carry no scopes today, so anything weaker would silently make every
+issued key a root shell on every VM in the fleet.

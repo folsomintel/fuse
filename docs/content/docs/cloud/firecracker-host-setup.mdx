@@ -132,7 +132,7 @@ A bring-your-own host agent has to serve `fork` and `attach` too. `fuse environm
 fork` is implemented on top of the former, and the API's attach endpoint on top of
 the latter, rather than on any orchestrator-side fallback. Attach has no CLI
 command, it is reachable only over
-[the HTTP API](/docs/reference/api/environments).
+[the HTTP API](/reference/api).
 
 `url` is `<public_host>:<host_port>`, DNAT'd to the guest's `9550`. Host port is
 `19550 + vm_index`. Public host is auto-detected; override with `PUBLIC_HOST=...` in

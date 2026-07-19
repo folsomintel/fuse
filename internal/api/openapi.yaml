@@ -5,24 +5,33 @@ info:
   version: 0.1.0
   description: |
     Control plane for Fuse orchestrator. Provisions, inspects, and destroys
-    VMs; manages snapshots. This API is consumed by the harness and by
-    operations tooling. It is the stable HTTP surface for everything that
-    is not the in-guest agent (which exposes gRPC from inside the sandbox).
+    VMs; manages snapshots. This API is consumed by the fuse CLI (via the
+    Go SDK), the language SDKs, and operations tooling. It is the stable
+    HTTP surface for everything that is not the in-guest agent (fused),
+    which exposes its own HTTP API from inside the VM.
 
     Path prefix: `/v1`. Backward-incompatible changes bump the prefix.
 
-    All non-2xx responses use the Error envelope defined below.
+    Every non-2xx response under `/v1` uses the Error envelope defined
+    below. The one exception is the unauthenticated `/ready` probe,
+    which reports failure as a bare `{"status","checks"}` object with no
+    `error` key — so a client must not assume `body.error.code` is
+    present on any non-2xx it receives.
 
     Every response carries an `X-Request-ID` header — either the value
     the client supplied on the request (when it matches `[A-Za-z0-9_-]{1,128}`)
     or a freshly generated `req_<32hex>` identifier. The same value is
     threaded through audit events and server logs for correlation.
-    Probe endpoints (`/health`, `/ready`, `/metrics`) are mounted
-    outside this middleware and do not carry a request ID.
+    Probe endpoints (`/health`, `/ready`, `/metrics`, `/v1/version`) are
+    mounted outside this middleware and do not carry a request ID.
 
 servers:
   - url: http://localhost:8080
     description: Local development
+
+security:
+  - BearerAuth: []
+  - CookieAuth: []
 
 tags:
   - name: environments
@@ -31,13 +40,27 @@ tags:
     description: Checkpoint / restore lifecycle
   - name: hosts
     description: Host registry and scheduling controls
+  - name: api-keys
+    description: |
+      Revocable API key management (master token only; requires Postgres).
+      These routes exist only when the orchestrator runs with a
+      Postgres-backed key store (`DATABASE_URL`). Without it they are not
+      registered, and a call — authenticated or not — returns 404 with
+      code `route_not_found`, not 401. The CIDR allowlist still applies
+      first: it is mounted at the router level, ahead of the not-found
+      handler, so a caller outside the allowlist gets 403 `forbidden`
+      instead and never reaches the 404.
+  - name: health
+    description: Unauthenticated probe and identity endpoints (mounted outside auth)
+  - name: auth
+    description: Session-cookie login/logout for browser callers
 
 paths:
   /health:
     get:
       tags: [health]
       operationId: liveness
-      summary: Liveness probe.
+      summary: Check liveness
       description: |
         Always returns 200 with `{"status":"ok"}`. Mounted outside the
         auth + CIDR middleware chain so it works for k8s / load-balancer
@@ -61,7 +84,7 @@ paths:
     get:
       tags: [health]
       operationId: readiness
-      summary: Readiness probe.
+      summary: Check readiness
       description: |
         Returns 200 when the orchestrator can serve traffic, 503 otherwise.
         Checks the state store with a bounded ListVMs call (default 2s
@@ -69,6 +92,14 @@ paths:
         body includes a per-check breakdown so operators can see which
         dependency is unhealthy. Mounted outside auth — k8s readinessProbe
         does not carry credentials.
+
+        Failure messages are clipped to the first 200 bytes, with the
+        literal marker `…(truncated)` appended — so a truncated check
+        value is 214 bytes, not 200. Truncation keeps driver errors
+        and stack traces from blowing out the probe body. Use this endpoint
+        — not `/health` — for a load balancer's routing decision;
+        `/health` only reports that the process is up, not that it can
+        serve a request end to end.
       security: []
       responses:
         "200":
@@ -108,11 +139,124 @@ paths:
                       state_store: "connection refused"
                       fleet: ok
 
+  /metrics:
+    get:
+      tags: [health]
+      operationId: metrics
+      summary: Scrape Prometheus metrics
+      description: |
+        Prometheus text exposition (stock promhttp handler). Exposes the
+        orchestrator's own `orchestrator_*` reconcile, fleet, and HTTP RED
+        metrics alongside the default Go runtime and process collectors
+        (`go_*`, `process_*`). The `route` label on HTTP metrics is the chi
+        route pattern (e.g. `/v1/environments/{vmId}`), not the raw request
+        path, so invalid-ID spam cannot blow up series cardinality. Mounted
+        outside auth so Prometheus can scrape without a token.
+      security: []
+      responses:
+        "200":
+          description: Metrics in Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /v1/version:
+    get:
+      tags: [health]
+      operationId: version
+      summary: Identify the orchestrator
+      description: |
+        Identifies this process as the fuse orchestrator and reports its
+        build version (`dev` when the binary was not stamped at build
+        time). Despite the `/v1` prefix it is mounted on the outer mux,
+        outside auth and the CIDR allowlist, so `fuse connect` can confirm
+        it is talking to an orchestrator (rather than a host agent, or
+        nothing at all) before it holds a validated token.
+      security: []
+      responses:
+        "200":
+          description: Service identity and build version.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [service, version]
+                properties:
+                  service:
+                    type: string
+                    enum: [fuse-orchestrator]
+                  version:
+                    type: string
+                    example: 1.4.0
+
+  /login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Log in
+      description: |
+        Exchanges the shared operator token (`ORCH_AUTH_TOKEN`) for an
+        HttpOnly `fuse_session` cookie (`SameSite=Lax`, `Secure` when the
+        server serves TLS, 7-day Max-Age) so browser callers never store
+        the token in JavaScript-readable storage. Only the master token is
+        accepted here — not revocable API keys. Mounted outside bearer
+        auth (but behind the CIDR allowlist). When the orchestrator runs
+        with no auth token configured, login returns a no-op 204
+        regardless of body and sets no cookie. That keeps the SPA flow
+        working only when the API key store is also absent (no
+        `DATABASE_URL`), because bearer auth is a pass-through only when
+        both are unset. With `ORCH_AUTH_TOKEN` empty but `DATABASE_URL`
+        set — a supported configuration — the 204 is a false success:
+        no `fuse_session` cookie is issued and every subsequent `/v1`
+        call fails 401 `unauthorized` with "missing or malformed
+        credentials".
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "204":
+          description: Session cookie set (no body).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Token does not match. Fires the auth-failure audit hook.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Log out
+      description: |
+        Clears the `fuse_session` cookie (Max-Age=-1). Safe to call
+        unauthenticated — clearing a cookie the caller may not hold is
+        harmless, and there is no server-side session state. Always
+        succeeds.
+      security: []
+      responses:
+        "204":
+          description: Session cookie cleared (no body).
+
   /v1/environments:
     get:
       tags: [environments]
       operationId: listEnvironments
-      summary: List tracked environments with optional exact-match filters.
+      summary: List environments
+      description: |
+        Lists tracked environments. Filters are optional exact matches,
+        combined with AND.
       parameters:
         - name: task_id
           in: query
@@ -140,12 +284,22 @@ paths:
     post:
       tags: [environments]
       operationId: createEnvironment
-      summary: Provision a new environment for a task.
+      summary: Create environment
       description: |
         Creates a VM, uploads the manifest, starts the agent, and assigns the
         task. Blocks until the VM is running or creation fails. The
         manifest and secrets are passed inline as byte strings; a future
         revision may add manifest-ref indirection.
+
+        GPU requests are validated at the API boundary (not just in the
+        CLI): negative `gpus`, a malformed `gpu_profile`, a profile with
+        `gpus` < 1, or a profile on a non-MIG `gpu_kind` each return 400
+        on the first failure. `gpu_profile` is lowercased on the way in.
+        A GPU request with no registered GPU host fails 503
+        (`gpu workloads require a registered gpu host`). `manifest_inline`
+        must be standard base64; a bad encoding is a 400. Secrets are
+        validated against the manifest before provisioning, and secret
+        values are redacted from error messages.
       requestBody:
         required: true
         content:
@@ -174,7 +328,8 @@ paths:
     get:
       tags: [environments]
       operationId: getEnvironment
-      summary: Fetch a VM by ID.
+      summary: Get environment
+      description: Fetches a VM by ID.
       responses:
         "200":
           description: Environment.
@@ -187,25 +342,35 @@ paths:
     post:
       tags: [environments]
       operationId: environmentAction
-      summary: Perform an action on an environment.
+      summary: Act on an environment
       description: |
         Supported actions:
 
-        - `rotate-token` — generate fresh per-VM TLS credentials and
-          push them to the guest. Returns 204.
-        - `drain` — first phase of two-phase teardown. Calls the agent's
-          gRPC Down RPC inside the guest so the service DAG stops
-          gracefully and the harness can flush outputs. The VM
-          transitions to the `draining` state but is **not** destroyed;
-          a subsequent DELETE tears it down. Only Running VMs can be
-          drained — any other state returns 409 Conflict. If the agent's
-          Down RPC fails the VM remains in `draining` so the caller
-          can still proceed with DELETE; the error is returned as 5xx.
-        - `fork` — snapshot the source VM and provision a copy from
-          that seed. Returns 201 with the new Environment. A VM that
-          holds a GPU passthrough device cannot be forked (a vfio
-          device cannot be checkpointed) and returns 409 Conflict;
-          this is permanent and must not be retried.
+        - `rotate-token` — generate fresh per-VM credentials, upload them
+          to the guest filesystem, and persist the orchestrator's
+          encrypted copy. Returns 204. Note: the running fused process
+          reads its token once at startup and keeps serving the old token
+          until it is restarted; rotation currently takes full effect only
+          after the guest agent restarts.
+        - `drain` — first phase of two-phase teardown. Runs the
+          environment's configured drain command inside the guest
+          (default: the fused drain command) so in-guest workloads
+          quiesce gracefully; an empty drain command only transitions the
+          state. The VM transitions to `draining` but is **not**
+          destroyed; a subsequent DELETE tears it down. Only running VMs
+          can be drained — any other state returns 409. If the drain
+          command fails the VM remains in `draining` so the caller can
+          still DELETE; the failure is returned as 5xx.
+        - `fork` — create a new environment seeded from a checkpoint of
+          this one. With `reuse_snapshot_id` empty the server snapshots
+          the source first; otherwise it reuses that ready snapshot (it
+          must belong to this VM). The fork is pinned to the source's
+          host, receives its own guest credentials (fused is restarted),
+          and is returned as a new Environment with 201. GPU environments
+          (spec.gpus > 0, including MIG) and QEMU-hosted environments
+          cannot be forked: a vfio device cannot be checkpointed, so the
+          request returns 409 `conflict`. That is a permanent property of
+          the environment and must not be retried.
         - `exec` — run a single command inside the guest and return its
           exit code, stdout, and stderr. Takes an
           ExecEnvironmentRequest body and returns an
@@ -229,15 +394,39 @@ paths:
         - 409 `conflict` — the VM is not running (e.g. draining).
         - 501 `unimplemented` — the provider has no guest to exec into
           (e.g. the in-memory stub).
+
+        **Fork error mapping.** Fork returns 409 `conflict` for three
+        distinct preconditions:
+
+        - the reused snapshot (`reuse_snapshot_id`) is not in state
+          `ready`;
+        - the source holds a GPU passthrough device (permanent — do not
+          retry);
+        - with `reuse_snapshot_id` empty, the implicit seed snapshot is
+          refused because the snapshot quota (count or bytes) is
+          exhausted. This 409 has nothing to do with a reused snapshot's
+          state, so do not infer the cause from the status code alone.
+
+        404 covers an unknown VM or snapshot, including a reused
+        snapshot that is no longer present on the host.
+
+        **Known limitation:** the remaining fork and rotate-token
+        precondition failures — source VM not running, and a provider
+        with no fork support — still return 500 `internal` rather than
+        409/501. Treat the message, not the status code, as the contract
+        until these move to 4xx.
       requestBody:
         required: false
         description: |
           Required for `exec`, which rejects an empty body with 400.
-          Ignored by `rotate-token` and `drain`.
+          Optional for `fork` (ForkEnvironmentRequest). Ignored by
+          `rotate-token` and `drain`.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ExecEnvironmentRequest"
+              oneOf:
+                - $ref: "#/components/schemas/ExecEnvironmentRequest"
+                - $ref: "#/components/schemas/ForkEnvironmentRequest"
       parameters:
         - name: action
           in: query
@@ -266,7 +455,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Environment"
         "204":
-          description: Action succeeded (rotate-token).
+          description: |
+            Action succeeded with no body. Always for rotate-token; for
+            drain and fork only in the rare race where the action
+            succeeded but the environment record could not be re-read to
+            build a response body.
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -282,11 +475,14 @@ paths:
     delete:
       tags: [environments]
       operationId: destroyEnvironment
-      summary: Tear down a VM.
+      summary: Destroy environment
       description: |
-        Forcefully destroys the VM and marks its task failed. Idempotent
-        in the sense that a second call on an already-gone VM returns
-        404, not an error.
+        Forcefully destroys the VM and marks its task failed. Not
+        idempotent: a second call on an already-gone VM returns 404
+        `not_found` in the standard error envelope, and SDKs raise on it
+        like any other 4xx. A caller that retries destroys should treat
+        404 as success itself rather than expecting the server to absorb
+        the repeat.
       responses:
         "204":
           description: VM destroyed.
@@ -301,8 +497,9 @@ paths:
     get:
       tags: [environments]
       operationId: attachEnvironment
-      summary: Open an interactive stream to a process inside the guest.
+      summary: Attach to environment
       description: |
+        Opens an interactive stream to a process inside the guest.
         Upgrades the connection to `fuse-attach/1` and relays a raw
         duplex byte stream between the client and a process in the
         guest. This is the transport behind `fuse environment shell`.
@@ -317,7 +514,10 @@ paths:
         speak it, because only an interactive terminal needs it.
 
         **Handshake.** The request must carry `Upgrade: fuse-attach/1`
-        and `Connection: Upgrade` over HTTP/1.1. A request without the
+        over HTTP/1.1, and should send `Connection: Upgrade` alongside it
+        as HTTP/1.1 requires — though this server only inspects the
+        `Upgrade` header, so a request omitting `Connection` is still
+        accepted and hijacked. A request without the
         Upgrade header is rejected with 400 `invalid_argument`. The
         server replies `101 Switching Protocols` and echoes the
         `Upgrade` header, after which the connection is no longer HTTP.
@@ -361,13 +561,14 @@ paths:
       parameters:
         - name: tty
           in: query
-          required: false
+          required: true
           schema:
             type: string
             enum: ["1", "true"]
           description: |
-            Request a pty for the process. Any other value (including
-            the parameter's absence) means no pty.
+            Must be `1` or `true`. Attach is pty-only; a request without
+            it is rejected with 400 invalid_argument (`attach requires
+            tty=1; use ?action=exec for non-interactive commands`).
         - name: rows
           in: query
           required: false
@@ -418,7 +619,8 @@ paths:
                 enum: [Upgrade]
         "400":
           description: |
-            The request did not carry `Upgrade: fuse-attach/1`.
+            The request did not carry `Upgrade: fuse-attach/1`, or did
+            not set `tty=1`.
           content:
             application/json:
               schema:
@@ -459,8 +661,9 @@ paths:
     get:
       tags: [environments]
       operationId: streamEnvironmentEvents
-      summary: Stream state-change events for a VM as Server-Sent Events.
+      summary: Stream environment events
       description: |
+        Streams state-change events for a VM as Server-Sent Events.
         Replaces polling `GET /v1/environments/{vmId}` for state
         transitions. The control-server should use this stream during
         provisioning instead of a 2s polling loop.
@@ -512,18 +715,21 @@ paths:
     post:
       tags: [snapshots]
       operationId: createSnapshot
-      summary: Snapshot a running VM.
+      summary: Snapshot a running VM
       description: |
-        Quiesces the VM and records a first-class snapshot resource.
+        Checkpoints a running VM into a new snapshot. Creation is
+        synchronous; the 201 body is the persisted record, already in
+        state `ready`, with `parent_snapshot_id` pointing at the VM's
+        previous ready snapshot. `mode` defaults to `manual`.
 
         Preconditions are reported as 4xx, not 5xx:
 
         - 404 `not_found` — unknown VM.
         - 409 `conflict` — the VM is not running (e.g. draining), the
-          snapshot quota is exhausted, or the VM holds a GPU
-          passthrough device. A vfio device cannot be checkpointed, so
-          GPU environments can never be snapshotted; this is permanent
-          and must not be retried.
+          per-tenant snapshot quota (count or bytes) is exhausted, or the
+          VM holds a GPU passthrough device. A vfio device cannot be
+          checkpointed, so GPU environments can never be snapshotted;
+          this is permanent and must not be retried.
         - 501 `unimplemented` — the provider has no snapshot support
           (e.g. the in-memory stub).
       requestBody:
@@ -534,15 +740,21 @@ paths:
               $ref: "#/components/schemas/CreateSnapshotRequest"
       responses:
         "201":
-          description: Snapshot created.
+          description: Snapshot created (already in state `ready`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Snapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: Snapshot quota exceeded for the tenant (count or bytes).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
         "501":
@@ -552,7 +764,12 @@ paths:
     get:
       tags: [snapshots]
       operationId: listSnapshots
-      summary: List snapshots with optional exact-match filters.
+      summary: List snapshots
+      description: |
+        Lists snapshots across the whole fleet. Filters are optional
+        exact matches, combined with AND. There is no host-scoped
+        filter; listing is fleet-wide regardless of which host the
+        source VM ran on.
       parameters:
         - name: vm_id
           in: query
@@ -582,6 +799,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SnapshotList"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/snapshots/{snapshotId}:
     parameters:
@@ -589,7 +808,7 @@ paths:
     get:
       tags: [snapshots]
       operationId: getSnapshot
-      summary: Get one snapshot resource by ID.
+      summary: Get a snapshot
       responses:
         "200":
           description: Snapshot metadata.
@@ -598,19 +817,28 @@ paths:
               schema:
                 $ref: "#/components/schemas/Snapshot"
         "404":
-          $ref: "#/components/responses/NotFound"
+          description: |
+            Snapshot does not exist. Store-level failures also surface
+            as 404, so this endpoint never returns 500.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     post:
       tags: [snapshots]
       operationId: snapshotAction
-      summary: Perform an action on a snapshot.
+      summary: Perform a snapshot action
       description: |
-        Rolls the snapshot's VM back to the recorded checkpoint.
+        Dispatches an action via the required `?action=` query
+        parameter. `restore` rolls the snapshot back in place onto its
+        original VM. There is no cross-host restore or restore into a
+        new VM; use the environment `fork` action for that.
 
         Preconditions are reported as 4xx, not 5xx:
 
         - 400 `invalid_argument` — missing or unknown action.
-        - 404 `not_found` — unknown snapshot, or the snapshot no longer
-          exists on the provider.
+        - 404 `not_found` — unknown snapshot, or its checkpoint is
+          missing on the provider.
         - 409 `conflict` — the target VM is not running (e.g.
           draining), or the snapshot is not in the `ready` state.
         - 501 `unimplemented` — the provider has no snapshot support.
@@ -638,14 +866,24 @@ paths:
     delete:
       tags: [snapshots]
       operationId: deleteSnapshot
-      summary: Delete a leaf snapshot.
+      summary: Delete a leaf snapshot
+      description: |
+        Deletes a snapshot and its provider-side artifact. Leaf-only:
+        409 while any other snapshot lists this one as
+        `parent_snapshot_id` (every new snapshot of a VM records the
+        previous ready snapshot as its parent). There is no soft-delete;
+        export records do not block deletion.
       responses:
         "204":
           description: Snapshot deleted.
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          $ref: "#/components/responses/Conflict"
+          description: Snapshot has children.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -653,7 +891,7 @@ paths:
     get:
       tags: [hosts]
       operationId: listHosts
-      summary: List registered hosts.
+      summary: List registered hosts
       responses:
         "200":
           description: Host list.
@@ -664,7 +902,27 @@ paths:
     post:
       tags: [hosts]
       operationId: registerHost
-      summary: Register or update a host in the scheduler.
+      summary: Register or update a host
+      description: |
+        Registers a host. Re-registering an existing ID is a **full
+        replacement, not a patch**: the handler builds a fresh host
+        record from the request alone and overwrites the stored entry.
+        Beyond URL, token, region, and capacity, that also (a)
+        overwrites `backend`, (b) resets `state` to `active` — silently
+        uncordoning a cordoned host, (c) zeroes the allocated counters
+        even while VMs are still placed on the host, and that zeroed
+        record is persisted, and (d) resets `created_at` to now. Do not
+        use this endpoint to tweak one field of a live host; (b) and (c)
+        are scheduling side effects that can lead to overcommit.
+
+        The capacity probe against
+        the host agent doubles as an auth check: a token the agent
+        rejects fails registration with 502, while an unreachable agent
+        only blocks when cpus/ram_mb/storage_gb were not all declared
+        (otherwise the host registers with a warning, so pre-provisioning
+        an unreachable host still works). The response capacity reflects
+        resolved (probed or overridden) values, never the raw zeros
+        sent, and `warnings` is populated only on this response.
       requestBody:
         required: true
         content:
@@ -682,6 +940,26 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "500":
           $ref: "#/components/responses/InternalError"
+        "501":
+          description: |
+            Host registration is disabled — the orchestrator was started
+            without a provider factory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: |
+            The capacity probe against the host agent failed. Either the
+            agent rejected the token (code `unauthorized` — the token
+            must be the agent's own `FC_AGENT_TOKEN`, not the
+            orchestrator token) or the agent was unreachable while
+            cpus/ram_mb/storage_gb were not all declared explicitly
+            (code `internal`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/hosts/{hostId}:
     parameters:
@@ -689,7 +967,7 @@ paths:
     get:
       tags: [hosts]
       operationId: getHost
-      summary: Fetch a host by ID.
+      summary: Fetch a host by ID
       responses:
         "200":
           description: Host.
@@ -702,7 +980,7 @@ paths:
     post:
       tags: [hosts]
       operationId: hostAction
-      summary: Perform an action on a host.
+      summary: Perform an action on a host
       parameters:
         - name: action
           in: query
@@ -713,7 +991,9 @@ paths:
           description: |
             The action to perform on the host.
             - cordon: Mark the host unschedulable for new environments.
-            - uncordon: Return the host to active scheduling.
+              Existing VMs keep running; cordon only stops new placements.
+            - uncordon: Return the host to active scheduling. Also
+              reactivates a host in the `draining` state.
       responses:
         "204":
           description: Action succeeded.
@@ -726,12 +1006,14 @@ paths:
     delete:
       tags: [hosts]
       operationId: removeHost
-      summary: Remove a host from the scheduler.
+      summary: Remove a host from the scheduler
       description: |
-        Removes the host from the registry. The host must have no VMs
-        assigned; cordon it, drain the VMs, and wait for them to leave
-        first. Removing a host that still has VMs assigned returns
-        409 `conflict`.
+        The host must have no environments assigned; cordon it and wait
+        for (or destroy) its VMs first. A host that still has VMs
+        assigned returns 409 `conflict` with the message
+        `host <id> still has vm <id> assigned`. The named VM is one of
+        the assigned set rather than a count, and because the check
+        walks a map it can differ between identical calls.
       responses:
         "204":
           description: Host removed.
@@ -742,7 +1024,156 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/api-keys:
+    post:
+      tags: [api-keys]
+      operationId: createAPIKey
+      summary: Create API key
+      description: |
+        Mints a new revocable API key. `key` is the raw secret (prefix
+        `fuse_sk_`) and appears only in this response; it cannot be
+        recovered afterward — only its SHA-256 is stored. An empty body
+        creates an unlabeled key; only a present-but-malformed body is
+        400. Master-token only: a caller authenticated with an API key
+        receives 403, and the 403 body carries code `unauthorized` (not
+        a separate forbidden code). Auth is never disabled on this
+        route: it exists only when the Postgres key store is configured,
+        and that same store makes bearer auth mandatory, so every
+        request reaching this handler carries a principal. Requires the
+        Postgres-backed key store (`DATABASE_URL`); without it this
+        route is not registered and returns 404 `route_not_found`.
+
+        Note that `ORCH_AUTH_TOKEN` unset with `DATABASE_URL` set is
+        permitted (unless `ORCH_REQUIRE_AUTH=true`), and in that
+        configuration there is no master credential at all: every caller
+        authenticates as an API key and therefore receives 403
+        `unauthorized` here. Configure a master token to use this route.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAPIKeyRequest"
+      responses:
+        "201":
+          description: Key created; `key` is shown exactly once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAPIKeyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: |
+            No Postgres key store is configured, so this route is not
+            registered; the fallback handler answers with code
+            `route_not_found`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      tags: [api-keys]
+      operationId: listAPIKeys
+      summary: List API keys
+      description: |
+        Lists metadata for all keys, live and revoked, newest first.
+        Never returns key secrets or hashes. `api_keys` is always an
+        array — `[]` when empty, not null. Master-token only (403 with
+        code `unauthorized` for API-key callers). Requires the
+        Postgres-backed key store (`DATABASE_URL`); without it this
+        route is not registered and returns 404 `route_not_found`.
+      responses:
+        "200":
+          description: Key metadata list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/APIKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: |
+            No Postgres key store is configured, so this route is not
+            registered; the fallback handler answers with code
+            `route_not_found`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/api-keys/{id}:
+    delete:
+      tags: [api-keys]
+      operationId: revokeAPIKey
+      summary: Revoke API key
+      description: |
+        Revokes the key with the given id (the `ak_`-prefixed handle,
+        not the secret). Revocation is immediate — requests using the
+        revoked secret are rejected from then on — and idempotent:
+        re-revoking returns 204 and keeps the original `revoked_at`.
+        Master-token only (403 with code `unauthorized` for API-key
+        callers). Requires the Postgres-backed key store
+        (`DATABASE_URL`); without it this route is not registered and
+        returns 404 `route_not_found`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: API key id from create or list (prefix `ak_`).
+      responses:
+        "204":
+          description: Key revoked (or already revoked).
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        `Authorization: Bearer <token>` — either the static master token
+        (`ORCH_AUTH_TOKEN`) or a revocable API key issued via
+        /v1/api-keys (API keys require Postgres; without a database only
+        the master token is accepted). Master-only surfaces (exec,
+        attach, API key management) refuse API keys with 403.
+
+        **Authentication can be disabled entirely.** When neither
+        `ORCH_AUTH_TOKEN` nor an API key store (`DATABASE_URL`) is
+        configured — the default local-development posture — the bearer
+        middleware becomes a pass-through: every operation this document
+        marks as secured is reachable with no credentials, requests carry
+        no principal, and master-only surfaces therefore admit everyone.
+        Never run that configuration on a reachable network; set
+        `ORCH_REQUIRE_AUTH=true` to make the orchestrator refuse to start
+        without a master token.
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: fuse_session
+      description: |
+        HttpOnly session cookie set by POST /login for browser callers.
+        Consulted only when no Authorization header is present.
+
   parameters:
     VMID:
       name: vmId
@@ -773,17 +1204,28 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
     Forbidden:
       description: |
         The caller authenticated, but not as the master operator.
         Master-only surfaces (exec, attach, API key management) refuse
-        API keys.
+        API keys; those 403 bodies carry code `unauthorized`. CIDR
+        allowlist rejections also return 403 but with code `forbidden`.
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
     NotFound:
-      description: Resource does not exist.
+      description: |
+        Resource does not exist. Note the distinct code
+        `route_not_found`, returned when the URL matches no registered
+        route at all (wrong host, port, or path prefix) rather than a
+        known route with a missing resource.
       content:
         application/json:
           schema:
@@ -801,7 +1243,13 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     Unavailable:
-      description: The orchestrator is rejecting work (e.g. shutting down).
+      description: |
+        No registered host has room for this spec — the scheduler found
+        no capacity, or no hosts are registered at all (code
+        `unavailable`). This includes the GPU case: a spec asking for
+        GPUs a host cannot satisfy lands here. There is no
+        shutdown-rejection path; a 503 always means placement failed,
+        so it is worth retrying once capacity frees up.
       content:
         application/json:
           schema:
@@ -826,12 +1274,21 @@ components:
           properties:
             code:
               type: string
-              description: Stable machine-readable code.
+              description: |
+                Stable machine-readable code. `route_not_found` (404)
+                means the URL matches no route this server exposes —
+                usually a wrong host, port, or path prefix — as opposed
+                to `not_found`, where the route exists but the resource
+                does not. `forbidden` is emitted only by CIDR-allowlist
+                rejections; master-only refusals (exec, attach, API key
+                management) return 403 with code `unauthorized`.
               enum:
                 - not_found
+                - route_not_found
                 - conflict
                 - invalid_argument
                 - unauthorized
+                - forbidden
                 - unavailable
                 - internal
                 - unimplemented
@@ -840,20 +1297,32 @@ components:
               description: Human-readable description.
             details:
               type: object
-              additionalProperties: true
+              additionalProperties:
+                type: string
+              description: |
+                Optional stable, non-sensitive metadata (e.g. ids,
+                counts). Omitted when empty.
 
     ResourceSpec:
       type: object
-      description: Hardware requirements for a VM.
+      description: |
+        Hardware requirements for a VM.
+
+        No lower bound is declared on cpus/ram_mb because the server
+        does not enforce one: createEnvironment validates only task_id
+        and the GPU fields, so a spec with `cpus: 0` / `ram_mb: 0` is
+        accepted and scheduled. Callers should still send positive
+        values; a strict request validator must not reject zero, or it
+        will refuse payloads the API accepts.
       properties:
         cpus:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 0
         ram_mb:
           type: integer
           format: int32
-          minimum: 1
+          minimum: 0
         storage_gb:
           type: integer
           format: int32
@@ -879,6 +1348,12 @@ components:
             When set, gpus counts MIG instances of this profile rather
             than whole devices, and the qemu host agent attaches them
             via vfio-pci sysfsdev (decision D5).
+        image:
+          type: string
+          description: |
+            Optional named base rootfs for the provider to boot from
+            (resolved by the host agent against its named-rootfs
+            directory). Empty means the provider's default base image.
         region:
           type: string
         max_runtime_seconds:
@@ -889,6 +1364,31 @@ components:
             fleet default". The orchestrator tears down tasks that
             exceed this age with no state transitions.
 
+    ExposeSpec:
+      type: object
+      required: [port]
+      properties:
+        port:
+          type: integer
+          description: Guest-side port to publish.
+        as:
+          type: string
+          description: Caller-chosen label, e.g. "http".
+
+    Endpoint:
+      type: object
+      required: [url, port]
+      properties:
+        as:
+          type: string
+          description: Caller-chosen label from the expose request.
+        url:
+          type: string
+          description: Reachable address, e.g. "http://203.0.113.5:41231".
+        port:
+          type: integer
+          description: The guest-side port this endpoint publishes.
+
     CreateEnvironmentRequest:
       type: object
       required: [task_id, spec]
@@ -897,7 +1397,13 @@ components:
           type: string
           description: Caller-assigned task identifier. Must be unique.
         spec:
-          $ref: "#/components/schemas/ResourceSpec"
+          allOf:
+            - $ref: "#/components/schemas/ResourceSpec"
+          description: |
+            Hardware requirements. Nominally required, but the server
+            does not currently reject a missing/zero spec; scheduling
+            against registered hosts is what fails a zero-resource
+            request.
         manifest_inline:
           type: string
           description: |
@@ -908,6 +1414,20 @@ components:
           additionalProperties:
             type: string
           description: Resolved key/value secrets passed to the agent.
+        startup_script:
+          type: string
+          description: Optional script run inside the guest at boot.
+        gateway_url:
+          type: string
+        gateway_token:
+          type: string
+        expose:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExposeSpec"
+          description: |
+            Guest ports to publish as reachable endpoints; each entry
+            surfaces on the Environment's `endpoints`.
 
     Environment:
       type: object
@@ -927,7 +1447,9 @@ components:
           description: Scheduler-assigned host ID when placement uses the host registry.
         url:
           type: string
-          description: Reachable URL for surfd's gRPC surface.
+          description: |
+            host:port address where the guest agent (fused) is
+            reachable, via per-VM DNAT. Empty before the VM is running.
         spec:
           $ref: "#/components/schemas/ResourceSpec"
         created_at:
@@ -939,6 +1461,13 @@ components:
         error:
           type: string
           description: Last failure message, empty on the happy path.
+        endpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/Endpoint"
+          description: |
+            Published network endpoints for ports requested via the
+            create request's `expose` list. Omitted when none.
 
     EnvironmentList:
       type: object
@@ -979,7 +1508,10 @@ components:
             and signal the end of the stream.
         url:
           type: string
-          description: Reachable URL for surfd's gRPC surface; empty before Running and after Destroyed.
+          description: |
+            host:port address where the guest agent (fused) is
+            reachable, via per-VM DNAT; empty before Running and after
+            Destroyed.
         error:
           type: string
           description: Last error message attached to the VM, empty on the happy path.
@@ -1053,6 +1585,19 @@ components:
           type: string
           example: ""
 
+    ForkEnvironmentRequest:
+      type: object
+      description: Optional body of POST /v1/environments/{vmId}?action=fork.
+      properties:
+        reuse_snapshot_id:
+          type: string
+          description: |
+            Existing ready snapshot of this VM to seed the fork from.
+            Empty means snapshot the source first.
+        comment:
+          type: string
+          description: Free-form note attached to the seed snapshot.
+
     CreateSnapshotRequest:
       type: object
       properties:
@@ -1062,9 +1607,17 @@ components:
         mode:
           type: string
           enum: [manual, auto]
+          description: |
+            Defaults to "manual" when omitted. Values outside this set
+            are not rejected by the server.
         retention_seconds:
           type: integer
           format: int64
+          description: |
+            Seconds from now until the snapshot is eligible for garbage
+            collection. Omitted or 0 falls back to the server's default
+            retention if configured; otherwise the snapshot is kept
+            until deleted.
         metadata:
           type: object
           additionalProperties:
@@ -1074,6 +1627,9 @@ components:
         export_status:
           type: string
           enum: [pending, ready, error]
+          description: |
+            Defaults to "pending" when omitted. Values outside this set
+            are not rejected by the server.
 
     SnapshotExport:
       type: object
@@ -1083,7 +1639,13 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, ready, error]
+          description: |
+            Normally "pending", "ready", or "error". Not an enum: the
+            create handler stores the caller-supplied `export_status`
+            verbatim (only an empty value is defaulted to "pending"), so
+            an arbitrary string can appear here. Treat unknown values as
+            opaque rather than rejecting the response.
+          example: pending
         requested_at:
           type: string
           format: date-time
@@ -1109,7 +1671,13 @@ components:
           type: string
         mode:
           type: string
-          enum: [manual, auto]
+          description: |
+            Normally "manual" or "auto". Not an enum: the server stores
+            the caller-supplied `mode` verbatim (only an empty value is
+            defaulted to "manual"), so an arbitrary string can appear
+            here. Treat unknown values as opaque rather than rejecting
+            the response.
+          example: manual
         state:
           type: string
           enum: [creating, ready, restoring, deleting, error]
@@ -1128,6 +1696,9 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: |
+            When the snapshot becomes eligible for garbage collection;
+            null/absent when it is kept until deleted.
         last_error:
           type: string
         export_ref:
@@ -1146,9 +1717,69 @@ components:
           items:
             $ref: "#/components/schemas/Snapshot"
 
+    CreateAPIKeyRequest:
+      type: object
+      properties:
+        label:
+          type: string
+          description: Optional operator memory aid ("ci", "partner-acme").
+
+    APIKey:
+      type: object
+      required: [id, created_at]
+      properties:
+        id:
+          type: string
+          description: |
+            Public handle, prefix `ak_`. Used to revoke; not the secret.
+        label:
+          type: string
+          description: Optional operator memory aid. Omitted when empty.
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          description: |
+            Omitted (not null) until the key first authenticates.
+            Best-effort bump.
+        revoked_at:
+          type: string
+          format: date-time
+          description: Omitted (not null) while the key is live.
+
+    CreateAPIKeyResponse:
+      allOf:
+        - $ref: "#/components/schemas/APIKey"
+        - type: object
+          required: [key]
+          properties:
+            key:
+              type: string
+              description: |
+                Raw secret, prefix `fuse_sk_`. Shown exactly once; only
+                its SHA-256 is stored.
+
+    APIKeyList:
+      type: object
+      required: [api_keys]
+      properties:
+        api_keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/APIKey"
+          description: Always present; `[]` when there are no keys.
+
     HostCapacity:
       type: object
-      required: [cpus, ram_mb, storage_gb, vm_count]
+      required: [vm_count]
+      description: |
+        On responses (HostInfo.capacity / HostInfo.allocated) the four
+        scalar fields cpus/ram_mb/storage_gb/vm_count are always
+        serialized. On registration requests only vm_count is required;
+        the other scalars may be omitted to have them probed from the
+        host agent.
       properties:
         cpus:
           type: integer
@@ -1174,7 +1805,54 @@ components:
           description: |
             Fractional GPU capacity: MIG instance count by profile name
             (e.g. {"1g.10gb": 4}). Requires backend "qemu". Independent
-            of the whole-device gpus counter (decision D5).
+            of the whole-device gpus counter (decision D5). Keys are
+            lowercased on registration and must be mig-parted profile
+            names (e.g. "1g.10gb") with positive counts; invalid entries
+            are rejected with 400.
+        gpu_devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/GPUDevice"
+          description: |
+            Per-device GPU inventory probed from the host agent.
+            Probe-only: values sent in a register request are discarded.
+            Populated only on capacity (never allocated) of qemu-backed
+            hosts. `gpus` and the length of `gpu_devices` may disagree:
+            the host agent emits at most one entry per IOMMU group, so a
+            group holding several GPUs contributes one entry while each
+            card still counts toward `gpus`. Treat `gpus` as the
+            schedulable count and `gpu_devices` as best-effort detail.
+
+    GPUDevice:
+      type: object
+      description: |
+        A single probed GPU. All fields are best-effort and omitted when
+        the host agent could not determine them.
+      properties:
+        uuid:
+          type: string
+        model:
+          type: string
+          description: E.g. "NVIDIA A100-SXM4-40GB".
+        pci_bus_id:
+          type: string
+        memory_mb:
+          type: integer
+        driver_version:
+          type: string
+        cuda_version:
+          type: string
+          description: Reserved — not currently populated by the host agent.
+        compute_cap:
+          type: string
+        mig_capable:
+          type: boolean
+        mig_mode:
+          type: string
+          description: E.g. "Enabled".
+        iommu_group:
+          type: string
+          description: Reserved — not currently populated by the host agent.
 
     RegisterHostRequest:
       type: object
@@ -1198,12 +1876,13 @@ components:
           allOf:
             - $ref: "#/components/schemas/HostCapacity"
           description: |
-            cpus/ram_mb/storage_gb: 0 (or omitted) means "probe the host
-            agent for the real value" instead of zero capacity. A positive
-            value overrides the probe; if it exceeds what was probed,
-            registration still succeeds but HostInfo.warnings notes it.
-            vm_count is scheduling policy, not a hardware fact: always
-            required, never probed.
+            cpus/ram_mb/storage_gb/gpus left at 0 and an empty gpu_kind
+            are filled from the host agent's capacity probe. Positive
+            declared values override the probe; exceeding the probed
+            value (or declaring a gpu_kind that differs from the probed
+            one) succeeds with a note in HostInfo.warnings. vm_count is
+            scheduling policy, not a hardware fact: always required,
+            never probed.
 
     HostInfo:
       type: object
@@ -1219,6 +1898,9 @@ components:
         state:
           type: string
           enum: [active, cordoned, draining]
+          description: |
+            `draining` means cordoned with eviction pending; drain
+            automation is not yet implemented.
         backend:
           type: string
           enum: [firecracker, qemu]

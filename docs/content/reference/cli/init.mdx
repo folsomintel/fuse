@@ -1,0 +1,43 @@
+---
+title: fuse init
+description: Scaffold an example Fusefile
+icon: file-code
+---
+
+```bash
+fuse init [path] [flags]
+```
+
+Writes a fully commented example [Fusefile](/docs/concepts/fusefile) to
+disk, documenting the common v1 fields with an explanatory comment on each. The
+GPU fields under `resources` (`gpu`, `gpu_kind`, `gpu_profile`) are not part of
+the scaffold, see [Fusefile](/docs/concepts/fusefile) for those.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `-f, --file` | Path to write. Default: `./Fusefile`. |
+| `--force` | Overwrite an existing file at the target path. |
+
+## Examples
+
+```bash
+fuse init
+# writes ./Fusefile
+
+fuse init ./services/api/Fusefile
+# the positional argument is the file to write, not a directory
+
+fuse init --force
+# overwrites an existing ./Fusefile
+```
+
+Without `--force`, `init` refuses to overwrite an existing file at the target
+path, protecting any edits you've already made. Passing a directory path is not
+a shortcut for the Fusefile inside it, it aborts with
+`a Fusefile already exists at ./services/api (use --force to overwrite)`
+because the directory itself exists.
+
+After scaffolding, edit the file to match your workload, then run
+[`fuse up`](/reference/cli/up) to bring it up.
