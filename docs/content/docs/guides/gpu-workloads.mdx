@@ -95,9 +95,19 @@ same inventory.
 
 MIG placement honors `gpu_kind`. A host is only a candidate for a `gpu_profile`
 request when it has free instances of that profile *and* reports a MIG-capable
-device matching the requested kind, so a request pinned to `a100` is never routed
-to a host whose free instances are all a different card. Omit `gpu_kind` and any
-host offering the profile is eligible.
+device matching the requested kind, so a request pinned to `a100` is not routed to
+a host that carries no MIG-capable `a100` at all. Omit `gpu_kind` and any host
+offering the profile is eligible.
+
+:::warning[The kind gate filters hosts, not instances]
+The MIG pool is counted per profile, not per card: a host advertising
+`1g.10gb=4` reports four instances, with no record of which GPU each was carved
+from. So the check is that the host has *a* MIG-capable device of the requested
+kind, not that the free instances are on that device. On a host carrying both a
+MIG-capable `a100` and a MIG-capable `h100`, a request pinned to `a100` can still
+be handed an instance carved from the `h100`. Pin such workloads with a label or
+keep MIG hosts homogeneous if the distinction matters to you.
+:::
 
 :::warning[Hosts that report no per-device inventory]
 Kind matching uses the per-device inventory the qemu agent probes (`gpu_devices`,
