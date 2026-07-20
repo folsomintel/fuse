@@ -113,6 +113,18 @@ func dash(s string) string {
 	return s
 }
 
+// shortUUID returns the first 8 chars of a uuid (enough to disambiguate
+// instances in a host detail view) or "-" when empty.
+func shortUUID(s string) string {
+	if s == "" {
+		return "-"
+	}
+	if len(s) <= 8 {
+		return s
+	}
+	return s[:8]
+}
+
 // shortTime formats a timestamp compactly, or "-" if zero.
 func shortTime(t time.Time) string {
 	if t.IsZero() {

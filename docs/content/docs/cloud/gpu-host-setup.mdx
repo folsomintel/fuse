@@ -168,35 +168,62 @@ file is empty or stale — re-run `sudo ./qemu-vfio-bind.sh` and check
 
 ## Fractional GPUs with MIG
 
-:::warning[Stub: phase 3 work]
-This section describes the **current manual** MIG model: you create instances
-on the host with NVIDIA's tooling and declare them with `--mig-profile` at
-registration. Auto-probe and first-class MIG allocation (umbrella issue
-[#41](https://github.com/folsomintel/fuse/issues/41)) are phase 3 and will
-replace the manual `mig-inventory.txt` step. The pieces documented here
-(enabling MIG, profiles, requesting `gpu_profile` from a Fusefile) are the
-contract those changes build on, so the rest of this section is stable even
-though the registration flow will get simpler.
-:::
-
 A host can also serve **MIG** (Multi-Instance GPU) slices, fractions of a physical
 card exposed as separate mdev devices. Creating those instances is a prerequisite
-you handle on the host with NVIDIA's own tooling, outside Fuse. Fuse consumes MIG
-instances, it never creates them.
+you handle on the host, outside Fuse. Fuse consumes MIG instances, it never creates
+them, but the `qemu-mig-setup.sh` operator script automates the create/list/destroy
+lifecycle and writes the inventory file the agent probes.
 
-Once the instances exist, list them in `mig-inventory.txt` (default
-`$QEMU_DIR/mig-inventory.txt`, override with `MIG_INVENTORY`). Each line is exactly
-three fields:
+### Carving and listing MIG instances
 
-```text
-<profile> <kind> <mdev_uuid>
-1g.10gb a100 3f8e1a2b-0000-4000-8000-000000000001
+`qemu-mig-setup.sh` is the MIG analogue of `qemu-vfio-bind.sh`. It enables MIG
+mode on each card, carves the requested profiles into GPU instances, and emits the
+inventory the agent reports to the orchestrator. Apply a layout with one
+`--profile profile=count` flag per profile:
+
+```bash
+sudo ./qemu-mig-setup.sh --profile 1g.10gb=4 --profile 2g.20gb=2
 ```
 
-Both `profile` and `kind` are lowercased when parsed.
+The layout is persisted to `$QEMU_DIR/mig-layout.conf` so a reboot re-applies it
+(the agent also re-applies it after a VM holding mdevs is destroyed, when
+`MIG_LIFECYCLE_MANAGED` is set). List the live instances with `--list`:
 
-Register the MIG capacity with a repeatable `--mig-profile profile=count` flag,
-which also requires `--backend qemu`:
+```bash
+./qemu-mig-setup.sh --list
+```
+
+The inventory format is four fields, the last one optional:
+
+```text
+<profile> <kind> <mdev_uuid> [<parent_gpu_uuid>]
+1g.10gb a100 3f8e1a2b-0000-4000-8000-000000000001 GPU-abc123
+```
+
+Both `profile` and `kind` are lowercased when parsed. `parent_gpu_uuid` ties an
+instance back to the card it was carved from, which lets the scheduler match a
+MIG request's `gpu_kind` against the parent device's model when the instance
+itself reports no kind.
+
+### How the orchestrator allocates MIG
+
+When the agent's capacity probe finds a non-empty `mig-inventory.txt`, it reports
+`mig_instances` (one entry per carved instance) alongside the `mig_profiles`
+count summary. The orchestrator then switches from count-based to per-instance
+allocation: it binds specific instance UUIDs to VMs and records them on the VM,
+so it knows exactly which instance went to which VM. Releasing a VM frees its
+specific UUIDs, not a counter.
+
+This is strictly additive. A host that reports no per-instance inventory (a
+hand-managed `mig-inventory.txt` without parent detail, or an operator who wants
+to override the probe) falls back to the count-map path, where `mig_profiles` is
+the scheduling unit and the qemu agent picks the UUID locally.
+
+### Registering MIG capacity
+
+Register the host as a qemu backend. When the agent probes per-instance inventory,
+you do not need `--mig-profile`: the orchestrator derives the count map from the
+probed instances:
 
 ```bash
 fuse host register gpu-1 \
@@ -204,22 +231,20 @@ fuse host register gpu-1 \
   --token "$QEMU_AGENT_TOKEN" \
   --backend qemu \
   --gpu-kind a100 \
-  --mig-profile 1g.10gb=4 \
   --cpus 16 \
   --ram-mb 65536 \
   --storage-gb 500 \
   --max-vms 4
 ```
 
-Unlike whole-device capacity, MIG capacity is never probed today, it is declared
-by you. The agent cannot infer it, because MIG instances have to be pre-created
-on the host before registration. Phase 3 ([#41](https://github.com/folsomintel/fuse/issues/41))
-will relax this by reading the live `mig-inventory.txt` the same way the bind
-script writes `vfio-inventory.txt`.
+`--mig-profile profile=count` remains supported as an override: it sets the
+declared count map directly and is what a host with no probeable inventory falls
+back to. Use it only when you want to pin the counts yourself rather than let the
+probe report them.
 
 The MIG pool and the whole-device pool are separate inventories. A MIG placement
-never consumes a whole device, so a host registered with both `--gpus` and
-`--mig-profile` serves the two request shapes independently.
+never consumes a whole device, so a host registered with both `--gpus` and MIG
+capacity serves the two request shapes independently.
 
 ## Requesting a GPU
 
