@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -715,5 +716,113 @@ func TestSchedule_migProfileSkipsNonMIGCapableHost(t *testing.T) {
 	_, _, err := Schedule(migSpec(1, "", "1g.10gb"), []*Host{bad}, PlacementSpread)
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Errorf("err = %v, want ErrNoCapacity (host reports no mig capable device)", err)
+	}
+}
+
+// migInstanceHost builds a per-instance MIG host: capacity carries concrete
+// MIGInstance entries (one per carved GPU instance) instead of just a count
+// map. The MIGProfiles map is derived as a summary so the host still reports
+// the legacy field for back-compat readers.
+func migInstanceHost(id string, instances ...MIGInstance) *Host {
+	h := host(id, 8, 4096, 100, 10, HostActive)
+	h.Backend = BackendQEMU
+	h.Capacity.MIGInstances = instances
+	profiles := make(map[string]int, len(instances))
+	for _, inst := range instances {
+		profiles[strings.ToLower(inst.Profile)]++
+	}
+	h.Capacity.MIGProfiles = profiles
+	if len(instances) > 0 {
+		h.Capacity.GPUKind = instances[0].Kind
+	}
+	return h
+}
+
+func TestFits_migInstancesCountFreeByProfileAndKind(t *testing.T) {
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		MIGInstances: []MIGInstance{
+			{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+			{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+			{UUID: "m3", Profile: "2g.20gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		},
+	}
+	// one 1g.10gb already bound: only one free, so a 2-instance request fails
+	// but a 1-instance request fits.
+	alloc := HostCapacity{MIGInstanceUUIDs: []string{"m1"}}
+	if fits(cap, alloc, migSpec(2, "a100", "1g.10gb")) {
+		t.Error("fits = true, want false (only one free 1g.10gb instance)")
+	}
+	if !fits(cap, alloc, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (one free 1g.10gb instance)")
+	}
+	// a different profile is untouched by the m1 binding.
+	if !fits(cap, alloc, migSpec(1, "a100", "2g.20gb")) {
+		t.Error("fits = false, want true (2g.20gb pool is separate)")
+	}
+}
+
+func TestFits_migInstancesRejectMismatchedKind(t *testing.T) {
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		MIGInstances: []MIGInstance{
+			{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		},
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "h100", "1g.10gb")) {
+		t.Error("fits = true, want false (instance kind is a100, request is h100)")
+	}
+	// empty kind matches anything, same as the device path.
+	if !fits(cap, HostCapacity{}, migSpec(1, "", "1g.10gb")) {
+		t.Error("fits = false, want true (empty kind matches any instance)")
+	}
+}
+
+func TestFits_migInstanceKindFallsBackToParentDevice(t *testing.T) {
+	// instance omits Kind; the parent GPU device's Model is the evidence.
+	cap := HostCapacity{
+		CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 5,
+		GPUDevices: []GPUDevice{
+			{UUID: "gpu-a", Model: "NVIDIA A100-SXM4-40GB"},
+		},
+		MIGInstances: []MIGInstance{
+			{UUID: "m1", Profile: "1g.10gb", ParentGPUUUID: "gpu-a"},
+		},
+	}
+	if !fits(cap, HostCapacity{}, migSpec(1, "a100", "1g.10gb")) {
+		t.Error("fits = false, want true (parent device model matches a100)")
+	}
+	if fits(cap, HostCapacity{}, migSpec(1, "h100", "1g.10gb")) {
+		t.Error("fits = true, want false (parent device model is a100)")
+	}
+}
+
+func TestSchedule_migInstanceHostPlacesAndBindsUUIDs(t *testing.T) {
+	h := migInstanceHost("mig-1",
+		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		MIGInstance{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+	)
+	picked, _, err := Schedule(migSpec(1, "a100", "1g.10gb"), []*Host{h}, PlacementSpread)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if picked.ID != "mig-1" {
+		t.Errorf("picked %s, want mig-1", picked.ID)
+	}
+	// over-request: only 2 instances of the profile exist, ask for 3.
+	if _, _, err := Schedule(migSpec(3, "a100", "1g.10gb"), []*Host{h}, PlacementSpread); !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (not enough instances)", err)
+	}
+}
+
+func TestSchedule_migInstanceHostExhaustedFallsBackToCount(t *testing.T) {
+	// sanity: a per-instance host whose instances are all bound still
+	// rejects, it does not silently route to the count-map path.
+	h := migInstanceHost("mig-1",
+		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100"},
+	)
+	h.Allocated.MIGInstanceUUIDs = []string{"m1"}
+	if _, _, err := Schedule(migSpec(1, "a100", "1g.10gb"), []*Host{h}, PlacementSpread); !errors.Is(err, ErrNoCapacity) {
+		t.Errorf("err = %v, want ErrNoCapacity (only instance is bound)", err)
 	}
 }

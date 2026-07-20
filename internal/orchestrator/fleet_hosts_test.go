@@ -239,3 +239,118 @@ func TestConcurrentGPUProvisionReservesBeforeBoot(t *testing.T) {
 		t.Fatalf("first provision: %v", err)
 	}
 }
+
+func migInstanceFleetHost(id string, instances ...MIGInstance) Host {
+	h := gpuFleetHost(id, 0, "")
+	h.Capacity.MIGInstances = instances
+	profiles := make(map[string]int, len(instances))
+	for _, inst := range instances {
+		profiles[inst.Profile]++
+	}
+	h.Capacity.MIGProfiles = profiles
+	if len(instances) > 0 {
+		h.Capacity.GPUKind = instances[0].Kind
+	}
+	return h
+}
+
+func TestAllocateOnHost_bindsConcreteMIGInstanceUUIDs(t *testing.T) {
+	stub := newStubProvider()
+	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	host := migInstanceFleetHost("h1",
+		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		MIGInstance{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		MIGInstance{UUID: "m3", Profile: "2g.20gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+	)
+	if err := fm.RegisterHost(context.Background(), host, stub); err != nil {
+		t.Fatal(err)
+	}
+
+	v := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100", GPUProfile: "1g.10gb"}}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", v)
+	fm.mu.Unlock()
+
+	if len(v.spec.MIGInstanceUUIDs) != 1 {
+		t.Fatalf("v.spec.MIGInstanceUUIDs = %v, want one bound uuid", v.spec.MIGInstanceUUIDs)
+	}
+	bound := v.spec.MIGInstanceUUIDs[0]
+	if bound != "m1" && bound != "m2" {
+		t.Errorf("bound uuid %q not a 1g.10gb instance", bound)
+	}
+	h := findHost(t, fm, "h1")
+	if len(h.Allocated.MIGInstanceUUIDs) != 1 || h.Allocated.MIGInstanceUUIDs[0] != bound {
+		t.Errorf("host allocated = %v, want the single bound uuid", h.Allocated.MIGInstanceUUIDs)
+	}
+	// the derived count map must reflect the binding, not the legacy counter.
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 1 (derived from bound uuids)", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+
+	// a second env must bind the OTHER 1g.10gb instance, never reuse, and
+	// never touch the 2g.20gb pool.
+	v2 := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100", GPUProfile: "1g.10gb"}}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", v2)
+	fm.mu.Unlock()
+	if len(v2.spec.MIGInstanceUUIDs) != 1 || v2.spec.MIGInstanceUUIDs[0] == bound {
+		t.Errorf("second bind = %v, want the other 1g.10gb instance", v2.spec.MIGInstanceUUIDs)
+	}
+	h = findHost(t, fm, "h1")
+	if h.Allocated.MIGProfiles["1g.10gb"] != 2 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 2 after second bind", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+
+	// deallocate the first vm: only its uuid is released, and the count map
+	// is re-derived from the survivors so it cannot drift.
+	fm.mu.Lock()
+	fm.deallocateOnHost("h1", v.spec)
+	fm.mu.Unlock()
+	h = findHost(t, fm, "h1")
+	if len(h.Allocated.MIGInstanceUUIDs) != 1 || h.Allocated.MIGInstanceUUIDs[0] != v2.spec.MIGInstanceUUIDs[0] {
+		t.Errorf("after dealloc host allocated = %v, want only the second uuid", h.Allocated.MIGInstanceUUIDs)
+	}
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 1 after release", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+}
+
+func TestDeallocateOnHost_migInstanceReleasesAcrossProfiles(t *testing.T) {
+	stub := newStubProvider()
+	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	host := migInstanceFleetHost("h1",
+		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100"},
+		MIGInstance{UUID: "m3", Profile: "2g.20gb", Kind: "a100"},
+	)
+	if err := fm.RegisterHost(context.Background(), host, stub); err != nil {
+		t.Fatal(err)
+	}
+
+	v1 := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100", GPUProfile: "1g.10gb"}}
+	v2 := &vm{spec: Spec{CPUs: 1, RamMB: 256, GPUs: 1, GPUKind: "a100", GPUProfile: "2g.20gb"}}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", v1)
+	fm.allocateOnHost("h1", v2)
+	fm.mu.Unlock()
+
+	h := findHost(t, fm, "h1")
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 || h.Allocated.MIGProfiles["2g.20gb"] != 1 {
+		t.Fatalf("MIGProfiles = %v, want one of each profile", h.Allocated.MIGProfiles)
+	}
+
+	// releasing the 2g.20gb vm must leave the 1g.10gb binding untouched and
+	// drop only the 2g.20gb count.
+	fm.mu.Lock()
+	fm.deallocateOnHost("h1", v2.spec)
+	fm.mu.Unlock()
+	h = findHost(t, fm, "h1")
+	if len(h.Allocated.MIGInstanceUUIDs) != 1 || h.Allocated.MIGInstanceUUIDs[0] != v1.spec.MIGInstanceUUIDs[0] {
+		t.Errorf("after release allocated = %v, want only the 1g.10gb uuid", h.Allocated.MIGInstanceUUIDs)
+	}
+	if _, ok := h.Allocated.MIGProfiles["2g.20gb"]; ok {
+		t.Errorf("MIGProfiles still has 2g.20gb = %d, want it removed", h.Allocated.MIGProfiles["2g.20gb"])
+	}
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 1 (untouched by the 2g.20gb release)", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+}

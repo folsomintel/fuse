@@ -109,6 +109,90 @@ func freeMIG(capacity, allocated HostCapacity, profile string) int {
 	return capacity.MIGProfiles[profile] - allocated.MIGProfiles[profile]
 }
 
+// freeMIGInstances returns the capacity MIG instances of the requested profile
+// that are not currently bound to a VM (not in allocated.MIGInstanceUUIDs) and
+// whose kind matches gpuKind. An empty gpuKind matches any instance. this is
+// the per-instance analogue of freeMIG: where freeMIG subtracts counters,
+// this filters the concrete instance list. used only when the host reports
+// per-instance MIG inventory (Capacity.MIGInstances non-empty).
+func freeMIGInstances(capacity, allocated HostCapacity, profile, gpuKind string) []MIGInstance {
+	used := make(map[string]struct{}, len(allocated.MIGInstanceUUIDs))
+	for _, u := range allocated.MIGInstanceUUIDs {
+		used[u] = struct{}{}
+	}
+	wantProfile := strings.ToLower(profile)
+	var free []MIGInstance
+	for _, inst := range capacity.MIGInstances {
+		if inst.UUID == "" {
+			continue
+		}
+		if !strings.EqualFold(inst.Profile, wantProfile) {
+			continue
+		}
+		if _, taken := used[inst.UUID]; taken {
+			continue
+		}
+		if !migKindMatches(gpuKind, inst, capacity) {
+			continue
+		}
+		free = append(free, inst)
+	}
+	return free
+}
+
+// migKindMatches reports whether a requested gpu kind matches a MIG instance.
+// An empty request matches anything. the instance's own Kind field is the
+// primary evidence (the agent reports kind per instance). when the instance
+// reports no kind, fall back to the parent GPU device's Model, then the host
+// scalar GPUKind, so a request like "a100" still matches an instance whose
+// parent card is "NVIDIA A100-SXM4-40GB".
+func migKindMatches(gpuKind string, inst MIGInstance, capacity HostCapacity) bool {
+	if gpuKind == "" {
+		return true
+	}
+	if inst.Kind != "" {
+		return strings.Contains(strings.ToLower(inst.Kind), strings.ToLower(gpuKind))
+	}
+	// fall back to the parent GPU device's model when the instance omits kind.
+	if inst.ParentGPUUUID != "" {
+		for _, d := range capacity.GPUDevices {
+			if d.UUID == inst.ParentGPUUUID {
+				return gpuKindMatches(gpuKind, d, capacity.GPUKind)
+			}
+		}
+	}
+	// last resort: the host scalar kind.
+	return capacity.GPUKind == "" || strings.EqualFold(gpuKind, capacity.GPUKind)
+}
+
+// migProfileCounts derives the MIGProfiles count map from a set of bound MIG
+// instance uuids, looking each up against the host's per-instance inventory.
+// uuids not in the inventory (e.g. an instance since destroyed) are skipped
+// rather than counted under an unknown profile. nil in, nil out.
+func migProfileCounts(boundUUIDs []string, inventory []MIGInstance) map[string]int {
+	if len(boundUUIDs) == 0 {
+		return nil
+	}
+	byUUID := make(map[string]MIGInstance, len(inventory))
+	for _, inst := range inventory {
+		if inst.UUID != "" {
+			byUUID[inst.UUID] = inst
+		}
+	}
+	out := make(map[string]int)
+	for _, u := range boundUUIDs {
+		inst, ok := byUUID[u]
+		if !ok || inst.Profile == "" {
+			continue
+		}
+		out[strings.ToLower(inst.Profile)]++
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // GPUDevice is the per-device detail the host agent probes for a single
 // whole GPU. Field names mirror the agent's gpu_devices payload. All fields
 // are best-effort: the agent omits any it cannot determine.
@@ -153,6 +237,14 @@ func fits(capacity, allocated HostCapacity, spec Spec) bool {
 			// Fractional request: spec.GPUs counts MIG instances of the
 			// requested profile, allocated from the host's MIG pool (D5).
 			// This pool is independent of the whole-device GPUs pool.
+			if len(capacity.MIGInstances) > 0 {
+				// per-instance host: require that many free instances of the
+				// requested profile on a kind-matching card. this is the
+				// granularity change the count-map path cannot make: it filters
+				// by instance, not by host (issue #41).
+				return len(freeMIGInstances(capacity, allocated, spec.GPUProfile, spec.GPUKind)) >= int(spec.GPUs)
+			}
+			// legacy count-map host.
 			if freeMIG(capacity, allocated, spec.GPUProfile) < int(spec.GPUs) {
 				return false
 			}

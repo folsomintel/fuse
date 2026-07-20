@@ -795,6 +795,21 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 			capacity.GPUKind, warnings = resolveCapacityKind(capacity.GPUKind, probed.GPUKind, warnings)
 			// the probe is the source of truth for the per-device list.
 			capacity.GPUDevices = probed.GPUDevices
+			// per-instance MIG inventory is probed too. when the agent reports
+			// instances, the scheduler binds specific uuids to VMs; the count
+			// map (MIGProfiles) is then a derived summary. an operator's
+			// explicit --mig-profile declaration wins over the probe for the
+			// count map (it is a capacity override), but the per-instance
+			// inventory still rides through so allocation can bind concrete
+			// instances. a host that reports neither falls back to the
+			// declared count-map path unchanged.
+			capacity.MIGInstances = probed.MIGInstances
+			if len(probed.MIGInstances) > 0 && len(capacity.MIGProfiles) == 0 {
+				capacity.MIGProfiles = make(map[string]int, len(probed.MIGInstances))
+				for _, inst := range probed.MIGInstances {
+					capacity.MIGProfiles[strings.ToLower(inst.Profile)]++
+				}
+			}
 		case isAgentUnauthorized(err):
 			_ = provider.Close()
 			writeError(w, http.StatusBadGateway, CodeUnauthorized,

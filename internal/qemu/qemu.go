@@ -86,15 +86,16 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 	}
 
 	reqBody := createVMRequest{
-		Name:       spec.Name,
-		CPUs:       spec.CPUs,
-		MemoryMB:   spec.RamMB,
-		StorageGB:  spec.StorageGB,
-		Region:     spec.Region,
-		Image:      spec.Image,
-		GPUs:       spec.GPUs,
-		GPUKind:    spec.GPUKind,
-		GPUProfile: spec.GPUProfile,
+		Name:             spec.Name,
+		CPUs:             spec.CPUs,
+		MemoryMB:         spec.RamMB,
+		StorageGB:        spec.StorageGB,
+		Region:           spec.Region,
+		Image:            spec.Image,
+		GPUs:             spec.GPUs,
+		GPUKind:          spec.GPUKind,
+		GPUProfile:       spec.GPUProfile,
+		MIGInstanceUUIDs: spec.MIGInstanceUUIDs,
 	}
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
@@ -171,12 +172,14 @@ func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, err
 		return orchestrator.HostCapacity{}, fmt.Errorf("qemu capacity: %w", err)
 	}
 	return orchestrator.HostCapacity{
-		CPUs:       resp.CPUs,
-		RamMB:      resp.RamMB,
-		StorageGB:  resp.StorageGB,
-		GPUs:       resp.GPUs,
-		GPUKind:    resp.GPUKind,
-		GPUDevices: resp.GPUDevices,
+		CPUs:         resp.CPUs,
+		RamMB:        resp.RamMB,
+		StorageGB:    resp.StorageGB,
+		GPUs:         resp.GPUs,
+		GPUKind:      resp.GPUKind,
+		GPUDevices:   resp.GPUDevices,
+		MIGProfiles:  resp.MIGProfiles,
+		MIGInstances: resp.MIGInstances,
 	}, nil
 }
 
@@ -331,6 +334,11 @@ type createVMRequest struct {
 	// agent allocates mdev devices of this profile and attaches them via
 	// vfio-pci sysfsdev (decision D5).
 	GPUProfile string `json:"gpu_profile,omitempty"`
+	// MIGInstanceUUIDs are the concrete MIG instance uuids the orchestrator's
+	// per-instance scheduler chose for this VM. when set, the agent binds
+	// exactly these (validating them against its inventory) instead of
+	// picking locally. empty on count-map hosts (issue #41).
+	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
 }
 
 type createVMResponse struct {
@@ -346,12 +354,14 @@ type getVMResponse struct {
 // capacityResponse is the GET /v1/capacity response: the host agent's real
 // CPU count, total RAM, free disk, and probed GPU inventory.
 type capacityResponse struct {
-	CPUs       int                      `json:"cpus"`
-	RamMB      int                      `json:"ram_mb"`
-	StorageGB  int                      `json:"storage_gb"`
-	GPUs       int                      `json:"gpus"`
-	GPUKind    string                   `json:"gpu_kind"`
-	GPUDevices []orchestrator.GPUDevice `json:"gpu_devices"`
+	CPUs         int                        `json:"cpus"`
+	RamMB        int                        `json:"ram_mb"`
+	StorageGB    int                        `json:"storage_gb"`
+	GPUs         int                        `json:"gpus"`
+	GPUKind      string                     `json:"gpu_kind"`
+	GPUDevices   []orchestrator.GPUDevice   `json:"gpu_devices"`
+	MIGProfiles  map[string]int             `json:"mig_profiles,omitempty"`
+	MIGInstances []orchestrator.MIGInstance `json:"mig_instances,omitempty"`
 }
 
 type listVMResponse struct {

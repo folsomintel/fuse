@@ -544,8 +544,9 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.allocateOnHost(selectedHost.ID, v)
 		// allocateOnHost binds concrete gpu device uuids onto v.spec; mirror
 		// them onto the local spec so Boot and the reservation-release path
-		// see the same binding.
+		// see the same binding. the same applies to per-instance MIG uuids.
 		spec.GPUUUIDs = v.spec.GPUUUIDs
+		spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
 		reservedHost = true
 		fm.mu.Unlock()
 		fm.logger.Info("scheduled vm",
