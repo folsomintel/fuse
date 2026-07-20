@@ -195,3 +195,126 @@ func TestRecoverExcludesDestroyingVMFromRecompute(t *testing.T) {
 		t.Errorf("allocated uuids = %v, want [gpu-a] (gpu-b freed with the destroying vm)", h.Allocated.GPUDeviceUUIDs)
 	}
 }
+
+// TestRecoverRederivesMIGAllocationFromLiveVMs checks that a restart derives a
+// per-instance MIG host's Allocated (bound uuid set + derived count map)
+// purely from the live VM bindings, not a persisted counter.
+func TestRecoverRederivesMIGAllocationFromLiveVMs(t *testing.T) {
+	store := NewMemoryStateStore()
+	stub := newStubProvider()
+
+	seed := recoverFleet(store, stub)
+	host := migInstanceFleetHost("h1",
+		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		MIGInstance{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+		MIGInstance{UUID: "m3", Profile: "2g.20gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
+	)
+	if err := seed.RegisterHost(context.Background(), host, stub); err != nil {
+		t.Fatal(err)
+	}
+	seedRunningVM(t, store, stub, "mig-vm-1", "h1", Spec{
+		CPUs: 2, RamMB: 512, StorageGB: 10, GPUs: 1, GPUKind: "a100",
+		GPUProfile:       "1g.10gb",
+		MIGInstanceUUIDs: []string{"m1"},
+	})
+
+	fm := recoverFleet(store, stub)
+	if err := fm.recoverState(context.Background()); err != nil {
+		t.Fatalf("recoverState: %v", err)
+	}
+
+	h := findHost(t, fm, "h1")
+	if len(h.Allocated.MIGInstanceUUIDs) != 1 || h.Allocated.MIGInstanceUUIDs[0] != "m1" {
+		t.Errorf("allocated mig uuids = %v, want [m1]", h.Allocated.MIGInstanceUUIDs)
+	}
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 1 (derived from bound uuid)", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+	// whole-device pool is untouched on a MIG-only host.
+	if h.Allocated.GPUs != 0 {
+		t.Errorf("allocated GPUs = %d, want 0 (mig vm must not count as whole device)", h.Allocated.GPUs)
+	}
+}
+
+// TestRecoverHealsInjectedMIGDrift persists a per-instance host whose
+// Allocated counter claims a stale bound uuid (drift from a crash mid
+// write-behind) alongside a single live VM bound to a different instance, and
+// asserts recovery re-derives the bound set from the VM so the stale uuid is
+// released.
+func TestRecoverHealsInjectedMIGDrift(t *testing.T) {
+	store := NewMemoryStateStore()
+	stub := newStubProvider()
+
+	drifted := HostRecord{
+		ID:      "h1",
+		URL:     "http://h1.test",
+		Backend: BackendQEMU,
+		State:   HostActive,
+		Capacity: HostCapacity{
+			CPUs: 8, RamMB: 4096, StorageGB: 100, VMCount: 10,
+			MIGInstances: []MIGInstance{
+				{UUID: "m1", Profile: "1g.10gb", Kind: "a100"},
+				{UUID: "m2", Profile: "1g.10gb", Kind: "a100"},
+			},
+			MIGProfiles: map[string]int{"1g.10gb": 2},
+		},
+		Allocated: HostCapacity{
+			CPUs: 4, RamMB: 2048, VMCount: 2,
+			MIGInstanceUUIDs: []string{"m2"}, // stale: no live vm holds m2
+			MIGProfiles:      map[string]int{"1g.10gb": 1},
+		},
+	}
+	if err := store.UpsertHost(context.Background(), drifted); err != nil {
+		t.Fatal(err)
+	}
+	seedRunningVM(t, store, stub, "mig-vm-1", "h1", Spec{
+		CPUs: 2, RamMB: 512, StorageGB: 10, GPUs: 1, GPUKind: "a100",
+		GPUProfile:       "1g.10gb",
+		MIGInstanceUUIDs: []string{"m1"},
+	})
+
+	fm := recoverFleet(store, stub)
+	if err := fm.recoverState(context.Background()); err != nil {
+		t.Fatalf("recoverState: %v", err)
+	}
+
+	h := findHost(t, fm, "h1")
+	if len(h.Allocated.MIGInstanceUUIDs) != 1 || h.Allocated.MIGInstanceUUIDs[0] != "m1" {
+		t.Errorf("healed mig uuids = %v, want [m1] (stale m2 released)", h.Allocated.MIGInstanceUUIDs)
+	}
+	if h.Allocated.MIGProfiles["1g.10gb"] != 1 {
+		t.Errorf("healed MIGProfiles[1g.10gb] = %d, want 1", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+}
+
+// TestRecoverRebuildsLegacyMIGCountMap checks that a legacy count-map host
+// (no per-instance inventory) rebuilds MIGProfiles from the live VM
+// profile+count, so a persisted counter drift heals there too.
+func TestRecoverRebuildsLegacyMIGCountMap(t *testing.T) {
+	store := NewMemoryStateStore()
+	stub := newStubProvider()
+
+	seed := recoverFleet(store, stub)
+	host := gpuFleetHost("h1", 0, "a100")
+	host.Capacity.MIGProfiles = map[string]int{"1g.10gb": 4}
+	if err := seed.RegisterHost(context.Background(), host, stub); err != nil {
+		t.Fatal(err)
+	}
+	seedRunningVM(t, store, stub, "mig-vm-1", "h1", Spec{
+		CPUs: 2, RamMB: 512, StorageGB: 10, GPUs: 2, GPUKind: "a100",
+		GPUProfile: "1g.10gb",
+	})
+
+	fm := recoverFleet(store, stub)
+	if err := fm.recoverState(context.Background()); err != nil {
+		t.Fatalf("recoverState: %v", err)
+	}
+
+	h := findHost(t, fm, "h1")
+	if h.Allocated.MIGProfiles["1g.10gb"] != 2 {
+		t.Errorf("MIGProfiles[1g.10gb] = %d, want 2 (rebuilt from vm count)", h.Allocated.MIGProfiles["1g.10gb"])
+	}
+	if len(h.Allocated.MIGInstanceUUIDs) != 0 {
+		t.Errorf("MIGInstanceUUIDs = %v, want empty on a count-map host", h.Allocated.MIGInstanceUUIDs)
+	}
+}
