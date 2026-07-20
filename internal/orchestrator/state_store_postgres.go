@@ -114,13 +114,23 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal gpu uuids for vm %s: %w", vm.ID, err)
 	}
+	// per-vm MIG instance binding: the concrete MIG instance uuids bound to
+	// this vm, nil-coerced to [] (mirrors gpu_uuids).
+	migInstanceUUIDs := vm.Spec.MIGInstanceUUIDs
+	if migInstanceUUIDs == nil {
+		migInstanceUUIDs = []string{}
+	}
+	migInstanceUUIDsJSON, err := json.Marshal(migInstanceUUIDs)
+	if err != nil {
+		return fmt.Errorf("marshal mig instance uuids for vm %s: %w", vm.ID, err)
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO orchestrator_vms (
 			vm_id, host_id, network_host, state, url, task_id, tenant_id,
 			cpus, ram_mb, storage_gb, region, max_runtime_seconds,
 			auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
-			gpus, gpu_kind, gpu_profile, gpu_uuids
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+			gpus, gpu_kind, gpu_profile, gpu_uuids, mig_instance_uuids
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (vm_id) DO UPDATE SET
 			host_id=EXCLUDED.host_id,
 			network_host=EXCLUDED.network_host,
@@ -142,7 +152,8 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			gpus=EXCLUDED.gpus,
 			gpu_kind=EXCLUDED.gpu_kind,
 			gpu_profile=EXCLUDED.gpu_profile,
-			gpu_uuids=EXCLUDED.gpu_uuids
+			gpu_uuids=EXCLUDED.gpu_uuids,
+			mig_instance_uuids=EXCLUDED.mig_instance_uuids
 	`,
 		vm.ID,
 		vm.HostID,
@@ -166,6 +177,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		vm.Spec.GPUKind,
 		vm.Spec.GPUProfile,
 		string(gpuUUIDsJSON),
+		string(migInstanceUUIDsJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert vm %s: %w", vm.ID, err)
@@ -185,7 +197,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		SELECT vm_id, host_id, network_host, state, url, task_id, tenant_id,
 		       cpus, ram_mb, storage_gb, region, max_runtime_seconds,
 		       auth_token_encrypted, secrets_encrypted, last_error, endpoints_json, created_at, updated_at,
-		       gpus, gpu_kind, gpu_profile, gpu_uuids
+		       gpus, gpu_kind, gpu_profile, gpu_uuids, mig_instance_uuids
 		FROM orchestrator_vms
 	`)
 	if err != nil {
@@ -201,6 +213,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			maxRuntimeSeconds int
 			endpointsJSON     string
 			gpuUUIDsJSON      []byte
+			migInstUUIDsJSON  []byte
 		)
 		if err := rows.Scan(
 			&record.ID,
@@ -225,6 +238,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			&record.Spec.GPUKind,
 			&record.Spec.GPUProfile,
 			&gpuUUIDsJSON,
+			&migInstUUIDsJSON,
 		); err != nil {
 			return nil, fmt.Errorf("scan vm row: %w", err)
 		}
@@ -242,6 +256,13 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		if len(gpuUUIDsJSON) > 0 {
 			if err := json.Unmarshal(gpuUUIDsJSON, &record.Spec.GPUUUIDs); err != nil {
 				return nil, fmt.Errorf("unmarshal gpu uuids for vm %s: %w", record.ID, err)
+			}
+		}
+		// mig_instance_uuids defaults to '[]'; an empty scan leaves
+		// MIGInstanceUUIDs nil (count-map host, no per-instance binding).
+		if len(migInstUUIDsJSON) > 0 {
+			if err := json.Unmarshal(migInstUUIDsJSON, &record.Spec.MIGInstanceUUIDs); err != nil {
+				return nil, fmt.Errorf("unmarshal mig instance uuids for vm %s: %w", record.ID, err)
 			}
 		}
 		out = append(out, record)
@@ -564,6 +585,18 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 	if err != nil {
 		return fmt.Errorf("marshal gpu devices for host %s: %w", h.ID, err)
 	}
+	// per-instance MIG inventory rides as a jsonb array too. nil coerces to []
+	// so the column never holds a json null and count-only hosts round-trip
+	// cleanly (the scheduler treats an empty MIGInstances as "use the count
+	// map", which is the back-compat path).
+	migInstances := h.Capacity.MIGInstances
+	if migInstances == nil {
+		migInstances = []MIGInstance{}
+	}
+	migInstancesJSON, err := json.Marshal(migInstances)
+	if err != nil {
+		return fmt.Errorf("marshal mig instances for host %s: %w", h.ID, err)
+	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO orchestrator_hosts (
 			host_id, url, token_encrypted, region, state, tenant_id,
@@ -571,8 +604,8 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 			cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
 			last_seen_at, created_at, updated_at,
 			backend, gpus_total, gpu_kind, gpus_allocated,
-			mig_profiles_json, mig_allocated_json, gpu_devices_json
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+			mig_profiles_json, mig_allocated_json, gpu_devices_json, mig_instances_json
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
 		ON CONFLICT (host_id) DO UPDATE SET
 			url=EXCLUDED.url,
 			token_encrypted=EXCLUDED.token_encrypted,
@@ -595,7 +628,8 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 			gpus_allocated=EXCLUDED.gpus_allocated,
 			mig_profiles_json=EXCLUDED.mig_profiles_json,
 			mig_allocated_json=EXCLUDED.mig_allocated_json,
-			gpu_devices_json=EXCLUDED.gpu_devices_json
+			gpu_devices_json=EXCLUDED.gpu_devices_json,
+			mig_instances_json=EXCLUDED.mig_instances_json
 	`,
 		h.ID,
 		h.URL,
@@ -621,6 +655,7 @@ func (s *PostgresStateStore) UpsertHost(ctx context.Context, h HostRecord) error
 		migProfilesJSON,
 		migAllocatedJSON,
 		string(gpuDevicesJSON),
+		string(migInstancesJSON),
 	)
 	if err != nil {
 		return fmt.Errorf("upsert host %s: %w", h.ID, err)
@@ -672,7 +707,7 @@ const hostsSelect = `
 	       cpus_allocated, ram_mb_allocated, storage_gb_allocated, vm_count_allocated,
 	       last_seen_at, created_at, updated_at,
 	       backend, gpus_total, gpu_kind, gpus_allocated,
-	       mig_profiles_json, mig_allocated_json, gpu_devices_json
+	       mig_profiles_json, mig_allocated_json, gpu_devices_json, mig_instances_json
 	FROM orchestrator_hosts`
 
 // scanHost maps a row from hostsSelect onto a HostRecord. Both
@@ -686,6 +721,7 @@ func scanHost(scan func(...any) error) (HostRecord, error) {
 		migProfilesJSON  string
 		migAllocatedJSON string
 		gpuDevicesJSON   []byte
+		migInstancesJSON []byte
 	)
 	if err := scan(
 		&record.ID,
@@ -712,6 +748,7 @@ func scanHost(scan func(...any) error) (HostRecord, error) {
 		&migProfilesJSON,
 		&migAllocatedJSON,
 		&gpuDevicesJSON,
+		&migInstancesJSON,
 	); err != nil {
 		return HostRecord{}, err
 	}
@@ -730,6 +767,14 @@ func scanHost(scan func(...any) error) (HostRecord, error) {
 	if len(gpuDevicesJSON) > 0 {
 		if err := json.Unmarshal(gpuDevicesJSON, &record.Capacity.GPUDevices); err != nil {
 			return HostRecord{}, fmt.Errorf("unmarshal gpu devices for host %s: %w", record.ID, err)
+		}
+	}
+	// mig_instances_json defaults to '[]'; an empty/legacy scan leaves
+	// MIGInstances nil, which the scheduler treats as "use the count map"
+	// (the back-compat path). only unmarshal a real array.
+	if len(migInstancesJSON) > 0 {
+		if err := json.Unmarshal(migInstancesJSON, &record.Capacity.MIGInstances); err != nil {
+			return HostRecord{}, fmt.Errorf("unmarshal mig instances for host %s: %w", record.ID, err)
 		}
 	}
 	return record, nil

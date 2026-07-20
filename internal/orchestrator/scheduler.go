@@ -50,7 +50,23 @@ type HostCapacity struct {
 	// nvidia driver and exports mdev devices, so it is never part of the
 	// whole-device GPUs pool — the two counters are independent (D5).
 	// Only qemu-backed hosts may advertise MIG profiles.
+	//
+	// When the host reports per-instance MIG inventory (MIGInstances), this
+	// map is a derived summary (count by profile) and the scheduler binds
+	// specific instance uuids rather than decrementing a counter. When a
+	// host only declares counts (the --mig-profile registration override,
+	// or a hand-managed mig-inventory.txt without parent detail), this map
+	// remains the scheduling unit so legacy callers do not break.
 	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+
+	// MIGInstances is the per-instance MIG inventory probed from the host
+	// agent (one entry per carved MIG GPU instance). When non-empty, the
+	// scheduler switches from count-based to instance-based allocation:
+	// fits() checks for free instances of the requested profile on a
+	// kind-matching card, and allocate binds concrete uuids to VMs. This
+	// is strictly additive — a host that reports no instances falls back
+	// to the MIGProfiles count path (issue #41).
+	MIGInstances []MIGInstance `json:"mig_instances,omitempty"`
 
 	// GPUDevices is the per-device detail probed from the host agent
 	// (one entry per whole GPU). It rides the capacity wire alongside the
@@ -66,6 +82,25 @@ type HostCapacity struct {
 	// recomputes it from live VM bindings, so it is never persisted as its
 	// own column (the durable source of truth is the per-VM gpu_uuids).
 	GPUDeviceUUIDs []string `json:"gpu_device_uuids,omitempty"`
+
+	// MIGInstanceUUIDs is the set of MIG instance uuids currently bound to
+	// VMs. Populated only on Allocated (never on Capacity), and only for
+	// hosts that report per-instance MIG inventory. fits() derives the
+	// free-instance set as Capacity.MIGInstances minus this set. In-memory
+	// only, like GPUDeviceUUIDs: the durable source of truth is the
+	// per-VM mig_instance_uuids binding.
+	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
+}
+
+// MIGInstance is one carved MIG GPU instance advertised by the host agent.
+// Field names mirror the agent's mig_instances payload. The orchestrator
+// binds a specific instance uuid to a VM (Spec.MIGInstanceUUIDs) so it knows
+// which instance went to which VM — the count-map path (MIGProfiles) cannot.
+type MIGInstance struct {
+	UUID          string `json:"uuid,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	ParentGPUUUID string `json:"parent_gpu_uuid,omitempty"`
 }
 
 // freeMIG returns the free instance count for a MIG profile given the
