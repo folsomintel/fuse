@@ -1,0 +1,76 @@
+/* theme.css is the last layer in blume's cascade, so these override the
+   defaults in blume/src/theme/entry.ts without patching the package.
+
+   this file only adjusts spacing. colors, fonts, and radius stay on blume's
+   defaults. */
+
+/* --- sidebar -------------------------------------------------------------
+   the nav tree ships fairly tight: 0.375rem row padding and 1.5rem between
+   groups. now that every row carries a 14px icon the rows need a little more
+   room to breathe, or the glyphs crowd their labels.
+   [data-blume-nav-drawer] is the one container that renders the tree for both
+   the desktop sidebar and the mobile drawer. */
+
+[data-blume-nav-drawer] nav a {
+  padding-block: 0.5rem;
+}
+
+/* gap between an icon and its label */
+[data-blume-nav-drawer] nav a > span {
+  gap: 0.625rem;
+}
+
+/* group heading ("Learn", "Concepts", ...) and the icon beside it */
+[data-blume-nav-drawer] nav p {
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+}
+
+/* space between top-level groups. scoped to the class blume itself puts on a
+   group (and never on the first one, or on root-level leaf links like the
+   reference tab's "Overview"/"Authentication"), so this only widens a gap that
+   is already there rather than inventing new ones. */
+[data-blume-nav-drawer] nav > ul > li.mt-6 {
+  margin-top: 2rem;
+}
+
+/* --- prose ---------------------------------------------------------------
+   a slightly looser vertical rhythm for body copy.
+
+   these carry the same `:not(:where([class~="not-prose"], ...))` guard that
+   tailwind typography puts on its own rules. that is not decoration: without
+   it the selector scores 0,1,0 against typography's 0,2,0 and the declaration
+   is silently discarded. (blume's own `.prose :where(p, ul, ol)` rule loses
+   this way, which is why the real paragraph spacing is typography's 1.25em
+   rather than the 1rem that file appears to set.)
+
+   values are in `em` to match typography's scale, so they track the font size
+   instead of drifting from it. */
+
+.prose {
+  line-height: 1.75;
+}
+
+.prose
+  :where(p, ul, ol):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  margin-top: 1.45em;
+  margin-bottom: 1.45em;
+}
+
+.prose :where(li):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  margin-top: 0.7em;
+  margin-bottom: 0.7em;
+}
+
+/* clearer break before a section and subsection */
+.prose :where(h2):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  margin-top: 2.6em;
+}
+
+.prose :where(h3):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  margin-top: 2.1em;
+}
+
+.prose :where(h4):not(:where([class~="not-prose"], [class~="not-prose"] *)) {
+  margin-top: 1.9em;
+}
