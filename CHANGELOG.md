@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/folsomintel/fuse/compare/v0.8.0...v0.9.0) (2026-07-20)
+
+
+### Features
+
+* per-instance MIG allocation (issue [#41](https://github.com/folsomintel/fuse/issues/41)) ([#71](https://github.com/folsomintel/fuse/issues/71)) ([6cc4132](https://github.com/folsomintel/fuse/commit/6cc41324830d1997599dcf5d71eadb87ebe53910))
+
 ## [0.8.0](https://github.com/folsomintel/fuse/compare/v0.7.0...v0.8.0) (2026-07-19)
 
 
