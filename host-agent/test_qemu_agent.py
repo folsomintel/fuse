@@ -188,6 +188,212 @@ class QEMUAgentTest(unittest.TestCase):
         self.assertEqual(meta["gpu_slots"], [])
         self.assertEqual(meta["gpu_mdevs"], ["aaa11111-1111-1111-1111-111111111111"])
 
+    def test_host_capacity_reports_mig_instance_uuids(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111 GPU-parent-1\n"
+            "1g.10gb a100 bbb22222-2222-2222-2222-222222222222 GPU-parent-1\n"
+            "2g.20gb a100 ccc33333-3333-3333-3333-333333333333 GPU-parent-2\n"
+        )
+
+        cap = qemu_agent.host_capacity()
+
+        instances = cap["mig_instances"]
+        self.assertEqual(len(instances), 3)
+        first = instances[0]
+        self.assertEqual(first["profile"], "1g.10gb")
+        self.assertEqual(first["kind"], "a100")
+        self.assertEqual(first["uuid"], "aaa11111-1111-1111-1111-111111111111")
+        self.assertEqual(first["parent_gpu_uuid"], "GPU-parent-1")
+        # the count map is derived as a back-compat summary of the instances.
+        self.assertEqual(cap["mig_profiles"], {"1g.10gb": 2, "2g.20gb": 1})
+
+    def test_host_capacity_omits_mig_when_no_inventory(self):
+        # no mig-inventory.txt: neither mig_instances nor mig_profiles appear,
+        # so a cpu-only or vfio-only host reports no MIG capacity.
+        cap = qemu_agent.host_capacity()
+        self.assertNotIn("mig_instances", cap)
+        self.assertNotIn("mig_profiles", cap)
+
+    def test_read_mig_inventory_accepts_optional_parent_uuid(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111 GPU-parent-1\n"
+            "2g.20gb a100 bbb22222-2222-2222-2222-222222222222\n"
+        )
+
+        devs = qemu_agent.read_mig_inventory()
+
+        self.assertEqual(devs[0]["parent_gpu_uuid"], "GPU-parent-1")
+        self.assertEqual(devs[1]["parent_gpu_uuid"], "")
+
+    def test_claim_mig_devices_binds_requested_uuids(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+            "1g.10gb a100 bbb22222-2222-2222-2222-222222222222\n"
+        )
+
+        uuids = qemu_agent.claim_mig_devices(
+            ["bbb22222-2222-2222-2222-222222222222"], "1g.10gb", "a100"
+        )
+
+        self.assertEqual(uuids, ["bbb22222-2222-2222-2222-222222222222"])
+
+    def test_claim_mig_devices_rejects_wrong_profile(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "2g.20gb a100 ccc33333-3333-3333-3333-333333333333\n"
+        )
+
+        with self.assertRaises(qemu_agent.HTTPError) as raised:
+            qemu_agent.claim_mig_devices(
+                ["ccc33333-3333-3333-3333-333333333333"], "1g.10gb", None
+            )
+
+        self.assertEqual(raised.exception.code, 409)
+
+    def test_claim_mig_devices_rejects_already_allocated(self):
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+        )
+        with mock.patch.object(
+            qemu_agent,
+            "allocated_mdev_uuids",
+            return_value={"aaa11111-1111-1111-1111-111111111111"},
+        ):
+            with self.assertRaises(qemu_agent.HTTPError) as raised:
+                qemu_agent.claim_mig_devices(
+                    ["aaa11111-1111-1111-1111-111111111111"], "1g.10gb", None
+                )
+
+        self.assertEqual(raised.exception.code, 409)
+
+    def test_create_binds_requested_mig_instance_uuids(self):
+        qemu_agent.BASE_ROOTFS.write_bytes(b"default")
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111 GPU-parent-1\n"
+            "1g.10gb a100 bbb22222-2222-2222-2222-222222222222 GPU-parent-1\n"
+        )
+
+        with (
+            mock.patch.object(qemu_agent, "pick_gpu_slots") as pick_slots,
+            mock.patch.object(qemu_agent, "pick_mig_devices") as pick_mig,
+            mock.patch.object(
+                qemu_agent,
+                "setup_tap",
+                return_value=("qv1", "10.200.1.1", "10.200.1.2"),
+            ),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            meta = qemu_agent.create_vm(
+                {
+                    "name": "mig-vm",
+                    "gpus": 1,
+                    "gpu_kind": "a100",
+                    "gpu_profile": "1g.10gb",
+                    "mig_instance_uuids": ["bbb22222-2222-2222-2222-222222222222"],
+                }
+            )
+
+        # the orchestrator-chosen uuid was bound, and neither local picker ran.
+        pick_slots.assert_not_called()
+        pick_mig.assert_not_called()
+        self.assertEqual(
+            meta["gpu_mdevs"], ["bbb22222-2222-2222-2222-222222222222"]
+        )
+
+    def test_destroy_reapplies_mig_layout_when_lifecycle_managed(self):
+        qemu_agent.BASE_ROOTFS.write_bytes(b"default")
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+        )
+
+        with (
+            mock.patch.object(
+                qemu_agent,
+                "setup_tap",
+                return_value=("qv1", "10.200.1.1", "10.200.1.2"),
+            ),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            meta = qemu_agent.create_vm(
+                {"name": "mig-vm", "gpus": 1, "gpu_profile": "1g.10gb"}
+            )
+
+        with (
+            mock.patch.object(qemu_agent, "stop_qemu"),
+            mock.patch.object(qemu_agent, "del_agent_forward"),
+            mock.patch.object(qemu_agent, "teardown_tap"),
+            mock.patch.object(qemu_agent, "MIG_LIFECYCLE_MANAGED", True),
+            mock.patch.object(qemu_agent, "MIG_SETUP_SCRIPT", self.root / "mig-setup.sh"),
+            mock.patch.object(qemu_agent.Path, "exists", return_value=True),
+            mock.patch("subprocess.run") as run,
+            mock.patch.object(qemu_agent, "sudo"),
+        ):
+            qemu_agent.destroy_vm(meta["vm_id"])
+
+        # the lifecycle hook re-ran the setup script exactly once.
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], [str(self.root / "mig-setup.sh")])
+
+    def test_destroy_skips_mig_reapply_when_not_lifecycle_managed(self):
+        qemu_agent.BASE_ROOTFS.write_bytes(b"default")
+        qemu_agent.MIG_INVENTORY.write_text(
+            "1g.10gb a100 aaa11111-1111-1111-1111-111111111111\n"
+        )
+
+        with (
+            mock.patch.object(
+                qemu_agent,
+                "setup_tap",
+                return_value=("qv1", "10.200.1.1", "10.200.1.2"),
+            ),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            meta = qemu_agent.create_vm(
+                {"name": "mig-vm", "gpus": 1, "gpu_profile": "1g.10gb"}
+            )
+
+        with (
+            mock.patch.object(qemu_agent, "stop_qemu"),
+            mock.patch.object(qemu_agent, "del_agent_forward"),
+            mock.patch.object(qemu_agent, "teardown_tap"),
+            mock.patch.object(qemu_agent, "MIG_LIFECYCLE_MANAGED", False),
+            mock.patch("subprocess.run") as run,
+            mock.patch.object(qemu_agent, "sudo"),
+        ):
+            qemu_agent.destroy_vm(meta["vm_id"])
+
+        run.assert_not_called()
+
+    def test_qemu_mig_setup_script_skips_without_nvidia_smi(self):
+        # qemu-mig-setup.sh is an operator script run on a real MIG host, so we
+        # do not exercise it against live hardware here. this test just guards
+        # the contract that --list degrades (rather than crashing) when
+        # nvidia-smi is absent, mirroring the skip-on-absent-hardware pattern.
+        import shutil as _shutil
+
+        if _shutil.which("nvidia-smi") is not None:
+            self.skipTest("nvidia-smi present on this host; skip the absent-path test")
+
+        import subprocess
+
+        script = Path(qemu_agent.__file__).with_name("qemu-mig-setup.sh")
+        proc = subprocess.run(
+            [str(script), "--list"],
+            capture_output=True, text=True, timeout=10,
+            env={"QEMU_DIR": str(self.root), "PATH": "/usr/bin:/bin"},
+        )
+        # the script dies with a clear message rather than producing partial
+        # output, so a missing nvidia-smi is loud, not silent.
+        self.assertNotEqual(proc.returncode, 0)
+
     def test_start_qemu_emits_mdev_sysfsdev(self):
         meta = {
             "vm_id": "mig-vm",

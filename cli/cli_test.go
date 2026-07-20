@@ -144,6 +144,45 @@ func TestHostGetNotFound(t *testing.T) {
 	}
 }
 
+// TestHostGetMIGInstanceDetail checks that `host get` renders one row per
+// carved MIG instance with its profile, parent gpu, and free/in-use state
+// when the host reports per-instance inventory.
+func TestHostGetMIGInstanceDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"mig-1","url":"http://m1","state":"active","backend":"qemu",
+			"capacity":{"cpus":8,"ram_mb":4096,"storage_gb":100,"vm_count":10,"gpu_kind":"a100",
+				"mig_profiles":{"1g.10gb":2},
+				"mig_instances":[
+					{"uuid":"MIG-aa-00","profile":"1g.10gb","kind":"a100","parent_gpu_uuid":"GPU-aaa"},
+					{"uuid":"MIG-bb-11","profile":"1g.10gb","kind":"a100","parent_gpu_uuid":"GPU-aaa"}
+				]},
+			"allocated":{"cpus":2,"ram_mb":512,"storage_gb":10,"vm_count":1,
+				"mig_profiles":{"1g.10gb":1},"mig_instance_uuids":["MIG-aa-00"]}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "host", "get", "mig-1"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	// the bound instance is in-use; the other is free. uuids render in their
+	// 8-char short form.
+	if !strings.Contains(out, "MIG-aa-0") || !strings.Contains(out, "in-use") {
+		t.Errorf("output missing bound instance row: %s", out)
+	}
+	if !strings.Contains(out, "MIG-bb-1") || !strings.Contains(out, "free") {
+		t.Errorf("output missing free instance row: %s", out)
+	}
+	if !strings.Contains(out, "parent=GPU-aaa") {
+		t.Errorf("output missing parent gpu: %s", out)
+	}
+}
+
 func TestEnvListScopedToActiveHost(t *testing.T) {
 	var gotHostQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

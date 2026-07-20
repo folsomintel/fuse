@@ -59,6 +59,14 @@ type Spec struct {
 	// that only track a scalar GPU count.
 	GPUUUIDs []string `json:"gpu_uuids,omitempty"`
 
+	// MIGInstanceUUIDs are the concrete MIG instance uuids this VM is bound
+	// to. Populated by allocation on hosts that report per-instance MIG
+	// inventory (Capacity.MIGInstances non-empty) and persisted per-VM so
+	// the binding survives an orchestrator restart. Empty when the host
+	// only tracks MIG allocation by profile count (the MIGProfiles path).
+	// Mirrors GPUUUIDs for whole devices (issue #41).
+	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
+
 	// MaxRuntime overrides FleetConfig.TaskStuckTimeout for this task.
 	// Zero means "use the fleet default". This is a leak-detection ceiling,
 	// not a liveness check — set it higher than any plausible healthy runtime.

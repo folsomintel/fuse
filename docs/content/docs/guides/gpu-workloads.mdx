@@ -75,18 +75,26 @@ run: python infer.py
 `gpu` stays a count, it just counts MIG instances once `gpu_profile` is set, so
 `gpu: 2` with `gpu_profile: 1g.10gb` asks for two slices rather than two cards.
 
-The operator creates the MIG instances on the host ahead of time and declares them
-at registration with `--mig-profile`, they are not carved on demand:
+The operator carves the MIG instances on the host ahead of time with
+`qemu-mig-setup.sh`, they are not carved on demand. The agent probes the resulting
+inventory and reports one `mig_instances` entry per carved instance, so the
+orchestrator binds a specific instance UUID to each VM and knows exactly which
+slice went to which VM. Register the host as a qemu backend; when the probe finds
+instances you do not need `--mig-profile`:
 
 ```bash
 fuse host register gpu-1 \
   --url http://gpu-host:8091 \
   --token "$QEMU_AGENT_TOKEN" \
   --backend qemu \
-  --mig-profile 1g.10gb=4 \
-  --mig-profile 2g.20gb=2 \
+  --gpu-kind a100 \
   --max-vms 8
 ```
+
+`--mig-profile profile=count` remains as an override for hosts that report no
+probeable per-instance inventory (a hand-managed `mig-inventory.txt` without
+parent detail). There the count map is the scheduling unit and the qemu agent
+picks the UUID locally.
 
 MIG capacity and whole-device capacity are tracked as separate pools. A host can
 register both, and a `1g.10gb` request never consumes a whole device from the
@@ -94,19 +102,21 @@ passthrough pool, so slice workloads and whole-card workloads don't contend for 
 same inventory.
 
 MIG placement honors `gpu_kind`. A host is only a candidate for a `gpu_profile`
-request when it has free instances of that profile *and* reports a MIG-capable
-device matching the requested kind, so a request pinned to `a100` is not routed to
-a host that carries no MIG-capable `a100` at all. Omit `gpu_kind` and any host
-offering the profile is eligible.
+request when it has free instances of that profile *and* the instance is on a
+MIG-capable card matching the requested kind, so a request pinned to `a100` is not
+routed to a host that carries no MIG-capable `a100` at all. Omit `gpu_kind` and any
+host offering the profile is eligible.
 
-:::warning[The kind gate filters hosts, not instances]
-The MIG pool is counted per profile, not per card: a host advertising
-`1g.10gb=4` reports four instances, with no record of which GPU each was carved
-from. So the check is that the host has *a* MIG-capable device of the requested
-kind, not that the free instances are on that device. On a host carrying both a
-MIG-capable `a100` and a MIG-capable `h100`, a request pinned to `a100` can still
-be handed an instance carved from the `h100`. Pin such workloads with a label or
-keep MIG hosts homogeneous if the distinction matters to you.
+:::warning[Per-instance vs count-map kind matching]
+On a host that reports per-instance inventory (`mig_instances`), each instance
+carries its own `kind` and `parent_gpu_uuid`, so the kind gate is per-instance: a
+request pinned to `a100` is only handed an instance carved from an `a100` card.
+The legacy count-map path (`--mig-profile` with no probeable inventory) has no
+record of which GPU each instance was carved from, so there the check is only that
+the host has *a* MIG-capable device of the requested kind. On a count-map host
+carrying both a MIG-capable `a100` and `h100`, a request pinned to `a100` can still
+be handed an instance carved from the `h100`. Prefer the per-instance probe, or
+keep MIG hosts homogeneous, when the distinction matters to you.
 :::
 
 :::warning[Hosts that report no per-device inventory]

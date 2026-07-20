@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -544,8 +545,9 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.allocateOnHost(selectedHost.ID, v)
 		// allocateOnHost binds concrete gpu device uuids onto v.spec; mirror
 		// them onto the local spec so Boot and the reservation-release path
-		// see the same binding.
+		// see the same binding. the same applies to per-instance MIG uuids.
 		spec.GPUUUIDs = v.spec.GPUUUIDs
+		spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
 		reservedHost = true
 		fm.mu.Unlock()
 		fm.logger.Info("scheduled vm",
@@ -1315,23 +1317,57 @@ func (fm *FleetManager) recomputeHostAllocations() []Host {
 	recomputed := make([]Host, 0, len(fm.hosts))
 	for _, h := range fm.hosts {
 		var alloc HostCapacity
-		var boundUUIDs []string
+		var boundDeviceUUIDs []string
+		var boundMIGUUIDs []string
+		var migCounts map[string]int
+		perInstanceMIG := len(h.Capacity.MIGInstances) > 0
 		perDevice := len(h.Capacity.GPUDevices) > 0
 		for _, v := range live[h.ID] {
 			alloc.CPUs += v.spec.CPUs
 			alloc.RamMB += v.spec.RamMB
 			alloc.StorageGB += v.spec.StorageGB
 			alloc.VMCount++
-			if perDevice && len(v.spec.GPUUUIDs) > 0 {
-				boundUUIDs = append(boundUUIDs, v.spec.GPUUUIDs...)
-			} else {
+			switch {
+			case v.spec.GPUProfile != "":
+				// MIG VM. a per-instance host binds concrete uuids onto
+				// v.spec.MIGInstanceUUIDs; a legacy count-map host only carries
+				// the profile + count. both are reconciled below from the
+				// durable per-VM binding, so neither trusts a stale counter.
+				if len(v.spec.MIGInstanceUUIDs) > 0 {
+					boundMIGUUIDs = append(boundMIGUUIDs, v.spec.MIGInstanceUUIDs...)
+				} else {
+					if migCounts == nil {
+						migCounts = make(map[string]int)
+					}
+					migCounts[strings.ToLower(v.spec.GPUProfile)] += int(v.spec.GPUs)
+				}
+			case perDevice && len(v.spec.GPUUUIDs) > 0:
+				boundDeviceUUIDs = append(boundDeviceUUIDs, v.spec.GPUUUIDs...)
+			default:
 				alloc.GPUs += int(v.spec.GPUs)
 			}
 		}
+		if perInstanceMIG {
+			// the bound-uuid set is the source of truth on a per-instance
+			// host. derive the count map from it so a stale persisted counter
+			// can never drift. legacy VMs that lack bound uuids (an upgraded
+			// host with pre-migration VMs) still contribute their counts.
+			alloc.MIGInstanceUUIDs = boundMIGUUIDs
+			alloc.MIGProfiles = migProfileCounts(boundMIGUUIDs, h.Capacity.MIGInstances)
+			for profile, n := range migCounts {
+				if alloc.MIGProfiles == nil {
+					alloc.MIGProfiles = make(map[string]int)
+				}
+				alloc.MIGProfiles[profile] += n
+			}
+		} else if len(migCounts) > 0 {
+			// legacy count-map host: the count map is the only scheduling unit.
+			alloc.MIGProfiles = migCounts
+		}
 		if perDevice {
 			// per-device host: the scalar count is the number of bound uuids.
-			alloc.GPUDeviceUUIDs = boundUUIDs
-			alloc.GPUs = len(boundUUIDs)
+			alloc.GPUDeviceUUIDs = boundDeviceUUIDs
+			alloc.GPUs = len(boundDeviceUUIDs)
 		}
 		h.Allocated = alloc
 		h.UpdatedAt = time.Now()

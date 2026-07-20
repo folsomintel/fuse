@@ -53,11 +53,17 @@ GPUs are only considered when the spec asks for them, and the check takes one of
 three forms depending on what the host reported:
 
 - **A MIG request** (a `gpu_profile` is set) draws from the MIG instance pool for
-  that profile, and then applies its own kind gate: the host must also report a
-  device that is MIG-capable *and* a kind match, both of the same card. The MIG
-  pool and the whole-device pool are independent counters, so a slice never
-  consumes a card. A host reporting no per-device inventory falls back to its
-  scalar `gpu_kind`, and one declaring no kind at all cannot be ruled out here.
+  that profile, and then applies its own kind gate. On a host that reports
+  per-instance inventory (`mig_instances`), the gate is per-instance: each instance
+  carries its own `kind` and `parent_gpu_uuid`, so the request is matched to a
+  free instance whose card is MIG-capable *and* a kind match, both of the same
+  card, and the orchestrator binds that specific UUID to the VM. A host that
+  reports no per-instance inventory falls back to the count-map path, where
+  `mig_profiles` is the scheduling unit and the kind gate is host-level (the host
+  must report *a* MIG-capable device of the requested kind). The MIG pool and the
+  whole-device pool are independent, so a slice never consumes a card. A host
+  reporting no per-device inventory falls back to its scalar `gpu_kind`, and one
+  declaring no kind at all cannot be ruled out here.
 - **A host reporting per-device inventory** counts free devices by UUID and
   filters them by kind, which is what lets a host with mixed GPU models answer
   correctly.

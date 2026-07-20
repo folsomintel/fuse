@@ -31,6 +31,7 @@ export type {
   Snapshot,
   HostCapacity,
   GPUDevice,
+  MIGInstance,
   RegisterHostRequest,
   Host,
   APIKey,

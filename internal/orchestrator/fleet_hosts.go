@@ -170,6 +170,9 @@ func (fm *FleetManager) activeHostsLocked() []*Host {
 		// arrays with the live host, and allocate/deallocate mutate them.
 		hc.Capacity.GPUDevices = append([]GPUDevice(nil), h.Capacity.GPUDevices...)
 		hc.Allocated.GPUDeviceUUIDs = append([]string(nil), h.Allocated.GPUDeviceUUIDs...)
+		// deep-copy the per-instance MIG slices for the same reason.
+		hc.Capacity.MIGInstances = append([]MIGInstance(nil), h.Capacity.MIGInstances...)
+		hc.Allocated.MIGInstanceUUIDs = append([]string(nil), h.Allocated.MIGInstanceUUIDs...)
 		out = append(out, &hc)
 	}
 	return out
@@ -199,10 +202,34 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 	switch {
 	case spec.GPUProfile != "":
 		// Fractional allocation: consume MIG instances, not whole devices.
-		if h.Allocated.MIGProfiles == nil {
-			h.Allocated.MIGProfiles = make(map[string]int)
+		if len(h.Capacity.MIGInstances) > 0 {
+			// per-instance host: bind concrete free instance uuids to the VM
+			// and record them on the host's allocated set, keeping the
+			// derived MIGProfiles count map in sync.
+			free := freeMIGInstances(h.Capacity, h.Allocated, spec.GPUProfile, spec.GPUKind)
+			n := int(spec.GPUs)
+			if n > len(free) {
+				// scheduler admitted this placement, so free should be
+				// sufficient; clamp defensively rather than index out of range.
+				n = len(free)
+			}
+			// size the backing array from the host inventory (len(free), a
+			// small non-user-controlled count), not from spec.GPUs, so a
+			// hostile gpu count can't drive an oversized allocation.
+			bound := make([]string, 0, len(free))
+			for _, inst := range free[:n] {
+				bound = append(bound, inst.UUID)
+			}
+			v.spec.MIGInstanceUUIDs = append([]string(nil), bound...)
+			h.Allocated.MIGInstanceUUIDs = append(h.Allocated.MIGInstanceUUIDs, bound...)
+			h.Allocated.MIGProfiles = migProfileCounts(h.Allocated.MIGInstanceUUIDs, h.Capacity.MIGInstances)
+		} else {
+			// legacy count-map host.
+			if h.Allocated.MIGProfiles == nil {
+				h.Allocated.MIGProfiles = make(map[string]int)
+			}
+			h.Allocated.MIGProfiles[spec.GPUProfile] += int(spec.GPUs)
 		}
-		h.Allocated.MIGProfiles[spec.GPUProfile] += int(spec.GPUs)
 	case spec.GPUs > 0 && len(h.Capacity.GPUDevices) > 0:
 		free := freeMatchingDevices(h.Capacity, h.Allocated, spec.GPUKind)
 		n := int(spec.GPUs)
@@ -244,7 +271,25 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	}
 	switch {
 	case spec.GPUProfile != "":
-		if n := h.Allocated.MIGProfiles[spec.GPUProfile] - int(spec.GPUs); n > 0 {
+		if len(spec.MIGInstanceUUIDs) > 0 {
+			// per-instance host: release exactly the MIG instance uuids this
+			// VM held, then re-derive the count map from the survivors so a
+			// stale counter can never drift from the bound-uuid set.
+			release := make(map[string]struct{}, len(spec.MIGInstanceUUIDs))
+			for _, u := range spec.MIGInstanceUUIDs {
+				release[u] = struct{}{}
+			}
+			var kept []string
+			for _, u := range h.Allocated.MIGInstanceUUIDs {
+				if _, drop := release[u]; drop {
+					continue
+				}
+				kept = append(kept, u)
+			}
+			h.Allocated.MIGInstanceUUIDs = kept
+			h.Allocated.MIGProfiles = migProfileCounts(h.Allocated.MIGInstanceUUIDs, h.Capacity.MIGInstances)
+		} else if n := h.Allocated.MIGProfiles[spec.GPUProfile] - int(spec.GPUs); n > 0 {
+			// legacy count-map host.
 			h.Allocated.MIGProfiles[spec.GPUProfile] = n
 		} else if h.Allocated.MIGProfiles != nil {
 			delete(h.Allocated.MIGProfiles, spec.GPUProfile)

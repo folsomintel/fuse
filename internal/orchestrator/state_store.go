@@ -238,11 +238,14 @@ func NewMemoryStateStore() *MemoryStateStore {
 
 // cloneVMRecord deep-copies the slice fields on a VMRecord so a caller that
 // mutates them (before Upsert or on a returned record) cannot corrupt the
-// stored view. Only Spec.GPUUUIDs and Endpoints share a backing array under
-// a shallow value copy.
+// stored view. Spec.GPUUUIDs, Spec.MIGInstanceUUIDs, and Endpoints share a
+// backing array under a shallow value copy.
 func cloneVMRecord(v VMRecord) VMRecord {
 	if v.Spec.GPUUUIDs != nil {
 		v.Spec.GPUUUIDs = append([]string(nil), v.Spec.GPUUUIDs...)
+	}
+	if v.Spec.MIGInstanceUUIDs != nil {
+		v.Spec.MIGInstanceUUIDs = append([]string(nil), v.Spec.MIGInstanceUUIDs...)
 	}
 	if v.Endpoints != nil {
 		v.Endpoints = append([]Endpoint(nil), v.Endpoints...)
@@ -383,15 +386,21 @@ func (s *MemoryStateStore) ListDeadLetters(_ context.Context) ([]DeadLetterRecor
 	return out, nil
 }
 
-// cloneHostRecord deep-copies the per-device GPU inventory so a caller that
-// mutates the GPUDevices slice (before Upsert or on a returned record) cannot
-// corrupt the stored view. HostRecord is otherwise a flat value; only the
-// GPUDevices slice shares a backing array under a shallow copy.
+// cloneHostRecord deep-copies the per-device GPU and per-instance MIG
+// inventory so a caller that mutates those slices (before Upsert or on a
+// returned record) cannot corrupt the stored view. HostRecord is otherwise a
+// flat value; only GPUDevices and MIGInstances share a backing array under a
+// shallow copy.
 func cloneHostRecord(h HostRecord) HostRecord {
 	if h.Capacity.GPUDevices != nil {
 		devices := make([]GPUDevice, len(h.Capacity.GPUDevices))
 		copy(devices, h.Capacity.GPUDevices)
 		h.Capacity.GPUDevices = devices
+	}
+	if h.Capacity.MIGInstances != nil {
+		instances := make([]MIGInstance, len(h.Capacity.MIGInstances))
+		copy(instances, h.Capacity.MIGInstances)
+		h.Capacity.MIGInstances = instances
 	}
 	return h
 }

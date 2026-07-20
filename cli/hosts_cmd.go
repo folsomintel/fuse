@@ -205,6 +205,25 @@ func renderHostDetail(h *fuse.Host) {
 		}
 		rows = append(rows, [2]string{"mig", strings.Join(parts, ", ")})
 	}
+	// per-instance MIG inventory: one row per carved instance with its profile,
+	// parent gpu, and whether it is currently bound to a vm. this is the
+	// detail the count-map row above summarizes; only present on hosts whose
+	// agent reports per-instance inventory.
+	if len(h.Capacity.MIGInstances) > 0 {
+		bound := make(map[string]bool, len(h.Allocated.MIGInstanceUUIDs))
+		for _, u := range h.Allocated.MIGInstanceUUIDs {
+			bound[u] = true
+		}
+		for _, inst := range h.Capacity.MIGInstances {
+			status := "free"
+			if bound[inst.UUID] {
+				status = "in-use"
+			}
+			val := fmt.Sprintf("%s (%s) parent=%s [%s]",
+				inst.Profile, dash(inst.Kind), dash(inst.ParentGPUUUID), status)
+			rows = append(rows, [2]string{"mig " + shortUUID(inst.UUID), val})
+		}
+	}
 	rows = append(rows,
 		[2]string{"last seen", fmt.Sprintf("%s (%s)", shortTime(h.LastSeen), ago(h.LastSeen))},
 		[2]string{"created", shortTime(h.CreatedAt)},

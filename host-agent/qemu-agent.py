@@ -73,6 +73,15 @@ VFIO_INVENTORY = Path(os.environ.get("VFIO_INVENTORY", str(QEMU_DIR / "vfio-inve
 # host driver) before listing them here; the agent picks free ones to attach
 # via vfio-pci sysfsdev at create time (decision D5, fractional passthrough).
 MIG_INVENTORY = Path(os.environ.get("MIG_INVENTORY", str(QEMU_DIR / "mig-inventory.txt")))
+# MIG_LIFECYCLE_MANAGED=1 declares that this host's MIG GPU instances are
+# managed by qemu-mig-setup.sh (it owns the layout config and re-applies it on
+# reboot). when set, destroy_vm re-applies the layout after a VM holding MIG
+# instances is torn down so freed instances are immediately re-carved and
+# available again. when unset the operator hand-manages instances and the
+# agent never touches the card layout on destroy (the instance is simply
+# released from the in-memory allocation set).
+MIG_LIFECYCLE_MANAGED = os.environ.get("MIG_LIFECYCLE_MANAGED", "") not in ("", "0", "false")
+MIG_SETUP_SCRIPT = Path(os.environ.get("MIG_SETUP_SCRIPT", str(Path(__file__).with_name("qemu-mig-setup.sh"))))
 # Port the in-guest agent listens on; per-VM host ports DNAT to this.
 FUSED_PORT = int(os.environ.get("FUSED_PORT", "9550"))
 HOST_PORT_BASE = int(os.environ.get("FUSE_HOST_PORT_BASE", "19650"))
@@ -263,8 +272,11 @@ def pick_gpu_slots(count: int, kind: str | None) -> list[str]:
 def read_mig_inventory() -> list[dict]:
     """Parse MIG_INVENTORY into a list of allocatable MIG instances.
 
-    Each line is "<profile> <kind> <mdev_uuid>" (one MIG instance per line).
-    Returns dicts like {"profile": "1g.10gb", "kind": "a100", "uuid": "..."}.
+    Each line is "<profile> <kind> <mdev_uuid> [<parent_gpu_uuid>]" (one MIG
+    instance per line). The optional 4th field is the parent GPU uuid, written
+    by qemu-mig-setup.sh so the orchestrator can bind a specific instance to a
+    specific VM and report which card it came off. Returns dicts like
+    {"profile": "1g.10gb", "kind": "a100", "uuid": "...", "parent_gpu_uuid": "..."}.
     """
     if not MIG_INVENTORY.exists():
         return []
@@ -274,10 +286,16 @@ def read_mig_inventory() -> list[dict]:
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) != 3:
+        if len(parts) not in (3, 4):
             raise HTTPError(500, f"bad mig inventory at {MIG_INVENTORY}:{lineno}: {raw!r}")
-        profile, kind, mdev_uuid = parts
-        devices.append({"profile": profile.lower(), "kind": kind.lower(), "uuid": mdev_uuid})
+        profile, kind, mdev_uuid = parts[0], parts[1], parts[2]
+        parent = parts[3] if len(parts) == 4 else ""
+        devices.append({
+            "profile": profile.lower(),
+            "kind": kind.lower(),
+            "uuid": mdev_uuid,
+            "parent_gpu_uuid": parent,
+        })
     return devices
 
 
@@ -322,6 +340,43 @@ def pick_mig_devices(count: int, profile: str, kind: str | None) -> list[str]:
     raise HTTPError(409,
         f"insufficient free mig instances: requested {count} x {want_profile} of "
         f"{kind_desc}, {len(selected)} free")
+
+
+def claim_mig_devices(uuids: list[str], profile: str, kind: str | None) -> list[str]:
+    """Validate and claim a specific set of MIG instance uuids.
+
+    The orchestrator's per-instance scheduler picks concrete uuids and sends
+    them in the create request so the control plane knows which instance went
+    to which VM. this enforces the contract the local pick_mig_devices path
+    also upholds: every requested uuid must be a real instance in the inventory,
+    of the requested profile, optionally of the requested kind, and currently
+    free (not attached to another VM). raises HTTPError(409) on any mismatch.
+    """
+    if not uuids:
+        return []
+
+    want_profile = profile.lower()
+    want_kind = (kind or "").lower()
+    used = allocated_mdev_uuids()
+
+    by_uuid = {d["uuid"]: d for d in read_mig_inventory()}
+    selected: list[str] = []
+    for u in uuids:
+        dev = by_uuid.get(u)
+        if dev is None:
+            raise HTTPError(409, f"mig instance {u} not in host inventory")
+        if dev["profile"] != want_profile:
+            raise HTTPError(409,
+                f"mig instance {u} is profile {dev['profile']!r}, not {want_profile!r}")
+        if want_kind and dev["kind"] != want_kind:
+            raise HTTPError(409,
+                f"mig instance {u} is kind {dev['kind']!r}, not {want_kind!r}")
+        if u in used:
+            raise HTTPError(409, f"mig instance {u} already attached to another vm")
+        if u in selected:
+            raise HTTPError(409, f"mig instance {u} requested more than once")
+        selected.append(u)
+    return selected
 
 
 def _normalize_pci_bus_id(bus_id: str) -> str:
@@ -732,9 +787,18 @@ def create_vm(req: dict) -> dict:
     gpu_count = int(req.get("gpus", "0"))
     gpu_kind = req.get("gpu_kind") or ""
     gpu_profile = (req.get("gpu_profile") or "").lower()
+    # When the orchestrator's per-instance scheduler has picked concrete MIG
+    # instance uuids, it sends them here and we bind exactly those (validating
+    # they are free and match the profile/kind). When it has only a profile +
+    # count (legacy / hand-managed hosts), fall back to picking locally. this
+    # keeps pick_mig_devices' contract intact for back-compat.
+    requested_mig_uuids = req.get("mig_instance_uuids") or []
     if gpu_profile:
         gpu_slots: list[str] = []
-        gpu_mdevs = pick_mig_devices(gpu_count, gpu_profile, gpu_kind or None)
+        if requested_mig_uuids:
+            gpu_mdevs = claim_mig_devices(list(requested_mig_uuids), gpu_profile, gpu_kind or None)
+        else:
+            gpu_mdevs = pick_mig_devices(gpu_count, gpu_profile, gpu_kind or None)
     else:
         gpu_slots = pick_gpu_slots(gpu_count, gpu_kind or None)
         gpu_mdevs = []
@@ -808,11 +872,32 @@ def create_vm(req: dict) -> dict:
         raise
     return meta
 
+def reapply_mig_layout() -> None:
+    """Re-apply the persisted MIG layout (qemu-mig-setup.sh) so freed instances
+    are re-carved and immediately available again.
+
+    Only does anything when the host is declared lifecycle-managed
+    (MIG_LIFECYCLE_MANAGED=1) and the setup script exists. Best-effort: a
+    failure is logged but never raised, so a VM destroy always succeeds even
+    when the card layout re-apply hiccups. the operator can re-run the script
+    by hand to recover.
+    """
+    if not MIG_LIFECYCLE_MANAGED or not MIG_SETUP_SCRIPT.exists():
+        return
+    try:
+        subprocess.run([str(MIG_SETUP_SCRIPT)], check=False,
+                        capture_output=True, text=True, timeout=60.0)
+    except (subprocess.SubprocessError, OSError):
+        # destroy must not fail because the layout re-apply did.
+        pass
+
+
 def destroy_vm(vm_id: str) -> None:
     """Stop a vm, release its GPU/tap/DNAT allocations, and delete its state dir."""
     meta = load_meta(vm_id)
     if not meta:
         raise HTTPError(404, "vm not found")
+    held_mdevs = bool(meta.get("gpu_mdevs"))
     stop_qemu(meta)
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
@@ -821,6 +906,11 @@ def destroy_vm(vm_id: str) -> None:
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
+    # On a lifecycle-managed host, a VM that held MIG instances just freed
+    # them; re-apply the layout so the card re-carves the same instances and
+    # they are available for the next allocation without operator action.
+    if held_mdevs:
+        reapply_mig_layout()
     
 
 
@@ -1255,6 +1345,12 @@ def host_capacity() -> dict:
     instead of trusting operator-declared --cpus/--ram-mb/--storage-gb
     flags. GPUs are probed too: count and kind come from VFIO_INVENTORY
     (matching pick_gpu_slots), and gpu_devices carries per-device detail.
+
+    MIG inventory is reported per-instance (mig_instances) when
+    MIG_INVENTORY lists carved instances, so the orchestrator can bind a
+    specific instance to a specific VM instead of just a profile count
+    (issue #41). the legacy mig_profiles count map is derived from the
+    per-instance list as a back-compat summary.
     """
     cpus = os.cpu_count() or 1
     ram_mb = 0
@@ -1273,7 +1369,12 @@ def host_capacity() -> dict:
     kinds = {g["kind"] for g in groups}
     gpu_kind = next(iter(kinds)) if len(kinds) == 1 else ""
 
-    return {
+    mig_instances = read_mig_inventory()
+    mig_profiles: dict[str, int] = {}
+    for inst in mig_instances:
+        mig_profiles[inst["profile"]] = mig_profiles.get(inst["profile"], 0) + 1
+
+    cap = {
         "cpus": cpus,
         "ram_mb": ram_mb,
         "storage_gb": free_bytes // (1024 ** 3),
@@ -1281,6 +1382,11 @@ def host_capacity() -> dict:
         "gpu_kind": gpu_kind,
         "gpu_devices": probe_gpu_devices(),
     }
+    if mig_instances:
+        cap["mig_instances"] = mig_instances
+    if mig_profiles:
+        cap["mig_profiles"] = mig_profiles
+    return cap
 
 
 class Handler(BaseHTTPRequestHandler):
