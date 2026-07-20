@@ -90,23 +90,25 @@ func toAPIHost(h orchestrator.Host) HostInfo {
 		Backend: string(h.Backend),
 		State:   string(h.State),
 		Capacity: HostCapacity{
-			CPUs:        h.Capacity.CPUs,
-			RamMB:       h.Capacity.RamMB,
-			StorageGB:   h.Capacity.StorageGB,
-			VMCount:     h.Capacity.VMCount,
-			GPUs:        h.Capacity.GPUs,
-			GPUKind:     h.Capacity.GPUKind,
-			MIGProfiles: copyMIGProfiles(h.Capacity.MIGProfiles),
-			GPUDevices:  toAPIGPUDevices(h.Capacity.GPUDevices),
+			CPUs:         h.Capacity.CPUs,
+			RamMB:        h.Capacity.RamMB,
+			StorageGB:    h.Capacity.StorageGB,
+			VMCount:      h.Capacity.VMCount,
+			GPUs:         h.Capacity.GPUs,
+			GPUKind:      h.Capacity.GPUKind,
+			MIGProfiles:  copyMIGProfiles(h.Capacity.MIGProfiles),
+			MIGInstances: toAPIMIGInstances(h.Capacity.MIGInstances),
+			GPUDevices:   toAPIGPUDevices(h.Capacity.GPUDevices),
 		},
 		Allocated: HostCapacity{
-			CPUs:        h.Allocated.CPUs,
-			RamMB:       h.Allocated.RamMB,
-			StorageGB:   h.Allocated.StorageGB,
-			VMCount:     h.Allocated.VMCount,
-			GPUs:        h.Allocated.GPUs,
-			GPUKind:     h.Allocated.GPUKind,
-			MIGProfiles: copyMIGProfiles(h.Allocated.MIGProfiles),
+			CPUs:             h.Allocated.CPUs,
+			RamMB:            h.Allocated.RamMB,
+			StorageGB:        h.Allocated.StorageGB,
+			VMCount:          h.Allocated.VMCount,
+			GPUs:             h.Allocated.GPUs,
+			GPUKind:          h.Allocated.GPUKind,
+			MIGProfiles:      copyMIGProfiles(h.Allocated.MIGProfiles),
+			MIGInstanceUUIDs: append([]string(nil), h.Allocated.MIGInstanceUUIDs...),
 		},
 		LastSeen:  h.LastSeen,
 		CreatedAt: h.CreatedAt,
@@ -147,6 +149,24 @@ func toAPIGPUDevices(devs []orchestrator.GPUDevice) []GPUDevice {
 			MIGCapable:    d.MIGCapable,
 			MIGMode:       d.MIGMode,
 			IOMMUGroup:    d.IOMMUGroup,
+		}
+	}
+	return out
+}
+
+// toAPIMIGInstances maps the orchestrator's per-instance MIG inventory to the
+// wire shape. Returns nil for an empty input so the field is omitted from JSON.
+func toAPIMIGInstances(insts []orchestrator.MIGInstance) []MIGInstance {
+	if len(insts) == 0 {
+		return nil
+	}
+	out := make([]MIGInstance, len(insts))
+	for i, inst := range insts {
+		out[i] = MIGInstance{
+			UUID:          inst.UUID,
+			Profile:       inst.Profile,
+			Kind:          inst.Kind,
+			ParentGPUUUID: inst.ParentGPUUUID,
 		}
 	}
 	return out

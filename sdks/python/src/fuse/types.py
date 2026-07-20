@@ -179,6 +179,16 @@ class GPUDevice(_Model):
     iommu_group: str = ""
 
 
+class MIGInstance(_Model):
+    # one carved mig gpu instance probed from the host agent. the orchestrator
+    # binds a specific instance uuid to a vm so it knows which instance went
+    # to which vm.
+    uuid: str = ""
+    profile: str = ""
+    kind: str = ""
+    parent_gpu_uuid: str = ""
+
+
 class HostCapacity(_Model):
     # a host's resource envelope.
     cpus: int = 0
@@ -187,8 +197,19 @@ class HostCapacity(_Model):
     vm_count: int = 0
     gpus: int = 0
     gpu_kind: str = ""
-    # fractional gpu capacity: mig instance count by profile name.
+    # fractional gpu capacity: mig instance count by profile name. when the
+    # host reports per-instance mig inventory (mig_instances), this map is a
+    # derived summary; otherwise it is the scheduling unit.
     mig_profiles: Optional[dict[str, int]] = None
+    # per-instance mig inventory probed from the host agent (one entry per
+    # carved mig gpu instance). when non-empty, the orchestrator binds
+    # specific instance uuids to vms. strictly additive: a host that reports
+    # no instances falls back to mig_profiles. only populated on capacity
+    # (not allocated) for qemu hosts.
+    mig_instances: list[MIGInstance] = Field(default_factory=list)
+    # the set of mig instance uuids currently bound to vms. populated only on
+    # allocated, and only for hosts that report per-instance mig inventory.
+    mig_instance_uuids: list[str] = Field(default_factory=list)
     # per-device gpu detail probed from the host agent. only populated on
     # capacity (not allocated) for qemu hosts.
     gpu_devices: list[GPUDevice] = Field(default_factory=list)

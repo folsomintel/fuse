@@ -162,9 +162,19 @@ export interface HostCapacity {
   gpus?: number;
   gpu_kind?: string;
   /** Fractional GPU capacity: MIG instance count by profile name (e.g.
-   * {"1g.10gb": 4}). Like gpus, it requires backend "qemu" and is declared by
-   * the operator, never probed. */
+   * {"1g.10gb": 4}). Like gpus, it requires backend "qemu". When the host
+   * reports per-instance MIG inventory (mig_instances), this map is a derived
+   * summary; otherwise it is the scheduling unit. */
   mig_profiles?: Record<string, number>;
+  /** Per-instance MIG inventory probed from the host agent (one entry per
+   * carved MIG GPU instance). When non-empty, the orchestrator binds specific
+   * instance uuids to VMs instead of decrementing a count. Strictly additive:
+   * a host that reports no instances falls back to mig_profiles. Only
+   * populated on capacity (not allocated) for qemu hosts. */
+  mig_instances?: MIGInstance[];
+  /** The set of MIG instance uuids currently bound to VMs. Populated only on
+   * allocated, and only for hosts that report per-instance MIG inventory. */
+  mig_instance_uuids?: string[];
   /** Per-device GPU detail probed from the host agent, carried alongside the
    * scalar gpus/gpu_kind counters. Only populated on capacity (not
    * allocated) for qemu hosts. */
@@ -184,6 +194,16 @@ export interface GPUDevice {
   mig_capable?: boolean;
   mig_mode?: string;
   iommu_group?: string;
+}
+
+/** MIGInstance is one carved MIG GPU instance probed from the host agent. The
+ * orchestrator binds a specific instance uuid to a VM so it knows which
+ * instance went to which VM. */
+export interface MIGInstance {
+  uuid?: string;
+  profile?: string;
+  kind?: string;
+  parent_gpu_uuid?: string;
 }
 
 /** RegisterHostRequest is the body for hosts.register. */

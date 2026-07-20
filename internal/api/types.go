@@ -243,7 +243,27 @@ type HostCapacity struct {
 	// MIGProfiles advertises fractional GPU capacity: MIG instance count
 	// by profile name (e.g. {"1g.10gb": 4}). Like GPUs, it requires
 	// backend "qemu" and is declared by the operator, never probed.
+	//
+	// When the host reports per-instance MIG inventory (MIGInstances), this
+	// map is a derived summary (count by profile) and the scheduler binds
+	// specific instance uuids. A host that only declares counts (the
+	// --mig-profile registration override) keeps this map as the scheduling
+	// unit.
 	MIGProfiles map[string]int `json:"mig_profiles,omitempty"`
+
+	// MIGInstances is the per-instance MIG inventory probed from the host
+	// agent (one entry per carved MIG GPU instance). When non-empty, the
+	// scheduler switches from count-based to instance-based allocation and
+	// binds concrete uuids to VMs. Strictly additive: a host that reports no
+	// instances falls back to MIGProfiles. Only populated on capacity (not
+	// allocated) for qemu hosts.
+	MIGInstances []MIGInstance `json:"mig_instances,omitempty"`
+
+	// MIGInstanceUUIDs is the set of MIG instance uuids currently bound to
+	// VMs. Populated only on Allocated (never on Capacity), and only for
+	// hosts that report per-instance MIG inventory. The durable source of
+	// truth is the per-VM mig_instance_uuids binding.
+	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
 
 	// GPUDevices is the per-device GPU detail probed from the host agent,
 	// carried alongside the scalar GPUs/GPUKind counters. Only populated on
@@ -265,6 +285,16 @@ type GPUDevice struct {
 	MIGCapable    bool   `json:"mig_capable,omitempty"`
 	MIGMode       string `json:"mig_mode,omitempty"`
 	IOMMUGroup    string `json:"iommu_group,omitempty"`
+}
+
+// MIGInstance is the wire shape of a single carved MIG GPU instance. It
+// mirrors orchestrator.MIGInstance. The orchestrator binds a specific
+// instance uuid to a VM so it knows which instance went to which VM.
+type MIGInstance struct {
+	UUID          string `json:"uuid,omitempty"`
+	Profile       string `json:"profile,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	ParentGPUUUID string `json:"parent_gpu_uuid,omitempty"`
 }
 
 // RegisterHostRequest is the JSON body accepted by POST /v1/hosts.
