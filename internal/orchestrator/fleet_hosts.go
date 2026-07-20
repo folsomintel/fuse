@@ -213,9 +213,12 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 				// sufficient; clamp defensively rather than index out of range.
 				n = len(free)
 			}
-			bound := make([]string, n)
-			for i, inst := range free[:n] {
-				bound[i] = inst.UUID
+			// size the backing array from the host inventory (len(free), a
+			// small non-user-controlled count), not from spec.GPUs, so a
+			// hostile gpu count can't drive an oversized allocation.
+			bound := make([]string, 0, len(free))
+			for _, inst := range free[:n] {
+				bound = append(bound, inst.UUID)
 			}
 			v.spec.MIGInstanceUUIDs = append([]string(nil), bound...)
 			h.Allocated.MIGInstanceUUIDs = append(h.Allocated.MIGInstanceUUIDs, bound...)
