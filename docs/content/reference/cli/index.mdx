@@ -14,9 +14,18 @@ the repo's `cli/` package.
 brew install --cask folsomintel/fuse/fuse
 ```
 
-Upgrade with `brew upgrade --cask fuse`, and check the installed version with
-`fuse --version`. On Linux without Homebrew, take the `fuse-cli_Linux_*.tar.gz` archive
-from the [latest release](https://github.com/folsomintel/fuse/releases/latest).
+Upgrade with `brew upgrade --cask folsomintel/fuse/fuse`, and check the installed version
+with `fuse --version`. On Linux without Homebrew, take the `fuse-cli_Linux_*.tar.gz`
+archive from the [latest release](https://github.com/folsomintel/fuse/releases/latest).
+
+:::warning[Always use the fully qualified name]
+Homebrew's own cask repo has an unrelated `fuse` (Fuse Studio, from fuse-open.github.io).
+A bare `brew install --cask fuse` or `brew upgrade --cask fuse` resolves to **that**
+project, not this CLI, even once you have tapped `folsomintel/fuse`. Qualify it as
+`folsomintel/fuse/fuse` every time. An install left on the bare name silently stops
+receiving updates, which is how a machine ends up pinned to an old CLI missing newer
+commands.
+:::
 
 To build from a checkout instead, for local development:
 
@@ -50,7 +59,7 @@ directory, created automatically on first `fuse connect`.
 
 | Command | Purpose |
 | --- | --- |
-| `fuse quickstart` | Guided first-time setup: connect an orchestrator and register a host. |
+| `fuse quickstart` | Guided first-time setup: connect an orchestrator and register a host. See [`fuse quickstart`](/reference/cli/quickstart). |
 | `fuse connect` / `fuse context` | Add and switch between orchestrator contexts. See [Contexts](/reference/cli/contexts). |
 | `fuse hosts` / `fuse host` | Manage compute hosts. See [Hosts](/reference/cli/hosts). |
 | `fuse environment` | Manage environments (VMs) directly. See [Environments](/reference/cli/environment). |
