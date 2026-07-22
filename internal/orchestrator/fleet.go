@@ -82,6 +82,15 @@ var (
 	// to the host. Callers should cordon/drain and wait for the VMs to
 	// leave before retrying.
 	ErrHostHasVMs = errors.New("host still has vms assigned")
+
+	// ErrStartupScriptTimeout is returned during boot when the caller's
+	// startup script did not finish within StartupScriptTimeout. The boot
+	// path runs the script synchronously, so a script that never returns
+	// (a foreground server, `sleep infinity`) would otherwise hang the
+	// create until the HTTP write timeout killed the response and the
+	// caller saw an opaque 500. Long-lived processes belong in `services`,
+	// or must be backgrounded by the script itself.
+	ErrStartupScriptTimeout = errors.New("startup script did not complete in time")
 )
 
 // VMState represents the lifecycle state of a managed VM.
@@ -200,6 +209,12 @@ type FleetConfig struct {
 	// skipped on subsequent cycles. Default 5.
 	OrphanDestroyMaxRetries int
 
+	// StartupScriptTimeout bounds a caller's boot-time startup script when
+	// BootOptions does not set its own. Default
+	// DefaultStartupScriptTimeout. Keep it under the HTTP write timeout so
+	// a create that trips it still returns a classified error.
+	StartupScriptTimeout time.Duration
+
 	// DefaultSnapshotRetention applies to snapshots created without an
 	// explicit retention window. Zero leaves snapshots unbounded until
 	// explicitly deleted.
@@ -243,6 +258,8 @@ type FleetManager struct {
 	prefix   string
 	logger   *slog.Logger
 	metrics  ReconcileMetrics
+
+	startupScriptTimeout time.Duration
 
 	reconcileInterval time.Duration
 
@@ -317,6 +334,9 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 	if cfg.StateStore == nil {
 		cfg.StateStore = NewMemoryStateStore()
 	}
+	if cfg.StartupScriptTimeout <= 0 {
+		cfg.StartupScriptTimeout = DefaultStartupScriptTimeout
+	}
 
 	return &FleetManager{
 		provider:                 cfg.Provider,
@@ -325,6 +345,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		prefix:                   cfg.Prefix,
 		logger:                   cfg.Logger,
 		metrics:                  cfg.Metrics,
+		startupScriptTimeout:     cfg.StartupScriptTimeout,
 		reconcileInterval:        cfg.ReconcileInterval,
 		taskStuckTimeout:         cfg.TaskStuckTimeout,
 		orphanDestroyMaxRetries:  cfg.OrphanDestroyMaxRetries,
@@ -460,6 +481,12 @@ func (fm *FleetManager) Stop() {
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
 // Blocks until the VM is ready or an error occurs.
 func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
+	// Callers that do not pick their own bound inherit the fleet's, so a
+	// startup script can never hang a create indefinitely.
+	if opts.StartupScriptTimeout <= 0 {
+		opts.StartupScriptTimeout = fm.startupScriptTimeout
+	}
+
 	// Check for duplicate task.
 	fm.mu.RLock()
 	for _, v := range fm.vms {

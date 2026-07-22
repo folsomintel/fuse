@@ -45,6 +45,9 @@ type fakeEnv struct {
 	execResult orchestrator.ExecResult
 	execErr    error
 
+	// blockExec makes ExecStream run until its context is done.
+	blockExec bool
+
 	// execArgv and execOpts record what Exec was actually asked to run.
 	execArgv [][]string
 	execOpts []orchestrator.ExecOptions
@@ -90,10 +93,15 @@ func (e *fakeEnv) Attach(_ context.Context, spec orchestrator.AttachSpec) (io.Re
 	return stream, nil
 }
 
-func (e *fakeEnv) ExecStream(_ context.Context, _, _ io.Writer, name string, args ...string) error {
+func (e *fakeEnv) ExecStream(ctx context.Context, _, _ io.Writer, name string, args ...string) error {
 	e.mu.Lock()
 	e.execCalls = append(e.execCalls, append([]string{name}, args...))
+	blocking := e.blockExec
 	e.mu.Unlock()
+	if blocking {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -164,6 +172,10 @@ func (e *fakeEnv) ListCheckpoints(context.Context) ([]orchestrator.Checkpoint, e
 type fakeProvider struct {
 	mu   sync.Mutex
 	envs map[string]*fakeEnv
+
+	// blockExec is stamped onto every env Create returns, modelling a
+	// startup script that never terminates.
+	blockExec bool
 }
 
 func newFakeProvider() *fakeProvider {
@@ -173,7 +185,7 @@ func newFakeProvider() *fakeProvider {
 func (p *fakeProvider) Create(_ context.Context, spec orchestrator.Spec) (orchestrator.Environment, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	e := &fakeEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+	e := &fakeEnv{name: spec.Name, url: "http://" + spec.Name + ".test", blockExec: p.blockExec}
 	p.envs[spec.Name] = e
 	return e, nil
 }
