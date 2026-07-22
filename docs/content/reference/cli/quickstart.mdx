@@ -1,0 +1,104 @@
+---
+title: fuse quickstart
+sidebar:
+  icon: rocket
+description: Guided first-time setup, connect an orchestrator and register a host
+---
+
+```bash
+fuse quickstart
+```
+
+Walks first-time setup end to end in one pass: it connects to an orchestrator,
+registers a compute host, and selects that host so later commands are scoped to
+it. It is the discoverable front door for [`fuse connect`](/reference/cli/contexts/connect)
+plus [`fuse host register`](/reference/cli/hosts/register), and it verifies each
+hop as it goes rather than failing later.
+
+Takes no arguments and has no flags of its own, only the
+[global flags](/reference/cli).
+
+## What it prompts for
+
+**Step 1, the orchestrator.**
+
+| Prompt | Meaning |
+| --- | --- |
+| Orchestrator URL | `scheme://host:port`. Port 8080 by default. |
+| Orchestrator token | `ORCH_AUTH_TOKEN`. Leave empty for an insecure/dev orchestrator. |
+| Is this the master token? | Marks the context as master, which the [`apikeys`](/reference/cli/apikeys) commands require. |
+
+The URL and token are verified against the live orchestrator before anything is
+saved. The context is then written to the config file, named after the
+orchestrator's hostname.
+
+**Step 2, the host.**
+
+| Prompt | Meaning |
+| --- | --- |
+| Host ID | A readable operator-chosen id, e.g. `prod-east-1`. It is the host's primary key. |
+| Host agent URL | `scheme://host:port` of the host agent. Port 8090 by default. |
+| Host agent token | The agent's `FC_AGENT_TOKEN`. Required. |
+| Region | Optional region label. |
+| Max VMs | Scheduling cap. Required, and must be positive. |
+
+CPU, RAM, and storage are not asked for. They are probed from the host agent at
+registration time, so the numbers reflect the real machine rather than a guess.
+Pass explicit values via [`fuse host register`](/reference/cli/hosts/register) if
+you need to override the probe.
+
+On success the host is registered *and* selected, so `fuse environment ...`
+commands are scoped to it without a further [`fuse host`](/reference/cli/hosts)
+call.
+
+:::warning[Two different tokens]
+The orchestrator token (`ORCH_AUTH_TOKEN`) authenticates **you to the
+orchestrator**. The host agent token (`FC_AGENT_TOKEN`) is what the
+**orchestrator uses to reach the host**. They are not interchangeable. A wrong
+host agent token still registers successfully and only surfaces later, as an
+opaque `http 401` on the first environment create. If you see that, re-register
+the host.
+:::
+
+## Interactive only
+
+`quickstart` drives a terminal form, so it refuses to run on a non-tty:
+
+```
+quickstart is interactive; on a non-tty use `fuse connect <url> --token ...` then `fuse host register <id> --url ... --token ...`
+```
+
+In CI, or any scripted setup, run the two steps it wraps directly:
+
+```bash
+fuse connect https://orch.example.com --token "$ORCH_AUTH_TOKEN"
+fuse host register prod-east-1 \
+  --url http://10.0.0.5:8090 \
+  --token "$FC_AGENT_TOKEN" \
+  --max-vms 20
+```
+
+## Errors
+
+| Message | Cause |
+| --- | --- |
+| `orchestrator url is required` | The URL prompt was left empty. |
+| `host id and host agent url are required` | Either the host id or the agent URL was left empty. |
+| `host agent token is required (the agent's FC_AGENT_TOKEN)` | The agent token prompt was left empty. |
+| `max vms must be a positive number` | Max VMs was zero or negative. |
+
+A failure in step 2 leaves the orchestrator context from step 1 in place, so
+re-running only costs you the second half.
+
+## Next steps
+
+Once setup is done, scaffold and bring up a workload:
+
+```bash
+fuse init
+fuse up
+```
+
+See [`fuse init`](/reference/cli/init) and [`fuse up`](/reference/cli/up), or the
+[Quickstart](/docs/learn/quickstart) walkthrough for the whole path from install
+to a running environment.
