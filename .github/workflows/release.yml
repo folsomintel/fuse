@@ -20,6 +20,13 @@ jobs:
   release-please:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Serialise: two pushes to main in quick succession (a feature PR and the
+    # release PR right behind it) otherwise start overlapping runs that race on
+    # the same release PR. Never cancel in progress, cancelling mid-release is
+    # how a half-tagged state happens in the first place.
+    concurrency:
+      group: release-please-main
+      cancel-in-progress: false
     steps:
       # a PAT (or the release-please app) is required so the release PR triggers
       # ci.yml; the default GITHUB_TOKEN would not trigger downstream workflows.
@@ -27,6 +34,80 @@ jobs:
         id: rp
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+
+  # Backstop for release-please's release phase, which intermittently merges the
+  # release PR without ever creating the tag. That leaves the PR labelled
+  # `autorelease: pending`, and every later run aborts with "There are untagged,
+  # merged release PRs outstanding" until someone tags by hand.
+  #
+  # The manifest version on main is the source of truth for "what should be
+  # released": it only changes when a release PR merges. So if that version has
+  # no tag, cut one. The tag-triggered publish jobs below then run exactly as
+  # they would have, and relabelling the merged release PR unblocks
+  # release-please for the next cycle.
+  #
+  # Idempotent: when release-please does its job, the tag already exists and
+  # this is a no-op.
+  tag-backstop:
+    needs: release-please
+    if: ${{ always() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-please-main-backstop
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # A PAT, not GITHUB_TOKEN: a tag pushed with GITHUB_TOKEN does not
+          # trigger workflows, so the publish half of this file would never fire.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+      - name: Tag the manifest version when it is untagged
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+
+          V="$(jq -r '.["."] // empty' .release-please-manifest.json)"
+          if [ -z "${V}" ]; then
+            echo "no version in .release-please-manifest.json; nothing to do"
+            exit 0
+          fi
+          if git rev-parse -q --verify "refs/tags/v${V}" >/dev/null; then
+            echo "v${V} is already tagged; release-please did its job"
+            exit 0
+          fi
+
+          echo "manifest is at ${V} with no v${V} tag; cutting it"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${V}" -m "v${V}"
+          git push origin "v${V}"
+
+          # The docs /changelog page renders GitHub release bodies, not
+          # CHANGELOG.md, so a bare tag would leave that version blank. Lift this
+          # version's section out of the changelog release-please just wrote.
+          NOTES="$(awk -v v="v${V}" '
+            index($0, "## [" substr(v,2) "]") == 1 || index($0, "## " substr(v,2)) == 1 { flag=1; next }
+            flag && /^## / { exit }
+            flag { print }
+          ' CHANGELOG.md)"
+          if [ -n "${NOTES//[$'\n\t ']/}" ]; then
+            printf '%s\n' "${NOTES}" | gh release create "v${V}" --title "v${V}" --notes-file -
+          else
+            gh release create "v${V}" --title "v${V}" --generate-notes
+          fi
+
+          # Let release-please move on instead of aborting on an untagged,
+          # merged release PR next cycle.
+          PR="$(gh pr list --state merged --label 'autorelease: pending' \
+                  --limit 1 --json number -q '.[0].number // empty')"
+          if [ -n "${PR}" ]; then
+            gh pr edit "${PR}" --remove-label 'autorelease: pending' \
+                               --add-label 'autorelease: tagged'
+            echo "relabelled release PR #${PR} as autorelease: tagged"
+          fi
 
   # full gate, run on the pushed tag (race detector + all linters) before any publish.
   verify:
