@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/folsomintel/fuse/compare/v0.9.0...v0.9.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* snapshot delete deadlock, unbounded startup scripts, and inert workspace ([#74](https://github.com/folsomintel/fuse/issues/74)) ([963f573](https://github.com/folsomintel/fuse/commit/963f5738e1392062ba81a227a7c49f7aa435fb88))
+
 ## [0.9.0](https://github.com/folsomintel/fuse/compare/v0.8.0...v0.9.0) (2026-07-20)
 
 
