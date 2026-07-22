@@ -3,10 +3,12 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"testing"
+	"time"
 )
 
 // bootMockEnv implements Environment for boot testing.
@@ -18,6 +20,10 @@ type bootMockEnv struct {
 	agentCommand string
 	execCalls    [][]string
 	checkpoints  []Checkpoint
+
+	// blockExec makes ExecStream run until its context is done, modelling a
+	// startup script that never terminates (a foreground server).
+	blockExec bool
 }
 
 func (e *bootMockEnv) Name() string  { return e.name }
@@ -26,8 +32,12 @@ func (e *bootMockEnv) Token() string { return "" }
 func (e *bootMockEnv) Exec(_ context.Context, _ []string, _ ExecOptions) (ExecResult, error) {
 	return ExecResult{}, nil
 }
-func (e *bootMockEnv) ExecStream(_ context.Context, _, _ io.Writer, name string, args ...string) error {
+func (e *bootMockEnv) ExecStream(ctx context.Context, _, _ io.Writer, name string, args ...string) error {
 	e.execCalls = append(e.execCalls, append([]string{name}, args...))
+	if e.blockExec {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	return nil
 }
 func (e *bootMockEnv) Upload(_ context.Context, data []byte, path string) error {
@@ -55,6 +65,9 @@ func (e *bootMockEnv) ListCheckpoints(_ context.Context) ([]Checkpoint, error) {
 type bootMockProvider struct {
 	envs      map[string]*bootMockEnv
 	createErr error
+
+	// blockExec is stamped onto every env Create returns.
+	blockExec bool
 }
 
 func newBootMockProvider() *bootMockProvider {
@@ -65,7 +78,7 @@ func (p *bootMockProvider) Create(_ context.Context, spec Spec) (Environment, er
 	if p.createErr != nil {
 		return nil, p.createErr
 	}
-	env := &bootMockEnv{name: spec.Name, url: "http://" + spec.Name}
+	env := &bootMockEnv{name: spec.Name, url: "http://" + spec.Name, blockExec: p.blockExec}
 	p.envs[spec.Name] = env
 	return env, nil
 }
@@ -158,6 +171,54 @@ func TestBoot_runs_startup_script(t *testing.T) {
 	call := env.execCalls[0]
 	if len(call) != 3 || call[0] != "sh" || call[1] != "-lc" || call[2] != "echo hello" {
 		t.Fatalf("unexpected exec call: %#v", call)
+	}
+}
+
+// A startup script that never returns must fail the boot with a classified
+// error rather than hanging until the HTTP write timeout truncates the
+// response and the caller sees an opaque 500.
+func TestBoot_startup_script_timeout(t *testing.T) {
+	p := newBootMockProvider()
+	p.blockExec = true
+	spec := Spec{Name: "test-vm"}
+	manifest := []byte(`{"version":"1"}`)
+
+	start := time.Now()
+	_, err := Boot(context.Background(), p, spec, manifest, nil, BootOptions{
+		StartupScript:        "sleep infinity",
+		StartupScriptTimeout: 50 * time.Millisecond,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected boot to fail on a startup script that never returns")
+	}
+	if !errors.Is(err, ErrStartupScriptTimeout) {
+		t.Fatalf("err = %v, want ErrStartupScriptTimeout", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("boot took %s; the timeout did not bound the script", elapsed)
+	}
+}
+
+// A deadline inherited from the caller is a genuine request timeout, not a
+// misbehaving script, so it must not be reported as ErrStartupScriptTimeout.
+func TestBoot_startup_script_respects_caller_cancellation(t *testing.T) {
+	p := newBootMockProvider()
+	p.blockExec = true
+	spec := Spec{Name: "test-vm"}
+	manifest := []byte(`{"version":"1"}`)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := Boot(ctx, p, spec, manifest, nil, BootOptions{
+		StartupScript:        "sleep infinity",
+		StartupScriptTimeout: 30 * time.Second,
+	}, nil)
+	if err == nil {
+		t.Fatal("expected boot to fail when the caller's context expires")
+	}
+	if errors.Is(err, ErrStartupScriptTimeout) {
+		t.Fatalf("caller cancellation misreported as a script timeout: %v", err)
 	}
 }
 

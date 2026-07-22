@@ -268,6 +268,14 @@ func compileManifest(f *Fusefile) ([]byte, []string, error) {
 	return manifestJSON, requiredSecrets, nil
 }
 
+// shellQuote renders s as a single POSIX shell word. The workspace path is
+// author-supplied, so it is quoted rather than interpolated raw: a path with
+// a space, a quote, or a metacharacter must not be able to alter the
+// generated script.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // compileStartupScript joins setup lines and the run command into a single
 // shell script with a strict-mode prelude. if there is nothing to run (no
 // setup lines and no run command), it returns "" rather than a bare prelude.
@@ -281,6 +289,16 @@ func compileStartupScript(f *Fusefile) string {
 	// (ubuntu's /bin/sh) has no pipefail. enable it only when supported.
 	b.WriteString("set -eu\n")
 	b.WriteString("if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n")
+	// the workspace is where setup and run are meant to execute, so create
+	// it and move into it. nothing else in the stack acts on
+	// manifest.machine.workspace, so without this the directory never
+	// exists in the guest and the field has no observable effect.
+	workspace := f.Workspace
+	if workspace == "" {
+		workspace = defaultWorkspace
+	}
+	fmt.Fprintf(&b, "mkdir -p %s\n", shellQuote(workspace))
+	fmt.Fprintf(&b, "cd %s\n", shellQuote(workspace))
 	for _, line := range f.Setup {
 		b.WriteString(line)
 		b.WriteString("\n")

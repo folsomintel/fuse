@@ -57,7 +57,8 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrAttachUnsupported),
 		errors.Is(err, orchestrator.ErrSnapshotUnsupported):
 		return http.StatusNotImplemented, CodeUnimplemented
-	case errors.Is(err, secrets.ErrSecretsValidation):
+	case errors.Is(err, secrets.ErrSecretsValidation),
+		errors.Is(err, orchestrator.ErrStartupScriptTimeout):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:
 		return http.StatusInternalServerError, CodeInternal

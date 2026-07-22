@@ -4,8 +4,10 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -230,6 +232,16 @@ func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
 }
 
+// IsNotFound reports whether err is, or wraps, a provider HTTP 404. Both the
+// firecracker and qemu providers surface agent responses as *HTTPStatusError,
+// so cleanup paths use this to tell "the resource is already gone" apart from
+// a real provider failure. A vanished resource means the work is already done,
+// not that the caller should retry forever.
+func IsNotFound(err error) bool {
+	var statusErr *HTTPStatusError
+	return errors.As(err, &statusErr) && statusErr.Code == http.StatusNotFound
+}
+
 // AgentSpec is the generic, provider-agnostic description of the guest agent
 // to launch inside a sandbox. fused is expressed as one configuration of this
 // spec via FusedAgentSpec (see agent_profile.go); nothing fuse-specific is
@@ -250,7 +262,20 @@ type BootOptions struct {
 	GatewayURL    string
 	GatewayToken  string
 	Expose        []ExposeSpec
+
+	// StartupScriptTimeout bounds StartupScript. Zero means
+	// DefaultStartupScriptTimeout. The script runs synchronously inside the
+	// create request, so this must stay comfortably under the orchestrator's
+	// HTTP write timeout (60s by default) for the caller to receive a real
+	// error instead of a truncated response.
+	StartupScriptTimeout time.Duration
 }
+
+// DefaultStartupScriptTimeout bounds a boot-time startup script when
+// BootOptions.StartupScriptTimeout is unset. Chosen to leave headroom under
+// the default 60s HTTP write timeout so the API can answer with a classified
+// error rather than having the response cut off mid-flight.
+const DefaultStartupScriptTimeout = 30 * time.Second
 
 // EndpointReporter is implemented by environments that can report additional
 // network endpoints published during StartAgent (e.g. via ingress/expose).
@@ -342,11 +367,31 @@ func setTokenIfSupported(env Environment, creds *secrets.VMCredentials) {
 }
 
 // runStartupScript executes BootOptions.StartupScript inside the env, if set.
-func runStartupScript(ctx context.Context, env Environment, script string) error {
+//
+// The script is bounded by timeout (DefaultStartupScriptTimeout when zero).
+// Boot runs synchronously inside the create request, so an unbounded script
+// that never returns would hang the request until the HTTP write timeout cut
+// the response, surfacing to the caller as an opaque 500 with a VM already
+// running. Exceeding the bound is reported as ErrStartupScriptTimeout, which
+// the API classifies as a client error.
+func runStartupScript(ctx context.Context, env Environment, script string, timeout time.Duration) error {
 	if script == "" {
 		return nil
 	}
-	if err := env.ExecStream(ctx, io.Discard, io.Discard, "sh", "-lc", script); err != nil {
+	if timeout <= 0 {
+		timeout = DefaultStartupScriptTimeout
+	}
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if err := env.ExecStream(execCtx, io.Discard, io.Discard, "sh", "-lc", script); err != nil {
+		// Only the bound we just imposed maps to the sentinel; a deadline
+		// inherited from the caller's ctx is a genuine request timeout.
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return fmt.Errorf("%w after %s: a startup script must terminate; "+
+				"background long-lived processes or declare them under `services`",
+				ErrStartupScriptTimeout, timeout)
+		}
 		return fmt.Errorf("startup script: %w", err)
 	}
 	return nil
@@ -377,7 +422,7 @@ func bootRestore(ctx context.Context, existing Environment, in bootInputs, start
 	// SetToken side effect via setTokenIfSupported below.
 	_ = uploadFiles(ctx, existing, in.agentSpec.Files)
 	setTokenIfSupported(existing, in.creds)
-	if err := runStartupScript(ctx, existing, in.opts.StartupScript); err != nil {
+	if err := runStartupScript(ctx, existing, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
 		return nil, err
 	}
 	_ = existing.StartAgent(ctx, in.agentSpec)
@@ -411,7 +456,7 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 	// env.Token() returns it.
 	setTokenIfSupported(env, in.creds)
 
-	if err := runStartupScript(ctx, env, in.opts.StartupScript); err != nil {
+	if err := runStartupScript(ctx, env, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
 		return nil, err
 	}
 

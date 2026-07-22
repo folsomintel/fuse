@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -281,5 +282,34 @@ func TestRemoveHost_withVMsReturns409(t *testing.T) {
 	}
 	if e := decodeError(t, rr.Body); e.Error.Code != CodeConflict {
 		t.Errorf("error code = %q, want %q", e.Error.Code, CodeConflict)
+	}
+}
+
+// ── Startup script preconditions ──────────────────────────────────
+
+// A startup script that never returns must fail the create with 400 rather
+// than blocking until the HTTP write timeout truncates the response, which
+// surfaced to callers as an opaque 500 with a VM left running.
+func TestCreateEnvironment_startupScriptTimeoutReturns400(t *testing.T) {
+	p := newFakeProvider()
+	p.blockExec = true
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider:             p,
+		Prefix:               "fuse-",
+		StartupScriptTimeout: 50 * time.Millisecond,
+	})
+	r := mustRouter(t, &Handler{Fleet: fm})
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-hang",
+		ManifestInline: encodeManifest(t),
+		StartupScript:  "sleep infinity",
+	})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+	if got := decodeError(t, rr.Body); got.Error.Code != CodeInvalidArgument {
+		t.Fatalf("code = %q, want %q", got.Error.Code, CodeInvalidArgument)
 	}
 }
