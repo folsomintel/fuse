@@ -23,7 +23,15 @@ orchestrator talks to your hosts.
 brew install --cask folsomintel/fuse/fuse
 ```
 
-Upgrade later with `brew upgrade --cask fuse`. Check what you have with `fuse --version`.
+Upgrade later with `brew upgrade --cask folsomintel/fuse/fuse`. Check what you have with
+`fuse --version`.
+
+:::warning[Always use the fully qualified name]
+Homebrew's own cask repo has an unrelated `fuse` (Fuse Studio, from fuse-open.github.io).
+A bare `brew install --cask fuse` or `brew upgrade --cask fuse` resolves to **that**
+project, not this CLI, even once you have tapped `folsomintel/fuse`. Qualify it as
+`folsomintel/fuse/fuse` every time, or an install silently stops receiving updates.
+:::
 
 For Linux without Homebrew, grab the `fuse-cli_Linux_*.tar.gz` archive from the
 [latest release](https://github.com/folsomintel/fuse/releases/latest).
