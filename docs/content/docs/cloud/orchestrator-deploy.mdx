@@ -157,11 +157,11 @@ co-locates, a remote URL doesn't.
 ## Build and run directly
 
 ```bash
-go build -o bin/fuse ./cmd/orchestrator
+go build -o bin/orchestrator ./cmd/orchestrator
 export FIRECRACKER_BASE_URL=http://<host>:<port>
 export FIRECRACKER_TOKEN=<token>
 export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
 export ORCH_AUTH_TOKEN=<token>
 export DATABASE_URL=postgres://...
-./bin/fuse
+./bin/orchestrator
 ```
