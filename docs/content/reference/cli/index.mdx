@@ -11,6 +11,16 @@ the repo's `cli/` package.
 ## Install
 
 ```bash
+brew install --cask folsomintel/fuse/fuse
+```
+
+Upgrade with `brew upgrade --cask fuse`, and check the installed version with
+`fuse --version`. On Linux without Homebrew, take the `fuse-cli_Linux_*.tar.gz` archive
+from the [latest release](https://github.com/folsomintel/fuse/releases/latest).
+
+To build from a checkout instead, for local development:
+
+```bash
 go build -o bin/fuse ./cli
 ```
 
