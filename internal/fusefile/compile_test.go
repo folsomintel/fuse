@@ -373,22 +373,44 @@ func TestCompileManifestServiceEnvValue(t *testing.T) {
 }
 
 func TestCompileStartupScript(t *testing.T) {
-	const prelude = "set -eu\nif (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n"
+	// the prelude enables strict mode, then creates and enters the workspace
+	// so setup/run execute where the Fusefile says they should.
+	const prelude = "set -eu\nif (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n" +
+		"mkdir -p '/workspace'\ncd '/workspace'\n"
 	cases := []struct {
-		name  string
-		setup []string
-		run   string
-		want  string
+		name      string
+		workspace string
+		setup     []string
+		run       string
+		want      string
 	}{
-		{"setup and run", []string{"a", "b"}, "./c", prelude + "a\nb\n./c\n"},
-		{"run only", nil, "./c", prelude + "./c\n"},
-		{"setup only", []string{"a"}, "", prelude + "a\n"},
-		{"neither", nil, "", ""},
+		{"setup and run", "", []string{"a", "b"}, "./c", prelude + "a\nb\n./c\n"},
+		{"run only", "", nil, "./c", prelude + "./c\n"},
+		{"setup only", "", []string{"a"}, "", prelude + "a\n"},
+		{"neither", "", nil, "", ""},
+		{
+			"custom workspace",
+			"/srv/app",
+			nil,
+			"./c",
+			"set -eu\nif (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n" +
+				"mkdir -p '/srv/app'\ncd '/srv/app'\n./c\n",
+		},
+		{
+			// an author-supplied path must not be able to break out of the
+			// generated script.
+			"workspace with a quote is escaped",
+			"/tmp/it's here",
+			nil,
+			"./c",
+			"set -eu\nif (set -o pipefail) 2>/dev/null; then set -o pipefail; fi\n" +
+				`mkdir -p '/tmp/it'\''s here'` + "\n" + `cd '/tmp/it'\''s here'` + "\n./c\n",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &Fusefile{Version: 1, Setup: tc.setup, Run: tc.run}
+			f := &Fusefile{Version: 1, Workspace: tc.workspace, Setup: tc.setup, Run: tc.run}
 			c, err := Compile(f)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
