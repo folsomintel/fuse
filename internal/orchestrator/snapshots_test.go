@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -18,6 +19,10 @@ type snapshotTestEnv struct {
 	mu          sync.Mutex
 	files       map[string][]byte
 	checkpoints []Checkpoint
+
+	// deleteCheckpointErr, when set, makes DeleteCheckpoint fail with it.
+	// Lets a test drive the non-404 provider-failure branch.
+	deleteCheckpointErr error
 }
 
 func (e *snapshotTestEnv) Name() string  { return e.name }
@@ -65,6 +70,12 @@ func (e *snapshotTestEnv) Restore(_ context.Context, checkpointID string) error 
 	return fmt.Errorf("checkpoint %s not found", checkpointID)
 }
 func (e *snapshotTestEnv) DeleteCheckpoint(_ context.Context, checkpointID string) error {
+	e.mu.Lock()
+	stubErr := e.deleteCheckpointErr
+	e.mu.Unlock()
+	if stubErr != nil {
+		return stubErr
+	}
 	for i, checkpoint := range e.checkpoints {
 		if checkpoint.ID != checkpointID {
 			continue
@@ -96,7 +107,10 @@ func (p *snapshotTestProvider) Create(_ context.Context, spec Spec) (Environment
 func (p *snapshotTestProvider) Get(_ context.Context, name string) (Environment, error) {
 	env, ok := p.envs[name]
 	if !ok {
-		return nil, fmt.Errorf("env %s not found", name)
+		// Mirror the real providers, which surface an agent 404 as
+		// *HTTPStatusError; cleanup paths key off that to tell a vanished
+		// VM apart from a provider failure.
+		return nil, &HTTPStatusError{Code: http.StatusNotFound, Body: "vm not found"}
 	}
 	return env, nil
 }
@@ -183,6 +197,93 @@ func TestDeleteSnapshot_rejectsParentWithChildren(t *testing.T) {
 	}
 	if !errors.Is(err, ErrSnapshotHasChildren) {
 		t.Fatalf("err = %v, want ErrSnapshotHasChildren", err)
+	}
+}
+
+// A snapshot whose VM has been destroyed must still be deletable. The host
+// reclaimed the checkpoint along with the VM, so only the metadata row is
+// left. Before this was handled, the delete failed on the provider's 404 and
+// the record was stranded in "error" forever, which in turn pinned every
+// ancestor snapshot (a child blocks its parent) and left an undeletable chain.
+func TestDeleteSnapshot_dropsRecordWhenVMIsGone(t *testing.T) {
+	provider := newSnapshotTestProvider()
+	fm := NewFleetManager(FleetConfig{
+		Provider: provider,
+		Prefix:   "fuse-",
+	})
+	vmID := provisionSnapshotTestVM(t, fm, "task-1")
+
+	snap, err := fm.CreateSnapshot(context.Background(), vmID, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	// Destroy the VM out from under the snapshot, the way `environment
+	// destroy` on a fork does to its auto fork-seed snapshot.
+	if err := provider.Destroy(context.Background(), vmID); err != nil {
+		t.Fatalf("destroy vm: %v", err)
+	}
+	fm.mu.Lock()
+	delete(fm.vms, vmID)
+	fm.mu.Unlock()
+
+	// DeleteSnapshotByID is the path the API and CLI use (DELETE
+	// /v1/snapshots/{id}); it resolves the record globally rather than via
+	// the VM, so it reaches the artifact delete even once the VM is gone.
+	if err := fm.DeleteSnapshotByID(context.Background(), snap.SnapshotID); err != nil {
+		t.Fatalf("delete snapshot with missing vm: %v", err)
+	}
+
+	remaining, err := fm.loadSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("load snapshots: %v", err)
+	}
+	for _, s := range remaining {
+		if s.SnapshotID == snap.SnapshotID {
+			t.Fatalf("snapshot %s still present after delete (state=%s)", s.SnapshotID, s.State)
+		}
+	}
+}
+
+// A non-404 provider failure must still strand the record in "error" rather
+// than silently dropping metadata for an artifact that may still exist.
+func TestDeleteSnapshot_keepsRecordOnNonNotFoundError(t *testing.T) {
+	provider := newSnapshotTestProvider()
+	fm := NewFleetManager(FleetConfig{
+		Provider: provider,
+		Prefix:   "fuse-",
+	})
+	vmID := provisionSnapshotTestVM(t, fm, "task-1")
+
+	snap, err := fm.CreateSnapshot(context.Background(), vmID, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	env := provider.envs[vmID]
+	env.mu.Lock()
+	env.deleteCheckpointErr = &HTTPStatusError{Code: http.StatusInternalServerError, Body: "boom"}
+	env.mu.Unlock()
+
+	if err := fm.DeleteSnapshot(context.Background(), vmID, snap.SnapshotID); err == nil {
+		t.Fatal("expected delete to fail on a 500 from the provider")
+	}
+
+	remaining, err := fm.loadSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("load snapshots: %v", err)
+	}
+	var found bool
+	for _, s := range remaining {
+		if s.SnapshotID == snap.SnapshotID {
+			found = true
+			if s.State != SnapshotStateError {
+				t.Fatalf("state = %s, want %s", s.State, SnapshotStateError)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("snapshot %s was dropped despite a non-404 failure", snap.SnapshotID)
 	}
 }
 

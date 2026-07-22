@@ -4,8 +4,10 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -228,6 +230,16 @@ type HTTPStatusError struct {
 
 func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("http %d: %s", e.Code, e.Body)
+}
+
+// IsNotFound reports whether err is, or wraps, a provider HTTP 404. Both the
+// firecracker and qemu providers surface agent responses as *HTTPStatusError,
+// so cleanup paths use this to tell "the resource is already gone" apart from
+// a real provider failure. A vanished resource means the work is already done,
+// not that the caller should retry forever.
+func IsNotFound(err error) bool {
+	var statusErr *HTTPStatusError
+	return errors.As(err, &statusErr) && statusErr.Code == http.StatusNotFound
 }
 
 // AgentSpec is the generic, provider-agnostic description of the guest agent

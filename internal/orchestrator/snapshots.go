@@ -267,11 +267,20 @@ func (fm *FleetManager) deleteSnapshotRecord(ctx context.Context, record Snapsho
 	}
 
 	if err := fm.deleteSnapshotArtifact(ctx, record); err != nil {
-		record.State = SnapshotStateError
-		record.LastError = err.Error()
-		record.UpdatedAt = time.Now()
-		_ = fm.upsertSnapshotRecord(ctx, record)
-		return err
+		// A 404 means the VM is gone, and the host reclaimed its checkpoints
+		// along with it, so the metadata row is all that is left to remove.
+		// Returning the error here would strand the record permanently: the
+		// VM is never coming back, so no retry can succeed, and because a
+		// child pins its parent the whole ancestor chain becomes undeletable.
+		if !IsNotFound(err) {
+			record.State = SnapshotStateError
+			record.LastError = err.Error()
+			record.UpdatedAt = time.Now()
+			_ = fm.upsertSnapshotRecord(ctx, record)
+			return err
+		}
+		fm.logger.Info("snapshot artifact already gone; dropping metadata record",
+			"snapshot", snapshotID, "vm", vmID, "err", err)
 	}
 
 	if fm.store != nil {
