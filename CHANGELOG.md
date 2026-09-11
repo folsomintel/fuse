@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.29.3](https://github.com/folsomintel/fuse/compare/v0.29.2...v0.29.3) (2026-09-04)
+
+
+### Bug Fixes
+
+* **local:** probe leases before use, verify pid identity, and honor version on reinstall ([#232](https://github.com/folsomintel/fuse/issues/232)) ([29c7ed9](https://github.com/folsomintel/fuse/commit/29c7ed93cd81d9803a5dd18cf2145d64e7730400))
+
+## [0.29.2](https://github.com/folsomintel/fuse/compare/v0.29.1...v0.29.2) (2026-09-02)
+
+
+### Performance Improvements
+
+* probe tcp before forking ssh in guest readiness wait ([#230](https://github.com/folsomintel/fuse/issues/230)) ([3c7816a](https://github.com/folsomintel/fuse/commit/3c7816a828ecc42ac55d8a56cd746557cfbbe6bd))
+* quiet guest kernel boot log to cut serial console time ([#229](https://github.com/folsomintel/fuse/issues/229)) ([bfaaba4](https://github.com/folsomintel/fuse/commit/bfaaba482f907ef0787ec3f2e47f9f2e17b49f4f))
+
+## [0.29.1](https://github.com/folsomintel/fuse/compare/v0.29.0...v0.29.1) (2026-08-23)
+
+
+### Bug Fixes
+
+* **orchestrator:** reject fork and seed from a live snapshot instead of failing at boot ([#221](https://github.com/folsomintel/fuse/issues/221)) ([5502c77](https://github.com/folsomintel/fuse/commit/5502c7724ce919c031cba31a378aadefb0fa6ad2))
+* **test:** base64-decode exec stdout in the live snapshot e2e ([#220](https://github.com/folsomintel/fuse/issues/220)) ([01881d7](https://github.com/folsomintel/fuse/commit/01881d7824e83bdda4fdbba3d167e0d4f8fdd2a4))
+
+## [0.29.0](https://github.com/folsomintel/fuse/compare/v0.28.0...v0.29.0) (2026-08-23)
+
+
+### Features
+
+* **fc-agent:** live memory snapshots and in-place resume ([#216](https://github.com/folsomintel/fuse/issues/216)) ([f79b8cb](https://github.com/folsomintel/fuse/commit/f79b8cb075d8bc0822789a774dcc306719b552c0))
+* **snapshots:** surface live snapshots through the api, cli and sdks ([#217](https://github.com/folsomintel/fuse/issues/217)) ([499800e](https://github.com/folsomintel/fuse/commit/499800e81ce20569af53edce586f24e3bb0100a8))
+
+## [0.28.0](https://github.com/folsomintel/fuse/compare/v0.27.0...v0.28.0) (2026-08-19)
+
+
+### Features
+
+* **desktop:** live view of the desktop with human takeover ([#207](https://github.com/folsomintel/fuse/issues/207)) ([480215e](https://github.com/folsomintel/fuse/commit/480215e8ce24132aad00c270e6349775b7b17c98))
+
+
+### Bug Fixes
+
+* keep firecracker api sockets under a short path to respect sun_len ([#214](https://github.com/folsomintel/fuse/issues/214)) ([566b22d](https://github.com/folsomintel/fuse/commit/566b22d7eafe522c1d0bed308f81f9f4f82ed352))
+
+## [0.27.0](https://github.com/folsomintel/fuse/compare/v0.26.0...v0.27.0) (2026-08-16)
+
+
+### Features
+
+* ent orm spike for the orchestrator state store ([#206](https://github.com/folsomintel/fuse/issues/206)) ([f5fbe66](https://github.com/folsomintel/fuse/commit/f5fbe66dc7d673ec9fed4fde8810e3ec540b6bb3))
+
+## [0.26.0](https://github.com/folsomintel/fuse/compare/v0.25.0...v0.26.0) (2026-08-16)
+
+
+### Features
+
+* **sdks:** rust sdk ([#200](https://github.com/folsomintel/fuse/issues/200)) ([a446ae6](https://github.com/folsomintel/fuse/commit/a446ae6967792e8be20b8f34c461c25257f43b46))
+
+## [0.25.0](https://github.com/folsomintel/fuse/compare/v0.24.0...v0.25.0) (2026-08-16)
+
+
+### Features
+
+* **cli:** fuse computer commands and the desktop detail row ([#198](https://github.com/folsomintel/fuse/issues/198)) ([e20145d](https://github.com/folsomintel/fuse/commit/e20145daeb4ad74de974ac6ac4c9a5b96db017b2))
+
+
+### Bug Fixes
+
+* **host-agent:** four bugs in the desktop rootfs bake, found live-verifying computer use ([#197](https://github.com/folsomintel/fuse/issues/197)) ([1565428](https://github.com/folsomintel/fuse/commit/1565428051b7432891cff6848f7d13737513dea1))
+
 ## [0.24.0](https://github.com/folsomintel/fuse/compare/v0.23.0...v0.24.0) (2026-08-15)
 
 

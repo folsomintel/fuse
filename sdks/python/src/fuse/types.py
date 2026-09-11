@@ -307,6 +307,24 @@ class SnapshotRequest(_Model):
     # ordinary snapshot. the scope it is filed under comes from how the caller
     # authenticated and is not settable here.
     layer_key: Optional[str] = None
+    # captures the guest's memory and vcpu state alongside the rootfs, so
+    # restoring resumes the guest instead of cold-booting it. unset (or false)
+    # is a disk-only snapshot, which is the default and the fallback.
+    #
+    # it costs the environment's full configured memory in bytes on every
+    # create, pauses the guest for the length of the capture, and produces an
+    # artifact pinned to the host that took it. it also cannot seed a new
+    # environment: fork and CreateRequest.seed_snapshot_id read only a
+    # snapshot's rootfs, and a live snapshot's rootfs is captured without
+    # quiescing the guest filesystem, so it is consistent only alongside the
+    # memory image. both reject a live snapshot with a 409 conflict.
+    #
+    # against a backend with no live-snapshot support this is a 501
+    # unimplemented, not a conflict, so is_conflict reports false for it.
+    #
+    # it is a request, not a guarantee: read Snapshot.kind to find out what was
+    # actually written.
+    live: Optional[bool] = None
 
 
 class SnapshotExport(_Model):
@@ -344,6 +362,18 @@ class Snapshot(_Model):
     # bytes (timestamps, inode ordering, package caches). it can never be used
     # as a cache key.
     digest: str = ""
+    # "disk" or "live": whether this artifact is the rootfs alone, or the
+    # rootfs plus the guest's memory and vcpu state. restoring a disk snapshot
+    # cold-boots the guest; restoring a live one resumes it.
+    #
+    # it is what the host agent reports it actually wrote, not what was
+    # requested. a host running an agent too old to know about live snapshots
+    # answers SnapshotRequest(live=True) with a disk snapshot, and this then
+    # says "disk". branch on it rather than on your own request.
+    #
+    # a server that predates live snapshots omits it entirely, which reads back
+    # as ""; treat that as "disk".
+    kind: str = ""
     size_bytes: int = 0
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

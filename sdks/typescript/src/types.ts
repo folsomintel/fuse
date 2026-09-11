@@ -333,6 +333,24 @@ export interface SnapshotRequest {
    * ordinary snapshot. The scope it is filed under comes from how the caller
    * authenticated and is not settable here. */
   layer_key?: string;
+  /** Capture the guest's memory and vCPU state alongside the rootfs, so
+   * restoring resumes the guest instead of cold-booting it. Omitted or false
+   * takes a disk-only snapshot, which is the default and the fallback.
+   *
+   * It costs the environment's full configured memory in bytes on every
+   * create, pauses the guest for the length of the capture, and produces an
+   * artifact pinned to the host that took it. It also cannot seed a new
+   * environment: `fork` and `CreateRequest.seed_snapshot_id` read only a
+   * snapshot's rootfs, and a live snapshot's rootfs is captured without
+   * quiescing the guest filesystem, so it is consistent only alongside the
+   * memory image. Both reject a live snapshot with a 409 conflict.
+   *
+   * Against a backend with no live-snapshot support this is a 501
+   * `unimplemented`, not a conflict.
+   *
+   * It is a request, not a guarantee: read `Snapshot.kind` to find out what
+   * was actually written. */
+  live?: boolean;
 }
 
 /** ResolveSnapshotResponse is the wire envelope for a layer lookup. Internal:
@@ -377,6 +395,19 @@ export interface Snapshot {
    * bytes (timestamps, inode ordering, package caches). It can never be used
    * as a cache key. */
   digest?: string;
+  /** Whether this artifact is the rootfs alone (`"disk"`), or the rootfs plus
+   * the guest's memory and vCPU state (`"live"`). Restoring a disk snapshot
+   * cold-boots the guest; restoring a live one resumes it.
+   *
+   * It is what the host agent reports it actually wrote, not what was
+   * requested. A host running an agent too old to know about live snapshots
+   * answers `live: true` with a disk snapshot, and this then says `"disk"`.
+   * Branch on it rather than on your own request.
+   *
+   * Typed loosely rather than as a `"disk" | "live"` union so a server that
+   * grows a third kind does not turn into a compile error here. A server that
+   * predates live snapshots omits it entirely; treat undefined as `"disk"`. */
+  kind?: string;
   size_bytes?: number;
   created_at: string;
   updated_at?: string;

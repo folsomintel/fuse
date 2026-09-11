@@ -46,11 +46,13 @@ func classifyFleetError(err error) (status int, code string) {
 	case errors.Is(err, orchestrator.ErrNoCapacity),
 		errors.Is(err, orchestrator.ErrNoHosts),
 		errors.Is(err, orchestrator.ErrHostPinUnschedulable),
-		errors.Is(err, orchestrator.ErrNoLabelMatch):
+		errors.Is(err, orchestrator.ErrNoLabelMatch),
+		errors.Is(err, orchestrator.ErrGuestUnavailable):
 		return http.StatusServiceUnavailable, CodeUnavailable
 	case errors.Is(err, orchestrator.ErrSnapshotQuotaExceeded),
 		errors.Is(err, orchestrator.ErrSnapshotInvalidState),
 		errors.Is(err, orchestrator.ErrSnapshotHasChildren),
+		errors.Is(err, orchestrator.ErrSnapshotNotSeedable),
 		errors.Is(err, orchestrator.ErrVMNotRunning),
 		errors.Is(err, orchestrator.ErrGPUUnsupported),
 		errors.Is(err, orchestrator.ErrHostHasVMs):

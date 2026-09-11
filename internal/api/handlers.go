@@ -202,6 +202,11 @@ func (h *Handler) register(r chi.Router) {
 	r.Post("/v1/environments/{vmId}/computer", h.computerAction)
 	r.Get("/v1/environments/{vmId}/computer", h.computerDisplay)
 
+	// The live desktop stream is a protocol upgrade like attach, so it is a
+	// sub-path of the computer surface rather than an ?action= verb. See
+	// computerStream in computer.go.
+	r.Get("/v1/environments/{vmId}/computer/stream", h.computerStream)
+
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
 	// A fixed sub-path rather than a filter on the collection above: this
@@ -343,6 +348,17 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		if record.State != orchestrator.SnapshotStateReady {
 			writeError(w, http.StatusConflict, CodeConflict,
 				fmt.Sprintf("snapshot %s is in state %s, want ready", record.SnapshotID, record.State), nil)
+			return
+		}
+		// Seeding boots the artifact's rootfs on its own. A live snapshot's
+		// rootfs was copied without quiescing the guest filesystem, so it only
+		// mounts cleanly with the memory image beside it, which seed does not
+		// carry. Fail here rather than at boot. This is checked before the host
+		// pin because the kind is a permanent property of the artifact, where a
+		// missing host is placement state that can still change.
+		if record.Kind == orchestrator.SnapshotKindLive {
+			writeError(w, http.StatusConflict, CodeConflict,
+				fmt.Sprintf("snapshot %s is a live snapshot, whose rootfs is only consistent with its memory image; seed from a disk snapshot instead", record.SnapshotID), nil)
 			return
 		}
 		if record.HostID == "" {
@@ -662,6 +678,7 @@ func (h *Handler) destroyEnvironment(w http.ResponseWriter, r *http.Request) {
 //	@Failure	404		{object}	Error
 //	@Failure	409		{object}	Error
 //	@Failure	500		{object}	Error
+//	@Failure	501		{object}	Error
 //	@Security	BearerAuth
 //	@Router		/v1/environments/{vmId}/snapshots [post]
 func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -697,6 +714,12 @@ func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 		Metadata:       req.Metadata,
 		Exports:        exports,
 		LayerKey:       req.LayerKey,
+		// Passed straight through. The orchestrator decides whether the
+		// backend can honour it, and reports what it actually wrote back as
+		// the record's Kind; nothing here echoes the request into the
+		// response, because a caller reading its own flag back is exactly the
+		// mistake the recorded kind exists to prevent.
+		Live: req.Live,
 		// Security boundary: a layer is filed under the scope the caller
 		// authenticated as, never one it can name. It is read back the same way
 		// by resolveSnapshot, which is what makes a write and a later lookup

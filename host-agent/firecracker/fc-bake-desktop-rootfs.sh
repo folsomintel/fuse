@@ -9,6 +9,7 @@
 #   ops/systemd/fuse-display.service   systemd unit for the display
 #   ops/systemd/fuse-wm.service        systemd unit for the window manager (mutter)
 #   ops/systemd/fuse-panel.service     systemd unit for the panel (tint2)
+#   ops/systemd/fuse-vnc.service       systemd unit for the vnc server (x11vnc)
 #
 # Output:
 #   rootfs-desktop.ext4    desktop image; place it in the images dir to use it
@@ -40,7 +41,7 @@ WORK=${FC_BAKE_WORK:-/tmp/fcbake-work}
 # archive "firefox" package on 22.04 is a snap shim, and snaps cannot run in
 # the guest.
 DESKTOP_PACKAGES="xvfb x11-utils x11-xserver-utils xauth
-  xdotool scrot xclip
+  xdotool scrot xclip x11vnc
   mutter tint2
   pcmanfm xterm
   dbus dbus-x11
@@ -53,7 +54,7 @@ for c in sudo mount umount truncate e2fsck resize2fs tar podman chroot; do need 
 
 [ -f "$BASE" ] || { echo "$BASE not found — run ./fc-bake-rootfs.sh first" >&2; exit 1; }
 [ -f fuse-display-run ] || { echo "fuse-display-run not found — it ships in host-agent/firecracker/; restore it" >&2; exit 1; }
-for u in fuse-display fuse-wm fuse-panel; do
+for u in fuse-display fuse-wm fuse-panel fuse-vnc; do
   [ -f "$OPS_SYSTEMD/$u.service" ] || { echo "$u.service not found — it ships in ops/systemd/; restore it" >&2; exit 1; }
 done
 
@@ -103,14 +104,30 @@ if [ ! -f "$WORK/desktop-full.tar" ]; then
     set -e
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq >/dev/null
-    apt-get install -y --no-install-recommends software-properties-common ca-certificates >/dev/null
+    apt-get install -y --no-install-recommends software-properties-common ca-certificates gnupg >/dev/null
     add-apt-repository -y ppa:mozillateam/ppa >/dev/null 2>&1
     apt-get update -qq >/dev/null
     dpkg-query -W -f="\${Package}\n" | sort > /tmp/before
     apt-get install -y --no-install-recommends $DESKTOP_PACKAGES >/dev/null
     dpkg-query -W -f="\${Package}\n" | sort > /tmp/after
     comm -13 /tmp/before /tmp/after > /tmp/new-pkgs
-    while read -r p; do dpkg -L "$p"; done < /tmp/new-pkgs | sort -u > /tmp/paths
+    # union with the full dependency closure of DESKTOP_PACKAGES, not just the
+    # names themselves: dbus (for dbus-run-session) and its library
+    # libdbus-1-3 are both pulled in transitively by software-properties-common
+    # earlier, so neither shows up as "new" here even though the desktop
+    # stack depends on their files.
+    apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
+      --no-breaks --no-replaces --no-enhances $DESKTOP_PACKAGES 2>/dev/null \
+      | grep -E "^[a-zA-Z0-9]" | sort -u > /tmp/desktop-closure
+    { cat /tmp/new-pkgs /tmp/desktop-closure; for p in $DESKTOP_PACKAGES; do echo "$p"; done; } \
+      | sort -u > /tmp/wanted-pkgs
+    # the closure above names packages that were never actually installed
+    # (virtual/alternative deps, things --no-recommends excluded); dpkg -L on
+    # one of those fails, and under set -e that silently kills this loop
+    # partway through - everything sorted after the first failure never makes
+    # it into the bundle. || true keeps one absent package from taking the
+    # rest down with it.
+    while read -r p; do dpkg -L "$p" 2>/dev/null || true; done < /tmp/wanted-pkgs | sort -u > /tmp/paths
     # gtk apps need the caches the package triggers generated in this
     # container; dpkg does not own them, so they are listed by hand
     glib-compile-schemas /usr/share/glib-2.0/schemas 2>/dev/null || true
@@ -143,7 +160,7 @@ fi
 
 log "inject display runner + systemd units"
 sudo -n install -m 0755 fuse-display-run "$MOUNT_POINT/usr/local/bin/fuse-display-run"
-for u in fuse-display fuse-wm fuse-panel; do
+for u in fuse-display fuse-wm fuse-panel fuse-vnc; do
   sudo -n install -m 0644 "$OPS_SYSTEMD/$u.service" "$MOUNT_POINT/etc/systemd/system/$u.service"
   sudo -n ln -sf "/etc/systemd/system/$u.service" \
     "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/$u.service"
@@ -181,6 +198,8 @@ check -x /usr/bin/scrot
 check -x /usr/bin/xclip
 check -x /usr/bin/mutter
 check -x /usr/bin/tint2
+check -x /usr/bin/x11vnc
+check -x /usr/bin/xsetroot
 check -x /usr/bin/pcmanfm
 check -e /usr/bin/firefox-esr
 check -x /usr/local/bin/fuse-display-run
@@ -188,6 +207,7 @@ check -f /etc/systemd/system/fuse-display.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-display.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-wm.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-panel.service
+check -L /etc/systemd/system/multi-user.target.wants/fuse-vnc.service
 check -f /etc/systemd/system/fused.service.d/10-desktop.conf
 
 # boot the display stack in a chroot and capture a real screenshot, so a bundle
@@ -202,7 +222,7 @@ if [ "${FC_DESKTOP_SKIP_DISPLAY_CHECK:-0}" != "1" ]; then
     set -e
     Xvfb :99 -screen 0 640x480x24 -nolisten tcp >/dev/null 2>&1 &
     xpid=$!
-    trap "kill $xpid 2>/dev/null || true" EXIT
+    trap "kill $xpid 2>/dev/null; wait $xpid 2>/dev/null; true" EXIT
     i=0
     while [ ! -S /tmp/.X11-unix/X99 ]; do
       i=$((i+1)); [ $i -gt 50 ] && exit 1; sleep 0.2
