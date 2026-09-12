@@ -670,41 +670,58 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
-def _free_host_port() -> int:
-    """Bind to port 0, read it back, then close. Small race is acceptable."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+# Transports an expose entry can name. Kept in step with fusefile's
+# validProtocols and the firecracker agent's EXPOSE_PROTOCOLS; the parser is
+# the first gate, this is the re-check for a direct API caller.
+EXPOSE_PROTOCOLS = {"tcp", "udp"}
+
+
+def _free_host_port(protocol: str = "tcp") -> int:
+    """Bind to port 0, read it back, then close. Small race is acceptable.
+
+    The probe socket's type matches the protocol being published: the tcp and
+    udp port spaces are independent, so probing the wrong one can hand back a
+    port already bound on the transport that actually matters."""
+    kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET, kind) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
-    """DNAT host_port -> guest_ip:guest_port for a published (exposed) guest port."""
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
+    """DNAT host_port -> guest_ip:guest_port for a published (exposed) guest port.
+
+    protocol is "tcp" or "udp", defaulting to tcp so a caller that predates
+    the field installs exactly the rules it always did. Rules are
+    per-transport: a tcp rule forwards no udp traffic."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
+        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp",
+        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-I", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        ["iptables", "-I", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
         sudo(r, check=False)
 
 
-def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
     """Remove an expose DNAT rule (idempotent)."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp",
+        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", "tcp",
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-D", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        ["iptables", "-D", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
@@ -1020,7 +1037,9 @@ def destroy_vm(vm_id: str) -> None:
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     for endpoint in meta.get("expose_endpoints", []):
-        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
+        # endpoints written before the protocol field existed are tcp.
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"],
+                           endpoint["port"], endpoint.get("protocol", "tcp"))
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
@@ -1251,9 +1270,19 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                     f"(agent management port {FUSED_PORT} or SSH 22); "
                     f"this is blocked at fusefile parse time as well",
                 )
-            host_port = _free_host_port()
-            add_expose_forward(host_port, meta["guest_ip"], guest_port)
-            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port})
+            # an omitted protocol is tcp: that is what every expose entry
+            # written before the field existed meant, and the orchestrator
+            # normalizes it before sending, so this covers a direct caller.
+            protocol = str(entry.get("protocol") or "tcp").lower()
+            if protocol not in EXPOSE_PROTOCOLS:
+                raise HTTPError(
+                    500,
+                    f"unsupported expose protocol {protocol!r} "
+                    f"(want one of {sorted(EXPOSE_PROTOCOLS)})",
+                )
+            host_port = _free_host_port(protocol)
+            add_expose_forward(host_port, meta["guest_ip"], guest_port, protocol)
+            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port, "protocol": protocol})
         meta["expose_endpoints"] = endpoints
         save_meta(meta)
     return endpoints

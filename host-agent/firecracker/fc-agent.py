@@ -367,31 +367,52 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
-def _free_host_port() -> int:
+# Transports an expose entry can name. Kept in step with fusefile's
+# validProtocols and fc-expose.sh's own check; the parser is the first gate,
+# this is the re-check for a direct API caller.
+EXPOSE_PROTOCOLS = {"tcp", "udp"}
+
+
+def _free_host_port(protocol: str = "tcp") -> int:
     """Picks a free host port by binding to port 0 and reading it back, then
     closing the socket. There is an inherent (small) race between this and
     the DNAT rule being installed; acceptable for this host agent's level of
     simplicity, matching fc-expose.sh's own lack of allocation/conflict
-    detection."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    detection.
+
+    The probe socket's type matches the protocol being published, so a udp
+    endpoint is allocated from the udp port space. The two spaces are
+    independent, and probing the wrong one can hand back a port already bound
+    by another listener on the transport that actually matters."""
+    kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET, kind) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
-    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh."""
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
+    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh.
+
+    protocol is "tcp" or "udp". It defaults to tcp so a caller that predates
+    the field (an older orchestrator, or a direct API client) installs exactly
+    the rules it always did.
+    """
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip, str(guest_port)],
+        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip,
+         str(guest_port), protocol],
         check=True,
     )
 
 
-def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
     """Removes a forward previously installed by add_expose_forward. Best
     effort (mirrors del_agent_forward): a vm being destroyed should not fail
     to tear down over a stale firewall rule."""
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip, str(guest_port)],
+        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip,
+         str(guest_port), protocol],
         check=False,
     )
 
@@ -776,7 +797,9 @@ def destroy_vm(vm_id: str) -> None:
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     for endpoint in meta.get("expose_endpoints", []):
-        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
+        # endpoints written before the protocol field existed are tcp.
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"],
+                           endpoint["port"], endpoint.get("protocol", "tcp"))
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     # Snapshots are NOT under vm_dir any more (see SNAPSHOTS_DIR), so this
@@ -1590,9 +1613,19 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                     f"(agent management port {FUSED_PORT} or SSH 22); "
                     f"this is blocked at fusefile parse time as well",
                 )
-            host_port = _free_host_port()
-            add_expose_forward(host_port, meta["guest_ip"], guest_port)
-            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port})
+            # an omitted protocol is tcp: that is what every expose entry
+            # written before the field existed meant, and the orchestrator
+            # normalizes it before sending, so this covers a direct caller.
+            protocol = str(entry.get("protocol") or "tcp").lower()
+            if protocol not in EXPOSE_PROTOCOLS:
+                raise HTTPError(
+                    500,
+                    f"unsupported expose protocol {protocol!r} "
+                    f"(want one of {sorted(EXPOSE_PROTOCOLS)})",
+                )
+            host_port = _free_host_port(protocol)
+            add_expose_forward(host_port, meta["guest_ip"], guest_port, protocol)
+            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port, "protocol": protocol})
         meta["expose_endpoints"] = endpoints
         save_meta(meta)
     return endpoints
