@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.30.0](https://github.com/folsomintel/fuse/compare/v0.29.3...v0.30.0) (2026-09-12)
+
+
+### Features
+
+* **fusefile:** finish expose (shorthand, protocol, and the published url) ([#248](https://github.com/folsomintel/fuse/issues/248)) ([eb30443](https://github.com/folsomintel/fuse/commit/eb3044386b19c333f9e39f9e396403c311603d8a))
+
+
+### Bug Fixes
+
+* clear all 19 open security alerts (17 dependabot + 2 codeql) ([#249](https://github.com/folsomintel/fuse/issues/249)) ([d69d741](https://github.com/folsomintel/fuse/commit/d69d74170541fce9b78c0a07539e02096d39efc8))
+
 ## [0.29.3](https://github.com/folsomintel/fuse/compare/v0.29.2...v0.29.3) (2026-09-04)
 
 
