@@ -13,6 +13,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type Protocol string
+
+const (
+	ProtocolTCP Protocol = "tcp"
+
+	ProtocolUDP Protocol = "udp"
+)
+
+var validProtocols = map[Protocol]struct{}{
+	ProtocolTCP: {},
+	ProtocolUDP: {},
+}
+
 // Parse decodes a Fusefile from yaml bytes using a strict decoder (unknown
 // fields are rejected) and then validates the result. It returns the parsed
 // Fusefile only if it is structurally valid.
@@ -282,6 +295,18 @@ func validate(f *Fusefile) error {
 			}
 		}
 
+		// empty means tcp, filled in by compileExpose. validate's job is only
+		// to reject a value that is neither. this sits above the `as` check
+		// because that block returns early for an unnamed entry, and a
+		// protocol typo on `- port: 5353` must still be reported.
+		if exp.Protocol != "" {
+			if _, ok := validProtocols[exp.Protocol]; !ok {
+				errs = append(errs, fmt.Errorf(
+					"expose[%d].protocol: must be %q or %q, got %q",
+					i, ProtocolTCP, ProtocolUDP, exp.Protocol))
+			}
+		}
+
 		if exp.As == "" {
 			continue
 		}
@@ -297,6 +322,7 @@ func validate(f *Fusefile) error {
 	}
 
 	errs = append(errs, validateHealthProbe(f.Healthcheck)...)
+	errs = append(errs, validateExposeHealthcheck(f)...)
 	errs = append(errs, validateDesktop(f.Desktop)...)
 
 	// an empty secret name is a requirement no `--secret` flag can satisfy, and
@@ -344,6 +370,33 @@ const privilegedPortCeiling = 1024
 func isReservedGuestPort(port int) bool {
 	_, reserved := reservedGuestPorts[port]
 	return reserved
+}
+
+// validateExposeHealthcheck rejects an http healthcheck aimed at a guest port
+// that expose publishes as udp.
+//
+// this is not a reachability rule. the probe runs inside the guest and needs
+// no expose entry at all, so the two blocks are independent by design. it is a
+// contradiction in what the author said the port speaks: http is tcp, so
+// `protocol: udp` on the same guest port means one of the two lines is wrong,
+// and guessing which one would leave a probe that can never pass and an
+// environment that never reaches ready.
+func validateExposeHealthcheck(f *Fusefile) []error {
+	if f.Healthcheck == nil || f.Healthcheck.HTTP == nil {
+		return nil
+	}
+	probed := f.Healthcheck.HTTP.Port
+
+	var errs []error
+	for i, exp := range f.Expose {
+		if exp.Port == probed && exp.Protocol == ProtocolUDP {
+			errs = append(errs, fmt.Errorf(
+				"expose[%d].protocol: guest port %d is published as udp, but healthcheck.http.port probes"+
+					" it over http; publish it as tcp, or point the healthcheck at a different port",
+				i, exp.Port))
+		}
+	}
+	return errs
 }
 
 // validateHealthProbe checks the structural rules of the environment-level

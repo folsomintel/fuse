@@ -433,7 +433,7 @@ func toSDKExpose(in []fusefile.ExposeSpec) []fuse.ExposeSpec {
 	}
 	out := make([]fuse.ExposeSpec, len(in))
 	for i, e := range in {
-		out[i] = fuse.ExposeSpec{Port: e.Port, As: e.As}
+		out[i] = fuse.ExposeSpec{Port: e.Port, As: e.As, Protocol: string(e.Protocol)}
 	}
 	return out
 }

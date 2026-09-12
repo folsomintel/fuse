@@ -1150,3 +1150,191 @@ func TestParseRunCommandForm(t *testing.T) {
 		})
 	}
 }
+
+// TestParseExposeShorthand verifies that a bare port decodes identically to the
+// mapping form. The two must be indistinguishable after decode, because every
+// rule downstream (range, reserved ports, duplicates) runs in validate, which
+// never learns which form was written.
+func TestParseExposeShorthand(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want []Expose
+	}{
+		{
+			name: "bare port",
+			yaml: "version: 1\nexpose:\n  - 8080\n",
+			want: []Expose{{Port: 8080}},
+		},
+		{
+			name: "bare port matches the mapping form",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n",
+			want: []Expose{{Port: 8080}},
+		},
+		{
+			name: "the two forms mix in one list",
+			yaml: "version: 1\nexpose:\n  - 8080\n  - port: 5432\n    as: db\n",
+			want: []Expose{{Port: 8080}, {Port: 5432, As: "db"}},
+		},
+		{
+			name: "shorthand carries no protocol, so compile defaults it",
+			yaml: "version: 1\nexpose:\n  - 5353\n",
+			want: []Expose{{Port: 5353}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := Parse([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if !reflect.DeepEqual(f.Expose, tc.want) {
+				t.Errorf("expose = %+v, want %+v", f.Expose, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseExposeShorthandRejects covers the decode-time errors the shorthand
+// introduces. These come from UnmarshalYAML rather than validate, so they abort
+// the parse instead of joining with other findings.
+func TestParseExposeShorthandRejects(t *testing.T) {
+	cases := []struct {
+		name        string
+		yaml        string
+		wantContain string
+	}{
+		{
+			name:        "unknown key in the mapping form",
+			yaml:        "version: 1\nexpose:\n  - port: 8080\n    prot: udp\n",
+			wantContain: "field prot not found in expose entry",
+		},
+		{
+			name:        "neither a scalar nor a mapping",
+			yaml:        "version: 1\nexpose:\n  - [8080]\n",
+			wantContain: "must be a port number or a mapping",
+		},
+		{
+			name:        "a shorthand duplicate is still a duplicate",
+			yaml:        "version: 1\nexpose:\n  - 8080\n  - port: 8080\n",
+			wantContain: "already exposed by expose[0]",
+		},
+		{
+			name:        "the shorthand does not bypass the reserved-port block",
+			yaml:        "version: 1\nexpose:\n  - 9550\n",
+			wantContain: "reserved for the guest agent's control surface",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Parse([]byte(tc.yaml))
+			if err == nil {
+				t.Fatalf("Parse: want error containing %q, got nil", tc.wantContain)
+			}
+			if !strings.Contains(err.Error(), tc.wantContain) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.wantContain)
+			}
+		})
+	}
+}
+
+// TestParseExposeProtocol covers the protocol field's own validation, including
+// the case that only reproduces on an entry with no `as`: the name checks
+// return early for an unnamed entry, so a protocol check placed below them
+// would never run.
+func TestParseExposeProtocol(t *testing.T) {
+	cases := []struct {
+		name        string
+		yaml        string
+		wantContain string
+		want        Protocol
+	}{
+		{
+			name: "tcp is accepted",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n    protocol: tcp\n",
+			want: ProtocolTCP,
+		},
+		{
+			name: "udp is accepted",
+			yaml: "version: 1\nexpose:\n  - port: 5353\n    protocol: udp\n",
+			want: ProtocolUDP,
+		},
+		{
+			name: "omitted stays empty until compile",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n",
+			want: "",
+		},
+		{
+			name:        "a typo is rejected",
+			yaml:        "version: 1\nexpose:\n  - port: 8080\n    protocol: tpc\n",
+			wantContain: `expose[0].protocol: must be "tcp" or "udp", got "tpc"`,
+		},
+		{
+			name:        "a typo is rejected on an unnamed entry too",
+			yaml:        "version: 1\nexpose:\n  - port: 5353\n    protocol: sctp\n",
+			wantContain: `expose[0].protocol: must be "tcp" or "udp", got "sctp"`,
+		},
+		{
+			name:        "the value is case sensitive",
+			yaml:        "version: 1\nexpose:\n  - port: 8080\n    protocol: TCP\n",
+			wantContain: `expose[0].protocol`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := Parse([]byte(tc.yaml))
+			if tc.wantContain != "" {
+				if err == nil {
+					t.Fatalf("Parse: want error containing %q, got nil", tc.wantContain)
+				}
+				if !strings.Contains(err.Error(), tc.wantContain) {
+					t.Errorf("error = %v, want it to contain %q", err, tc.wantContain)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			if got := f.Expose[0].Protocol; got != tc.want {
+				t.Errorf("protocol = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestParseExposeUDPVersusHTTPProbe pins the cross-block rule: an http probe
+// aimed at a port published as udp is a contradiction, not a reachability
+// problem. The probe runs in-guest and needs no expose entry at all, so the two
+// blocks are otherwise independent.
+func TestParseExposeUDPVersusHTTPProbe(t *testing.T) {
+	const conflicting = "version: 1\n" +
+		"expose:\n  - port: 8080\n    protocol: udp\n" +
+		"healthcheck:\n  http:\n    port: 8080\n"
+	_, err := Parse([]byte(conflicting))
+	if err == nil {
+		t.Fatal("Parse: want an error for an http probe against a udp port, got nil")
+	}
+	if !strings.Contains(err.Error(), "published as udp") {
+		t.Errorf("error = %v, want it to mention the udp conflict", err)
+	}
+
+	// a probe on a different port is fine: nothing says the probed port has
+	// to be exposed at all.
+	const disjoint = "version: 1\n" +
+		"expose:\n  - port: 5353\n    protocol: udp\n" +
+		"healthcheck:\n  http:\n    port: 8080\n"
+	if _, err := Parse([]byte(disjoint)); err != nil {
+		t.Errorf("Parse(disjoint ports): %v", err)
+	}
+
+	// tcp on the same port is the ordinary case.
+	const tcpSamePort = "version: 1\n" +
+		"expose:\n  - port: 8080\n    protocol: tcp\n" +
+		"healthcheck:\n  http:\n    port: 8080\n"
+	if _, err := Parse([]byte(tcpSamePort)); err != nil {
+		t.Errorf("Parse(tcp on the probed port): %v", err)
+	}
+}

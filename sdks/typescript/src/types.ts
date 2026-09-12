@@ -39,12 +39,22 @@ export interface Spec {
 export interface ExposeSpec {
   port: number;
   as?: string;
+  /** Transport to publish on: "tcp" (the default) or "udp". Typed as a plain
+   * string rather than a union so a server that grows a third transport does
+   * not turn into a compile error here. The host agent installs a separate
+   * forwarding rule per transport, so a service speaking both needs two
+   * entries. */
+  protocol?: string;
 }
 
 /** Endpoint is a published port with its externally reachable URL. */
 export interface Endpoint {
   as?: string;
   url: string;
+  /** The transport this endpoint was actually published on, which is not
+   * always what was asked for: an agent too old to know about the field
+   * publishes tcp and answers with this omitted. */
+  protocol?: string;
   port: number;
 }
 

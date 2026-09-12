@@ -44,11 +44,12 @@ type ResourceSpec struct {
 	Labels map[string]string
 }
 
-// ExposeSpec requests that a guest port be published as a reachable
+// ExposeSpec requests that a guest port be published as a reafhable
 // endpoint. Mirrors Fusefile's Expose entries one-for-one.
 type ExposeSpec struct {
-	Port int
-	As   string
+	Port     int
+	As       string
+	Protocol Protocol
 }
 
 // HealthcheckSpec is the compiled environment-level probe. It mirrors
@@ -615,7 +616,11 @@ func compileExpose(f *Fusefile) []ExposeSpec {
 	}
 	out := make([]ExposeSpec, len(f.Expose))
 	for i, e := range f.Expose {
-		out[i] = ExposeSpec{Port: e.Port, As: e.As}
+		proto := e.Protocol
+		if proto == "" {
+			proto = ProtocolTCP
+		}
+		out[i] = ExposeSpec{Port: e.Port, As: e.As, Protocol: proto}
 	}
 	return out
 }

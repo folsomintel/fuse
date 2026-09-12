@@ -53,8 +53,9 @@ type compiledSpec struct {
 
 // compiledExpose mirrors fuse.ExposeSpec with yaml tags added.
 type compiledExpose struct {
-	Port int    `json:"port" yaml:"port"`
-	As   string `json:"as,omitempty" yaml:"as,omitempty"`
+	Port     int    `json:"port" yaml:"port"`
+	As       string `json:"as,omitempty" yaml:"as,omitempty"`
+	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
 }
 
 // compiledHealthcheck mirrors fuse.HealthcheckSpec with yaml tags added.
@@ -245,7 +246,7 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		req.ManifestInline = base64.StdEncoding.EncodeToString(c.ManifestJSON)
 	}
 	for _, e := range c.Expose {
-		req.Expose = append(req.Expose, compiledExpose{Port: e.Port, As: e.As})
+		req.Expose = append(req.Expose, compiledExpose{Port: e.Port, As: e.As, Protocol: string(e.Protocol)})
 	}
 	if hc := c.Healthcheck; hc != nil {
 		req.Healthcheck = &compiledHealthcheck{
@@ -347,11 +348,18 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 	if len(c.Expose) > 0 {
 		_, _ = fmt.Fprintf(w, "\nexpose\n")
 		for _, e := range c.Expose {
+			// the protocol suffix is printed only for udp: tcp is the default
+			// and annotating every row with it would be noise in the common
+			// case, where no Fusefile mentions a protocol at all.
+			proto := ""
+			if e.Protocol == fusefile.ProtocolUDP {
+				proto = " udp"
+			}
 			if e.As != "" {
-				_, _ = fmt.Fprintf(w, "  %d as %s\n", e.Port, e.As)
+				_, _ = fmt.Fprintf(w, "  %d as %s%s\n", e.Port, e.As, proto)
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "  %d\n", e.Port)
+			_, _ = fmt.Fprintf(w, "  %d%s\n", e.Port, proto)
 		}
 	}
 
@@ -412,7 +420,7 @@ func writeCompiledPart(w io.Writer, part string, c *fusefile.Compiled, req compi
 		return err
 	case "expose":
 		for _, e := range c.Expose {
-			if _, err := fmt.Fprintf(w, "%d %s\n", e.Port, e.As); err != nil {
+			if _, err := fmt.Fprintf(w, "%d %s %s\n", e.Port, e.As, e.Protocol); err != nil {
 				return err
 			}
 		}

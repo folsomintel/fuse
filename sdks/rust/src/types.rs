@@ -262,6 +262,17 @@ impl Spec {
     }
 }
 
+string_enum! {
+    /// Transports an exposed port can be published on.
+    ///
+    /// The host agent installs a separate forwarding rule per transport, so a
+    /// service that speaks both needs two [`ExposeSpec`] entries.
+    pub enum Protocol {
+        Tcp => "tcp",
+        Udp => "udp",
+    }
+}
+
 /// Requests that a guest port be published as a reachable endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExposeSpec {
@@ -269,18 +280,33 @@ pub struct ExposeSpec {
     /// Optional name the endpoint is published under.
     #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    /// Transport to publish on; absent means tcp, which is what every entry
+    /// written before this field existed meant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
 }
 
 impl ExposeSpec {
     pub fn new(port: u16) -> Self {
-        Self { port, alias: None }
+        Self {
+            port,
+            alias: None,
+            protocol: None,
+        }
     }
 
     pub fn named(port: u16, alias: impl Into<String>) -> Self {
         Self {
             port,
             alias: Some(alias.into()),
+            protocol: None,
         }
+    }
+
+    /// Publishes this port on `protocol` instead of the tcp default.
+    pub fn protocol(mut self, protocol: Protocol) -> Self {
+        self.protocol = Some(protocol);
+        self
     }
 }
 
@@ -291,6 +317,11 @@ pub struct Endpoint {
     #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     pub url: String,
+    /// The transport this endpoint was actually published on, which is not
+    /// always what was asked for: an agent too old to know about the field
+    /// publishes tcp and answers with this absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<Protocol>,
     pub port: u16,
 }
 

@@ -176,10 +176,13 @@ run: ./start.sh
 # inherit it.
 workspace: /workspace
 
-# ports published to the outside world (ingress).
+# ports published to the outside world (ingress). a bare number is shorthand
+# for {port: N}; the mapping form adds a name and a transport.
 expose:
-  - port: 8080
-    as: http
+  - 8080
+  - port: 5353
+    as: dns
+    protocol: udp
 
 # environment-level readiness probe: one verdict for whether the whole sandbox
 # is doing its job, reported back to the control plane. exactly one of http and
@@ -241,7 +244,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `run` | string or list of strings | The main entrypoint, compiled into `startup_script` after `build`. A string is interpreted by `sh -lc`; a list is an argv, each element shell-quoted into a single command line so no argument is subject to word splitting, globbing, or metacharacter reinterpretation. The list form is not a shell-less `execve`: the generated command still runs inside `sh -lc`, so it protects arguments from shell interpretation rather than removing the shell. Use it only when an argument would otherwise be reinterpreted (spaces, quotes, `$`, globs). |
 | `startup_timeout` | string | Go duration bounding `build` + `run`. Omit for the orchestrator default (30s). See [Startup timeout](#startup-timeout). |
 | `workspace` | string | Working directory for the `build` steps and `run`. Defaults to `/workspace`. Must be an absolute path with no `..` segments; the generated script `mkdir -p`s it and `cd`s into it. Services, `fuse environment exec`, and `fuse environment shell` do **not** inherit it. See [Workspace](#workspace). |
-| `expose` | list of `{port, as}` | Guest ports published externally. Each `port` is between 1 and 65535 and may appear only once. `as` is an optional name, unique across the list, in DNS-label form (lowercase letters, digits and dashes, alphanumeric at both ends, 63 chars max). |
+| `expose` | list of `{port, as, protocol, allow_reserved}`, or a bare port number | Guest ports published externally. A bare integer is shorthand for `{port: N}`. Each `port` is between 1 and 65535 and may appear only once. `as` is an optional name, unique across the list, in DNS-label form (lowercase letters, digits and dashes, alphanumeric at both ends, 63 chars max). `protocol` is `tcp` (the default) or `udp`; a forwarding rule is installed per transport, so a service that speaks both needs two entries, and an `http` healthcheck aimed at a port published only as `udp` is rejected. The guest agent's management port (9550) and SSH (22) are always refused, and ports below 1024 need `allow_reserved: true`. Published ports are unauthenticated pass-through NAT: see [Security](/docs/cloud/security). |
 | `healthcheck` | `{http \| exec, interval, timeout, retries, start_period}` | The environment-level readiness probe. Exactly one of `http` and `exec`. Omit the whole block for no probe. See [Healthcheck](#healthcheck). |
 | `healthcheck.http` | `{port, path}` | An HTTP GET inside the guest; a 2xx or 3xx response passes. `port` is between 1 and 65535 and needs no matching `expose` entry, because the probe runs in-guest. `path` must start with `/` and defaults to `/`. |
 | `healthcheck.exec` | list of strings | An argv run inside the guest; exit status 0 passes. An argv rather than a shell string, so no element can be reinterpreted as a pipeline, a redirect, or a glob. |

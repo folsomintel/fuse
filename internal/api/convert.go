@@ -133,7 +133,11 @@ func toOrchestratorExpose(in []ExposeSpec) []orchestrator.ExposeSpec {
 	}
 	out := make([]orchestrator.ExposeSpec, len(in))
 	for i, e := range in {
-		out[i] = orchestrator.ExposeSpec{Port: e.Port, As: e.As}
+		proto := e.Protocol
+		if proto == "" {
+			proto = string(orchestrator.ProtocolTCP)
+		}
+		out[i] = orchestrator.ExposeSpec{Port: e.Port, As: e.As, Protocol: orchestrator.Protocol(proto)}
 	}
 	return out
 }
@@ -145,7 +149,7 @@ func toAPIEndpoints(in []orchestrator.Endpoint) []Endpoint {
 	}
 	out := make([]Endpoint, len(in))
 	for i, e := range in {
-		out[i] = Endpoint{As: e.As, URL: e.URL, Port: e.Port}
+		out[i] = Endpoint{As: e.As, URL: e.URL, Port: e.Port, Protocol: string(e.Protocol)}
 	}
 	return out
 }
