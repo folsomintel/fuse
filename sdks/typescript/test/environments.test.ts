@@ -73,6 +73,50 @@ describe("environments", () => {
     });
   });
 
+  it("create carries expose protocol and omits it when unset", async () => {
+    let body = "";
+    current = await serve(async (req, res) => {
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-1","state":"running","task_id":"task-1","url":"https://x"}`);
+    });
+
+    await current.client.environments.create({
+      task_id: "task-1",
+      expose: [{ port: 5353, as: "dns", protocol: "udp" }, { port: 8080 }],
+    });
+
+    // an entry that names no protocol serializes exactly as it did before the
+    // field existed, so upgrading the SDK alone is not a wire change.
+    expect(JSON.parse(body)).toEqual({
+      task_id: "task-1",
+      expose: [{ port: 5353, as: "dns", protocol: "udp" }, { port: 8080 }],
+    });
+  });
+
+  it("get decodes an endpoint protocol, including one it does not know", async () => {
+    // protocol is typed as string rather than a union, so a server that grows
+    // a third transport does not break decoding. endpoints come back on every
+    // environment read, so a strict type here would be a hard failure.
+    current = await serve((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        `{"id":"vm-1","state":"running","task_id":"task-1","url":"u",` +
+          `"endpoints":[{"as":"dns","url":"h:1","port":5353,"protocol":"udp"},` +
+          `{"as":"web","url":"h:2","port":8080},` +
+          `{"as":"x","url":"h:3","port":1,"protocol":"sctp"}]}`,
+      );
+    });
+
+    const env = await current.client.environments.get("vm-1");
+
+    expect(env.endpoints?.map((e) => e.protocol)).toEqual([
+      "udp",
+      undefined,
+      "sctp",
+    ]);
+  });
+
   it("get decodes an endpoints array on EnvironmentInfo", async () => {
     current = await serve((req, res) => {
       res.setHeader("Content-Type", "application/json");

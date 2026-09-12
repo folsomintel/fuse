@@ -58,9 +58,59 @@ def test_environments_create_with_image_and_expose() -> None:
 
     body = json.loads(route.calls.last.request.content)
     assert body["spec"]["image"] == "my/image:latest"
+    # an unset protocol is omitted, so an SDK upgrade alone is not a wire
+    # change for a caller that never mentions the field.
     assert body["expose"] == [{"port": 8080, "as": "web"}]
     # keyword alias must serialize to the wire key "as", not "as_".
     assert "as_" not in body["expose"][0]
+
+
+@respx.mock
+def test_environments_create_with_udp_expose() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="task-1",
+                expose=[fuse.ExposeSpec(port=5353, as_="dns", protocol="udp")],
+            )
+        )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["expose"] == [{"port": 5353, "as": "dns", "protocol": "udp"}]
+
+
+@respx.mock
+def test_environment_endpoints_decode_protocol() -> None:
+    # protocol is a plain str, not a Literal, so a transport this build has
+    # never heard of decodes rather than raising. the endpoint list is part of
+    # every environment read, so a strict type here would let a newer server
+    # break reads outright.
+    respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "vm-1",
+                "state": "running",
+                "task_id": "task-1",
+                "url": "u",
+                "endpoints": [
+                    {"as": "dns", "url": "h:1", "port": 5353, "protocol": "udp"},
+                    {"as": "web", "url": "h:2", "port": 8080},
+                    {"as": "x", "url": "h:3", "port": 1, "protocol": "sctp"},
+                ],
+            },
+        )
+    )
+    with new_client() as client:
+        env = client.environments.get("vm-1")
+
+    assert [e.protocol for e in env.endpoints] == ["udp", "", "sctp"]
 
 
 @respx.mock

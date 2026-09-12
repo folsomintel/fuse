@@ -33,17 +33,36 @@ type Spec struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
+// Protocols an exposed port can be published on, carried in
+// ExposeSpec.Protocol and Endpoint.Protocol. Both fields are plain strings so
+// a server that grows a third transport does not turn into a decode error
+// here; compare against these rather than writing the literals.
+const (
+	ProtocolTCP = "tcp"
+	ProtocolUDP = "udp"
+)
+
 // ExposeSpec requests that a guest port be published as a reachable endpoint.
 type ExposeSpec struct {
 	Port int    `json:"port"`
 	As   string `json:"as,omitempty"`
+	// Protocol is ProtocolTCP or ProtocolUDP. Empty means tcp, which is what
+	// every request written before this field existed meant. The host agent
+	// installs a separate forwarding rule per transport, so a service that
+	// speaks both needs two entries.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // Endpoint is a published network endpoint for an environment.
 type Endpoint struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As  string `json:"as,omitempty"`
+	URL string `json:"url"`
+	// Protocol is the transport this endpoint was actually published on,
+	// which is not always what was asked for: an agent too old to know about
+	// the field publishes tcp and answers with an empty value. Read it
+	// rather than assuming the request was honoured.
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 // HealthcheckSpec is the environment-level readiness probe (the Fusefile's

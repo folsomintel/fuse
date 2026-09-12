@@ -61,15 +61,26 @@ class Spec(_Model):
 class ExposeSpec(_Model):
     # a port to publish from the microvm. as_ maps to the wire key "as"
     # because as is a reserved python keyword.
+    #
+    # protocol is "tcp" (the default when omitted) or "udp". it is a plain
+    # str rather than a Literal so a server that grows a third transport
+    # does not fail to parse here. the host agent installs a separate
+    # forwarding rule per transport, so a service speaking both needs two
+    # entries.
     port: int
     as_: Optional[str] = Field(default=None, alias="as")
+    protocol: Optional[str] = None
 
 
 class Endpoint(_Model):
     # a published endpoint reported by the server. as_ maps to the wire
     # key "as" because as is a reserved python keyword.
+    #
+    # protocol is the transport actually published, not the one requested:
+    # an agent too old to know about the field publishes tcp and omits it.
     as_: Optional[str] = Field(default=None, alias="as")
     url: str = ""
+    protocol: str = ""
     port: int = 0
 
 
