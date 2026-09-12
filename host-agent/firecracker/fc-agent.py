@@ -566,11 +566,21 @@ def sock_path(vm_id: str) -> Path:
     # suffix keeps truncated names collision-free. vm_id has been through
     # sanitize_name(), so it is filesystem-safe.
     SOCK_DIR.mkdir(parents=True, exist_ok=True)
+    # budget the name against the resolved root rather than SOCK_DIR itself:
+    # firecracker binds the path we hand it, and where SOCK_DIR sits behind a
+    # symlink (macOS $TMPDIR) the resolved form is the longer of the two.
+    sock_root = os.path.realpath(str(SOCK_DIR))
     name = vm_id
-    if len(str(SOCK_DIR / f"{name}.sock")) > 100:
+    if len(os.path.join(sock_root, f"{name}.sock")) > 100:
         digest = hashlib.sha256(vm_id.encode()).hexdigest()[:12]
         name = f"{vm_id[:24]}-{digest}"
-    return SOCK_DIR / f"{name}.sock"
+    # this is the second vm_id-derived path in the agent. vm_dir is the other
+    # one and already re-checks containment; this one builds off the raw id
+    # rather than off vm_dir's contained result, so it needs its own check.
+    resolved = os.path.realpath(os.path.join(sock_root, f"{name}.sock"))
+    if not resolved.startswith(sock_root + os.sep):
+        raise HTTPError(400, f"invalid vm id: {vm_id!r}")
+    return Path(resolved)
 
 
 def spawn_firecracker(meta: dict) -> None:
