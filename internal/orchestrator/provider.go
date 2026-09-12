@@ -116,11 +116,38 @@ type Spec struct {
 	PinnedHostID string
 }
 
+// Protocol is the transport an exposed port is published on.
+//
+// It is a named type for the same reason SnapshotKind is, but it is open in
+// the same way: a host agent newer than this orchestrator may report a
+// transport this build has no constant for, and carrying it through beats
+// discarding it. Nothing here rejects an unknown value. The Fusefile parser is
+// the strict gate (fusefile.validProtocols), so a typo is caught while
+// authoring rather than by refusing to talk to a peer.
+type Protocol string
+
+const (
+	// ProtocolTCP is the default and the fallback. Every expose entry
+	// written before this field existed is this, and an empty value read
+	// back off the wire or out of the store means this.
+	ProtocolTCP Protocol = "tcp"
+
+	// ProtocolUDP publishes udp. The host agents install a separate
+	// forwarding rule per transport rather than widening the tcp one, so a
+	// service that speaks both needs two expose entries.
+	ProtocolUDP Protocol = "udp"
+)
+
 // ExposeSpec requests that a guest port be published as a reachable
 // endpoint by the provider during StartAgent.
 type ExposeSpec struct {
 	Port int
 	As   string
+	// Protocol is "tcp" or "udp". Empty means tcp: the API boundary
+	// normalizes it (toOrchestratorExpose), but a record written before the
+	// field existed still reads back empty, so consumers fall back rather
+	// than assume.
+	Protocol Protocol
 }
 
 // Endpoint is a published network endpoint for an environment (e.g. an
@@ -129,6 +156,10 @@ type Endpoint struct {
 	As   string // caller-chosen label, e.g. "http"
 	URL  string // reachable address, e.g. "http://203.0.113.5:41231"
 	Port int    // the guest-side port this endpoint publishes
+	// Protocol is the transport the host agent actually published on, not
+	// what was requested. Empty from an agent that predates the field, which
+	// a reader takes as tcp.
+	Protocol Protocol
 }
 
 // Environment is a running sandbox.

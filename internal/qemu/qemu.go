@@ -317,7 +317,11 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 	}
 	endpoints := make([]orchestrator.Endpoint, len(resp.Endpoints))
 	for i, endpoint := range resp.Endpoints {
-		endpoints[i] = orchestrator.Endpoint{As: endpoint.As, URL: endpoint.URL, Port: endpoint.Port}
+		proto := orchestrator.Protocol(endpoint.Protocol)
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
+		endpoints[i] = orchestrator.Endpoint{As: endpoint.As, URL: endpoint.URL, Port: endpoint.Port, Protocol: proto}
 	}
 	e.endpointsMu.Lock()
 	e.endpoints = endpoints
@@ -411,12 +415,19 @@ type startAgentRequest struct {
 type exposeWire struct {
 	Port int    `json:"port"`
 	As   string `json:"as,omitempty"`
+	// Protocol is "tcp" or "udp". Always sent explicitly so the host agent
+	// never has to derive the default; an agent too old to read it installs
+	// a tcp rule, which is what an omitted protocol always meant.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type endpointWire struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As  string `json:"as,omitempty"`
+	URL string `json:"url"`
+	// Protocol is what the agent actually published on. Empty from an agent
+	// that predates the field, which reads back as tcp.
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 type startAgentResponse struct {
@@ -429,7 +440,11 @@ func toWireExpose(in []orchestrator.ExposeSpec) []exposeWire {
 	}
 	out := make([]exposeWire, len(in))
 	for i, expose := range in {
-		out[i] = exposeWire{Port: expose.Port, As: expose.As}
+		proto := expose.Protocol
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
+		out[i] = exposeWire{Port: expose.Port, As: expose.As, Protocol: string(proto)}
 	}
 	return out
 }
@@ -604,7 +619,11 @@ func (e *stubEnv) StartAgent(_ context.Context, spec orchestrator.AgentSpec) err
 	defer e.mu.Unlock()
 	e.endpoints = make([]orchestrator.Endpoint, len(spec.Expose))
 	for i, expose := range spec.Expose {
-		e.endpoints[i] = orchestrator.Endpoint{As: expose.As, URL: e.url, Port: expose.Port}
+		proto := expose.Protocol
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
+		e.endpoints[i] = orchestrator.Endpoint{As: expose.As, URL: e.url, Port: expose.Port, Protocol: proto}
 	}
 	return nil
 }

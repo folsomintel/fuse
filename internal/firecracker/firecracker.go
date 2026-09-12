@@ -398,7 +398,11 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 func (e *remoteEnv) setEndpoints(in []endpointWire) {
 	out := make([]orchestrator.Endpoint, len(in))
 	for i, ep := range in {
-		out[i] = orchestrator.Endpoint{As: ep.As, URL: ep.URL, Port: ep.Port}
+		proto := orchestrator.Protocol(ep.Protocol)
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
+		out[i] = orchestrator.Endpoint{As: ep.As, URL: ep.URL, Port: ep.Port, Protocol: proto}
 	}
 	e.endpointsMu.Lock()
 	e.endpoints = out
@@ -412,7 +416,11 @@ func toWireExpose(in []orchestrator.ExposeSpec) []exposeWire {
 	}
 	out := make([]exposeWire, len(in))
 	for i, ex := range in {
-		out[i] = exposeWire{Port: ex.Port, As: ex.As}
+		proto := ex.Protocol
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
+		out[i] = exposeWire{Port: ex.Port, As: ex.As, Protocol: string(proto)}
 	}
 	return out
 }
@@ -611,12 +619,19 @@ type startAgentRequest struct {
 type exposeWire struct {
 	Port int    `json:"port"`
 	As   string `json:"as,omitempty"`
+	// Protocol is "tcp" or "udp". Always sent explicitly so the host agent
+	// never has to derive the default; an agent too old to read it installs
+	// a tcp rule, which is what an omitted protocol always meant.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type endpointWire struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As  string `json:"as,omitempty"`
+	URL string `json:"url"`
+	// Protocol is what the agent actually published on. Empty from an agent
+	// that predates the field, which reads back as tcp.
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 // startAgentResponse is the /start-agent response body. Endpoints is
@@ -914,10 +929,15 @@ func (e *stubEnv) StartAgent(_ context.Context, spec orchestrator.AgentSpec) err
 	}
 	endpoints := make([]orchestrator.Endpoint, len(spec.Expose))
 	for i, ex := range spec.Expose {
+		proto := ex.Protocol
+		if proto == "" {
+			proto = orchestrator.ProtocolTCP
+		}
 		endpoints[i] = orchestrator.Endpoint{
-			As:   ex.As,
-			URL:  fmt.Sprintf("fc://%s:%d", e.name, ex.Port),
-			Port: ex.Port,
+			As:       ex.As,
+			URL:      fmt.Sprintf("fc://%s:%d", e.name, ex.Port),
+			Port:     ex.Port,
+			Protocol: proto,
 		}
 	}
 	e.mu.Lock()

@@ -1703,6 +1703,15 @@ components:
         as:
           type: string
           description: Caller-chosen label, e.g. "http".
+        protocol:
+          type: string
+          enum: [tcp, udp]
+          default: tcp
+          description: |
+            Transport to publish this port on. A forwarding rule is installed
+            per transport, so a service that speaks both needs two entries.
+            Omitted means tcp, which is what every request written before this
+            field existed meant.
 
     HealthcheckHTTP:
       type: object
@@ -1919,6 +1928,14 @@ components:
         url:
           type: string
           description: Reachable address, e.g. "http://203.0.113.5:41231".
+        protocol:
+          type: string
+          enum: [tcp, udp]
+          description: |
+            The transport this endpoint was actually published on, which is
+            not always what was requested: a host agent too old to know about
+            the field publishes tcp and omits this. Read it rather than
+            assuming the request was honoured.
         port:
           type: integer
           description: The guest-side port this endpoint publishes.

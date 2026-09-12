@@ -53,15 +53,17 @@ type ResourceSpec struct {
 // ExposeSpec requests that a guest port be published as a reachable
 // endpoint.
 type ExposeSpec struct {
-	Port int    `json:"port"`
-	As   string `json:"as,omitempty"`
+	Port     int    `json:"port"`
+	As       string `json:"as,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // Endpoint is a published network endpoint for an environment.
 type Endpoint struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As       string `json:"as,omitempty"`
+	URL      string `json:"url"`
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 // HealthcheckSpec is the environment-level readiness probe (the Fusefile's
