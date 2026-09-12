@@ -2,9 +2,8 @@
 // the wire, so a refactor cannot silently drift from the server's schema.
 
 use fuse::{
-    Arch, ComputerAction, CreateRequest, EnvironmentState, Event, EventKind, ExecRequest,
-    Endpoint, ExposeSpec, HealthcheckHttp, HealthcheckSpec, MissReason, Protocol,
-    ScrollDirection, Snapshot,
+    Arch, ComputerAction, CreateRequest, Endpoint, EnvironmentState, Event, EventKind, ExecRequest,
+    ExposeSpec, HealthcheckHttp, HealthcheckSpec, MissReason, Protocol, ScrollDirection, Snapshot,
     SnapshotKind, SnapshotRequest, Spec,
 };
 use serde_json::json;

@@ -110,11 +110,7 @@ describe("environments", () => {
 
     const env = await current.client.environments.get("vm-1");
 
-    expect(env.endpoints?.map((e) => e.protocol)).toEqual([
-      "udp",
-      undefined,
-      "sctp",
-    ]);
+    expect(env.endpoints?.map((e) => e.protocol)).toEqual(["udp", undefined, "sctp"]);
   });
 
   it("get decodes an endpoints array on EnvironmentInfo", async () => {
