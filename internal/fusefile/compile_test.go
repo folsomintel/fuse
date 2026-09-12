@@ -1222,3 +1222,71 @@ func TestCompileStartupScriptExecForm(t *testing.T) {
 		})
 	}
 }
+
+// TestCompileExposeProtocolDefault pins where the tcp default is applied.
+//
+// It lands in compileExpose rather than in Parse because Decode and Validate
+// are separable: `fuse validate` runs Validate and Compile over the same
+// decoded file, so defaulting upstream of Compile would leave `fuse up` and
+// `fuse compile` emitting different wires for identical input.
+func TestCompileExposeProtocolDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want []ExposeSpec
+	}{
+		{
+			name: "an omitted protocol compiles to tcp",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n",
+			want: []ExposeSpec{{Port: 8080, Protocol: ProtocolTCP}},
+		},
+		{
+			name: "the shorthand compiles to tcp",
+			yaml: "version: 1\nexpose:\n  - 8080\n",
+			want: []ExposeSpec{{Port: 8080, Protocol: ProtocolTCP}},
+		},
+		{
+			name: "an explicit tcp is carried through",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n    protocol: tcp\n",
+			want: []ExposeSpec{{Port: 8080, Protocol: ProtocolTCP}},
+		},
+		{
+			name: "udp is carried through",
+			yaml: "version: 1\nexpose:\n  - port: 5353\n    as: dns\n    protocol: udp\n",
+			want: []ExposeSpec{{Port: 5353, As: "dns", Protocol: ProtocolUDP}},
+		},
+		{
+			name: "the same port on both transports is two entries",
+			yaml: "version: 1\nexpose:\n  - port: 8080\n    protocol: tcp\n",
+			want: []ExposeSpec{{Port: 8080, Protocol: ProtocolTCP}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, err := Parse([]byte(tc.yaml))
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			got := compileExpose(f)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("compileExpose = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCompileExposeDropsAllowReserved keeps AllowReserved out of the wire. It
+// is an authoring-time opt-in: once the file is valid it means nothing to the
+// orchestrator or host agent, and carrying it would invite a reader to treat
+// it as policy.
+func TestCompileExposeDropsAllowReserved(t *testing.T) {
+	f, err := Parse([]byte("version: 1\nexpose:\n  - port: 443\n    allow_reserved: true\n    protocol: udp\n"))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []ExposeSpec{{Port: 443, Protocol: ProtocolUDP}}
+	if got := compileExpose(f); !reflect.DeepEqual(got, want) {
+		t.Errorf("compileExpose = %+v, want %+v", got, want)
+	}
+}

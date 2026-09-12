@@ -496,6 +496,17 @@ type Expose struct {
 	Port int    `yaml:"port"`
 	As   string `yaml:"as,omitempty"`
 
+	// Protocol is the transport this entry publishes: "tcp" (the default) or
+	// "udp". It is the transport the host agent's DNAT rule matches on, so it
+	// has to be decided at authoring time: a rule installed for one protocol
+	// forwards nothing for the other.
+	//
+	// Empty means tcp. The default is applied in compileExpose, so the
+	// compiled wire always carries an explicit value no matter which entry
+	// point produced it, and a reader downstream never has to know what the
+	// default was.
+	Protocol Protocol `yaml:"protocol,omitempty"`
+
 	// AllowReserved opts in to exposing a privileged guest port (below 1024)
 	// that is otherwise blocked by default. The guest agent's management port
 	// (9550, FUSED_PORT) and SSH (22) are always blocked — they cannot be
@@ -503,4 +514,51 @@ type Expose struct {
 	// hands the outside world the guest's control plane or bypasses the
 	// environment's access model.
 	AllowReserved bool `yaml:"allow_reserved,omitempty"`
+}
+
+// exposeFields is the set of keys the mapping form accepts. Parse's decoder
+// runs with KnownFields(true), but a custom UnmarshalYAML decodes through a
+// yaml.Node and does not inherit that, so unknown keys are rejected here or
+// `- prot: udp` would silently parse as a tcp entry.
+var exposeFields = map[string]bool{"port": true, "as": true, "protocol": true, "allow_reserved": true}
+
+// UnmarshalYAML decodes either a bare scalar port (the shorthand, `- 8080`) or
+// the mapping form. The shorthand exists because publishing one port with no
+// name and no options is the common case, and three lines of yaml for it reads
+// as ceremony.
+//
+// The scalar decodes through int rather than through the mapping, so `- 8080`
+// and `- {port: 8080}` produce an identical Expose and validate identically:
+// range, reserved ports and duplicates are all checked later in validate,
+// which never learns which form was written.
+func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var port int
+		if err := node.Decode(&port); err != nil {
+			return fmt.Errorf("expose: %w", err)
+		}
+		*e = Expose{Port: port}
+		return nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("expose: must be a port number or a mapping")
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !exposeFields[key] {
+			return fmt.Errorf("line %d: field %s not found in expose entry", node.Content[i].Line, key)
+		}
+	}
+
+	// expose is an alias without the method set, so decoding it does not
+	// recurse back into UnmarshalYAML.
+	type expose Expose
+	var raw expose
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*e = Expose(raw)
+	return nil
 }
