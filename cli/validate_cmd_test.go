@@ -108,6 +108,21 @@ func TestValidateReportsErrors(t *testing.T) {
 			want: []string{"expose[0].port: must be between 1 and 65535"},
 		},
 		{
+			name: "expose port out of range via the shorthand",
+			body: "version: 1\nexpose:\n  - 99999\n",
+			want: []string{"expose[0].port: must be between 1 and 65535"},
+		},
+		{
+			name: "expose protocol typo",
+			body: "version: 1\nexpose:\n  - port: 8080\n    protocol: tpc\n",
+			want: []string{`expose[0].protocol: must be "tcp" or "udp", got "tpc"`},
+		},
+		{
+			name: "http probe against a udp port",
+			body: "version: 1\nexpose:\n  - port: 8080\n    protocol: udp\nhealthcheck:\n  http:\n    port: 8080\n",
+			want: []string{"published as udp"},
+		},
+		{
 			name: "bad memory size",
 			body: "version: 1\nresources:\n  memory: 2 gigs\n",
 			want: []string{`resources.memory: invalid size "2 gigs"`},

@@ -198,7 +198,9 @@ func TestCompileOnlyParts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("only expose: %v", err)
 	}
-	if expose != "8080 http\n" {
+	// the machine-readable form names the protocol unconditionally: a caller
+	// parsing this should not have to know what the default is.
+	if expose != "8080 http tcp\n" {
 		t.Errorf("--only expose = %q", expose)
 	}
 

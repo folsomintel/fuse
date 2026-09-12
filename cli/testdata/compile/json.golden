@@ -13,7 +13,8 @@
   "expose": [
     {
       "port": 8080,
-      "as": "http"
+      "as": "http",
+      "protocol": "tcp"
     }
   ],
   "required_secrets": [
