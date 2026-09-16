@@ -134,7 +134,7 @@ func (m *Mock) Healthcheck(ctx context.Context, ep Endpoint) error {
 	if err != nil {
 		return fmt.Errorf("dial %s: %w", u.Host, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	deadline := time.Now().Add(5 * time.Second)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -177,7 +177,7 @@ func (m *Mock) serve(ln net.Listener) {
 }
 
 func (m *Mock) handle(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 	target, err := socks5Connect(conn)
 	if err != nil {
@@ -192,7 +192,7 @@ func (m *Mock) handle(conn net.Conn) {
 		socks5Reply(conn, socks5ReplyFor(err))
 		return
 	}
-	defer up.Close()
+	defer func() { _ = up.Close() }()
 	socks5Reply(conn, 0x00)
 	_ = conn.SetDeadline(time.Time{})
 
