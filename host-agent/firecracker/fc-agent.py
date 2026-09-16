@@ -297,7 +297,7 @@ def tap_name(idx: int) -> str:
     return f"fcv{idx}"
 
 
-def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
+def setup_tap(idx: int, iface: str, egress_mode: str = "direct") -> tuple[str, str, str]:
     tap = tap_name(idx)
     host_ip = f"10.200.{idx}.1"
     guest_ip = f"10.200.{idx}.2"
@@ -306,18 +306,44 @@ def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    # the guest's outbound leg is the only rule that depends on egress_mode.
+    # direct installs the tap -> iface accept it always has. proxy installs a
+    # drop in its place: not merely omitting the accept, because the FORWARD
+    # chain has no default-deny (issue #208) and omission alone would enforce
+    # nothing on a host whose policy is ACCEPT. the RELATED,ESTABLISHED return
+    # rule is -I'd after it and so sits above it, which is what keeps the
+    # reply leg of the orchestrator's dnat'd connection to fused working.
+    if egress_mode == "proxy":
+        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"],
+                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"])
+        # iptables rules outlive the tap they name, so a direct vm that held
+        # this index earlier can have left its accept behind. an accept above
+        # the drop wins, so it has to go first.
+        purge_forward_rule(tap, iface, "ACCEPT")
+    else:
+        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
+                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"])
     # NAT rules (idempotent)
     for chk, add in [
         (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
          ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
-        (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"]),
+        outbound,
         (["iptables", "-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
          ["iptables", "-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
     ]:
         if sudo(chk, check=False).returncode != 0:
             sudo(add)
     return tap, host_ip, guest_ip
+
+
+def purge_forward_rule(tap: str, iface: str, target: str) -> None:
+    """Deletes every FORWARD tap -> iface rule with the given target. -D
+    removes one match per call, so loop until there is nothing left; bounded
+    so a chain that somehow keeps matching cannot spin this forever."""
+    rule = ["iptables", "-D", "FORWARD", "-i", tap, "-o", iface, "-j", target]
+    for _ in range(16):
+        if sudo(rule, check=False).returncode != 0:
+            return
 
 
 def teardown_tap(tap: str) -> None:
@@ -372,6 +398,67 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
 # this is the re-check for a direct API caller.
 EXPOSE_PROTOCOLS = {"tcp", "udp"}
 
+EGRESS_MODES = {"direct", "proxy"}
+EGRESS_PROVIDERS: dict[str, tuple] = {}
+
+def parse_egress_mode(req: dict) -> str:
+    egress = req.get("egress") or {}
+    mode = egress.get("mode") or "direct"
+    if mode not in EGRESS_MODES:
+        raise HTTPError(400, f"unknown egress mode {mode!r} (want one of {sorted(EGRESS_MODES)})")
+    return mode
+
+def guest_network_fixup(host_ip: str, egress_mode: str) -> str:
+    route = f"ip route show default | grep -q . || ip route add default via {host_ip}; "
+    if egress_mode == "proxy":
+        return route + "echo nameserver 127.0.0.1 > /etc/resolv.conf"
+    return route + "grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || echo nameserver 1.1.1.1 > /etc/resolv.conf"
+
+def provision_egress(vm_id: str, body: dict) -> dict:
+    meta = load_meta(vm_id)
+    if not meta:
+        raise HTTPError(404, "vm not found")
+    if meta.get("egress_mode") != "proxy":
+        raise HTTPError(409, f"vm {vm_id} was created with direct egress; a backend needs a proxy-mode vm")
+    if meta.get("egress"):
+        raise HTTPError(409, f"vm {vm_id} already has egress provisioned; release it first")
+    provider = body.get("provider") or ""
+    backend = EGRESS_PROVIDERS.get(provider)
+    if backend is None:
+        known = ", ".join(sorted(EGRESS_PROVIDERS)) or "none"
+        raise HTTPError(400, f"unknown egress provider {provider!r} (this host has: {known})")
+    listen_ip = body.get("listen_ip") or meta["host_ip"]
+    if listen_ip != meta["host_ip"]:
+        raise HTTPError(400, f"listen_ip must be the vm's tap address {meta['host_ip']}, not {listen_ip}")
+
+    provision, _ = backend
+    endpoint = provision(meta, body)
+    meta["egress"] = {
+        "provider": provider,
+        "protocol": endpoint.get("protocol") or body.get("protocol") or "socks5",
+        "url": endpoint["url"],
+    }
+    save_meta(meta)
+    return meta["egress"]
+
+def release_egress(meta: dict) -> None:
+    """Releases whatever backend meta records, idempotently. DELETE
+    /v1/vm/{id}/egress and destroy_vm both land here. Best effort by design
+    (mirrors del_agent_forward): a vm being torn down must not fail to tear
+    down over a backend that is already gone."""
+    rec = meta.get("egress")
+    if not rec:
+        return
+    backend = EGRESS_PROVIDERS.get(rec.get("provider", ""))
+    if backend is not None:
+        try:
+            backend[1](meta)
+        except Exception as e:
+            print(f"[fc-agent] egress release failed for {meta['vm_id']}: {e}", flush=True)
+    # the record goes even when the backend is no longer registered: there is
+    # nothing left to release and a stale record would block re-provisioning.
+    meta.pop("egress", None)
+    save_meta(meta)
 
 def _free_host_port(protocol: str = "tcp") -> int:
     """Picks a free host port by binding to port 0 and reading it back, then
@@ -698,6 +785,7 @@ def stop_firecracker(meta: dict) -> None:
 
 def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
+    egress_mode = parse_egress_mode(req)
     vm_id = sanitize_name(name)
 
     # Resolve the source rootfs before any allocation, so an unknown named
@@ -738,7 +826,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
 
     idx = pick_index()
     iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(idx, iface)
+    tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
     add_agent_forward(host_port, guest_ip, iface)
@@ -763,6 +851,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "memory_mb": int(req.get("memory_mb", 512)),
         "storage_gb": int(req.get("storage_gb", 0)),
         "region": req.get("region", ""),
+        "egress_mode": egress_mode,
         "tap": tap,
         "host_ip": host_ip,
         "guest_ip": guest_ip,
@@ -783,16 +872,14 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         else:
             meta["ssh_ready"] = True
             # Fix up guest networking: add default route + DNS if missing.
-            ssh_exec(guest_ip, (
-                "ip route show default | grep -q . || ip route add default via "
-                f"{host_ip}; grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || "
-                "echo nameserver 1.1.1.1 > /etc/resolv.conf"
-            ))
+            ssh_exec(guest_ip, guest_network_fixup(host_ip, egress_mode))
         save_meta(meta)
     except Exception:
         # Roll back on failure.
         stop_firecracker(meta)
         del_agent_forward(host_port, guest_ip)
+        if egress_mode == "proxy":
+            purge_forward_rule(tap, iface, "DROP")
         teardown_tap(tap)
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -810,6 +897,11 @@ def destroy_vm(vm_id: str) -> None:
         # endpoints written before the protocol field existed are tcp.
         del_expose_forward(endpoint["host_port"], meta["guest_ip"],
                            endpoint["port"], endpoint.get("protocol", "tcp"))
+    release_egress(meta)
+    if meta.get("egress_mode") == "proxy":
+        # the drop would otherwise outlive the tap and block the next direct
+        # vm that lands on this index.
+        purge_forward_rule(meta["tap"], host_iface(), "DROP")
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     # Snapshots are NOT under vm_dir any more (see SNAPSHOTS_DIR), so this
@@ -1052,7 +1144,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])
     iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
+    tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
         add_agent_forward(meta["host_port"], guest_ip, iface)
@@ -2218,6 +2310,15 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+                    if action == "egress" and method == "POST":
+                        body = self._read_json()
+                        return self._json(200, provision_egress(vm_id, body))
+                    if action == "egress" and method == "DELETE":
+                        meta = load_meta(vm_id)
+                        if not meta:
+                            raise HTTPError(404, "vm not found")
+                        release_egress(meta)
+                        return self._text(204, "")
                     if action == "fork" and method == "POST":
                         # Seeds a NEW vm from vm_id's snapshot. Holds vm_id's
                         # lock (the source must not be restored/destroyed
@@ -2286,7 +2387,7 @@ def reattach_vms() -> None:
             # Recreate TAP + DNAT using the stored index/ports.
             teardown_tap(meta["tap"])
             iface = host_iface()
-            tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
+            tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
             if "host_port" in meta:
                 del_agent_forward(meta["host_port"], guest_ip)

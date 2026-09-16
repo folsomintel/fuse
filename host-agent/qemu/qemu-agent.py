@@ -909,7 +909,14 @@ def create_vm(req: dict) -> dict:
     Returns the vm meta dict.
     """
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
-    vm_id = sanitize_name(name) 
+    vm_id = sanitize_name(name)
+    # this backend is one host with no one to test the proxy-mode netfilter
+    # work against, so it refuses anything but direct egress. a refusal is
+    # honest where a silent direct would leave the control plane believing
+    # the vm is proxied. checked before any allocation, like the image.
+    egress_mode = (req.get("egress") or {}).get("mode") or "direct"
+    if egress_mode != "direct":
+        raise HTTPError(400, f"egress mode {egress_mode!r} is not supported on the qemu backend; only direct egress is")
     
     # Resolve the source rootfs before any allocation, so a rejected or unknown
     # image fails fast with no vm dir, tap, forward, or gpu claim to roll back.
@@ -1781,6 +1788,17 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+                    # the egress wire exists here so the answer is explicit:
+                    # no backend can be brought up on this host, and there is
+                    # never anything to release. create_vm already refuses
+                    # proxy mode, so a release is a no-op by construction.
+                    if action == "egress" and method == "POST":
+                        self._read_json()
+                        raise HTTPError(501, "egress backends are not supported on the qemu backend; only direct egress is")
+                    if action == "egress" and method == "DELETE":
+                        if not load_meta(vm_id):
+                            raise HTTPError(404, "vm not found")
+                        return self._text(204, "")
             # Capacity
             if path == "/v1/capacity" and method == "GET":
                 return self._json(200, host_capacity())
