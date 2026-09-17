@@ -43,7 +43,7 @@ type UnknownProviderError struct {
 
 func (e *UnknownProviderError) Error() string {
 	if len(e.Known) == 0 {
-		return fmt.Sprintf("egress: unknown provider %q (no egress providers are registered", e.Name)
+		return fmt.Sprintf("egress: unknown provider %q (no egress providers are registered)", e.Name)
 	}
 	return fmt.Sprintf("egress: unknown provider %q (registered: %s)", e.Name, strings.Join(e.Known, ", "))
 }
