@@ -219,6 +219,16 @@ class EgressSpec(_Model):
     protocol: Optional[str] = None
 
 
+class EgressHealth(_Model):
+    # the proxy endpoint's last probe verdict. state is "unknown" until the
+    # first probe, then "healthy" or "unhealthy"; unhealthy means the
+    # environment currently has no egress at all, never direct egress.
+    # reason is the backend-level failure, empty while healthy.
+    state: str = ""
+    reason: str = ""
+    checked_at: Optional[datetime] = None
+
+
 class EgressStatus(_Model):
     # how the environment's outbound traffic is actually routed. mode is
     # always set; provider, protocol and endpoint are present only for proxy
@@ -227,6 +237,7 @@ class EgressStatus(_Model):
     provider: str = ""
     protocol: str = ""
     endpoint: str = ""
+    health: Optional[EgressHealth] = None
 
 
 class CreateRequest(_Model):

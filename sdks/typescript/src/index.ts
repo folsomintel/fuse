@@ -28,6 +28,7 @@ export type {
   DesktopSpec,
   EgressSpec,
   EgressStatus,
+  EgressHealth,
   ComputerAction,
   ComputerResult,
   ComputerDisplay,

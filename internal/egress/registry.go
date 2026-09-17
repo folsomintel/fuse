@@ -43,10 +43,25 @@ type UnknownProviderError struct {
 
 func (e *UnknownProviderError) Error() string {
 	if len(e.Known) == 0 {
-		return fmt.Sprintf("egress: unknown provider %q (no egress providers are registered", e.Name)
+		return fmt.Sprintf("egress: unknown provider %q (no egress providers are registered)", e.Name)
 	}
 	return fmt.Sprintf("egress: unknown provider %q (registered: %s)", e.Name, strings.Join(e.Known, ", "))
 }
+
+// ProvisionError is a backend's refusal or failure to come up, wrapped so a
+// caller can tell an egress failure apart from every other boot failure and
+// name the provider in what it reports.
+type ProvisionError struct {
+	Provider string
+	VMID     string
+	Err      error
+}
+
+func (e *ProvisionError) Error() string {
+	return fmt.Sprintf("egress: provision %s for %s: %v", e.Provider, e.VMID, e.Err)
+}
+
+func (e *ProvisionError) Unwrap() error { return e.Err }
 
 func (r *Registry) Provision(ctx context.Context, spec Spec, ec Context) (Endpoint, error) {
 	spec = spec.Normalize()
@@ -63,7 +78,7 @@ func (r *Registry) Provision(ctx context.Context, spec Spec, ec Context) (Endpoi
 	ec.Protocol = spec.Protocol
 	ep, err := p.Provision(ctx, ec)
 	if err != nil {
-		return Endpoint{}, fmt.Errorf("egress: provision %s for %s: %w", spec.Provider, ec.VMID, err)
+		return Endpoint{}, &ProvisionError{Provider: spec.Provider, VMID: ec.VMID, Err: err}
 	}
 	if ep.Provider == "" {
 		ep.Provider = spec.Provider

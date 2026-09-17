@@ -434,6 +434,22 @@ func run() error {
 		egressRegistry.Register(mock)
 		logger.Warn("egress: mock backend registered; it provides no privacy or isolation and is for local development only")
 	}
+	// cloudflare warp is registered only when a credential is configured:
+	// a zero trust service token (enrolled headlessly on the host through
+	// mdm.xml) or a consumer warp+ license. the credential lives here and
+	// travels to the host per request; it is never persisted by the host or
+	// shown to the guest.
+	warpCfg := egress.WarpConfig{
+		Organization:     env("ORCH_EGRESS_WARP_ORG", ""),
+		AuthClientID:     env("ORCH_EGRESS_WARP_CLIENT_ID", ""),
+		AuthClientSecret: env("ORCH_EGRESS_WARP_CLIENT_SECRET", ""),
+		License:          env("ORCH_EGRESS_WARP_LICENSE", ""),
+		ProxyPort:        envInt("ORCH_EGRESS_WARP_PROXY_PORT", 0),
+	}
+	if warpCfg.Enabled() {
+		egressRegistry.Register(egress.NewWarp(warpCfg))
+		logger.Info("egress: cloudflare-warp backend registered")
+	}
 
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
 		Provider:            provider,

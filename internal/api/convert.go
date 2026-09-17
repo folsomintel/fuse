@@ -35,12 +35,22 @@ func toAPIEgress(s egress.Status) *EgressStatus {
 	if mode == "" {
 		mode = egress.ModeDirect
 	}
-	return &EgressStatus{
+	out := &EgressStatus{
 		Mode:     string(mode),
 		Provider: s.Provider,
 		Protocol: string(s.Protocol),
 		Endpoint: s.Endpoint,
 	}
+	// health only means something for a proxy: direct has no endpoint to
+	// probe, so the field is omitted rather than reporting "unknown".
+	if mode == egress.ModeProxy {
+		state := s.Health.State
+		if state == "" {
+			state = egress.HealthUnknown
+		}
+		out.Health = &EgressHealth{State: string(state), Reason: s.Health.Reason, CheckedAt: s.Health.CheckedAt}
+	}
+	return out
 }
 
 // toOrchestratorEgress converts a wire egress block into the orchestrator

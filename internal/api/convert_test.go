@@ -237,11 +237,32 @@ func TestToOrchestratorEgress(t *testing.T) {
 // rather than an empty mode.
 func TestToAPIEgress(t *testing.T) {
 	got := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"})
-	if got == nil || *got != (EgressStatus{Mode: "proxy", Provider: "mock", Protocol: "socks5", Endpoint: "socks5h://10.200.3.1:1080"}) {
+	if got == nil || got.Mode != "proxy" || got.Provider != "mock" || got.Protocol != "socks5" || got.Endpoint != "socks5h://10.200.3.1:1080" {
 		t.Errorf("egress = %+v", got)
 	}
-	if got := toAPIEgress(egress.Status{}); got == nil || *got != (EgressStatus{Mode: "direct"}) {
-		t.Errorf("zero status = %+v, want {Mode: direct}", got)
+	if got := toAPIEgress(egress.Status{}); got == nil || got.Mode != "direct" || got.Health != nil {
+		t.Errorf("zero status = %+v, want {Mode: direct} with no health", got)
+	}
+}
+
+// TestToAPIEgressHealth checks the probe verdict reaches the wire for a
+// proxy, reads as unknown before the first probe, and is omitted for direct,
+// which has no endpoint to probe.
+func TestToAPIEgressHealth(t *testing.T) {
+	checked := time.Now().UTC().Truncate(time.Second)
+	got := toAPIEgress(egress.Status{
+		Mode: egress.ModeProxy, Provider: "mock", Endpoint: "socks5h://10.200.3.1:1080",
+		Health: egress.Health{State: egress.HealthUnhealthy, Reason: "dial: connection refused", CheckedAt: checked},
+	})
+	if got.Health == nil || got.Health.State != "unhealthy" || got.Health.Reason != "dial: connection refused" || !got.Health.CheckedAt.Equal(checked) {
+		t.Errorf("health = %+v", got.Health)
+	}
+	fresh := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock"})
+	if fresh.Health == nil || fresh.Health.State != "unknown" {
+		t.Errorf("unprobed proxy health = %+v, want unknown", fresh.Health)
+	}
+	if direct := toAPIEgress(egress.Status{Mode: egress.ModeDirect}); direct.Health != nil {
+		t.Errorf("direct health = %+v, want omitted", direct.Health)
 	}
 }
 

@@ -130,10 +130,12 @@ The whole point of computer use is running untrusted, model-chosen actions
 with a browser present. What Fuse gives you today: each environment is its
 own Firecracker microVM with its own kernel, and the computer surface is
 bearer-authenticated end to end (your API key to the orchestrator, a per-VM
-guest token from the orchestrator to the agent). What it does not give you
-yet: per-environment egress policy — the browser can reach whatever the host
-can. Treat the environment as a blast-radius boundary, not a network policy,
-and keep secrets out of desktop environments a model is driving.
+guest token from the orchestrator to the agent). Outbound traffic is a
+per-environment policy: with [`egress: proxy`](/docs/guides/egress) the
+browser can reach the internet only through the proxy the host hands it, and
+a fetch that ignores the proxy gets nothing. That is a route, not a content
+filter, so treat the environment as a blast-radius boundary rather than an
+allowlist, and keep secrets out of desktop environments a model is driving.
 
 ## Read next
 

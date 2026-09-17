@@ -62,6 +62,14 @@ is what keeps the state store and the real provider fleet in sync:
   which is unset by default: environments that don't ask for idle expiry never
   get it. `orchestrator_reconcile_idle_vms_suspected_total` is the first-strike
   leading indicator.
+- `orchestrator_fleet_egress_endpoints{provider,state}` is the live count of
+  proxy egress endpoints. A non-zero `state="unhealthy"` series means those
+  environments currently have no outbound access at all: proxy mode is enforced
+  on the host's tap, so a dead backend never falls back to direct egress.
+  `orchestrator_egress_provision_failures_total{provider}` increasing means
+  proxy-mode creates are failing at boot because the backend would not come
+  up; `orchestrator_egress_teardown_failures_total{provider}` means a backend
+  is being leaked on destroy and the host needs a look.
 
 **Fleet size drift**: `orchestrator_fleet_tracked_vms` (what the state store
 thinks exists) versus `orchestrator_fleet_provider_vms` (what the provider
@@ -92,6 +100,7 @@ saturation cannot be broken down by route.
 | `/ready` returning `503` for 2+ minutes | Critical | The orchestrator can't serve traffic; likely a Postgres outage. |
 | `rate(orchestrator_http_requests_total{code=~"5.."}[5m]) > 0` sustained | Warning | Server errors on the API surface. |
 | `orchestrator_reconcile_orphans_dead_lettered_total` increasing | Warning | VMs stuck in an unrecoverable state, needs manual cleanup. |
+| `orchestrator_fleet_egress_endpoints{state="unhealthy"} > 0` for 2+ cycles | Warning | Proxy-mode environments with no outbound access; the backend on that host is down. |
 
 ## What isn't covered
 

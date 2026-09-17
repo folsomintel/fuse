@@ -546,6 +546,32 @@ pub struct EgressStatus {
     pub protocol: Option<EgressProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The endpoint's last probe verdict; proxy only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<EgressHealth>,
+}
+
+string_enum! {
+    /// The verdict of the orchestrator's last probe of a proxy endpoint.
+    pub enum EgressHealthState {
+        /// No probe has run yet.
+        Unknown => "unknown",
+        /// The most recent probe reached the backend.
+        Healthy => "healthy",
+        /// It did not. The environment has no egress, never direct egress.
+        Unhealthy => "unhealthy",
+    }
+}
+
+/// One probe verdict on a proxy endpoint. `reason` is the backend-level
+/// failure, empty while healthy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressHealth {
+    pub state: EgressHealthState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked_at: Option<String>,
 }
 
 /// The body of [`Environments::create`](crate::Environments::create).

@@ -194,6 +194,21 @@ func renderEnvDetail(e *fuse.EnvironmentInfo, display *fuse.ComputerDisplay) {
 			if eg.Endpoint != "" {
 				egress += "  " + eg.Endpoint
 			}
+			// the probe verdict, with its reason when the proxy is down:
+			// an unhealthy proxy means no egress, which is worth seeing.
+			if h := eg.Health; h != nil {
+				switch h.State {
+				case fuse.EgressHealthUnhealthy:
+					egress += "  " + styleBad.Render(h.State)
+					if h.Reason != "" {
+						egress += "  " + styleBad.Render(h.Reason)
+					}
+				case fuse.EgressHealthHealthy:
+					egress += "  " + h.State
+				default:
+					egress += "  " + styleWarn.Render(h.State)
+				}
+			}
 		}
 		pairs = append(pairs, [2]string{"egress", egress})
 	}

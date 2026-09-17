@@ -109,7 +109,10 @@ type Health struct {
 	CheckedAt time.Time   `json:"checked_at"`
 }
 
-// is useless to anyone not already inside the sandbox.
+// Status is the resolved policy as echoed back on an environment: never a
+// credential, and the endpoint only because it is a host-local address that
+// is useless to anyone not already inside the sandbox. Health is live,
+// refreshed by the orchestrator's reconcile pass and never persisted.
 type Status struct {
 	Mode     Mode     `json:"mode"`
 	Provider string   `json:"provider,omitempty"`

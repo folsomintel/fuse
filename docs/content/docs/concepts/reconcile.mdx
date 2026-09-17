@@ -32,8 +32,10 @@ Each cycle, in order:
 4. **Fail stuck tasks** that have exceeded their runtime ceiling.
 5. **Read health verdicts** back from the guests of environments that declared a
    [`healthcheck`](/docs/concepts/fusefile#healthcheck).
-6. **Garbage-collect snapshots** past the retention window.
-7. **Reap** destroyed VMs and return their capacity to the host.
+6. **Probe egress endpoints** of environments running with
+   [`egress: proxy`](/docs/concepts/fusefile#egress).
+7. **Garbage-collect snapshots** past the retention window.
+8. **Reap** destroyed VMs and return their capacity to the host.
 
 :::warning[Known limitation]
 A failure listing VMs from any host aborts the entire cycle, it does not isolate
@@ -138,6 +140,29 @@ restarting the orchestrator drops them until each guest is read again; a VM
 recovered across a restart is not polled at all, because the probe it was created
 with is not persisted.
 
+## Egress health
+
+The second reporting pass. An environment running with
+[`egress: proxy`](/docs/concepts/fusefile#egress) was handed a proxy endpoint at
+boot; each cycle the loop asks that endpoint's provider to probe it (for a socks5
+backend, a full method negotiation, not just a TCP connect) and records the
+verdict on the VM, where it surfaces as `egress.health` on the environment. It
+reads `unknown` until the first probe. A transition to `unhealthy` emits a
+`vm.egress_degraded` event carrying the provider and the backend-level reason.
+
+Unlike the guest healthcheck, a probe that fails **is** the verdict: the provider
+returns an error precisely because the reason is what a caller needs to see.
+
+Nothing acts on `unhealthy`, and that is the point. Proxy mode is enforced on the
+host's tap, not by the proxy being up, so a proxy that dies leaves the
+environment with **no** egress rather than direct egress. Nothing reinstalls a
+direct route, nothing tears the environment down, and its backend record is
+kept so teardown can still release it. Silently restoring direct access is the
+one outcome a caller who asked for proxy egress can never tolerate.
+
+Only proxy-mode environments are probed, so a fleet that never asks for egress
+pays nothing. Probes run concurrently, each bounded at 5 seconds.
+
 ## Dead letters
 
 Orphans that exhaust their retries, tasks failed for being stuck, and
@@ -180,6 +205,9 @@ visible rather than silent:
 | `orchestrator_reconcile_vms_missing_provider_total` | Tracked VMs the provider lost. |
 | `orchestrator_reconcile_health_checked_vms` | Environments that answered their healthcheck this cycle. |
 | `orchestrator_reconcile_health_failing_vms` | Environments whose healthcheck reported `failing` this cycle. |
+| `orchestrator_fleet_egress_endpoints` | Provisioned proxy endpoints, labelled by `provider` and health `state`. |
+| `orchestrator_egress_provision_failures_total` | Proxy backends that failed to come up at boot, by `provider`. |
+| `orchestrator_egress_teardown_failures_total` | Proxy backends that failed to release on teardown, by `provider`. |
 
 A persistent gap between `fleet_tracked_vms` and `fleet_provider_vms` is the
 signal worth alerting on, it means the two views of the world are diverging.

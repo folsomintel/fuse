@@ -260,7 +260,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `healthcheck.retries` | int | Consecutive failures that flip the verdict to `failing`. Omit for the guest agent's default (`3`). A single failed attempt is never a verdict. |
 | `healthcheck.start_period` | string | Go duration measured from the first attempt, during which failures are not counted. It ends for good once the probe passes once. |
 | `desktop` | `{width, height}` | The geometry of the environment's graphical session, both required, 320 to 3840 each. Requires an image baked with the desktop stack; on any other image the block is inert. Omit the whole block to keep a desktop image's baked default. See [Desktop](#desktop). |
-| `egress` | `{mode, provider, protocol}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend on the host (`mock` today), and takes an optional `protocol` of `socks5` (the default) or `http`. With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
+| `egress` | `{mode, provider, protocol}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`. With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
 | `secrets` | list of strings | Secret *names* this environment requires. An empty name is rejected: nothing you could pass to `--secret` would satisfy it. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
 ## Naming an environment
@@ -495,6 +495,47 @@ unhealthy *inside the guest*: nothing about it reaches the orchestrator.
 The top-level `healthcheck:` is about the environment as a whole, is evaluated
 by the guest agent, and its verdict travels back to the control plane. Both can
 be set on the same Fusefile; they do not interact.
+
+## Egress
+
+```yaml
+egress:
+  mode: proxy
+  provider: cloudflare-warp
+  protocol: socks5 # the default for proxy; or http
+```
+
+`egress:` is the environment's outbound traffic policy. Omit the block, or
+write `mode: direct`, and the guest gets NAT straight out of the host, exactly
+as every environment did before the block existed. `mode: proxy` routes every
+outbound connection through a backend on the host: the orchestrator
+provisions it at boot, hands the guest its endpoint, probes it on every
+reconcile tick and releases it at teardown.
+
+With `proxy` the host installs **no direct route at all**: the forward rule
+that would carry the guest's packets out is replaced by a drop. A workload
+that ignores the proxy gets no egress rather than direct egress, and a proxy
+that dies after boot leaves the environment with no egress rather than
+falling back. That is why `provider` and `protocol` are rejected under
+`mode: direct` instead of ignored: an author who wrote them believes they
+asked for proxying and did not.
+
+`provider` is required for `proxy` and names a backend the orchestrator has
+registered. The vocabulary is open, the Fusefile parser does not know which
+backends exist, so an unknown name is refused by the orchestrator with a
+`400` listing the ones it has.
+
+| Provider | What it is |
+| --- | --- |
+| `mock` | An in-process socks5 server inside the orchestrator, for local development. No privacy or isolation. `fuse local` registers it. |
+| `cloudflare-warp` | Cloudflare WARP on the host, one connection shared by that host's proxy-mode environments. Speaks `socks5` and `http`. |
+
+`protocol` is how the workload talks to the proxy, `socks5` (the default) or
+`http`. Proxy mode leaves the guest with no working local resolver by design,
+so names have to be resolved at the proxy: `socks5h://`, which is what the
+injected variables carry, or http CONNECT, which always does. The
+[egress guide](/docs/guides/egress) covers the DNS consequences, which
+variables reach which surface, and what a failure looks like.
 
 ## Desktop
 

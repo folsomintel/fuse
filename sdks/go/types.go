@@ -104,7 +104,22 @@ const (
 
 	EgressProtocolSOCKS5 = "socks5"
 	EgressProtocolHTTP   = "http"
+
+	// Egress health states, carried in EgressHealth.State. Unknown until the
+	// orchestrator's first probe; unhealthy means the environment currently
+	// has no egress at all, never direct egress.
+	EgressHealthUnknown   = "unknown"
+	EgressHealthHealthy   = "healthy"
+	EgressHealthUnhealthy = "unhealthy"
 )
+
+// EgressHealth is the proxy endpoint's last probe verdict. Reason is the
+// backend-level failure, empty while healthy.
+type EgressHealth struct {
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	CheckedAt time.Time `json:"checked_at,omitempty"`
+}
 
 // EgressSpec routes the environment's outbound traffic. Omit it (or leave
 // Mode empty) for direct egress, which is what every request written before
@@ -128,6 +143,9 @@ type EgressStatus struct {
 	Provider string `json:"provider,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+	// Health is the endpoint's last probe verdict, present only for proxy
+	// egress and only from a server that probes.
+	Health *EgressHealth `json:"health,omitempty"`
 }
 
 // DesktopSpec is the geometry of the environment's graphical session (the
