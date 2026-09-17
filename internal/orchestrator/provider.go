@@ -705,7 +705,7 @@ func bootRestore(ctx context.Context, p Provider, existing Environment, in bootI
 	// Re-upload the agent's files (manifest/secrets/credentials all live in
 	// AgentSpec.Files, populated by the profile). Credential files carry the
 	// SetToken side effect via setTokenIfSupported below.
-	_ = uploadFiles(ctx, existing, in.agentSpec.Files)
+	_ = uploadFiles(ctx, existing, withEgressFiles(in.agentSpec.Files, egressStatus, existing))
 	setTokenIfSupported(existing, in.creds)
 	if err := runStartupScript(ctx, existing, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
 		releaseEgress(ctx, p, existing, in, egressStatus)
@@ -746,8 +746,10 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 	// Upload everything the agent profile declared. For fused this is the
 	// manifest, secrets JSON, and (when present) the TLS/auth credential
 	// files. The guest is responsible for mounting any sensitive paths on
-	// tmpfs (see PRD-08 for the fused profile's /fuse contract).
-	if err := uploadFiles(ctx, env, in.agentSpec.Files); err != nil {
+	// tmpfs (see PRD-08 for the fused profile's /fuse contract). the egress
+	// files ride the same pass, so the proxy variables exist before the
+	// startup script runs.
+	if err := uploadFiles(ctx, env, withEgressFiles(in.agentSpec.Files, egressStatus, env)); err != nil {
 		releaseEgress(ctx, p, env, in, egressStatus)
 		return nil, err
 	}

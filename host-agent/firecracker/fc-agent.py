@@ -401,6 +401,14 @@ EXPOSE_PROTOCOLS = {"tcp", "udp"}
 EGRESS_MODES = {"direct", "proxy"}
 EGRESS_PROVIDERS: dict[str, tuple] = {}
 
+# sourced ahead of every exec'd command and every attach that names a
+# command. both run as a non-login `bash -c` over ssh, which reads neither
+# /etc/profile.d nor /fuse/env, so the proxy variables the orchestrator
+# writes to /etc/profile.d/fuse-egress.sh would otherwise reach the startup
+# script and a login shell but not `fuse exec`. the guard keeps a guest
+# booted by an older orchestrator, which wrote no such file, unchanged.
+EGRESS_ENV_PREFIX = "[ -r /etc/profile.d/fuse-egress.sh ] && . /etc/profile.d/fuse-egress.sh; "
+
 def parse_egress_mode(req: dict) -> str:
     egress = req.get("egress") or {}
     mode = egress.get("mode") or "direct"
@@ -1576,7 +1584,7 @@ def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     timeout = EXEC_TIMEOUT_MAX
     if timeout_ms and timeout_ms > 0:
         timeout = min(timeout_ms / 1000.0, EXEC_TIMEOUT_MAX)
-    remote = " ".join(shlex.quote(c) for c in cmd)
+    remote = EGRESS_ENV_PREFIX + " ".join(shlex.quote(c) for c in cmd)
     rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=timeout)
     return {
         "exit_code": rc,
@@ -1884,9 +1892,13 @@ def attach_argv(guest_ip: str, cmd: list[str]) -> list[str]:
 
     -tt forces a pty on the far side even though ssh's own stdin is already
     one; without it a command given to ssh runs without a terminal. An empty
-    cmd means the guest's login shell.
+    cmd means the guest's login shell, which reads /etc/profile.d itself; a
+    named command runs non-login and gets the egress variables sourced ahead
+    of it, the same as do_exec.
     """
-    return SSH_BASE + ["-tt", f"root@{guest_ip}"] + list(cmd)
+    if cmd:
+        return SSH_BASE + ["-tt", f"root@{guest_ip}", EGRESS_ENV_PREFIX] + list(cmd)
+    return SSH_BASE + ["-tt", f"root@{guest_ip}"]
 
 
 def do_attach(handler, vm_id: str, spec: dict) -> None:
