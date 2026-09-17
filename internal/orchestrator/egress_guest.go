@@ -112,7 +112,7 @@ func egressNoProxy(listenIP, guestIP string) []string {
 // a copy, because AgentSpec.Files is shared by the restore and fresh paths
 // and the endpoint differs per boot.
 func withEgressFiles(files map[string][]byte, status egress.Status, env Environment) map[string][]byte {
-	out := make(map[string][]byte, len(files)+3)
+	out := make(map[string][]byte)
 	for path, data := range files {
 		out[path] = data
 	}
