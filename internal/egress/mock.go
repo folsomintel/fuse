@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"strconv"
 	"sync"
 	"syscall"
@@ -125,32 +124,10 @@ func (m *Mock) Provision(_ context.Context, ec Context) (Endpoint, error) {
 // socks5 method negotiation, so a port held by something that is not a
 // socks server is not reported healthy.
 func (m *Mock) Healthcheck(ctx context.Context, ep Endpoint) error {
-	u, err := url.Parse(ep.URL)
-	if err != nil {
-		return fmt.Errorf("mock: endpoint url: %w", err)
+	if ep.Protocol == "" {
+		ep.Protocol = ProtocolSOCKS5
 	}
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", u.Host)
-	if err != nil {
-		return fmt.Errorf("dial %s: %w", u.Host, err)
-	}
-	defer func() { _ = conn.Close() }()
-	deadline := time.Now().Add(5 * time.Second)
-	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
-		deadline = d
-	}
-	_ = conn.SetDeadline(deadline)
-	if _, err := conn.Write([]byte{5, 1, 0}); err != nil {
-		return fmt.Errorf("socks5 greeting to %s: %w", u.Host, err)
-	}
-	reply := make([]byte, 2)
-	if _, err := io.ReadFull(conn, reply); err != nil {
-		return fmt.Errorf("socks5 greeting to %s: %w", u.Host, err)
-	}
-	if reply[0] != 5 || reply[1] != 0 {
-		return fmt.Errorf("socks5 greeting to %s: unexpected reply %v", u.Host, reply)
-	}
-	return nil
+	return ProbeEndpoint(ctx, ep)
 }
 
 // Destroy implements Provider. it closes the listener and forgets it, and
