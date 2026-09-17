@@ -346,6 +346,112 @@ class DestroyVMTest(unittest.TestCase):
         self.assertNotIn(PURGE_DROP, calls)
 
 
+class WarpBackendTest(unittest.TestCase):
+    """the cloudflare-warp backend: one warp per host, refcounted, and the
+    credential travels to the script on stdin and nowhere else."""
+
+    SECRET = "svc-secret-0123456789abcdef"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        refs = Path(self.tmp.name) / "warp-refs"
+        p = mock.patch.object(fc_agent, "WARP_REFS_DIR", refs)
+        p.start()
+        self.addCleanup(p.stop)
+        self.runs = []
+        self.sudos = []
+
+        def fake_run(cmd, check=True, input_bytes=None):
+            self.runs.append((list(cmd), input_bytes))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        def fake_sudo(cmd, check=True):
+            self.sudos.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        for name, fake in (("run", fake_run), ("sudo", fake_sudo)):
+            p = mock.patch.object(fc_agent, name, side_effect=fake)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def meta(self, vm_id, idx=3):
+        return {"vm_id": vm_id, "tap": f"fcv{idx}", "host_ip": f"10.200.{idx}.1", "guest_ip": f"10.200.{idx}.2"}
+
+    def body(self, **overrides):
+        b = {"provider": "cloudflare-warp", "protocol": "socks5", "listen_ip": "10.200.3.1",
+             "config": {"WARP_ORG": "acme", "WARP_CLIENT_ID": "client-0123456789", "WARP_CLIENT_SECRET": self.SECRET}}
+        b.update(overrides)
+        return b
+
+    def script_calls(self, verb):
+        return [c for c in self.runs if c[0][-1] == verb] + [(c, None) for c in self.sudos if verb in c]
+
+    def test_first_vm_brings_warp_up_with_the_credential_on_stdin_only(self):
+        ep = fc_agent.warp_provision(self.meta("vm-a"), self.body())
+        self.assertEqual(ep, {"url": "socks5h://10.200.3.1:1080", "protocol": "socks5"})
+        ups = [c for c in self.runs if "up" in c[0]]
+        self.assertEqual(len(ups), 1)
+        argv, stdin = ups[0]
+        self.assertNotIn(self.SECRET, " ".join(argv))
+        self.assertIn(f"WARP_CLIENT_SECRET={self.SECRET}\n", stdin.decode())
+        self.assertIn("WARP_ORG=acme\n", stdin.decode())
+        # no sudo call ever carries it either.
+        for c in self.sudos:
+            self.assertNotIn(self.SECRET, " ".join(c))
+        self.assertIn(["bash", str(fc_agent.WARP_SCRIPT), "attach", "fcv3", "10.200.3.1", "1080"], self.sudos)
+        self.assertEqual(fc_agent.warp_refs(), {"vm-a"})
+
+    def test_second_vm_shares_the_running_warp(self):
+        fc_agent.warp_provision(self.meta("vm-a", 3), self.body())
+        self.runs.clear(); self.sudos.clear()
+        ep = fc_agent.warp_provision(self.meta("vm-b", 4), self.body(protocol="http"))
+        self.assertEqual(ep, {"url": "http://10.200.4.1:1080", "protocol": "http"})
+        self.assertEqual([c for c in self.runs if "up" in c[0]], [], "warp brought up twice")
+        self.assertIn(["bash", str(fc_agent.WARP_SCRIPT), "attach", "fcv4", "10.200.4.1", "1080"], self.sudos)
+        self.assertEqual(fc_agent.warp_refs(), {"vm-a", "vm-b"})
+
+    def test_last_vm_out_tears_warp_down(self):
+        fc_agent.warp_provision(self.meta("vm-a", 3), self.body())
+        fc_agent.warp_provision(self.meta("vm-b", 4), self.body())
+        self.sudos.clear()
+        fc_agent.warp_destroy(self.meta("vm-a", 3))
+        self.assertIn(["bash", str(fc_agent.WARP_SCRIPT), "detach", "fcv3", "10.200.3.1", "1080"], self.sudos)
+        self.assertNotIn(["bash", str(fc_agent.WARP_SCRIPT), "down"], self.sudos, "torn down with a vm still attached")
+        self.sudos.clear()
+        fc_agent.warp_destroy(self.meta("vm-b", 4))
+        self.assertIn(["bash", str(fc_agent.WARP_SCRIPT), "down"], self.sudos)
+        self.assertEqual(fc_agent.warp_refs(), set())
+        # a second destroy is a no-op that still runs the idempotent detach.
+        fc_agent.warp_destroy(self.meta("vm-b", 4))
+
+    def test_a_backend_that_does_not_come_up_is_a_502_without_the_credential(self):
+        def failing_run(cmd, check=True, input_bytes=None):
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=f"[warp] refused: bad token {self.SECRET}\n".encode())
+
+        with mock.patch.object(fc_agent, "run", side_effect=failing_run):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.warp_provision(self.meta("vm-a"), self.body())
+        self.assertEqual(caught.exception.code, 502)
+        self.assertNotIn(self.SECRET, caught.exception.msg)
+        self.assertIn("[REDACTED]", caught.exception.msg)
+        self.assertEqual(fc_agent.warp_refs(), set(), "a failed provision must hold no ref")
+
+    def test_rejects_bad_protocol_missing_credential_and_unknown_keys(self):
+        for body, want in (
+            (self.body(protocol="udp"), 400),
+            (self.body(config={"WARP_ORG": "acme"}), 400),
+            (self.body(config={"WARP_LICENSE": "k", "EVIL": "x"}), 400),
+        ):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.warp_provision(self.meta("vm-a"), body)
+            self.assertEqual(caught.exception.code, want)
+        self.assertEqual(self.runs, [], "a refused request must not touch the host")
+
+    def test_registered_under_its_name(self):
+        self.assertIn("cloudflare-warp", fc_agent.EGRESS_PROVIDERS)
+
+
 class ExecEnvTest(unittest.TestCase):
     """exec'd commands and attach-with-command run as a non-login bash -c
     over ssh, which reads no profile, so the agent sources the egress hook

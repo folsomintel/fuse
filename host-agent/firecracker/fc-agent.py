@@ -468,6 +468,70 @@ def release_egress(meta: dict) -> None:
     meta.pop("egress", None)
     save_meta(meta)
 
+
+# -- cloudflare warp backend --------------------------------------------------
+# one warp-svc per host in its own network namespace, refcounted across the
+# host's proxy-mode vms: the first provision brings it up, the last release
+# tears it down. fc-warp.sh owns every host-side mechanism (namespace, veth,
+# unit, registration, per-tap rules); this table entry owns the refcount and
+# the credential's one-way trip from the request to the script's stdin.
+
+WARP_PROVIDER = "cloudflare-warp"
+WARP_SCRIPT = FC_DIR / "fc-warp.sh"
+# the port the proxy is published on at each vm's tap address. one port for
+# every vm, because the tap address already differs per vm.
+WARP_GUEST_PORT = int(os.environ.get("FUSE_WARP_GUEST_PORT", "1080"))
+WARP_REFS_DIR = STATE_DIR / "warp-refs"
+WARP_CONFIG_KEYS = {"WARP_ORG", "WARP_CLIENT_ID", "WARP_CLIENT_SECRET", "WARP_LICENSE", "WARP_PROXY_PORT"}
+
+
+def warp_refs() -> set[str]:
+    """the vm ids currently holding the host's warp. a file per vm, so the
+    count survives an agent restart and a crash mid-teardown leaves a
+    visible stale ref rather than a leaked daemon."""
+    if not WARP_REFS_DIR.exists():
+        return set()
+    return {p.name for p in WARP_REFS_DIR.iterdir()}
+
+
+def warp_provision(meta: dict, body: dict) -> dict:
+    protocol = body.get("protocol") or "socks5"
+    if protocol not in ("socks5", "http"):
+        raise HTTPError(400, f"cloudflare-warp: unsupported protocol {protocol!r} (want socks5 or http)")
+    config = body.get("config") or {}
+    unknown = sorted(set(config) - WARP_CONFIG_KEYS)
+    if unknown:
+        raise HTTPError(400, f"cloudflare-warp: unknown config keys {unknown}")
+    if not (config.get("WARP_LICENSE") or config.get("WARP_CLIENT_SECRET")):
+        raise HTTPError(400, "cloudflare-warp: the request carries no credential")
+    # the credential rides stdin as KEY=value lines. an argument or a sudo
+    # env assignment would put it in every process listing on the host.
+    lines = "".join(f"{k}={v}\n" for k, v in config.items())
+    if not warp_refs():
+        cp = run(["sudo", "-n", "bash", str(WARP_SCRIPT), "up"], check=False, input_bytes=lines.encode())
+        if cp.returncode != 0:
+            detail = cp.stderr.decode(errors="replace").strip().splitlines()
+            reason = detail[-1] if detail else f"exit {cp.returncode}"
+            for v in config.values():
+                if len(v) >= 8:
+                    reason = reason.replace(v, "[REDACTED]")
+            raise HTTPError(502, f"cloudflare-warp: {reason}")
+    sudo(["bash", str(WARP_SCRIPT), "attach", meta["tap"], meta["host_ip"], str(WARP_GUEST_PORT)])
+    WARP_REFS_DIR.mkdir(parents=True, exist_ok=True)
+    (WARP_REFS_DIR / meta["vm_id"]).touch()
+    scheme = "socks5h" if protocol == "socks5" else "http"
+    return {"url": f"{scheme}://{meta['host_ip']}:{WARP_GUEST_PORT}", "protocol": protocol}
+
+
+def warp_destroy(meta: dict) -> None:
+    sudo(["bash", str(WARP_SCRIPT), "detach", meta["tap"], meta["host_ip"], str(WARP_GUEST_PORT)], check=False)
+    (WARP_REFS_DIR / meta["vm_id"]).unlink(missing_ok=True)
+    if not warp_refs():
+        sudo(["bash", str(WARP_SCRIPT), "down"], check=False)
+
+
+EGRESS_PROVIDERS[WARP_PROVIDER] = (warp_provision, warp_destroy)
+
 def _free_host_port(protocol: str = "tcp") -> int:
     """Picks a free host port by binding to port 0 and reading it back, then
     closing the socket. There is an inherent (small) race between this and
