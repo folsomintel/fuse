@@ -51,6 +51,38 @@ if err := client.Environments.Destroy(ctx, env.ID); err != nil {
   second call on an already-gone environment returns a `not_found`
   `*APIError` rather than panicking or hanging.
 
+## Proxied egress
+
+`Egress` on `CreateRequest` routes the environment's outbound traffic through
+a provider the orchestrator has registered; leave it nil for direct egress.
+Every read carries the resolved policy back as an `*EgressStatus`, with the
+proxy's last probe verdict under `Health`:
+
+```go
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID: "scrape-1",
+	Egress: &fuse.EgressSpec{Mode: fuse.EgressModeProxy, Provider: "cloudflare-warp"},
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+info, err := client.Environments.Get(ctx, env.ID)
+if err != nil {
+	log.Fatal(err)
+}
+if h := info.Egress.Health; h != nil && h.State == fuse.EgressHealthUnhealthy {
+	// the environment is still running, with no egress at all
+	log.Printf("proxy down: %s", h.Reason)
+}
+```
+
+`Egress` is nil only from a server that predates the field, and `Health` is
+nil until the orchestrator has probed the endpoint once. The mode, protocol
+and health constants (`EgressModeProxy`, `EgressProtocolHTTP`,
+`EgressHealthUnhealthy`, ...) are plain strings. See the
+[egress guide](/docs/guides/egress) for what proxy mode enforces.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

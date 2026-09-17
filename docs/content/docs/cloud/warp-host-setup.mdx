@@ -1,0 +1,170 @@
+---
+title: WARP egress host setup
+sidebar:
+  icon: globe
+description: Running Cloudflare WARP on a Firecracker host as the cloudflare-warp egress provider
+---
+
+The `cloudflare-warp` [egress provider](/docs/guides/egress#providers) routes
+a proxy-mode environment's outbound traffic through Cloudflare's network. The
+host side is one `warp-svc` per host, running in its own network namespace and
+shared by every proxy-mode environment on that host. This page is the
+bring-up: what the host needs, how it enrols with Cloudflare, what the
+orchestrator has to know, and how to operate it.
+
+:::warning[New, and not yet exercised on a production host]
+This provider is new. The contract below is what the code implements and what
+the end-to-end suite exercises against the `mock` provider; the WARP half has
+not yet been run on a production host under real traffic. Expect the
+operational details (unit behaviour, enrolment quirks, Cloudflare-side limits)
+to be refined once it has. Treat the `mock` provider as the thing that is
+proven, and this one as the thing that is wired.
+:::
+
+## Requirements
+
+- A working [Firecracker host](/docs/cloud/firecracker-host-setup): `fc-agent`
+  running, environments booting. WARP is added on top; it changes nothing
+  about hosts that never see a proxy-mode environment.
+- Linux `x86_64`, with `ip netns` support in the kernel and iproute2. The agent
+  runs `warp-svc` in a namespace named `fuse-warp`, so the host's own routing
+  and DNS are untouched.
+- One of the two Cloudflare credentials below: a **Zero Trust service token**
+  for headless enrolment into an organisation, or a **consumer WARP+ licence
+  key**.
+- `fc-deps.sh` installs the rest, including the `cloudflare-warp` package
+  (which ships `warp-svc` and `warp-cli`) on apt or dnf. Re-run it on an
+  existing host to add it.
+
+## Install
+
+```bash
+cd ~/fc/host-agent/firecracker
+
+# 0. host dependencies, now including the cloudflare-warp package
+./fc-deps.sh
+
+# 1. create the fuse-warp namespace, write the systemd unit, enable it
+sudo ./fc-warp.sh install
+
+# 2. restart the agent so it registers the provider
+./fc-agent.sh restart
+```
+
+`fc-warp.sh install` places `ops/systemd/fuse-warp.service` as the unit that
+owns `warp-svc` inside the namespace. It is idempotent and safe to re-run.
+The agent registers `cloudflare-warp` as a host provider once this has run;
+a proxy-mode create naming it against a host that has not is refused with
+`unknown egress provider 'cloudflare-warp' (this host has: none)`.
+
+## Registration
+
+WARP has to enrol with Cloudflare before it will carry traffic, and there are
+two ways to do that headlessly. Pick one; the orchestrator's configuration
+decides which.
+
+**Zero Trust service token.** The organisation route. In the Cloudflare Zero
+Trust dashboard create a service token (Access, Service Auth) and note the
+team name, client id and client secret. `warp-svc` enrols from an `mdm.xml`
+file, which is how Cloudflare supports managed, non-interactive registration:
+the host agent writes one under `/var/lib/cloudflare-warp/` carrying the
+organisation and the service token, and `warp-svc` registers the device on
+start. Device posture, gateway policies and logging are then whatever your
+Zero Trust organisation applies to that device.
+
+**WARP+ licence key.** The consumer route. A `1.1.1.1` WARP+ subscription
+gives you a licence key; `warp-cli registration license <key>` binds the
+device to it. No organisation, no dashboard policy, just the tunnel.
+
+Both routes end in the same place: a registered device whose proxy listener
+speaks socks5 and http CONNECT, which is why the provider accepts both
+`protocol: socks5` and `protocol: http` on a Fusefile.
+
+## What the orchestrator knows
+
+The orchestrator registers `cloudflare-warp` at startup when it finds one of
+these two credential sets in its environment. With neither, the provider is
+not registered and every proxy-mode create naming it is a `400` listing what
+is.
+
+| Variable | Meaning |
+| --- | --- |
+| `ORCH_EGRESS_WARP_ORG` | The Zero Trust team name. |
+| `ORCH_EGRESS_WARP_CLIENT_ID` | The service token's client id. |
+| `ORCH_EGRESS_WARP_CLIENT_SECRET` | The service token's client secret. All three together select the Zero Trust route. |
+| `ORCH_EGRESS_WARP_LICENSE` | A consumer WARP+ licence key. Selects the consumer route on its own. |
+
+Put them in `/etc/fuse/orchestrator.env` next to the other
+[orchestrator settings](/docs/cloud/orchestrator-deploy) and restart it.
+
+### Where the credential goes, and where it never goes
+
+The credential lives in orchestrator configuration and travels to the host
+agent **per request**, inside the provision call for one environment. That is
+the whole of its journey:
+
+- **Never in `meta.json`.** The agent's per-vm record holds the provider name,
+  the protocol and the endpoint url. The provision request's config is used
+  and dropped.
+- **Never in a log line.** Neither the orchestrator nor the agent logs the
+  provision body. The orchestrator's egress log lines carry the vm id, the
+  provider and the health state, nothing else.
+- **Never in the guest.** The three guest files (`/etc/fuse/egress.json`,
+  `/etc/fuse/egress.env`, `/etc/profile.d/fuse-egress.sh`) carry the endpoint
+  and the bypass set. The endpoint is a host-local address, not a secret.
+- **On the host disk only under `/var/lib/cloudflare-warp/`**, which is
+  warp's own state directory (the `mdm.xml` and the registration it
+  produces). Nothing else on the host persists it.
+
+Rotate it by changing the orchestrator's environment and restarting; the next
+provision carries the new value.
+
+## Operating
+
+```bash
+systemctl status fuse-warp             # the unit owning warp-svc in the namespace
+sudo ip netns exec fuse-warp warp-cli status
+sudo ip netns exec fuse-warp warp-cli registration show
+journalctl -u fuse-warp -f
+```
+
+**The namespace.** `warp-svc` runs inside `fuse-warp`, so the host's default
+route, resolver and firewall never see the tunnel. The proxy listener is what
+crosses the boundary: for each proxy-mode vm the agent publishes an endpoint
+on that vm's tap address (`10.200.<N>.1`), which is the only address the
+guest can reach and the only one the agent will accept as `listen_ip`.
+
+**Refcounting.** One `warp-svc` serves every proxy-mode vm on the host. The
+first proxy-mode provision on a host runs `fc-warp.sh up`, later ones share
+the running daemon, and each release drops one reference; the last release
+runs `fc-warp.sh down`, which disconnects, stops the unit and deletes the
+namespace and veth. The references are files under the agent's state dir,
+so they survive an agent restart and a crash mid-teardown leaves a visible
+stale reference rather than a leaked daemon. Destroying a vm always releases
+its reference, on the normal path and on the reconcile cleanup and
+orphan-reaping paths.
+
+**Health.** The orchestrator probes every proxy-mode endpoint on its
+reconcile tick and records the verdict as `egress.health` on the environment.
+A `warp-svc` that stops answering shows up as `unhealthy` with the dial error
+as the reason, and a `vm.egress_degraded` event; the environments keep
+running with no egress. Nothing restarts the unit for you: that is
+`systemctl restart fuse-warp`, after which the next probe flips the verdict
+back. See [Reconciliation](/docs/concepts/reconcile#egress-health).
+
+**Cloudflare's per-request timeout.** WARP's proxy mode imposes a 10 second
+timeout on each proxied request, on Cloudflare's side. A slow origin or a
+large upload that does not complete inside it is cut off by the proxy, not by
+anything in Fuse, and there is no knob here to raise it. Workloads that need
+long-lived connections through the proxy should expect this.
+
+## What this is not
+
+The provider decides the path packets take and makes every other path
+impossible. It is not an anti-bot or captcha capability, it provides no ip
+rotation (one host's environments share one WARP connection and one exit
+address), and nothing inspects or filters what goes through it. The
+[egress guide](/docs/guides/egress#what-this-is-not) says the same thing
+from the Fusefile author's side, and
+[Security hardening](/docs/cloud/security#proxy-egress-is-a-policy-not-a-filter)
+states the exact guarantee.
