@@ -87,6 +87,7 @@
     },
     "healthcheck": { "$ref": "#/$defs/envHealthcheck" },
     "desktop": { "$ref": "#/$defs/desktop" },
+    "egress": { "$ref": "#/$defs/egress" },
     "startup_timeout": {
       "allOf": [{ "$ref": "#/$defs/duration" }],
       "description": "Go duration bounding build + run. Omit for the orchestrator default (30s)."
@@ -374,6 +375,29 @@
           "minimum": 320,
           "maximum": 3840,
           "description": "Display height in pixels."
+        }
+      }
+    },
+    "egress": {
+      "type": "object",
+      "description": "Outbound traffic policy. Omit the block for direct egress. With mode proxy the host installs no direct route at all, so a workload that ignores the proxy gets no egress rather than direct egress.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["direct", "proxy"],
+          "default": "direct",
+          "description": "direct sends guest traffic straight out of the host; proxy routes it through a provider on the host. Defaults to direct."
+        },
+        "provider": {
+          "type": "string",
+          "description": "The proxy backend on the host, e.g. \"mock\". Required when mode is proxy and rejected when it is direct."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["socks5", "http"],
+          "default": "socks5",
+          "description": "What the proxy speaks. Only valid with mode proxy. Defaults to socks5."
         }
       }
     },
