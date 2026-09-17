@@ -1,0 +1,27 @@
+version: 1
+
+# proxy mode through the in-process mock backend. the orchestrator has to be
+# started with ORCH_EGRESS_MOCK=true (fuse local does that); a fleet without
+# the backend refuses this create with "unknown provider", which is the
+# honest answer and not a fallback to direct.
+#
+# the mock provides no privacy or isolation whatsoever. what this case proves
+# is the policy: the variables reach the startup script and exec'd commands,
+# traffic flows through the endpoint, a bare fetch is dropped, and dns fails
+# closed rather than resolving outside the tunnel.
+egress:
+  mode: proxy
+  provider: mock
+
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+
+# the startup script runs under sh -lc, so /etc/profile.d applies and the
+# variable is already exported here.
+run: |
+  printf '%s' "${HTTP_PROXY:-unset}" > /workspace/proxy.marker
+
+workspace: /workspace

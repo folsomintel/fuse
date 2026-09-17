@@ -1,0 +1,11 @@
+version: 1
+name: computer-use-verify
+image: desktop
+
+desktop:
+  width: 1280
+  height: 800
+
+resources:
+  cpus: 2
+  memory: 4GB

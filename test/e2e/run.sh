@@ -392,7 +392,72 @@ if selected services; then
   fi
 fi
 
-# --- 8. negative cases -------------------------------------------------------
+# --- 8. egress ---------------------------------------------------------------
+
+if selected egress; then
+  head_ "egress: direct is unchanged, proxy is enforced"
+
+  if up egress-direct "$FF/Fusefile.egress-direct"; then
+    ok "direct environment created"
+    expect "direct writes a policy file saying so" "direct" \
+      "$(guest egress-direct 'sed -n "s/.*\"mode\":\"\([a-z]*\)\".*/\1/p" /etc/fuse/egress.json')"
+    # unset, not empty: an empty HTTP_PROXY is not the same thing to every
+    # client that reads it.
+    expect "direct sets no proxy variable in run"  "unset" "$(guest egress-direct 'cat /workspace/proxy.marker')"
+    expect "direct sets no proxy variable in exec" "unset" "$(guest egress-direct 'printf %s "${HTTP_PROXY:-unset}"')"
+    expect "direct reaches the internet" "301" \
+      "$(guest egress-direct 'curl -s -o /dev/null -w "%{http_code}" -m 10 http://1.1.1.1/')"
+    DETAIL="$("$FUSE" -o json environment get "$(env_id egress-direct)" 2>/dev/null)"
+    contains "api reports direct" '"mode":"direct"' "$(printf '%s' "$DETAIL" | tr -d ' \n')"
+  else
+    bad "direct environment created"; note "$(tail -5 "$WORK/egress-direct.log")"
+  fi
+
+  if up egress-proxy "$FF/Fusefile.egress-proxy"; then
+    ok "proxy environment created"
+    DETAIL="$("$FUSE" -o json environment get "$(env_id egress-proxy)" 2>/dev/null)"
+    EGRESS="$(printf '%s' "$DETAIL" | tr -d ' \n' | grep -o '"egress":{[^}]*}')"
+    contains "api reports proxy" '"mode":"proxy"' "$EGRESS"
+    ENDPOINT="$(printf '%s' "$EGRESS" | grep -o '"endpoint":"[^"]*"' | sed 's/"endpoint":"\(.*\)"/\1/')"
+    note "endpoint: $ENDPOINT"
+
+    # every `guest` call here is an exec over the control plane, so each one
+    # that answers is also the proof that proxy mode did not cut the
+    # orchestrator off from fused.
+    expect "control plane reaches fused in proxy mode" "up" "$(guest egress-proxy 'echo up')"
+
+    # the variables have to reach every surface: the startup script (a login
+    # shell, wrote the marker), an exec'd command (non-login, sourced by the
+    # host agent), and a non-root reader of the policy file.
+    expect "run script saw HTTP_PROXY" "$ENDPOINT" "$(guest egress-proxy 'cat /workspace/proxy.marker')"
+    expect "exec sees HTTP_PROXY"      "$ENDPOINT" "$(guest egress-proxy 'printf %s "${HTTP_PROXY:-unset}"')"
+    expect "exec sees http_proxy"      "$ENDPOINT" "$(guest egress-proxy 'printf %s "${http_proxy:-unset}"')"
+    contains "no_proxy bypasses loopback" "127.0.0.1" "$(guest egress-proxy 'printf %s "${NO_PROXY:-}"')"
+    contains "policy file is readable by a non-root user" "$ENDPOINT" \
+      "$(guest egress-proxy 'su -s /bin/sh nobody -c "cat /etc/fuse/egress.json" 2>/dev/null')"
+
+    # enforcement, which is the whole point: through the proxy works, around
+    # it does not, and a name lookup fails rather than leaking to a resolver
+    # outside the tunnel.
+    expect "fetch through the proxy" "301" \
+      "$(guest egress-proxy 'curl -s -o /dev/null -w "%{http_code}" -m 20 --proxy "$HTTP_PROXY" http://1.1.1.1/')"
+    expect "fetch around the proxy is dropped" "000" \
+      "$(guest egress-proxy 'curl -s -o /dev/null -w "%{http_code}" -m 8 --noproxy "*" http://1.1.1.1/')"
+    expect "dns fails closed" "failed" \
+      "$(guest egress-proxy 'getent hosts example.com >/dev/null 2>&1 && echo resolved || echo failed')"
+    expect "fetch by name through the proxy resolves at the proxy" "200" \
+      "$(guest egress-proxy 'curl -s -o /dev/null -w "%{http_code}" -m 20 --proxy "$HTTP_PROXY" http://example.com/')"
+  else
+    bad "proxy environment created"; note "$(tail -5 "$WORK/egress-proxy.log")"
+    if grep -q "unknown provider" "$WORK/egress-proxy.log" 2>/dev/null; then
+      note "the orchestrator has no mock backend registered: start it with"
+      note "ORCH_EGRESS_MOCK=true (fuse local does). a fleet without the backend"
+      note "refusing this create is correct; it must never fall back to direct."
+    fi
+  fi
+fi
+
+# --- 9. negative cases -------------------------------------------------------
 
 if selected negative; then
   head_ "negative: the refusals"
@@ -463,6 +528,18 @@ if selected negative; then
   else
     bad "placement.host gate is not relaxed"
     destroy_one "$(env_id badhost)"
+  fi
+
+  # An egress backend the orchestrator has not registered is refused before
+  # any environment exists, naming the provider. Never a fallback to direct.
+  OUT="$("$FUSE" up -f "$NEG/Fusefile.egress-unknown-provider" --task-id "$(task_id egress-unknown)" 2>&1)"
+  if [ $? -ne 0 ]; then
+    ok "unknown egress provider is refused"
+    contains "refusal names the provider" "no-such-backend" "$OUT"
+  else
+    bad "unknown egress provider is refused"
+    note "booted an environment that asked for a backend nobody has"
+    destroy_one "$(env_id egress-unknown)"
   fi
 
   # A run that never returns must fail on the startup timeout.
