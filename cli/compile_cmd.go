@@ -75,6 +75,13 @@ type compiledHealthcheckHTTP struct {
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 }
 
+// compiledEgress mirrors fuse.EgressSpec with yaml tags added.
+type compiledEgress struct {
+	Mode     string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+}
+
 // compiledDesktop mirrors fuse.DesktopSpec with yaml tags added.
 type compiledDesktop struct {
 	Width  int `json:"width" yaml:"width"`
@@ -111,8 +118,11 @@ type compiledRequest struct {
 	Healthcheck *compiledHealthcheck `json:"healthcheck,omitempty" yaml:"healthcheck,omitempty"`
 	// Desktop is the graphical session's geometry, absent when the Fusefile
 	// declared none.
-	Desktop        *compiledDesktop `json:"desktop,omitempty" yaml:"desktop,omitempty"`
-	SeedSnapshotID string           `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
+	Desktop *compiledDesktop `json:"desktop,omitempty" yaml:"desktop,omitempty"`
+	// Egress is the outbound traffic policy, absent when the Fusefile
+	// declared none, which the orchestrator reads as direct.
+	Egress         *compiledEgress `json:"egress,omitempty" yaml:"egress,omitempty"`
+	SeedSnapshotID string          `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
 	// StartupScriptTimeoutSeconds bounds setup + run. Zero means the author
 	// asked for no bound and the orchestrator's default applies.
 	StartupScriptTimeoutSeconds int64    `json:"startup_script_timeout_seconds,omitempty" yaml:"startup_script_timeout_seconds,omitempty"`
@@ -263,6 +273,9 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 	if d := c.Desktop; d != nil {
 		req.Desktop = &compiledDesktop{Width: d.Width, Height: d.Height}
 	}
+	if eg := c.Egress; eg != nil {
+		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol)}
+	}
 	return req
 }
 
@@ -389,6 +402,17 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 	if d := req.Desktop; d != nil {
 		_, _ = fmt.Fprintf(w, "\ndesktop\n")
 		_, _ = fmt.Fprintf(w, "  %-15s %dx%d\n", "geometry", d.Width, d.Height)
+	}
+
+	if eg := req.Egress; eg != nil {
+		_, _ = fmt.Fprintf(w, "\negress\n")
+		_, _ = fmt.Fprintf(w, "  %-15s %s\n", "mode", eg.Mode)
+		// provider and protocol only mean something for proxy, and the
+		// compiler leaves both empty for direct.
+		if eg.Mode == string(fusefile.EgressModeProxy) {
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "provider", eg.Provider)
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "protocol", eg.Protocol)
+		}
 	}
 
 	if len(c.RequiredSecrets) > 0 {

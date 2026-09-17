@@ -724,6 +724,25 @@ class EgressTest(unittest.TestCase):
         handler = self.route("DELETE", "/v1/vm/missing/egress")
         self.assertEqual(handler._text.call_args.args[0], 404)
 
+    def test_exec_sources_the_egress_hook_first(self):
+        self.create({"name": "plain"})
+        with mock.patch.object(qemu_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+            qemu_agent.do_exec("plain", ["env"])
+        remote = ssh.call_args.args[1]
+        self.assertTrue(remote.startswith(qemu_agent.EGRESS_ENV_PREFIX), remote)
+        self.assertTrue(remote.endswith("env"), remote)
+
+    def test_attach_with_command_sources_the_hook_and_bare_attach_does_not(self):
+        with_cmd = qemu_agent.attach_argv("10.200.1.2", ["bash"])
+        self.assertEqual(with_cmd[-2:], [qemu_agent.EGRESS_ENV_PREFIX, "bash"])
+        bare = qemu_agent.attach_argv("10.200.1.2", [])
+        self.assertEqual(bare[-2:], ["-tt", "root@10.200.1.2"])
+
+    def test_vm_public_reports_tap_ends_and_direct(self):
+        pub = qemu_agent.vm_public({"vm_id": "vm-a", "url": "u", "host_ip": "10.200.1.1", "guest_ip": "10.200.1.2"})
+        self.assertEqual(pub["egress_mode"], "direct")
+        self.assertEqual((pub["host_ip"], pub["guest_ip"]), ("10.200.1.1", "10.200.1.2"))
+
 
 if __name__ == "__main__":
     unittest.main()

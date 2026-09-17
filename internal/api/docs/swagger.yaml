@@ -42,6 +42,8 @@ definitions:
     type: object
   api.CreateEnvironmentRequest:
     properties:
+      egress:
+        $ref: '#/definitions/api.EgressSpec'
       expose:
         items:
           $ref: '#/definitions/api.ExposeSpec'
@@ -91,10 +93,32 @@ definitions:
       url:
         type: string
     type: object
+  api.EgressSpec:
+    properties:
+      mode:
+        type: string
+      protocol:
+        type: string
+      provider:
+        type: string
+    type: object
+  api.EgressStatus:
+    properties:
+      endpoint:
+        type: string
+      mode:
+        type: string
+      protocol:
+        type: string
+      provider:
+        type: string
+    type: object
   api.Environment:
     properties:
       created_at:
         type: string
+      egress:
+        $ref: '#/definitions/api.EgressStatus'
       endpoints:
         items:
           $ref: '#/definitions/api.Endpoint'

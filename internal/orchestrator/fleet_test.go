@@ -71,8 +71,12 @@ func (e *mockEnv) execCommands() [][]string {
 	return out
 }
 
-func (e *mockEnv) Upload(_ context.Context, _ []byte, _ string) error      { return nil }
-func (e *mockEnv) StartAgent(_ context.Context, _ AgentSpec) error         { return nil }
+func (e *mockEnv) Upload(_ context.Context, _ []byte, _ string) error { return nil }
+func (e *mockEnv) StartAgent(_ context.Context, _ AgentSpec) error    { return nil }
+
+// EgressAddresses reports loopback for both ends so an in-process egress
+// backend has something bindable in tests.
+func (e *mockEnv) EgressAddresses() (string, string)                       { return "127.0.0.1", "127.0.0.1" }
 func (e *mockEnv) Checkpoint(_ context.Context, _ string) (string, error)  { return "cp-1", nil }
 func (e *mockEnv) Restore(_ context.Context, _ string) error               { return nil }
 func (e *mockEnv) ListCheckpoints(_ context.Context) ([]Checkpoint, error) { return nil, nil }

@@ -74,9 +74,10 @@ pub use events::EventStream;
 pub use hosts::{HostPage, Hosts, ListHostsOptions};
 pub use snapshots::{ListSnapshotsOptions, SnapshotPage, Snapshots};
 pub use types::{
-    ApiKey, Arch, CreateRequest, CreatedApiKey, DesktopSpec, Endpoint, EnvironmentInfo,
-    EnvironmentState, Event, EventKind, ExposeSpec, ForkOptions, GpuDevice, Health, HealthState,
-    HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, Host, HostBackend, HostCapacity, HostState,
-    MigInstance, MissReason, Protocol, RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind,
-    SnapshotMode, SnapshotRequest, SnapshotState, Spec, VersionInfo,
+    ApiKey, Arch, CreateRequest, CreatedApiKey, DesktopSpec, EgressMode, EgressProtocol,
+    EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind,
+    ExposeSpec, ForkOptions, GpuDevice, Health, HealthState, HealthcheckHttp, HealthcheckProbe,
+    HealthcheckSpec, Host, HostBackend, HostCapacity, HostState, MigInstance, MissReason, Protocol,
+    RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest,
+    SnapshotState, Spec, VersionInfo,
 };

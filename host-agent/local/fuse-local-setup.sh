@@ -225,8 +225,14 @@ start_stack() {
   if pid_running "$DIR/orchestrator.pid" "bin/orchestrator"; then
     log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid"))"
   else
+    # the mock egress backend runs inside the orchestrator and binds the
+    # host side of each vm's tap, which is reachable here because the
+    # orchestrator and fc-agent share this machine. it provides no privacy
+    # or isolation; it is what lets a proxy-mode environment be exercised
+    # end to end locally.
     ORCH_AUTH_TOKEN="${ORCH_AUTH_TOKEN:?ORCH_AUTH_TOKEN is required}" \
     ORCH_LISTEN=":${ORCH_PORT}" \
+    ORCH_EGRESS_MOCK=true \
       nohup "$DIR/bin/orchestrator" >"$DIR/orchestrator.log" 2>&1 &
     echo $! > "$DIR/orchestrator.pid"
     log "orchestrator started on :$ORCH_PORT (pid $!)"

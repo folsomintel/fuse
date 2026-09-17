@@ -33,6 +33,12 @@ The orchestrator has to be current too. The `env` block is resolved
 orchestrator-side, so a stale orchestrator silently drops it while the CLI
 happily compiles it.
 
+The `egress` case needs the orchestrator started with `ORCH_EGRESS_MOCK=true`,
+which registers the in-process mock proxy backend (`fuse local` does this).
+Against a fleet without it the proxy create is refused with "unknown provider",
+which the case reports as a failure with that hint rather than skipping: a
+fleet that quietly booted the environment direct would be the real bug.
+
 ## In CI
 
 `.github/workflows/e2e.yml` runs this suite on every `v*.*.*` tag, and on demand
@@ -63,16 +69,17 @@ the prefix is touched, so a run cannot disturb environments it did not create.
 
 ## The cases
 
-| Case      | Fusefile               | What it proves                                                                                                               |
-| --------- | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| baseline  | `Fusefile.baseline`    | scheduling, boot, build steps, run, workspace, per-step `workdir` scoping                                                    |
-| env       | `Fusefile.env-secrets` | top-level `env` literals and secret refs reach build and run; secrets stay out of the startup script                         |
-| cache-env | `Fusefile.cache-env`   | whether `env` reaches build steps on the layer-cache path as well as the startup-script path                                 |
-| files     | `Fusefile.files-copy`  | `files` content and modes, `copy` directory walking, relative paths resolving against a non-default `workspace`              |
-| cache     | `Fusefile.cache`       | `--plan`, layer reuse across two builds, `fuse build` artifacts, `fuse up --from-build`                                      |
-| health    | `Fusefile.healthcheck` | the probe verdict reaching the orchestrator API, and `expose` reachable from outside the host                                |
-| services  | `Fusefile.services`    | compose services and service-env secrets                                                                                     |
-| negative  | `negative/*`           | the refusals: bad manifests, missing secrets, over-provisioning, GPU on a GPU-less fleet, unknown host pin, a blocking `run` |
+| Case      | Fusefile               | What it proves                                                                                                                                               |
+| --------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| baseline  | `Fusefile.baseline`    | scheduling, boot, build steps, run, workspace, per-step `workdir` scoping                                                                                    |
+| env       | `Fusefile.env-secrets` | top-level `env` literals and secret refs reach build and run; secrets stay out of the startup script                                                         |
+| cache-env | `Fusefile.cache-env`   | whether `env` reaches build steps on the layer-cache path as well as the startup-script path                                                                 |
+| files     | `Fusefile.files-copy`  | `files` content and modes, `copy` directory walking, relative paths resolving against a non-default `workspace`                                              |
+| cache     | `Fusefile.cache`       | `--plan`, layer reuse across two builds, `fuse build` artifacts, `fuse up --from-build`                                                                      |
+| health    | `Fusefile.healthcheck` | the probe verdict reaching the orchestrator API, and `expose` reachable from outside the host                                                                |
+| services  | `Fusefile.services`    | compose services and service-env secrets                                                                                                                     |
+| egress    | `Fusefile.egress-*`    | direct is unchanged and reaches out; proxy sets the variables in run and exec, fetches only through the proxy, drops a fetch around it, and fails DNS closed |
+| negative  | `negative/*`           | the refusals: bad manifests, missing secrets, over-provisioning, GPU on a GPU-less fleet, unknown host pin, unknown egress provider, a blocking `run`        |
 
 Negative cases are as load-bearing as positive ones. A scheduler that accepts a
 512-CPU request, or a `placement.host` gate that degrades into a preference,

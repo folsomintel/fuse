@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/egress"
 )
 
 // TaskRunStatus captures the lifecycle of a task assignment.
@@ -90,8 +92,41 @@ type VMRecord struct {
 	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token (nil for legacy VMs)
 	SecretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
 	Endpoints          []Endpoint // published endpoints (e.g. ingress), if any
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	// Egress is the resolved outbound policy. persisted so a restarted
+	// orchestrator knows which backend to release on teardown; the health
+	// inside it is not meaningful once stored and is not written.
+	Egress    egress.Status
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// persistedEgress is the stored shape of VMRecord.Egress: the policy and
+// the endpoint, never the live health. the column defaults to '{}', which
+// unmarshals to the zero value and reads as direct.
+type persistedEgress struct {
+	Mode     egress.Mode     `json:"mode,omitempty"`
+	Provider string          `json:"provider,omitempty"`
+	Protocol egress.Protocol `json:"protocol,omitempty"`
+	Endpoint string          `json:"endpoint,omitempty"`
+}
+
+func marshalEgress(s egress.Status) ([]byte, error) {
+	return json.Marshal(persistedEgress{Mode: s.Mode, Provider: s.Provider, Protocol: s.Protocol, Endpoint: s.Endpoint})
+}
+
+func unmarshalEgress(raw []byte) (egress.Status, error) {
+	var p persistedEgress
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return egress.Status{}, err
+		}
+	}
+	// a row written before the column existed, or by a direct vm, reads
+	// as direct rather than as an empty mode.
+	if p.Mode == "" {
+		p.Mode = egress.ModeDirect
+	}
+	return egress.Status{Mode: p.Mode, Provider: p.Provider, Protocol: p.Protocol, Endpoint: p.Endpoint}, nil
 }
 
 // TaskRecord tracks durable task assignment/run metadata.

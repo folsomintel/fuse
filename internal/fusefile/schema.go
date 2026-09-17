@@ -86,6 +86,13 @@ type Fusefile struct {
 	// stays nil all the way down, the same contract Healthcheck has.
 	Desktop *Desktop `yaml:"desktop,omitempty"`
 
+	// Egress routes the environment's outbound traffic. Nil means direct,
+	// which is what every Fusefile written before the block existed meant,
+	// and it stays nil all the way down, the same contract Healthcheck and
+	// Desktop have: nothing downstream has to tell "no block" apart from
+	// "a block that asked for the default".
+	Egress *Egress `yaml:"egress,omitempty"`
+
 	// StartupTimeout bounds the generated startup script (build + run) as a
 	// go duration, e.g. "45s". Empty means the orchestrator's default. The
 	// orchestrator rejects a value above its configured ceiling rather than
@@ -483,6 +490,30 @@ type Desktop struct {
 	Width int `yaml:"width"`
 	// Height is the display height in pixels.
 	Height int `yaml:"height"`
+}
+
+// Egress is the outbound traffic policy: direct (the default) or proxied
+// through a provider on the host.
+//
+// The three fields are a policy, not a preference: with `mode: proxy` the
+// host installs no direct route at all, so a workload that ignores the proxy
+// gets no egress rather than direct egress. That is why a provider or a
+// protocol on a direct block is rejected instead of ignored; the author
+// believes they asked for proxying and did not.
+type Egress struct {
+	// Mode is "direct" or "proxy". Empty means direct, filled in by
+	// compileEgress so the wire always carries an explicit value.
+	Mode EgressMode `yaml:"mode,omitempty"`
+
+	// Provider names the proxy backend on the host ("mock" today). It is
+	// required when Mode is proxy and rejected otherwise. The vocabulary is
+	// open: which providers exist is the host's business, not the parser's.
+	Provider string `yaml:"provider,omitempty"`
+
+	// Protocol is what the proxy speaks: "socks5" (the default for proxy)
+	// or "http". Empty means socks5, applied in compileEgress for the same
+	// reason expose's tcp default is applied in compileExpose.
+	Protocol EgressProtocol `yaml:"protocol,omitempty"`
 }
 
 // EnvValue is either a literal value or a secret reference. exactly one is set.

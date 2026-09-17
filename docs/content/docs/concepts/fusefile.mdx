@@ -197,6 +197,13 @@ healthcheck:
   retries: 12       # consecutive failures that flip the verdict to failing
   start_period: 10s # grace window before failures are counted
 
+# outbound traffic policy. omit the block for direct egress. proxy routes all
+# guest traffic through a provider on the host and installs no direct route.
+egress:
+  mode: proxy
+  provider: mock
+  protocol: socks5  # default for proxy; or http
+
 # secret names this environment requires. values are supplied out-of-band
 # (cli flag / env / secret store), never written in the Fusefile.
 secrets:
@@ -253,6 +260,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `healthcheck.retries` | int | Consecutive failures that flip the verdict to `failing`. Omit for the guest agent's default (`3`). A single failed attempt is never a verdict. |
 | `healthcheck.start_period` | string | Go duration measured from the first attempt, during which failures are not counted. It ends for good once the probe passes once. |
 | `desktop` | `{width, height}` | The geometry of the environment's graphical session, both required, 320 to 3840 each. Requires an image baked with the desktop stack; on any other image the block is inert. Omit the whole block to keep a desktop image's baked default. See [Desktop](#desktop). |
+| `egress` | `{mode, provider, protocol}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend on the host (`mock` today), and takes an optional `protocol` of `socks5` (the default) or `http`. With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
 | `secrets` | list of strings | Secret *names* this environment requires. An empty name is rejected: nothing you could pass to `--secret` would satisfy it. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
 ## Naming an environment

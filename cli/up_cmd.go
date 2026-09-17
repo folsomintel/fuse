@@ -254,6 +254,7 @@ func newUpCmd() *cobra.Command {
 				Expose:                      toSDKExpose(c.Expose),
 				Healthcheck:                 toSDKHealthcheck(c.Healthcheck),
 				Desktop:                     toSDKDesktop(c.Desktop),
+				Egress:                      toSDKEgress(c.Egress),
 				SeedSnapshotID:              seedID,
 				// the gateway carries a credential, so it is a flag rather
 				// than a Fusefile field. matching `fuse environment create`
@@ -467,6 +468,16 @@ func toSDKDesktop(in *fusefile.DesktopSpec) *fuse.DesktopSpec {
 		return nil
 	}
 	return &fuse.DesktopSpec{Width: in.Width, Height: in.Height}
+}
+
+// toSDKEgress converts the compiler's egress block into the SDK wire type.
+// Nil in, nil out: a Fusefile with no `egress:` block must send no egress,
+// which the server reads as direct.
+func toSDKEgress(in *fusefile.EgressSpec) *fuse.EgressSpec {
+	if in == nil {
+		return nil
+	}
+	return &fuse.EgressSpec{Mode: string(in.Mode), Provider: in.Provider, Protocol: string(in.Protocol)}
 }
 
 // missingSecrets returns the entries of required that have does not supply a

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -51,6 +52,31 @@ func TestQEMURemoteEnv_notSnapshotCapable(t *testing.T) {
 }
 
 // TestProviderImplementsInterface asserts New returns an orchestrator.Provider.
+// TestQEMUProvider_notEgressHostAgent is the egress guardrail: the qemu agent
+// refuses proxy mode outright, so the provider must not answer
+// egress.HostAgent. the orchestrator asserts on that interface to decide
+// whether a host-side backend can be driven; a qemu provider that implemented
+// it would let a proxy-mode create reach a host that cannot enforce it.
+func TestQEMUProvider_notEgressHostAgent(t *testing.T) {
+	p := New(Config{})
+	if _, ok := any(p).(egress.HostAgent); ok {
+		t.Fatalf("qemu provider must NOT implement egress.HostAgent")
+	}
+}
+
+// TestCreateOmitsEgressForDirect pins that a direct spec sends byte-for-byte
+// the create request an older agent expects, and a proxy spec carries the
+// mode so the agent can refuse it explicitly.
+func TestCreateOmitsEgressForDirect(t *testing.T) {
+	if w := egressWireFor(orchestrator.Spec{}); w != nil {
+		t.Fatalf("direct spec produced egress wire %+v, want nil", w)
+	}
+	w := egressWireFor(orchestrator.Spec{Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "mock"}})
+	if w == nil || w.Mode != "proxy" {
+		t.Fatalf("proxy spec produced egress wire %+v, want mode proxy", w)
+	}
+}
+
 func TestProviderImplementsInterface(t *testing.T) {
 	var _ orchestrator.Provider = New(Config{})
 }

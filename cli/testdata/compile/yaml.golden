@@ -22,6 +22,10 @@ expose:
   - port: 8080
     as: http
     protocol: tcp
+egress:
+  mode: proxy
+  provider: mock
+  protocol: socks5
 required_secrets:
   - api_token
   - pg_password
