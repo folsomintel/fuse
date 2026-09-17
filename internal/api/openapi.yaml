@@ -1940,6 +1940,59 @@ components:
           type: integer
           description: The guest-side port this endpoint publishes.
 
+    EgressSpec:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [direct, proxy]
+          default: direct
+          description: |
+            `direct` is NAT straight out of the host, exactly the behaviour
+            of an environment that never mentions egress. `proxy` routes
+            every outbound connection through a backend the orchestrator
+            provisions, health-checks and tears down. In proxy mode the host
+            installs no direct route at all, so a workload that ignores the
+            proxy gets no egress rather than direct egress.
+        provider:
+          type: string
+          description: |
+            The backend, required for `proxy`. The orchestrator refuses a
+            name it has not registered, and the error lists the ones it
+            has. `mock` is an in-process socks5 backend for local
+            development that provides no privacy or isolation.
+        protocol:
+          type: string
+          enum: [socks5, http]
+          default: socks5
+          description: |
+            How the workload talks to the proxy. Proxy mode leaves the guest
+            with no working local DNS by design, so a client must resolve
+            names at the proxy: `socks5h://`, or http CONNECT, which always
+            does.
+
+    EgressStatus:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [direct, proxy]
+        provider:
+          type: string
+          description: The backend serving this environment. Proxy only.
+        protocol:
+          type: string
+          enum: [socks5, http]
+          description: Proxy only.
+        endpoint:
+          type: string
+          description: |
+            The proxy url the workload was handed, e.g.
+            `socks5h://10.200.3.1:1080`. A host-local address useless to
+            anyone not already inside the sandbox, and never a credential.
+            Proxy only.
+
     CreateEnvironmentRequest:
       type: object
       required: [task_id, spec]
@@ -2018,6 +2071,16 @@ components:
             Graphical session geometry. Omit it for an environment with no
             desktop, in which case a desktop image keeps its baked default
             geometry.
+        egress:
+          allOf:
+            - $ref: "#/components/schemas/EgressSpec"
+          description: |
+            Outbound networking policy. Omit it for direct egress, which is
+            also what an explicit `{"mode": "direct"}` means; the two
+            produce identical behaviour and identical stored state. An
+            unknown `provider` is refused with 400 before any environment
+            exists, and a backend that fails to come up is a failed create
+            with no surviving environment.
 
     Environment:
       type: object
@@ -2067,6 +2130,14 @@ components:
             until the first verdict has been read back from the guest.
             The orchestrator refreshes it on the reconcile tick (30s by
             default), so it lags the guest by up to one tick.
+        egress:
+          allOf:
+            - $ref: "#/components/schemas/EgressStatus"
+          description: |
+            The resolved outbound policy. Always present on a server that
+            knows about egress: an environment created without asking
+            reports `direct`, so a caller can tell "not proxied" from "this
+            server predates the field".
 
     EnvironmentList:
       type: object

@@ -70,6 +70,11 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 			continue
 		}
 
+		// an orphan has no record of which egress backend it used, if any;
+		// ask them all. after the vm is gone, so a backend bound to its tap
+		// has nothing left to serve.
+		fm.releaseOrphanEgress(ctx, name)
+
 		// Success — clear retry counter.
 		fm.mu.Lock()
 		delete(fm.orphanRetries, name)

@@ -241,10 +241,7 @@ func TestRemote_destroy(t *testing.T) {
 func TestRemote_list(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := listVMResponse{}
-		resp.VMs = []struct {
-			VMID string `json:"vm_id"`
-			URL  string `json:"url"`
-		}{
+		resp.VMs = []listVMEntry{
 			{VMID: "vm-1", URL: "http://vm-1"},
 			{VMID: "vm-2", URL: "http://vm-2"},
 		}

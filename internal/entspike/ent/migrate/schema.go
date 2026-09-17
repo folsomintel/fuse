@@ -78,6 +78,7 @@ var (
 		{Name: "gpu_profile", Type: field.TypeString, Default: ""},
 		{Name: "gpu_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "mig_instance_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "egress_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 	}

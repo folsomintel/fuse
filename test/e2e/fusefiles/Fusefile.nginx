@@ -1,0 +1,41 @@
+version: 1
+
+# nginx in a box. the container comes up as a compose service (compose-on-podman
+# in the guest), publishes to the vm loopback as 80:80, and the environment
+# healthcheck probes it from inside the guest, so the readiness verdict the
+# orchestrator reports means nginx actually answered. expose makes the same
+# port reachable from outside the host.
+#
+# nginx:alpine for the same reason services uses redis:7-alpine: the pull is on
+# the create path, and a small image keeps it clear of the startup timeout.
+resources:
+  cpus: 1
+  memory: 1GB
+  storage: 4GB
+  max_runtime: 20m
+
+services:
+  nginx:
+    image: nginx:alpine
+    ports: [80]
+    restart: unless-stopped
+
+healthcheck:
+  http:
+    port: 80
+    path: /
+  interval: 5s
+  timeout: 2s
+  retries: 5
+  start_period: 30s
+
+expose:
+  - port: 80
+    as: http
+
+# starting the container is the guest agent's job at boot; run only has to not
+# block. the marker is something a runner can read back to prove run executed.
+run: |
+  echo "nginx env up" > /workspace/nginx.marker
+
+workspace: /workspace

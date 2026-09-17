@@ -58,6 +58,11 @@ type config struct {
 	// desktop is the declared desktop geometry's path, uploaded by the
 	// orchestrator like the healthcheck config. See desktop.go.
 	desktop string
+
+	// egress is the environment's egress policy as data, uploaded by the
+	// orchestrator on every boot. reported on /v1/info; fused never acts on
+	// it, because enforcement lives on the host's tap and not in the guest.
+	egress string
 }
 
 func parseFlags() config {
@@ -75,6 +80,7 @@ func parseFlags() config {
 	flag.StringVar(&c.healthState, "health-state", "/fuse/health.json", "path to write the healthcheck verdict for the orchestrator to read")
 	flag.StringVar(&c.display, "display", ":1", "X display the computer routes drive (desktop images only)")
 	flag.StringVar(&c.desktop, "desktop", "/fuse/desktop.json", "path to the declared desktop geometry (absent means the image default)")
+	flag.StringVar(&c.egress, "egress", "/etc/fuse/egress.json", "path to the environment's egress policy (absent means an orchestrator that predates it)")
 	flag.BoolVar(&c.insecure, "insecure", false, "run without TLS/auth (dev only)")
 	flag.BoolVar(&c.showVersion, "version", false, "print version and exit")
 	flag.Parse()
@@ -192,13 +198,20 @@ func newHandler(c config, authToken string, manifestBytes []byte, secretCount in
 		writeJSON(w, http.StatusOK, body)
 	})
 	mux.HandleFunc("/v1/info", protect(authToken, func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
+		body := map[string]any{
 			"vm_id":          c.vmID,
 			"manifest_bytes": len(manifestBytes),
 			"secret_count":   secretCount,
 			"gateway":        c.gateway != "",
 			"tls":            useTLS,
-		})
+		}
+		// read per request rather than at startup: the file is written on
+		// the same upload pass as the manifest, but a restore rewrites it
+		// after fused is already running.
+		if eg := readEgress(c.egress); eg != nil {
+			body["egress"] = eg
+		}
+		writeJSON(w, http.StatusOK, body)
 	}))
 
 	// The computer control surface. Bearer-protected like /v1/info; on an
@@ -210,6 +223,25 @@ func newHandler(c config, authToken string, manifestBytes []byte, secretCount in
 	mux.HandleFunc("/v1/computer/display", protect(authToken, comp.handleDisplay))
 	mux.HandleFunc("/v1/computer/stream", protect(authToken, comp.handleStream))
 	return mux
+}
+
+// readEgress returns the egress policy document at path as decoded json,
+// or nil when there is none: an orchestrator that predates egress writes no
+// file, and that absence is reported as an absent field rather than as
+// direct, so a caller can tell the two apart.
+func readEgress(path string) map[string]any {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return map[string]any{"error": "egress policy file is not valid json"}
+	}
+	return doc
 }
 
 // fileNonEmpty reports whether path exists and has non-zero size.

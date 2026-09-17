@@ -346,5 +346,57 @@ class DestroyVMTest(unittest.TestCase):
         self.assertNotIn(PURGE_DROP, calls)
 
 
+class ExecEnvTest(unittest.TestCase):
+    """exec'd commands and attach-with-command run as a non-login bash -c
+    over ssh, which reads no profile, so the agent sources the egress hook
+    ahead of them. a bare attach is a login shell and reads it itself."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vms = Path(self.tmp.name) / "vms"
+        self.vms.mkdir()
+        patcher = mock.patch.object(fc_agent, "VMS_DIR", self.vms)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        (self.vms / "vm-a").mkdir()
+        fc_agent.save_meta({"vm_id": "vm-a", "guest_ip": "10.200.3.2"})
+
+    def test_exec_sources_the_egress_hook_first(self):
+        with mock.patch.object(fc_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+            fc_agent.do_exec("vm-a", ["env"])
+        remote = ssh.call_args.args[1]
+        self.assertTrue(remote.startswith(fc_agent.EGRESS_ENV_PREFIX), remote)
+        self.assertTrue(remote.endswith("env"), remote)
+        # the guard keeps a guest with no hook file unchanged.
+        self.assertIn("[ -r /etc/profile.d/fuse-egress.sh ] &&", remote)
+
+    def test_exec_still_quotes_the_command(self):
+        with mock.patch.object(fc_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+            fc_agent.do_exec("vm-a", ["sh", "-c", "echo $HTTP_PROXY"])
+        remote = ssh.call_args.args[1]
+        self.assertTrue(remote.endswith("sh -c 'echo $HTTP_PROXY'"), remote)
+
+    def test_attach_with_command_sources_the_hook(self):
+        argv = fc_agent.attach_argv("10.200.3.2", ["bash"])
+        self.assertEqual(argv[-2:], [fc_agent.EGRESS_ENV_PREFIX, "bash"])
+
+    def test_bare_attach_is_a_plain_login_shell(self):
+        argv = fc_agent.attach_argv("10.200.3.2", [])
+        self.assertEqual(argv[-2:], ["-tt", "root@10.200.3.2"])
+        self.assertNotIn(fc_agent.EGRESS_ENV_PREFIX, argv)
+
+
+class VMPublicTest(unittest.TestCase):
+    def test_reports_the_tap_ends_and_the_mode(self):
+        pub = fc_agent.vm_public({"vm_id": "vm-a", "url": "u", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2", "egress_mode": "proxy"})
+        self.assertEqual(pub, {"vm_id": "vm-a", "url": "u", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2", "egress_mode": "proxy"})
+
+    def test_pre_egress_meta_reads_as_direct(self):
+        pub = fc_agent.vm_public({"vm_id": "vm-a"})
+        self.assertEqual(pub["egress_mode"], "direct")
+        self.assertEqual(pub["host_ip"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1017,6 +1017,9 @@
         "api.CreateEnvironmentRequest": {
             "type": "object",
             "properties": {
+                "egress": {
+                    "$ref": "#/definitions/api.EgressSpec"
+                },
                 "expose": {
                     "type": "array",
                     "items": {
@@ -1092,11 +1095,45 @@
                 }
             }
         },
+        "api.EgressSpec": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.EgressStatus": {
+            "type": "object",
+            "properties": {
+                "endpoint": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                }
+            }
+        },
         "api.Environment": {
             "type": "object",
             "properties": {
                 "created_at": {
                     "type": "string"
+                },
+                "egress": {
+                    "$ref": "#/definitions/api.EgressStatus"
                 },
                 "endpoints": {
                     "type": "array",

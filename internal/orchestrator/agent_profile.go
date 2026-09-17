@@ -241,8 +241,13 @@ func composeFromManifest(manifestJSON []byte, secretMap map[string]string) ([]by
 		Retries  int      `yaml:"retries,omitempty"`
 	}
 	type composeService struct {
-		Image       string              `yaml:"image"`
-		Ports       []string            `yaml:"ports,omitempty"`
+		Image string   `yaml:"image"`
+		Ports []string `yaml:"ports,omitempty"`
+		// EnvFile carries the environment's egress variables into every
+		// service. podman does not inherit the shell's env, so this is the
+		// only way a container sees the proxy. the file always exists
+		// (empty for direct), so referencing it unconditionally is safe.
+		EnvFile     []string            `yaml:"env_file,omitempty"`
 		Environment map[string]string   `yaml:"environment,omitempty"`
 		Command     []string            `yaml:"command,omitempty"`
 		Restart     string              `yaml:"restart,omitempty"`
@@ -256,6 +261,7 @@ func composeFromManifest(manifestJSON []byte, secretMap map[string]string) ([]by
 	for name, svc := range m.Services {
 		cs := composeService{
 			Image:     svc.Image,
+			EnvFile:   []string{GuestEgressEnvPath},
 			Command:   svc.Command,
 			Restart:   svc.Restart,
 			DependsOn: svc.DependsOn,

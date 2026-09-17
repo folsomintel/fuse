@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -452,6 +453,177 @@ func TestCreateEnvironment_missingTaskIDReturns400(t *testing.T) {
 	})
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// EgressAddresses reports loopback so the in-process mock egress backend
+// has something bindable in handler tests.
+func (e *fakeEnv) EgressAddresses() (string, string) { return "127.0.0.1", "127.0.0.1" }
+
+// newEgressTestHandler is newTestHandler with the mock egress backend
+// registered, so proxy-mode creates can succeed end to end in-process.
+func newEgressTestHandler(t *testing.T) (*Handler, *egress.Mock) {
+	t.Helper()
+	mock := egress.NewMock()
+	mock.AllowLoopback = true
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+		Provider:       newFakeProvider(),
+		Prefix:         "fuse-",
+		EgressRegistry: egress.NewRegistry(mock),
+	})
+	return &Handler{Fleet: fm}, mock
+}
+
+func TestCreateEnvironment_egressAbsentAndDirectAreTheSame(t *testing.T) {
+	h, _ := newEgressTestHandler(t)
+	r := mustRouter(t, h)
+
+	for i, egressBlock := range []*EgressSpec{nil, {Mode: "direct"}} {
+		rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+			TaskID:         fmt.Sprintf("t-direct-%d", i),
+			ManifestInline: encodeManifest(t),
+			Egress:         egressBlock,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+		}
+		var env Environment
+		if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+			t.Fatal(err)
+		}
+		// always reported, so a caller can tell "not proxied" from "server
+		// predates egress"; and identical for both spellings.
+		want := &EgressStatus{Mode: "direct"}
+		if env.Egress == nil || *env.Egress != *want {
+			t.Fatalf("egress = %+v, want %+v", env.Egress, want)
+		}
+	}
+}
+
+func TestCreateEnvironment_egressProxyRoundTrip(t *testing.T) {
+	h, mock := newEgressTestHandler(t)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "t-proxy",
+		ManifestInline: encodeManifest(t),
+		Egress:         &EgressSpec{Mode: "proxy", Provider: "mock"},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var env Environment
+	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Egress == nil || env.Egress.Mode != "proxy" || env.Egress.Provider != "mock" || env.Egress.Protocol != "socks5" {
+		t.Fatalf("egress = %+v, want proxy/mock/socks5", env.Egress)
+	}
+	if !strings.HasPrefix(env.Egress.Endpoint, "socks5h://127.0.0.1:") {
+		t.Fatalf("endpoint = %q, want a socks5h loopback url", env.Egress.Endpoint)
+	}
+	if active := mock.Active(); len(active) != 1 {
+		t.Fatalf("mock listeners = %v, want one", active)
+	}
+
+	// the status survives a read.
+	get := doJSON(t, r, http.MethodGet, "/v1/environments/"+env.ID, nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("get status = %d. body: %s", get.Code, get.Body.String())
+	}
+	var read Environment
+	if err := json.NewDecoder(get.Body).Decode(&read); err != nil {
+		t.Fatal(err)
+	}
+	if read.Egress == nil || read.Egress.Endpoint != env.Egress.Endpoint {
+		t.Fatalf("read egress = %+v, want the created endpoint", read.Egress)
+	}
+
+	del := doJSON(t, r, http.MethodDelete, "/v1/environments/"+env.ID, nil)
+	if del.Code != http.StatusNoContent && del.Code != http.StatusOK {
+		t.Fatalf("delete status = %d. body: %s", del.Code, del.Body.String())
+	}
+	if active := mock.Active(); len(active) != 0 {
+		t.Fatalf("mock listeners after delete = %v, want none", active)
+	}
+}
+
+func TestCreateEnvironment_egressRejectedBeforeAnyVMExists(t *testing.T) {
+	cases := []struct {
+		name  string
+		block *EgressSpec
+		want  string
+	}{
+		{"unknown provider", &EgressSpec{Mode: "proxy", Provider: "warp"}, `unknown provider "warp" (registered: mock)`},
+		{"direct with provider", &EgressSpec{Mode: "direct", Provider: "mock"}, `requires mode "proxy"`},
+		{"proxy without provider", &EgressSpec{Mode: "proxy"}, "requires a provider"},
+		{"bad mode", &EgressSpec{Mode: "tunnel"}, `unknown mode "tunnel"`},
+		{"bad protocol", &EgressSpec{Mode: "proxy", Provider: "mock", Protocol: "ftp"}, `unknown protocol "ftp"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mock := newEgressTestHandler(t)
+			r := mustRouter(t, h)
+			rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+				TaskID:         "t-bad",
+				ManifestInline: encodeManifest(t),
+				Egress:         tc.block,
+			})
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+			}
+			e := decodeError(t, rr.Body)
+			if e.Error.Code != CodeInvalidArgument || !strings.Contains(e.Error.Message, tc.want) {
+				t.Fatalf("error = %+v, want %s containing %q", e.Error, CodeInvalidArgument, tc.want)
+			}
+			if n := len(h.Fleet.ListFleet()); n != 0 {
+				t.Fatalf("%d environments exist after a refused create", n)
+			}
+			if active := mock.Active(); len(active) != 0 {
+				t.Fatalf("refused create left listeners: %v", active)
+			}
+		})
+	}
+}
+
+func TestCreateEnvironment_egressProvisionFailureIsAFailedCreate(t *testing.T) {
+	h, mock := newEgressTestHandler(t)
+	r := mustRouter(t, h)
+	mock.FailNextProvision(fmt.Errorf("backend refused to start"))
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "t-fail",
+		ManifestInline: encodeManifest(t),
+		Egress:         &EgressSpec{Mode: "proxy", Provider: "mock"},
+	})
+	if rr.Code < 500 {
+		t.Fatalf("status = %d, want a 5xx failed create. body: %s", rr.Code, rr.Body.String())
+	}
+	e := decodeError(t, rr.Body)
+	if !strings.Contains(e.Error.Message, "backend refused to start") || !strings.Contains(e.Error.Message, "mock") {
+		t.Fatalf("error = %+v, want the backend's reason and its name", e.Error)
+	}
+	if n := len(h.Fleet.ListFleet()); n != 0 {
+		t.Fatalf("%d environments exist after a failed create", n)
+	}
+	if active := mock.Active(); len(active) != 0 {
+		t.Fatalf("failed create left listeners: %v", active)
+	}
+}
+
+func TestCreateEnvironment_filesUnderEtcFuseAreReserved(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "t-files",
+		ManifestInline: encodeManifest(t),
+		Files:          map[string]string{"/etc/fuse/egress.json": base64.StdEncoding.EncodeToString([]byte(`{"mode":"direct"}`))},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400. body: %s", rr.Code, rr.Body.String())
+	}
+	if e := decodeError(t, rr.Body); !strings.Contains(e.Error.Message, "/etc/fuse") {
+		t.Fatalf("error = %+v, want it to name /etc/fuse", e.Error)
 	}
 }
 
