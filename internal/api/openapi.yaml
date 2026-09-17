@@ -1992,6 +1992,32 @@ components:
             `socks5h://10.200.3.1:1080`. A host-local address useless to
             anyone not already inside the sandbox, and never a credential.
             Proxy only.
+        health:
+          allOf:
+            - $ref: "#/components/schemas/EgressHealth"
+          description: |
+            The endpoint's last probe verdict. Proxy only, and `unknown`
+            until the reconcile tick (30s by default) has probed it once.
+            An unhealthy proxy reports and nothing acts on it: the
+            environment keeps running with no egress, never with direct
+            egress.
+
+    EgressHealth:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unknown, healthy, unhealthy]
+        reason:
+          type: string
+          description: |
+            The backend-level failure, e.g. `dial tcp 10.200.3.1:1080:
+            connection refused`. Empty while healthy. Never a destination
+            hostname or anything drawn from the sandbox's traffic.
+        checked_at:
+          type: string
+          format: date-time
 
     CreateEnvironmentRequest:
       type: object

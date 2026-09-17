@@ -262,6 +262,7 @@ fn egress_status_round_trips_and_tolerates_the_unknown() {
             provider: Some("mock".into()),
             protocol: Some(EgressProtocol::Socks5),
             endpoint: Some("socks5h://10.200.3.1:1080".into()),
+            health: None,
         }
     );
     assert_eq!(

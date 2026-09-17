@@ -1109,11 +1109,28 @@
                 }
             }
         },
+        "api.EgressHealth": {
+            "type": "object",
+            "properties": {
+                "checked_at": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
         "api.EgressStatus": {
             "type": "object",
             "properties": {
                 "endpoint": {
                     "type": "string"
+                },
+                "health": {
+                    "$ref": "#/definitions/api.EgressHealth"
                 },
                 "mode": {
                     "type": "string"

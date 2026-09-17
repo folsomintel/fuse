@@ -239,6 +239,20 @@ export interface EgressStatus {
   provider?: string;
   protocol?: string;
   endpoint?: string;
+  /** the endpoint's last probe verdict; proxy only. */
+  health?: EgressHealth;
+}
+
+/**
+ * EgressHealth is the proxy endpoint's last probe verdict. state is
+ * "unknown" until the first probe, then "healthy" or "unhealthy"; typed as a
+ * plain string so a server that grows a state does not turn into a compile
+ * error here. reason is the backend-level failure, empty while healthy.
+ */
+export interface EgressHealth {
+  state: string;
+  reason?: string;
+  checked_at?: string;
 }
 
 /** CreateRequest is the body for environments.create. */

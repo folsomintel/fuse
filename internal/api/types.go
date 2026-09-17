@@ -155,6 +155,22 @@ type EgressStatus struct {
 	Provider string `json:"provider,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+	// Health is the proxy endpoint's last probe verdict. Absent for direct
+	// egress, and "unknown" until the first probe has run. Like the
+	// environment healthcheck it reports and nothing acts on it: an
+	// unhealthy proxy leaves the environment running with no egress,
+	// never with direct egress.
+	Health *EgressHealth `json:"health,omitempty"`
+}
+
+// EgressHealth is one probe verdict on a proxy endpoint. State is one of
+// "unknown", "healthy", "unhealthy". Reason is the backend-level failure
+// ("dial tcp ...: connection refused"), empty while healthy, and never a
+// destination hostname or anything drawn from the traffic itself.
+type EgressHealth struct {
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	CheckedAt time.Time `json:"checked_at,omitempty"`
 }
 
 // CreateEnvironmentRequest is the JSON body accepted by

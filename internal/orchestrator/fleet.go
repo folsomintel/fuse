@@ -274,7 +274,30 @@ type ReconcileSummary struct {
 	// causes a teardown: the environment-level probe reports, it does not act.
 	HealthChecked int
 	HealthFailing int
-	Duration      time.Duration
+	// EgressChecked counts proxy-mode VMs whose endpoint was probed this
+	// cycle; EgressUnhealthy is how many of those did not answer. Like the
+	// environment probe, an unhealthy proxy reports and nothing acts on it:
+	// the vm keeps running with no egress, never with direct egress.
+	EgressChecked   int
+	EgressUnhealthy int
+	// EgressEndpoints is the live count of provisioned endpoints by provider
+	// and health state, for the gauge. nil when nothing was probed.
+	EgressEndpoints map[EgressEndpointKey]int
+	Duration        time.Duration
+}
+
+// EgressEndpointKey labels one cell of the egress endpoint gauge.
+type EgressEndpointKey struct {
+	Provider string
+	State    egress.HealthState
+}
+
+// EgressMetrics is an optional extension of ReconcileMetrics for the two
+// egress counters that fire outside the reconcile tick. an implementation
+// that omits it loses those two counters and nothing else.
+type EgressMetrics interface {
+	EgressProvisionFailed(provider string)
+	EgressTeardownFailed(provider string)
 }
 
 // FleetConfig configures the fleet manager.
@@ -915,6 +938,20 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.deleteVMBackground(vmID)
 		fm.appendEventBackground("vm", vmID, "vm.provision_failed", map[string]any{"task_id": taskID, "error": redactedErr})
 		fm.appendEventBackground("task", taskID, "task.failed", map[string]any{"vm_id": vmID, "error": redactedErr})
+		// an egress backend that would not come up is its own event and
+		// its own counter, so a fleet whose proxy provider is failing is
+		// distinguishable from one whose hosts are.
+		var egressErr *egress.ProvisionError
+		if errors.As(err, &egressErr) {
+			fm.appendEventBackground("vm", vmID, "vm.egress_failed", map[string]any{
+				"task_id":  taskID,
+				"provider": egressErr.Provider,
+				"error":    redactedErr,
+			})
+			if em, ok := fm.metrics.(EgressMetrics); ok {
+				em.EgressProvisionFailed(egressErr.Provider)
+			}
+		}
 		// Synthetic terminal state — the vm has already been removed
 		// from fm.vms above so subscribers must learn of the failure
 		// from this synthesised event rather than from a snapshot.
@@ -1035,6 +1072,15 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	}
 	fm.appendEvent(ctx, "vm", vmID, "vm.running", map[string]any{"task_id": taskID})
 	fm.appendEvent(ctx, "task", taskID, "task.running", map[string]any{"vm_id": vmID})
+	if result.Egress.Mode == egress.ModeProxy {
+		// provider and protocol only: the endpoint is on the environment for
+		// anyone who needs it, and never in an event or a log line.
+		fm.appendEvent(ctx, "vm", vmID, "vm.egress_provisioned", map[string]any{
+			"task_id":  taskID,
+			"provider": result.Egress.Provider,
+			"protocol": string(result.Egress.Protocol),
+		})
+	}
 	if len(secretMap) > 0 {
 		fm.appendEvent(ctx, "vm", vmID, "secrets.deployed", map[string]any{
 			"task_id":     taskID,
@@ -1428,6 +1474,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileHealth(ctx, &summary)
+	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
 	fm.reconcileArtifacts(ctx)
 
@@ -1994,6 +2041,9 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 	}
 	if err := fm.egressRegistry.Destroy(ctx, v.egress.Provider, ec); err != nil {
 		fm.logger.Warn("egress release failed", "vm", v.id, "provider", v.egress.Provider, "err", err)
+		if em, ok := fm.metrics.(EgressMetrics); ok {
+			em.EgressTeardownFailed(v.egress.Provider)
+		}
 	}
 }
 

@@ -29,6 +29,13 @@ type PrometheusMetrics struct {
 	healthChecked prometheus.Gauge
 	healthFailing prometheus.Gauge
 
+	// egress: the live endpoint count is a gauge rewritten every cycle;
+	// the two failure counters fire from the boot and teardown paths and
+	// so arrive through EgressMetrics rather than the summary.
+	egressEndpoints       *prometheus.GaugeVec
+	egressProvisionFailed *prometheus.CounterVec
+	egressTeardownFailed  *prometheus.CounterVec
+
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
 	HTTPRequestDuration  *prometheus.HistogramVec
@@ -126,6 +133,25 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Help:      "VMs whose environment healthcheck reported failing this cycle.",
 		}),
 
+		egressEndpoints: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "orchestrator",
+			Subsystem: "fleet",
+			Name:      "egress_endpoints",
+			Help:      "Provisioned proxy egress endpoints by provider and health state.",
+		}, []string{"provider", "state"}),
+		egressProvisionFailed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "egress",
+			Name:      "provision_failures_total",
+			Help:      "Total proxy egress backends that failed to come up at boot, by provider.",
+		}, []string{"provider"}),
+		egressTeardownFailed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "egress",
+			Name:      "teardown_failures_total",
+			Help:      "Total proxy egress backends that failed to release on teardown, by provider.",
+		}, []string{"provider"}),
+
 		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
 			Subsystem: "http",
@@ -162,6 +188,9 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.vmsMissingProvider,
 		m.healthChecked,
 		m.healthFailing,
+		m.egressEndpoints,
+		m.egressProvisionFailed,
+		m.egressTeardownFailed,
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPRequestsInFlight,
@@ -187,4 +216,23 @@ func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) 
 	m.vmsMissingProvider.Add(float64(s.VMsMissingProvider))
 	m.healthChecked.Set(float64(s.HealthChecked))
 	m.healthFailing.Set(float64(s.HealthFailing))
+	// the whole vec is rewritten every cycle: a label pair that stops
+	// appearing (the last vm on a provider went away) would otherwise
+	// freeze at its last value forever.
+	m.egressEndpoints.Reset()
+	for key, n := range s.EgressEndpoints {
+		m.egressEndpoints.WithLabelValues(key.Provider, string(key.State)).Set(float64(n))
+	}
 }
+
+// EgressProvisionFailed implements orchestrator.EgressMetrics.
+func (m *PrometheusMetrics) EgressProvisionFailed(provider string) {
+	m.egressProvisionFailed.WithLabelValues(provider).Inc()
+}
+
+// EgressTeardownFailed implements orchestrator.EgressMetrics.
+func (m *PrometheusMetrics) EgressTeardownFailed(provider string) {
+	m.egressTeardownFailed.WithLabelValues(provider).Inc()
+}
+
+var _ orchestrator.EgressMetrics = (*PrometheusMetrics)(nil)
