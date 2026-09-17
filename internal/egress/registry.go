@@ -101,3 +101,19 @@ func (r *Registry) Destroy(ctx context.Context, provider string, ec Context) err
 	}
 	return p.Destroy(ctx, ec)
 }
+
+// Release asks every registered provider to destroy whatever it holds for
+// the vm described by ec. it is for teardown paths that have no record of
+// which provider was used, such as reconcile cleaning up an orphaned vm.
+// every provider's Destroy is idempotent and tolerates a vm it never saw,
+// so asking all of them is safe. the first error is returned after every
+// provider has been asked.
+func (r *Registry) Release(ctx context.Context, ec Context) error {
+	var first error
+	for _, name := range r.Names() {
+		if err := r.providers[name].Destroy(ctx, ec); err != nil && first == nil {
+			first = fmt.Errorf("egress: release %s for %s: %w", name, ec.VMID, err)
+		}
+	}
+	return first
+}

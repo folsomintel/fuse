@@ -55,6 +55,8 @@ const (
 	FieldGpuUuids = "gpu_uuids"
 	// FieldMigInstanceUuids holds the string denoting the mig_instance_uuids field in the database.
 	FieldMigInstanceUuids = "mig_instance_uuids"
+	// FieldEgress holds the string denoting the egress field in the database.
+	FieldEgress = "egress_json"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -87,6 +89,7 @@ var Columns = []string{
 	FieldGpuProfile,
 	FieldGpuUuids,
 	FieldMigInstanceUuids,
+	FieldEgress,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }

@@ -1305,8 +1305,16 @@ class HTTPError(Exception):
 
 
 def vm_public(meta: dict) -> dict:
-    """Project a vm meta dict to the public {vm_id, url} response shape."""
-    return {"vm_id": meta["vm_id"], "url": meta.get("url", "")}
+    """Project a vm meta dict to the public response shape. host_ip and
+    guest_ip are the two ends of the vm's tap, carried for parity with the
+    firecracker agent; egress_mode is always direct on this backend."""
+    return {
+        "vm_id": meta["vm_id"],
+        "url": meta.get("url", ""),
+        "host_ip": meta.get("host_ip", ""),
+        "guest_ip": meta.get("guest_ip", ""),
+        "egress_mode": "direct",
+    }
 
 
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command

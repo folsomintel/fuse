@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/secrets"
 )
 
@@ -114,6 +115,12 @@ type Spec struct {
 	// land where its host-local seed artifact already is. Empty means schedule
 	// across the fleet as usual.
 	PinnedHostID string
+
+	// Egress is the outbound networking policy. the zero value is direct,
+	// which is the pre-egress behaviour, so every stored record and every
+	// caller that predates the field deserializes into it without naming
+	// it. see internal/egress.
+	Egress egress.Spec
 }
 
 // Protocol is the transport an exposed port is published on.
@@ -417,6 +424,15 @@ type BootOptions struct {
 	// HTTP write timeout (60s by default) for the caller to receive a real
 	// error instead of a truncated response.
 	StartupScriptTimeout time.Duration
+
+	// HostID is the host the vm was scheduled onto. it is filled in by the
+	// fleet, not the caller, so egress provisioning can name the host.
+	HostID string
+
+	// EgressRegistry holds the fleet's egress backends, filled in by the
+	// fleet. nil means no proxy egress can be provisioned; a proxy spec then
+	// fails the boot rather than silently booting direct.
+	EgressRegistry *egress.Registry
 }
 
 // DefaultStartupScriptTimeout bounds a boot-time startup script when
@@ -479,6 +495,9 @@ type BootResult struct {
 	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token for persistence
 	DrainCommand       string     // graceful-shutdown command for the configured agent ('' => skip)
 	Endpoints          []Endpoint // published endpoints, if the provider reported any
+	// Egress is the resolved outbound policy: direct, or the proxy endpoint
+	// that was provisioned for this boot.
+	Egress egress.Status
 }
 
 // reportedEndpoints returns env.Endpoints() when env implements
@@ -490,6 +509,73 @@ func reportedEndpoints(env Environment) []Endpoint {
 		return er.Endpoints()
 	}
 	return nil
+}
+
+// EgressAddresser is implemented by environments that know the two ends of
+// their tap: the host side, which is the only address a proxy can bind that
+// the guest can reach and the host does not share, and the guest's own. an
+// environment that omits it can still run direct egress; a proxy backend
+// that needs the addresses gets empty strings and refuses.
+type EgressAddresser interface {
+	EgressAddresses() (listenIP, guestIP string)
+}
+
+// egressAddresses returns env.EgressAddresses() when env implements
+// EgressAddresser, or two empty strings otherwise.
+func egressAddresses(env Environment) (listenIP, guestIP string) {
+	if ea, ok := env.(EgressAddresser); ok {
+		return ea.EgressAddresses()
+	}
+	return "", ""
+}
+
+// egressContext is the provider-facing view of a booted vm. the host
+// handle is set only for providers that expose the host-side egress wire;
+// a backend that runs in this process never needs it.
+func egressContext(p Provider, env Environment, in bootInputs) egress.Context {
+	ec := egress.Context{VMID: in.spec.Name, HostID: in.opts.HostID}
+	ec.ListenIP, ec.GuestIP = egressAddresses(env)
+	if ha, ok := p.(egress.HostAgent); ok {
+		ec.Host = ha
+	}
+	return ec
+}
+
+// provisionEgress brings up the backend a proxy spec asks for. it runs
+// after Create, because the endpoint binds to the vm's tap, and before any
+// upload, because the guest files that carry the endpoint have to go up in
+// the same pass as the manifest. a direct spec returns a direct status and
+// makes no other call into the egress package.
+func provisionEgress(ctx context.Context, p Provider, env Environment, in bootInputs) (egress.Status, error) {
+	spec := in.spec.Egress.Normalize()
+	if !spec.IsProxy() {
+		return egress.Status{Mode: egress.ModeDirect}, nil
+	}
+	if in.opts.EgressRegistry == nil {
+		return egress.Status{}, fmt.Errorf("egress: mode %q requested but this orchestrator has no egress providers", spec.Mode)
+	}
+	ep, err := in.opts.EgressRegistry.Provision(ctx, spec, egressContext(p, env, in))
+	if err != nil {
+		return egress.Status{}, err
+	}
+	return egress.Status{
+		Mode:     spec.Mode,
+		Provider: ep.Provider,
+		Protocol: ep.Protocol,
+		Endpoint: ep.URL,
+		Health:   egress.Health{State: egress.HealthUnknown},
+	}, nil
+}
+
+// releaseEgress tears down what provisionEgress brought up, for the boot
+// steps that can still fail after it. best effort: the fleet's rollback
+// destroys the vm regardless, and a host-side backend is released by the
+// host's own destroy path.
+func releaseEgress(ctx context.Context, p Provider, env Environment, in bootInputs, status egress.Status) {
+	if status.Mode != egress.ModeProxy || in.opts.EgressRegistry == nil {
+		return
+	}
+	_ = in.opts.EgressRegistry.Destroy(ctx, status.Provider, egressContext(p, env, in))
 }
 
 // bootInputs bundles the inputs needed by bootFresh and bootRestore.
@@ -592,7 +678,7 @@ func runStartupScript(ctx context.Context, env Environment, script string, timeo
 // failed). Returns (result, nil) on successful restore. Returns (nil, err)
 // only for hard errors that should abort Boot entirely (e.g. startup script
 // failure).
-func bootRestore(ctx context.Context, existing Environment, in bootInputs, start time.Time, encToken []byte) (*BootResult, error) {
+func bootRestore(ctx context.Context, p Provider, existing Environment, in bootInputs, start time.Time, encToken []byte) (*BootResult, error) {
 	sc, ok := existing.(SnapshotCapable)
 	if !ok {
 		return nil, nil
@@ -606,12 +692,23 @@ func bootRestore(ctx context.Context, existing Environment, in bootInputs, start
 		return nil, nil
 	}
 
+	// a restored environment re-provisions its egress rather than inheriting
+	// a stale endpoint: whatever backend served it before this boot is gone
+	// or unknown. release first so a backend that still remembers the vm
+	// does not refuse the re-provision.
+	releaseEgress(ctx, p, existing, in, egress.Status{Mode: in.spec.Egress.Normalize().Mode, Provider: in.spec.Egress.Provider})
+	egressStatus, err := provisionEgress(ctx, p, existing, in)
+	if err != nil {
+		return nil, err
+	}
+
 	// Re-upload the agent's files (manifest/secrets/credentials all live in
 	// AgentSpec.Files, populated by the profile). Credential files carry the
 	// SetToken side effect via setTokenIfSupported below.
 	_ = uploadFiles(ctx, existing, in.agentSpec.Files)
 	setTokenIfSupported(existing, in.creds)
 	if err := runStartupScript(ctx, existing, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
+		releaseEgress(ctx, p, existing, in, egressStatus)
 		return nil, err
 	}
 	_ = existing.StartAgent(ctx, in.agentSpec)
@@ -622,6 +719,7 @@ func bootRestore(ctx context.Context, existing Environment, in bootInputs, start
 		AuthTokenEncrypted: encToken,
 		DrainCommand:       in.agentSpec.DrainCommand,
 		Endpoints:          reportedEndpoints(existing),
+		Egress:             egressStatus,
 	}, nil
 }
 
@@ -634,11 +732,23 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 		return nil, err
 	}
 
+	// egress comes up between Create and the upload pass: the endpoint
+	// binds to the vm's tap, so it cannot precede Create, and the guest
+	// files that carry it have to go up with the manifest. a failure here
+	// returns before anything is uploaded, and the fleet's rollback destroys
+	// the vm, so there is no window in which a vm exists, is reported to the
+	// caller, and has egress other than what was asked for.
+	egressStatus, err := provisionEgress(ctx, p, env, in)
+	if err != nil {
+		return nil, err
+	}
+
 	// Upload everything the agent profile declared. For fused this is the
 	// manifest, secrets JSON, and (when present) the TLS/auth credential
 	// files. The guest is responsible for mounting any sensitive paths on
 	// tmpfs (see PRD-08 for the fused profile's /fuse contract).
 	if err := uploadFiles(ctx, env, in.agentSpec.Files); err != nil {
+		releaseEgress(ctx, p, env, in, egressStatus)
 		return nil, err
 	}
 	// Credential files were uploaded above; record the token on the env so
@@ -646,10 +756,12 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 	setTokenIfSupported(env, in.creds)
 
 	if err := runStartupScript(ctx, env, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
+		releaseEgress(ctx, p, env, in, egressStatus)
 		return nil, err
 	}
 
 	if err := env.StartAgent(ctx, in.agentSpec); err != nil {
+		releaseEgress(ctx, p, env, in, egressStatus)
 		return nil, err
 	}
 
@@ -659,6 +771,7 @@ func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, 
 		AuthTokenEncrypted: encToken,
 		DrainCommand:       in.agentSpec.DrainCommand,
 		Endpoints:          reportedEndpoints(env),
+		Egress:             egressStatus,
 	}, nil
 }
 
@@ -709,7 +822,7 @@ func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap
 	// (nil, nil) when restore is not applicable (provider not SnapshotCapable,
 	// no checkpoints, or restore failed) so we fall through to fresh provision.
 	if existing, err := p.Get(ctx, spec.Name); err == nil {
-		result, err := bootRestore(ctx, existing, in, start, encToken)
+		result, err := bootRestore(ctx, p, existing, in, start, encToken)
 		if err != nil {
 			return nil, err
 		}

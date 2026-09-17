@@ -1757,7 +1757,17 @@ class HTTPError(Exception):
 
 
 def vm_public(meta: dict) -> dict:
-    return {"vm_id": meta["vm_id"], "url": meta.get("url", "")}
+    # host_ip and guest_ip are the two ends of the vm's tap. the orchestrator
+    # needs them to bind an in-process egress backend where the guest can
+    # reach it and to name the guest's own addresses in NO_PROXY. additive:
+    # a reader that predates them ignores them.
+    return {
+        "vm_id": meta["vm_id"],
+        "url": meta.get("url", ""),
+        "host_ip": meta.get("host_ip", ""),
+        "guest_ip": meta.get("guest_ip", ""),
+        "egress_mode": meta.get("egress_mode", "direct"),
+    }
 
 
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command
