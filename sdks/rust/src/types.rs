@@ -481,6 +481,73 @@ impl Default for Health {
     }
 }
 
+string_enum! {
+    /// How an environment's outbound traffic is routed.
+    pub enum EgressMode {
+        /// Straight out of the host, which is what every environment created
+        /// before egress existed got.
+        Direct => "direct",
+        /// Through a proxy run by [`EgressSpec::provider`].
+        Proxy => "proxy",
+    }
+}
+
+string_enum! {
+    /// Protocols a proxy egress can speak.
+    pub enum EgressProtocol {
+        Socks5 => "socks5",
+        Http => "http",
+    }
+}
+
+/// Routes the environment's outbound traffic. Omit it (or leave `mode`
+/// unset) for direct egress, which is what every request written before this
+/// field existed meant.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EgressSpec {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<EgressMode>,
+    /// The proxy backend, required when `mode` is proxy (today `mock`; later
+    /// `cloudflare-warp`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Absent means socks5 for a proxy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<EgressProtocol>,
+}
+
+impl EgressSpec {
+    /// Proxy egress through `provider`, on the socks5 default.
+    pub fn proxy(provider: impl Into<String>) -> Self {
+        Self {
+            mode: Some(EgressMode::Proxy),
+            provider: Some(provider.into()),
+            protocol: None,
+        }
+    }
+
+    /// Speaks `protocol` to the proxy instead of the socks5 default.
+    pub fn protocol(mut self, protocol: EgressProtocol) -> Self {
+        self.protocol = Some(protocol);
+        self
+    }
+}
+
+/// How the environment's outbound traffic is actually routed. `mode` is
+/// always set; `provider`, `protocol` and `endpoint` are present only for
+/// proxy egress. `endpoint` is a host-local address, never a credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EgressStatus {
+    pub mode: EgressMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<EgressProtocol>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+}
+
 /// The body of [`Environments::create`](crate::Environments::create).
 ///
 /// `task_id` is the only required field; build the rest with the chained
@@ -517,6 +584,9 @@ pub struct CreateRequest {
     /// soon as the VM is up, and the verdict arrives on later reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub healthcheck: Option<HealthcheckSpec>,
+    /// Routes the environment's outbound traffic. Omit it for direct egress.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressSpec>,
     /// The graphical session's geometry. Omit it for an environment with no
     /// desktop, in which case a desktop image keeps its baked default
     /// geometry.
@@ -593,6 +663,11 @@ impl CreateRequest {
         self
     }
 
+    pub fn egress(mut self, egress: EgressSpec) -> Self {
+        self.egress = Some(egress);
+        self
+    }
+
     pub fn desktop(mut self, width: u32, height: u32) -> Self {
         self.desktop = Some(DesktopSpec::new(width, height));
         self
@@ -643,6 +718,10 @@ pub struct EnvironmentInfo {
     /// tick.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<Health>,
+    /// How outbound traffic is actually routed. `None` only from a server
+    /// that predates the field; treat that as direct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressStatus>,
 }
 
 string_enum! {

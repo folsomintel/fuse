@@ -1139,6 +1139,13 @@ def do_upload(vm_id: str, path: str, content_b64: str) -> None:
         raise HTTPError(500, f"upload failed: {err.decode(errors='replace')}")
 
 
+# sourced ahead of every exec'd command and every attach that names a
+# command, for parity with the firecracker agent: both run as a non-login
+# `bash -c` over ssh, which reads neither /etc/profile.d nor /fuse/env. the
+# guard keeps a guest booted by an older orchestrator unchanged.
+EGRESS_ENV_PREFIX = "[ -r /etc/profile.d/fuse-egress.sh ] && . /etc/profile.d/fuse-egress.sh; "
+
+
 def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     meta = load_meta(vm_id)
     if not meta:
@@ -1150,7 +1157,7 @@ def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     timeout = EXEC_TIMEOUT_MAX
     if timeout_ms and timeout_ms > 0:
         timeout = min(timeout_ms / 1000.0, EXEC_TIMEOUT_MAX)
-    remote = " ".join(shlex.quote(c) for c in cmd)
+    remote = EGRESS_ENV_PREFIX + " ".join(shlex.quote(c) for c in cmd)
     rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=timeout)
     return {
         "exit_code": rc,
@@ -1305,8 +1312,16 @@ class HTTPError(Exception):
 
 
 def vm_public(meta: dict) -> dict:
-    """Project a vm meta dict to the public {vm_id, url} response shape."""
-    return {"vm_id": meta["vm_id"], "url": meta.get("url", "")}
+    """Project a vm meta dict to the public response shape. host_ip and
+    guest_ip are the two ends of the vm's tap, carried for parity with the
+    firecracker agent; egress_mode is always direct on this backend."""
+    return {
+        "vm_id": meta["vm_id"],
+        "url": meta.get("url", ""),
+        "host_ip": meta.get("host_ip", ""),
+        "guest_ip": meta.get("guest_ip", ""),
+        "egress_mode": "direct",
+    }
 
 
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command
@@ -1423,9 +1438,13 @@ def attach_argv(guest_ip: str, cmd: list[str]) -> list[str]:
 
     -tt forces a pty on the far side even though ssh's own stdin is already
     one; without it a command given to ssh runs without a terminal. An empty
-    cmd means the guest's login shell.
+    cmd means the guest's login shell, which reads /etc/profile.d itself; a
+    named command runs non-login and gets the egress variables sourced ahead
+    of it, the same as do_exec.
     """
-    return SSH_BASE + ["-tt", f"root@{guest_ip}"] + list(cmd)
+    if cmd:
+        return SSH_BASE + ["-tt", f"root@{guest_ip}", EGRESS_ENV_PREFIX] + list(cmd)
+    return SSH_BASE + ["-tt", f"root@{guest_ip}"]
 
 
 def do_attach(handler, vm_id: str, spec: dict) -> None:

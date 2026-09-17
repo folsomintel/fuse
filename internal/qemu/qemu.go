@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -101,6 +102,7 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		GPUKind:          spec.GPUKind,
 		GPUProfile:       spec.GPUProfile,
 		MIGInstanceUUIDs: spec.MIGInstanceUUIDs,
+		Egress:           egressWireFor(spec),
 	}
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
@@ -349,6 +351,21 @@ type createVMRequest struct {
 	// exactly these (validating them against its inventory) instead of
 	// picking locally. empty on count-map hosts (issue #41).
 	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
+	// Egress carries a proxy-mode request so the qemu agent can refuse it
+	// explicitly (it supports direct egress only). omitted for direct, so
+	// an older agent sees the request it always did.
+	Egress *egressWire `json:"egress,omitempty"`
+}
+
+type egressWire struct {
+	Mode string `json:"mode"`
+}
+
+func egressWireFor(spec orchestrator.Spec) *egressWire {
+	if !spec.Egress.IsProxy() {
+		return nil
+	}
+	return &egressWire{Mode: string(egress.ModeProxy)}
 }
 
 type createVMResponse struct {

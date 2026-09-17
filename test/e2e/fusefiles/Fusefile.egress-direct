@@ -1,0 +1,18 @@
+version: 1
+
+# the control case for egress. an explicit direct block must be
+# indistinguishable from no block at all: no proxy variables, the guest
+# reaches the internet straight out of the host, and the api reports direct.
+egress:
+  mode: direct
+
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+
+run: |
+  printf '%s' "${HTTP_PROXY:-unset}" > /workspace/proxy.marker
+
+workspace: /workspace

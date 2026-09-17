@@ -123,6 +123,11 @@ func TestValidateReportsErrors(t *testing.T) {
 			want: []string{"published as udp"},
 		},
 		{
+			name: "egress mode typo",
+			body: "version: 1\negress:\n  mode: prox\n  provider: mock\n",
+			want: []string{`egress.mode: must be "direct" or "proxy", got "prox"`},
+		},
+		{
 			name: "bad memory size",
 			body: "version: 1\nresources:\n  memory: 2 gigs\n",
 			want: []string{`resources.memory: invalid size "2 gigs"`},

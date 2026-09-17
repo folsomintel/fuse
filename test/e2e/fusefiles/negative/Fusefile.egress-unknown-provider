@@ -1,0 +1,18 @@
+version: 1
+
+# a proxy backend this orchestrator has not registered must be refused
+# before any environment exists, and the refusal must name it. silently
+# booting direct is the one outcome a caller who asked for proxy egress can
+# never tolerate.
+egress:
+  mode: proxy
+  provider: no-such-backend
+
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 10m
+
+run: |
+  echo "should never run" > /workspace/never.txt

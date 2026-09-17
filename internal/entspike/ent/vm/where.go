@@ -1134,6 +1134,16 @@ func MigInstanceUuidsNotNil() predicate.VM {
 	return predicate.VM(sql.FieldNotNull(FieldMigInstanceUuids))
 }
 
+// EgressIsNil applies the IsNil predicate on the "egress" field.
+func EgressIsNil() predicate.VM {
+	return predicate.VM(sql.FieldIsNull(FieldEgress))
+}
+
+// EgressNotNil applies the NotNil predicate on the "egress" field.
+func EgressNotNil() predicate.VM {
+	return predicate.VM(sql.FieldNotNull(FieldEgress))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldCreatedAt, v))

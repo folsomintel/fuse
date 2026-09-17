@@ -270,6 +270,12 @@ func (_c *VMCreate) SetMigInstanceUuids(v json.RawMessage) *VMCreate {
 	return _c
 }
 
+// SetEgress sets the "egress" field.
+func (_c *VMCreate) SetEgress(v json.RawMessage) *VMCreate {
+	_c.mutation.SetEgress(v)
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *VMCreate) SetCreatedAt(v time.Time) *VMCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -565,6 +571,10 @@ func (_c *VMCreate) createSpec() (*VM, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.MigInstanceUuids(); ok {
 		_spec.SetField(vm.FieldMigInstanceUuids, field.TypeJSON, value)
 		_node.MigInstanceUuids = value
+	}
+	if value, ok := _c.mutation.Egress(); ok {
+		_spec.SetField(vm.FieldEgress, field.TypeJSON, value)
+		_node.Egress = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -941,6 +951,24 @@ func (u *VMUpsert) UpdateMigInstanceUuids() *VMUpsert {
 // ClearMigInstanceUuids clears the value of the "mig_instance_uuids" field.
 func (u *VMUpsert) ClearMigInstanceUuids() *VMUpsert {
 	u.SetNull(vm.FieldMigInstanceUuids)
+	return u
+}
+
+// SetEgress sets the "egress" field.
+func (u *VMUpsert) SetEgress(v json.RawMessage) *VMUpsert {
+	u.Set(vm.FieldEgress, v)
+	return u
+}
+
+// UpdateEgress sets the "egress" field to the value that was provided on create.
+func (u *VMUpsert) UpdateEgress() *VMUpsert {
+	u.SetExcluded(vm.FieldEgress)
+	return u
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (u *VMUpsert) ClearEgress() *VMUpsert {
+	u.SetNull(vm.FieldEgress)
 	return u
 }
 
@@ -1384,6 +1412,27 @@ func (u *VMUpsertOne) UpdateMigInstanceUuids() *VMUpsertOne {
 func (u *VMUpsertOne) ClearMigInstanceUuids() *VMUpsertOne {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearMigInstanceUuids()
+	})
+}
+
+// SetEgress sets the "egress" field.
+func (u *VMUpsertOne) SetEgress(v json.RawMessage) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetEgress(v)
+	})
+}
+
+// UpdateEgress sets the "egress" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateEgress() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateEgress()
+	})
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (u *VMUpsertOne) ClearEgress() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearEgress()
 	})
 }
 
@@ -1998,6 +2047,27 @@ func (u *VMUpsertBulk) UpdateMigInstanceUuids() *VMUpsertBulk {
 func (u *VMUpsertBulk) ClearMigInstanceUuids() *VMUpsertBulk {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearMigInstanceUuids()
+	})
+}
+
+// SetEgress sets the "egress" field.
+func (u *VMUpsertBulk) SetEgress(v json.RawMessage) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetEgress(v)
+	})
+}
+
+// UpdateEgress sets the "egress" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateEgress() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateEgress()
+	})
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (u *VMUpsertBulk) ClearEgress() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearEgress()
 	})
 }
 

@@ -26,6 +26,36 @@ var validProtocols = map[Protocol]struct{}{
 	ProtocolUDP: {},
 }
 
+// EgressMode and EgressProtocol duplicate internal/egress's vocabulary rather
+// than importing it, the way Protocol duplicates the orchestrator's: this
+// package is the client-side authoring contract and must not pull the
+// control plane in behind it.
+type EgressMode string
+
+const (
+	EgressModeDirect EgressMode = "direct"
+
+	EgressModeProxy EgressMode = "proxy"
+)
+
+var validEgressModes = map[EgressMode]struct{}{
+	EgressModeDirect: {},
+	EgressModeProxy:  {},
+}
+
+type EgressProtocol string
+
+const (
+	EgressProtocolSOCKS5 EgressProtocol = "socks5"
+
+	EgressProtocolHTTP EgressProtocol = "http"
+)
+
+var validEgressProtocols = map[EgressProtocol]struct{}{
+	EgressProtocolSOCKS5: {},
+	EgressProtocolHTTP:   {},
+}
+
 // Parse decodes a Fusefile from yaml bytes using a strict decoder (unknown
 // fields are rejected) and then validates the result. It returns the parsed
 // Fusefile only if it is structurally valid.
@@ -324,6 +354,7 @@ func validate(f *Fusefile) error {
 	errs = append(errs, validateHealthProbe(f.Healthcheck)...)
 	errs = append(errs, validateExposeHealthcheck(f)...)
 	errs = append(errs, validateDesktop(f.Desktop)...)
+	errs = append(errs, validateEgress(f.Egress)...)
 
 	// an empty secret name is a requirement no `--secret` flag can satisfy, and
 	// the server's ExtractRequiredSecrets skips empty refs, so the two sides
@@ -472,6 +503,57 @@ func validateDesktop(d *Desktop) []error {
 	}
 	if d.Height < minDesktopDim || d.Height > maxDesktopDim {
 		errs = append(errs, fmt.Errorf("desktop.height: must be between %d and %d, got %d", minDesktopDim, maxDesktopDim, d.Height))
+	}
+	return errs
+}
+
+// validateEgress checks the structural rules of the egress block. It mirrors
+// internal/egress.Spec.Validate so a Fusefile the CLI accepts is one the
+// orchestrator accepts too. Defaults are not applied here: an empty mode is
+// read as direct and an empty protocol on a proxy block is fine, and the
+// compiler fills both in.
+//
+// A nil block is the common case (the block is optional) and yields nothing.
+func validateEgress(eg *Egress) []error {
+	if eg == nil {
+		return nil
+	}
+	var errs []error
+
+	mode := eg.Mode
+	if mode == "" {
+		mode = EgressModeDirect
+	}
+	if _, ok := validEgressModes[mode]; !ok {
+		errs = append(errs, fmt.Errorf(
+			"egress.mode: must be %q or %q, got %q", EgressModeDirect, EgressModeProxy, eg.Mode))
+		return errs
+	}
+
+	// a provider or protocol on a direct block means the author believes
+	// they asked for proxying and did not. rejecting is the only answer that
+	// does not silently hand them direct egress.
+	if mode == EgressModeDirect {
+		if eg.Provider != "" {
+			errs = append(errs, fmt.Errorf(
+				"egress.provider: %q requires mode %q", eg.Provider, EgressModeProxy))
+		}
+		if eg.Protocol != "" {
+			errs = append(errs, fmt.Errorf(
+				"egress.protocol: %q requires mode %q", eg.Protocol, EgressModeProxy))
+		}
+		return errs
+	}
+
+	if strings.TrimSpace(eg.Provider) == "" {
+		errs = append(errs, fmt.Errorf("egress.provider: is required when mode is %q", EgressModeProxy))
+	}
+	if eg.Protocol != "" {
+		if _, ok := validEgressProtocols[eg.Protocol]; !ok {
+			errs = append(errs, fmt.Errorf(
+				"egress.protocol: must be %q or %q, got %q",
+				EgressProtocolSOCKS5, EgressProtocolHTTP, eg.Protocol))
+		}
 	}
 	return errs
 }

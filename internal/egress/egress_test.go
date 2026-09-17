@@ -224,3 +224,19 @@ func TestRegistryDestroy(t *testing.T) {
 		t.Fatalf("Destroy of unknown provider = %v, want nil", err)
 	}
 }
+
+func TestRegistryReleaseAsksEveryProvider(t *testing.T) {
+	a := &fakeProvider{name: "a"}
+	b := &fakeProvider{name: "b"}
+	r := NewRegistry(a, b)
+	if err := r.Release(context.Background(), Context{VMID: "vm-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.destroyed) != 1 || len(b.destroyed) != 1 {
+		t.Fatalf("destroyed a=%d b=%d, want 1 each", len(a.destroyed), len(b.destroyed))
+	}
+	// an empty registry has nothing to ask and nothing to report.
+	if err := NewRegistry().Release(context.Background(), Context{VMID: "vm-1"}); err != nil {
+		t.Fatalf("Release on empty registry = %v, want nil", err)
+	}
+}

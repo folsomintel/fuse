@@ -60,6 +60,8 @@ type VM struct {
 	GpuUuids json.RawMessage `json:"gpu_uuids,omitempty"`
 	// MigInstanceUuids holds the value of the "mig_instance_uuids" field.
 	MigInstanceUuids json.RawMessage `json:"mig_instance_uuids,omitempty"`
+	// Egress holds the value of the "egress" field.
+	Egress json.RawMessage `json:"egress,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -72,7 +74,7 @@ func (*VM) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids:
+		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress:
 			values[i] = new([]byte)
 		case vm.FieldCpus, vm.FieldRAMMB, vm.FieldStorageGB, vm.FieldMaxRuntimeSeconds, vm.FieldIdleTimeoutSeconds, vm.FieldGpus:
 			values[i] = new(sql.NullInt64)
@@ -233,6 +235,14 @@ func (_m *VM) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field mig_instance_uuids: %w", err)
 				}
 			}
+		case vm.FieldEgress:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field egress", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Egress); err != nil {
+					return fmt.Errorf("unmarshal field egress: %w", err)
+				}
+			}
 		case vm.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -343,6 +353,9 @@ func (_m *VM) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("mig_instance_uuids=")
 	builder.WriteString(fmt.Sprintf("%v", _m.MigInstanceUuids))
+	builder.WriteString(", ")
+	builder.WriteString("egress=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Egress))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -95,21 +96,58 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		Region:       spec.Region,
 		Image:        spec.Image,
 		SeedSnapshot: spec.SeedSnapshotID,
+		Egress:       egressWireFor(spec),
 	}
 	var resp createVMResponse
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker create vm: %w", err)
 	}
+	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
+}
 
+// envFromResponse builds the handle for a vm the agent reported, defaulting
+// the url the way every call site used to.
+func (p *Provider) envFromResponse(vmID, url, hostIP, guestIP string) *remoteEnv {
 	env := &remoteEnv{
-		id:     resp.VMID,
-		url:    resp.URL,
-		client: p,
+		id:      vmID,
+		url:     url,
+		hostIP:  hostIP,
+		guestIP: guestIP,
+		client:  p,
 	}
 	if env.url == "" {
-		env.url = fmt.Sprintf("fc://%s", resp.VMID)
+		env.url = fmt.Sprintf("fc://%s", vmID)
 	}
-	return env, nil
+	return env
+}
+
+// ProvisionEgress brings a host-side egress backend up for vmID through
+// the agent's generic egress wire, satisfying egress.HostAgent. the stub
+// has no host and so no backends.
+func (p *Provider) ProvisionEgress(ctx context.Context, vmID string, req egress.HostRequest) (egress.Endpoint, error) {
+	if p.stub != nil {
+		return egress.Endpoint{}, fmt.Errorf("firecracker stub has no egress backends")
+	}
+	var resp egressResponse
+	path := fmt.Sprintf("/v1/vm/%s/egress", vmID)
+	if err := p.doJSON(ctx, http.MethodPost, path, req, &resp); err != nil {
+		return egress.Endpoint{}, fmt.Errorf("firecracker provision egress: %w", err)
+	}
+	return egress.Endpoint{URL: resp.URL, Protocol: egress.Protocol(resp.Protocol), Provider: resp.Provider}, nil
+}
+
+// DestroyEgress releases vmID's host-side backend, satisfying
+// egress.HostAgent. a vm the agent no longer knows has nothing to release.
+func (p *Provider) DestroyEgress(ctx context.Context, vmID string) error {
+	if p.stub != nil {
+		return nil
+	}
+	path := fmt.Sprintf("/v1/vm/%s/egress", vmID)
+	err := p.doJSON(ctx, http.MethodDelete, path, nil, nil)
+	if orchestrator.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // CreateFromCheckpoint provisions a brand-new sandbox seeded from an existing
@@ -133,22 +171,14 @@ func (p *Provider) CreateFromCheckpoint(ctx context.Context, spec orchestrator.S
 		MemoryMB:   spec.RamMB,
 		StorageGB:  spec.StorageGB,
 		Region:     spec.Region,
+		Egress:     egressWireFor(spec),
 	}
 	var resp createVMResponse
 	path := fmt.Sprintf("/v1/vm/%s/fork", srcVMID)
 	if err := p.doJSON(ctx, http.MethodPost, path, reqBody, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker fork vm %s from snapshot %s: %w", srcVMID, checkpointID, err)
 	}
-
-	env := &remoteEnv{
-		id:     resp.VMID,
-		url:    resp.URL,
-		client: p,
-	}
-	if env.url == "" {
-		env.url = fmt.Sprintf("fc://%s", resp.VMID)
-	}
-	return env, nil
+	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
 }
 
 // Get returns an existing sandbox.
@@ -161,7 +191,7 @@ func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environme
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker get vm: %w", err)
 	}
-	return &remoteEnv{id: resp.VMID, url: resp.URL, client: p}, nil
+	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
 }
 
 // Destroy tears down a sandbox.
@@ -188,7 +218,7 @@ func (p *Provider) List(ctx context.Context, prefix string) ([]orchestrator.Envi
 	}
 	envs := make([]orchestrator.Environment, 0, len(resp.VMs))
 	for _, vm := range resp.VMs {
-		envs = append(envs, &remoteEnv{id: vm.VMID, url: vm.URL, client: p})
+		envs = append(envs, p.envFromResponse(vm.VMID, vm.URL, vm.HostIP, vm.GuestIP))
 	}
 	return envs, nil
 }
@@ -232,6 +262,13 @@ type remoteEnv struct {
 	url    string
 	client *Provider
 
+	// hostIP and guestIP are the two ends of the vm's tap as the agent
+	// reported them, or empty from an agent that predates the fields. they
+	// are what an in-process egress backend binds and what the guest is told
+	// not to proxy.
+	hostIP  string
+	guestIP string
+
 	// authToken is the per-VM bearer token callers must present when
 	// reaching url. It is populated by Boot via SetToken once
 	// VMCredentials have been generated (and refreshed by token
@@ -256,6 +293,11 @@ var (
 	// orchestrator finds that out by asserting on this interface, so the
 	// assertion is pinned here rather than left to a caller to discover.
 	_ orchestrator.LiveSnapshotCapable = (*remoteEnv)(nil)
+	_ orchestrator.EgressAddresser     = (*remoteEnv)(nil)
+	// the firecracker agent is the only backend with a host-side egress
+	// wire; qemu deliberately omits this, and the orchestrator finds that
+	// out by asserting on the interface.
+	_ egress.HostAgent = (*Provider)(nil)
 )
 
 // Endpoints returns the ingress endpoints published by the last StartAgent
@@ -264,6 +306,12 @@ func (e *remoteEnv) Endpoints() []orchestrator.Endpoint {
 	e.endpointsMu.RLock()
 	defer e.endpointsMu.RUnlock()
 	return e.endpoints
+}
+
+// EgressAddresses returns the host and guest ends of the vm's tap,
+// satisfying orchestrator.EgressAddresser.
+func (e *remoteEnv) EgressAddresses() (listenIP, guestIP string) {
+	return e.hostIP, e.guestIP
 }
 
 func (e *remoteEnv) Name() string { return e.id }
@@ -522,11 +570,43 @@ type createVMRequest struct {
 	// than a named base image. The agent treats it as winning over Image, but
 	// the orchestrator rejects a request carrying both before it gets here.
 	SeedSnapshot string `json:"seed_snapshot,omitempty"`
+	// Egress carries the vm's egress mode. the agent decides the tap's
+	// forward rule at create time, so this has to travel with the create and
+	// not with the later egress call. omitted for direct so an older agent
+	// sees byte-for-byte the request it always did.
+	Egress *egressWire `json:"egress,omitempty"`
 }
 
+// egressWire is the create-time half of the agent's egress contract: only
+// the mode, because that is all the tap rules depend on. the backend, if
+// any, is brought up afterwards through egress.HostRequest.
+type egressWire struct {
+	Mode string `json:"mode"`
+}
+
+// egressWireFor returns the create-time egress field for spec, or nil for
+// direct so the field is omitted entirely.
+func egressWireFor(spec orchestrator.Spec) *egressWire {
+	if !spec.Egress.IsProxy() {
+		return nil
+	}
+	return &egressWire{Mode: string(egress.ModeProxy)}
+}
+
+// createVMResponse is what the agent reports for a vm. host_ip and guest_ip
+// are the two ends of the vm's tap, absent from an agent that predates them.
 type createVMResponse struct {
-	VMID string `json:"vm_id"`
-	URL  string `json:"url"`
+	VMID    string `json:"vm_id"`
+	URL     string `json:"url"`
+	HostIP  string `json:"host_ip"`
+	GuestIP string `json:"guest_ip"`
+}
+
+// egressResponse is the agent's answer to POST /v1/vm/{id}/egress.
+type egressResponse struct {
+	Provider string `json:"provider"`
+	Protocol string `json:"protocol"`
+	URL      string `json:"url"`
 }
 
 // forkVMRequest seeds a new vm from an existing vm's snapshot. The host agent
@@ -534,17 +614,20 @@ type createVMResponse struct {
 // snapshot's rootfs into the new vm, so no image is carried here. Sizing
 // fields left zero default to the source vm's on the host side.
 type forkVMRequest struct {
-	Name       string `json:"name"`
-	SnapshotID string `json:"snapshot_id"`
-	CPUs       int    `json:"cpus,omitempty"`
-	MemoryMB   int    `json:"memory_mb,omitempty"`
-	StorageGB  int    `json:"storage_gb,omitempty"`
-	Region     string `json:"region,omitempty"`
+	Name       string      `json:"name"`
+	SnapshotID string      `json:"snapshot_id"`
+	CPUs       int         `json:"cpus,omitempty"`
+	MemoryMB   int         `json:"memory_mb,omitempty"`
+	StorageGB  int         `json:"storage_gb,omitempty"`
+	Region     string      `json:"region,omitempty"`
+	Egress     *egressWire `json:"egress,omitempty"`
 }
 
 type getVMResponse struct {
-	VMID string `json:"vm_id"`
-	URL  string `json:"url"`
+	VMID    string `json:"vm_id"`
+	URL     string `json:"url"`
+	HostIP  string `json:"host_ip"`
+	GuestIP string `json:"guest_ip"`
 }
 
 // capacityResponse is the GET /v1/capacity response: the host agent's real
@@ -562,10 +645,14 @@ type capacityResponse struct {
 }
 
 type listVMResponse struct {
-	VMs []struct {
-		VMID string `json:"vm_id"`
-		URL  string `json:"url"`
-	} `json:"vms"`
+	VMs []listVMEntry `json:"vms"`
+}
+
+type listVMEntry struct {
+	VMID    string `json:"vm_id"`
+	URL     string `json:"url"`
+	HostIP  string `json:"host_ip"`
+	GuestIP string `json:"guest_ip"`
 }
 
 type uploadRequest struct {
@@ -865,7 +952,14 @@ var (
 	_ orchestrator.TokenSetter         = (*stubEnv)(nil)
 	_ orchestrator.EndpointReporter    = (*stubEnv)(nil)
 	_ orchestrator.LiveSnapshotCapable = (*stubEnv)(nil)
+	_ orchestrator.EgressAddresser     = (*stubEnv)(nil)
 )
+
+// EgressAddresses reports loopback for both ends: the stub has no tap, and
+// loopback is the one address an in-process backend can bind in a test.
+func (e *stubEnv) EgressAddresses() (listenIP, guestIP string) {
+	return "127.0.0.1", "127.0.0.1"
+}
 
 // Endpoints returns endpoints synthesized by the last StartAgent call,
 // satisfying orchestrator.EndpointReporter. The stub has no real guest or

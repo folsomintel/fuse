@@ -113,6 +113,61 @@ describe("environments", () => {
     expect(env.endpoints?.map((e) => e.protocol)).toEqual(["udp", undefined, "sctp"]);
   });
 
+  it("create carries egress and omits it when unset", async () => {
+    const bodies: string[] = [];
+    current = await serve(async (req, res) => {
+      bodies.push(await readBody(req));
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-1","state":"running","task_id":"task-1","url":"https://x"}`);
+    });
+
+    await current.client.environments.create({
+      task_id: "task-1",
+      egress: { mode: "proxy", provider: "mock", protocol: "socks5" },
+    });
+    await current.client.environments.create({ task_id: "task-1" });
+
+    // a request that never mentions egress serializes exactly as it did before
+    // the field existed, so upgrading the SDK alone is not a wire change.
+    expect(bodies.map((b) => JSON.parse(b))).toEqual([
+      {
+        task_id: "task-1",
+        egress: { mode: "proxy", provider: "mock", protocol: "socks5" },
+      },
+      { task_id: "task-1" },
+    ]);
+  });
+
+  it("get decodes an egress status and tolerates a server that omits it", async () => {
+    // mode is typed as string rather than a union, so a server that grows a
+    // new mode or provider does not break decoding. egress comes back on every
+    // environment read from a new server, so a strict type here would be a
+    // hard failure.
+    current = await serve((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (pathOf(req) === "/v1/environments/vm-old") {
+        res.end(`{"id":"vm-old","state":"running","task_id":"task-1","url":"u"}`);
+        return;
+      }
+      res.end(
+        `{"id":"vm-1","state":"running","task_id":"task-1","url":"u",` +
+          `"egress":{"mode":"proxy","provider":"mock","protocol":"socks5",` +
+          `"endpoint":"socks5h://10.200.3.1:1080"}}`,
+      );
+    });
+
+    const env = await current.client.environments.get("vm-1");
+    expect(env.egress).toEqual({
+      mode: "proxy",
+      provider: "mock",
+      protocol: "socks5",
+      endpoint: "socks5h://10.200.3.1:1080",
+    });
+
+    const old = await current.client.environments.get("vm-old");
+    expect(old.egress).toBeUndefined();
+  });
+
   it("get decodes an endpoints array on EnvironmentInfo", async () => {
     current = await serve((req, res) => {
       res.setHeader("Content-Type", "application/json");

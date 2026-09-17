@@ -14,6 +14,7 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/entspike/ent"
 	entvm "github.com/folsomintel/fuse/internal/entspike/ent/vm"
 )
@@ -138,6 +139,10 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal mig instance uuids for vm %s: %w", vm.ID, err)
 	}
+	egressJSON, err := marshalEgress(vm.Egress)
+	if err != nil {
+		return fmt.Errorf("marshal egress for vm %s: %w", vm.ID, err)
+	}
 	err = s.entc.VM.Create().
 		SetID(vm.ID).
 		SetHostID(vm.HostID).
@@ -161,6 +166,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		SetGpuProfile(vm.Spec.GPUProfile).
 		SetGpuUuids(json.RawMessage(gpuUUIDsJSON)).
 		SetMigInstanceUuids(json.RawMessage(migInstanceUUIDsJSON)).
+		SetEgress(json.RawMessage(egressJSON)).
 		SetCreatedAt(vm.CreatedAt.UTC()).
 		SetUpdatedAt(vm.UpdatedAt.UTC()).
 		OnConflictColumns(entvm.FieldID).
@@ -235,6 +241,14 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 				return nil, fmt.Errorf("unmarshal mig instance uuids for vm %s: %w", record.ID, err)
 			}
 		}
+		// egress_json defaults to '{}', which reads as direct; the policy is
+		// mirrored back onto the spec so a recovered vm carries what it was
+		// created with.
+		record.Egress, err = unmarshalEgress(row.Egress)
+		if err != nil {
+			return nil, fmt.Errorf("unmarshal egress for vm %s: %w", record.ID, err)
+		}
+		record.Spec.Egress = egress.Spec{Mode: record.Egress.Mode, Provider: record.Egress.Provider, Protocol: record.Egress.Protocol}
 		out = append(out, record)
 	}
 	return out, nil

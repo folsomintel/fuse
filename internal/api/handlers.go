@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/fusefile"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
@@ -300,6 +301,10 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
+	if err := h.validateEgress(req.Egress); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+		return
+	}
 	// A negative bound would reach the fleet as "unset" and quietly restore
 	// the default, so it is refused here where the sign is still visible.
 	// The upper bound is the fleet's to enforce, since it owns the ceiling.
@@ -369,6 +374,7 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		spec.SeedSnapshotID = record.SnapshotID
 		spec.PinnedHostID = record.HostID
 	}
+	spec.Egress = toOrchestratorEgress(req.Egress)
 	info, err := h.Fleet.ProvisionAndAssign(r.Context(), req.TaskID, spec, manifest, req.Secrets, orchestrator.BootOptions{
 		StartupScript:        req.StartupScript,
 		StartupScriptTimeout: time.Duration(req.StartupScriptTimeoutSeconds) * time.Second,
@@ -431,6 +437,11 @@ func decodeCreateFiles(files map[string]string) (map[string][]byte, error) {
 		case p == orchestrator.ReservedGuestDir || strings.HasPrefix(p, orchestrator.ReservedGuestDir+"/"):
 			return nil, fmt.Errorf("files: %q is under %s, which is reserved for the guest agent's own files",
 				p, orchestrator.ReservedGuestDir)
+		case p == orchestrator.GuestEgressDir || strings.HasPrefix(p, orchestrator.GuestEgressDir+"/"):
+			// the egress metadata there is world-readable on purpose, so a
+			// caller file could otherwise replace it and lie to the guest.
+			return nil, fmt.Errorf("files: %q is under %s, which is reserved for the environment's egress metadata",
+				p, orchestrator.GuestEgressDir)
 		}
 
 		data, err := base64.StdEncoding.DecodeString(files[p])
@@ -545,6 +556,31 @@ func validateDesktop(d *DesktopSpec) error {
 		return fmt.Errorf("desktop.height must be between 320 and 3840, got %d", d.Height)
 	}
 	return nil
+}
+
+// validateEgress enforces the egress policy's invariants at the API boundary
+// so raw SDK callers are held to the same rules as Fusefile authors, and
+// refuses a provider this orchestrator has not registered before any vm
+// row exists. the error names the providers it does have, so a caller can
+// act on it. a nil block is direct and always valid.
+func (h *Handler) validateEgress(e *EgressSpec) error {
+	if e == nil {
+		return nil
+	}
+	spec := egress.Spec{Mode: egress.Mode(e.Mode), Provider: e.Provider, Protocol: egress.Protocol(e.Protocol)}
+	if err := spec.Validate(); err != nil {
+		return err
+	}
+	if !spec.IsProxy() {
+		return nil
+	}
+	known := h.Fleet.EgressProviders()
+	for _, name := range known {
+		if name == spec.Provider {
+			return nil
+		}
+	}
+	return &egress.UnknownProviderError{Name: spec.Provider, Known: known}
 }
 
 // validatePlacementSpec enforces the placement vocabulary at the API boundary

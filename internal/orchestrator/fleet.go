@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/secrets"
 )
 
@@ -172,8 +173,13 @@ type vm struct {
 	secretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
 	drainCommand       string     // graceful-shutdown command run in the guest on Drain ('' => skip)
 	endpoints          []Endpoint // published endpoints (e.g. ingress), if the provider reported any
-	createdAt          time.Time
-	updatedAt          time.Time
+	// egress is the resolved outbound policy: direct, or the proxy backend
+	// and endpoint this vm was booted with. persisted, so a restart still
+	// knows which backend to release. health is live and refreshed by
+	// reconcile, never persisted.
+	egress    egress.Status
+	createdAt time.Time
+	updatedAt time.Time
 	// lastActivityAt is the clock the idle detector reads: the last time a
 	// caller exec'd or attached to this VM (create counts as activity). It is
 	// deliberately separate from updatedAt, which only moves on state
@@ -208,6 +214,7 @@ func (v *vm) toInfo() VMInfo {
 		UpdatedAt: v.updatedAt,
 		Error:     v.err,
 		Endpoints: v.endpoints,
+		Egress:    v.egress,
 	}
 	if v.env != nil {
 		info.URL = v.env.URL()
@@ -237,6 +244,9 @@ type VMInfo struct {
 	// environment declared no probe or none has been read back yet. See
 	// health.go.
 	Health *HealthStatus
+	// Egress is the resolved outbound policy. always set: a vm created
+	// without asking reports direct.
+	Egress egress.Status
 }
 
 // ReconcileMetrics is an optional callback invoked at the end of every
@@ -362,6 +372,11 @@ type FleetConfig struct {
 	// single-provider mode for all subsequent placements.
 	HostProviderFactory func(url, token string, backend HostBackend) Provider
 
+	// EgressRegistry holds the egress backends this orchestrator can
+	// provision. nil, or an empty registry, means a proxy-mode create is
+	// refused; there is no fallback to direct.
+	EgressRegistry *egress.Registry
+
 	Metrics ReconcileMetrics
 	Logger  *slog.Logger
 }
@@ -451,6 +466,10 @@ type FleetManager struct {
 	// single fm.provider path until an operator re-registers the host.
 	hostProviderFactory func(url, token string, backend HostBackend) Provider
 
+	// egressRegistry is the fleet's egress backends, or nil when none are
+	// configured. handed to Boot per vm and consulted on every teardown.
+	egressRegistry *egress.Registry
+
 	// placementPolicy is the default scheduling strategy (binpack or
 	// spread). Defaults to spread when empty.
 	placementPolicy PlacementPolicy
@@ -524,6 +543,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		hostProviders:            make(map[string]Provider),
 		tokenEncryptionKey:       cfg.TokenEncryptionKey,
 		hostProviderFactory:      cfg.HostProviderFactory,
+		egressRegistry:           cfg.EgressRegistry,
 		placementPolicy:          cfg.PlacementPolicy,
 		broadcaster:              newEventBroadcaster(),
 	}
@@ -868,6 +888,10 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.touchArtifact(spec.SeedSnapshotID, seed.record.SnapshotID)
 	}
 
+	// the fleet, not the caller, knows which host this vm landed on and
+	// which egress backends exist; Boot needs both to provision egress.
+	opts.HostID = v.hostID
+	opts.EgressRegistry = fm.egressRegistry
 	result, err := Boot(ctx, bootProvider, spec, manifest, secretMap, opts, fm.tokenEncryptionKey)
 	if err != nil {
 		releaseReservation()
@@ -937,6 +961,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	v.secretsEncrypted = secretsEncrypted
 	v.drainCommand = result.DrainCommand
 	v.endpoints = result.Endpoints
+	v.egress = result.Egress
 	v.updatedAt = time.Now()
 	fm.mu.Unlock()
 	fm.publishStateChange(vmID, "")
@@ -963,6 +988,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
 		go func() {
+			fm.releaseEgress(context.Background(), v)
 			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
 				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
 			}
@@ -999,6 +1025,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
 		go func() {
+			fm.releaseEgress(context.Background(), v)
 			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
 				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
 			}
@@ -1153,6 +1180,7 @@ func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 
 	fm.logger.Info("destroying vm", "vm", vmID)
 
+	fm.releaseEgress(ctx, v)
 	if err := provider.Destroy(ctx, vmID); err != nil {
 		fm.logger.Error("destroy failed", "vm", vmID, "err", err)
 		return fmt.Errorf("destroy vm %s: %w", vmID, err)
@@ -1443,6 +1471,9 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 		fm.logger.Error("async destroy provider lookup failed", "vm", vmID, "err", err)
 		return
 	}
+	if ok {
+		fm.releaseEgress(ctx, v)
+	}
 	if err := provider.Destroy(ctx, vmID); err != nil {
 		fm.logger.Error("async destroy failed", "vm", vmID, "err", err)
 		return
@@ -1576,6 +1607,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			// persisted as a DB column.
 			drainCommand: DefaultFusedDrainCommand,
 			endpoints:    record.Endpoints,
+			egress:       record.Egress,
 			createdAt:    record.CreatedAt,
 			updatedAt:    record.UpdatedAt,
 			// activity is not persisted, so recovery restarts the idle
@@ -1935,9 +1967,54 @@ func (fm *FleetManager) vmRecordFromVM(v *vm) VMRecord {
 		SecretsEncrypted:   v.secretsEncrypted,
 		LastError:          v.err,
 		Endpoints:          v.endpoints,
+		Egress:             v.egress,
 		CreatedAt:          v.createdAt,
 		UpdatedAt:          v.updatedAt,
 	}
+}
+
+// releaseEgress asks the registry to tear down v's proxy backend. safe on
+// every path: a direct vm returns at once, a fleet with no registry returns
+// at once, and an unregistered provider is a no-op in the registry. best
+// effort by design, because it runs on teardown paths that must not fail;
+// a host-side backend is released by the host's own destroy regardless.
+// call it without fm.mu held.
+func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
+	if fm.egressRegistry == nil || v.egress.Mode != egress.ModeProxy {
+		return
+	}
+	ec := egress.Context{VMID: v.id, HostID: v.hostID}
+	if v.env != nil {
+		ec.ListenIP, ec.GuestIP = egressAddresses(v.env)
+	}
+	if p, err := fm.providerForVM(v.hostID); err == nil {
+		if ha, ok := p.(egress.HostAgent); ok {
+			ec.Host = ha
+		}
+	}
+	if err := fm.egressRegistry.Destroy(ctx, v.egress.Provider, ec); err != nil {
+		fm.logger.Warn("egress release failed", "vm", v.id, "provider", v.egress.Provider, "err", err)
+	}
+}
+
+// releaseOrphanEgress is releaseEgress for a vm the fleet has no record of:
+// with no provider name to go on, every backend is asked.
+func (fm *FleetManager) releaseOrphanEgress(ctx context.Context, vmID string) {
+	if fm.egressRegistry == nil {
+		return
+	}
+	if err := fm.egressRegistry.Release(ctx, egress.Context{VMID: vmID}); err != nil {
+		fm.logger.Warn("orphan egress release failed", "vm", vmID, "err", err)
+	}
+}
+
+// EgressProviders lists the egress backends this fleet can provision, for
+// the api layer to refuse an unknown provider before a vm row exists.
+func (fm *FleetManager) EgressProviders() []string {
+	if fm.egressRegistry == nil {
+		return nil
+	}
+	return fm.egressRegistry.Names()
 }
 
 // reuploadSecrets decrypts the persisted secret blob for a recovered VM
