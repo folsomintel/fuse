@@ -94,6 +94,42 @@ type HealthcheckHTTP struct {
 	Path string `json:"path,omitempty"`
 }
 
+// Egress modes and proxy protocols, carried in EgressSpec and EgressStatus.
+// Both are plain strings so a server that grows a new mode or provider does
+// not turn into a decode error here; compare against these rather than
+// writing the literals.
+const (
+	EgressModeDirect = "direct"
+	EgressModeProxy  = "proxy"
+
+	EgressProtocolSOCKS5 = "socks5"
+	EgressProtocolHTTP   = "http"
+)
+
+// EgressSpec routes the environment's outbound traffic. Omit it (or leave
+// Mode empty) for direct egress, which is what every request written before
+// this field existed meant.
+type EgressSpec struct {
+	// Mode is EgressModeDirect or EgressModeProxy.
+	Mode string `json:"mode,omitempty"`
+	// Provider is the proxy backend, required when Mode is proxy (today
+	// "mock"; later "cloudflare-warp").
+	Provider string `json:"provider,omitempty"`
+	// Protocol is EgressProtocolSOCKS5 (the default for proxy) or
+	// EgressProtocolHTTP.
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// EgressStatus is how the environment's outbound traffic is actually routed.
+// Mode is always set; Provider, Protocol and Endpoint are present only for
+// proxy egress. Endpoint is a host-local address, never a credential.
+type EgressStatus struct {
+	Mode     string `json:"mode"`
+	Provider string `json:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
 // DesktopSpec is the geometry of the environment's graphical session (the
 // Fusefile's `desktop:` block). It requires an image that carries the desktop
 // stack; on any other image the declaration is inert and the computer surface
@@ -187,6 +223,10 @@ type CreateRequest struct {
 	// soon as the VM is up, and the verdict arrives on later reads.
 	Healthcheck *HealthcheckSpec `json:"healthcheck,omitempty"`
 
+	// Egress routes the environment's outbound traffic. Omit it for direct
+	// egress.
+	Egress *EgressSpec `json:"egress,omitempty"`
+
 	// Desktop is the graphical session's geometry. Omit it for an
 	// environment with no desktop, in which case a desktop image keeps its
 	// baked default geometry.
@@ -230,6 +270,9 @@ type EnvironmentInfo struct {
 	// its reconcile tick (30s by default), so it lags the guest by up to a
 	// tick.
 	Health *Health `json:"health,omitempty"`
+	// Egress is how outbound traffic is actually routed. Nil only from a
+	// server that predates the field; treat that as direct.
+	Egress *EgressStatus `json:"egress,omitempty"`
 }
 
 type environmentList struct {

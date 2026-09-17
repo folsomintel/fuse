@@ -55,6 +55,66 @@ func TestEnvironmentsCreate(t *testing.T) {
 	}
 }
 
+func TestEnvironmentsCreate_carriesEgressAndOmitsItWhenUnset(t *testing.T) {
+	var body []byte
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"vm-1","state":"running","task_id":"task-1","url":"u"}`)
+	})
+	defer cleanup()
+
+	_, err := c.Environments.Create(context.Background(), CreateRequest{
+		TaskID: "task-1",
+		Egress: &EgressSpec{Mode: EgressModeProxy, Provider: "mock", Protocol: EgressProtocolSOCKS5},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !strings.Contains(string(body), `"egress":{"mode":"proxy","provider":"mock","protocol":"socks5"}`) {
+		t.Fatalf("request body missing egress: %s", body)
+	}
+
+	// an unset egress must not travel at all, so upgrading the sdk alone is
+	// not a wire change for a caller that never mentions the field.
+	if _, err := c.Environments.Create(context.Background(), CreateRequest{TaskID: "task-1"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if strings.Contains(string(body), `"egress"`) {
+		t.Fatalf("egress sent when unset: %s", body)
+	}
+}
+
+func TestEnvironmentsGet_decodesEgressStatus(t *testing.T) {
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/environments/vm-old" {
+			// a server that predates the field omits the whole object
+			io.WriteString(w, `{"id":"vm-old","state":"running","task_id":"task-1","url":"u"}`)
+			return
+		}
+		io.WriteString(w, `{"id":"vm-1","state":"running","task_id":"task-1","url":"u","egress":{"mode":"proxy","provider":"mock","protocol":"socks5","endpoint":"socks5h://10.200.3.1:1080"}}`)
+	})
+	defer cleanup()
+
+	env, err := c.Environments.Get(context.Background(), "vm-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	want := EgressStatus{Mode: EgressModeProxy, Provider: "mock", Protocol: EgressProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"}
+	if env.Egress == nil || *env.Egress != want {
+		t.Fatalf("Egress = %+v, want %+v", env.Egress, want)
+	}
+
+	old, err := c.Environments.Get(context.Background(), "vm-old")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if old.Egress != nil {
+		t.Fatalf("Egress = %+v, want nil from a server that omits it", old.Egress)
+	}
+}
+
 func TestEnvironmentsList(t *testing.T) {
 	var got recordedRequest
 	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

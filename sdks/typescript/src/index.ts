@@ -26,6 +26,8 @@ export type {
   HealthcheckHttp,
   Health,
   DesktopSpec,
+  EgressSpec,
+  EgressStatus,
   ComputerAction,
   ComputerResult,
   ComputerDisplay,

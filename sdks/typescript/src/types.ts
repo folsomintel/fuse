@@ -212,6 +212,35 @@ export interface Health {
   message?: string;
 }
 
+/**
+ * EgressSpec routes the environment's outbound traffic. Omit it (or omit
+ * mode) for direct egress, which is what every request written before this
+ * field existed meant. Every field is a plain string rather than a union so a
+ * server that grows a new mode or provider does not turn into a compile error
+ * here.
+ */
+export interface EgressSpec {
+  /** "direct" (the default) or "proxy". */
+  mode?: string;
+  /** Proxy backend, required when mode is "proxy" (today "mock"; later
+   * "cloudflare-warp"). */
+  provider?: string;
+  /** "socks5" (the default for proxy) or "http". */
+  protocol?: string;
+}
+
+/**
+ * EgressStatus is how the environment's outbound traffic is actually routed.
+ * mode is always set; provider, protocol and endpoint are present only for
+ * proxy egress. endpoint is a host-local address, never a credential.
+ */
+export interface EgressStatus {
+  mode: string;
+  provider?: string;
+  protocol?: string;
+  endpoint?: string;
+}
+
 /** CreateRequest is the body for environments.create. */
 export interface CreateRequest {
   task_id: string;
@@ -234,6 +263,8 @@ export interface CreateRequest {
    * evaluated inside create: the call returns as soon as the VM is up, and
    * the verdict arrives on later reads. */
   healthcheck?: HealthcheckSpec;
+  /** Routes the environment's outbound traffic. Omit it for direct egress. */
+  egress?: EgressSpec;
   /** Graphical session geometry. Omit it for an environment with no desktop,
    * in which case a desktop image keeps its baked default geometry. */
   desktop?: DesktopSpec;
@@ -256,6 +287,9 @@ export interface EnvironmentInfo {
    * has been read back from the guest. The server refreshes it on its
    * reconcile tick (30s by default), so it lags the guest by up to a tick. */
   health?: Health;
+  /** How outbound traffic is actually routed. Absent only from a server that
+   * predates the field; treat that as direct. */
+  egress?: EgressStatus;
 }
 
 /** ForkOptions is the optional body for environments.fork. */
