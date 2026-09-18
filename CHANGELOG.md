@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.31.0](https://github.com/folsomintel/fuse/compare/v0.30.0...v0.31.0) (2026-09-17)
+
+
+### Features
+
+* **egress:** boot wiring, public api, sdks, guest env and e2e ([#256](https://github.com/folsomintel/fuse/issues/256)) ([e626325](https://github.com/folsomintel/fuse/commit/e626325da61514d63ca2ab672ca5c4ff9a0bae14))
+* **egress:** health, metrics and events, cloudflare warp, and the docs ([#254](https://github.com/folsomintel/fuse/issues/254)) ([50280d4](https://github.com/folsomintel/fuse/commit/50280d407759e30e525d63349d25400fbb95009a))
+* **egress:** types, registry, mock provider and host-agent policy ([#251](https://github.com/folsomintel/fuse/issues/251)) ([b58ac10](https://github.com/folsomintel/fuse/commit/b58ac107cca78375d3ce10113bae7d8ede211618))
+
 ## [0.30.0](https://github.com/folsomintel/fuse/compare/v0.29.3...v0.30.0) (2026-09-12)
 
 
