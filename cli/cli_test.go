@@ -326,6 +326,45 @@ func TestEnvForkJSON(t *testing.T) {
 	}
 }
 
+func TestEnvMigrateJSON(t *testing.T) {
+	var (
+		gotPath   string
+		gotAction string
+		gotBody   string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAction = r.URL.Query().Get("action")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"id":"fuse-migrate-abc","state":"running","task_id":"migrate-abc","url":"http://fuse-migrate-abc.test","spec":{}}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "migrate", "fuse-task-1", "--target-host", "host-b"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if gotPath != "/v1/environments/fuse-task-1" {
+		t.Errorf("path = %q, want /v1/environments/fuse-task-1", gotPath)
+	}
+	if gotAction != "migrate" {
+		t.Errorf("action = %q, want migrate", gotAction)
+	}
+	if !strings.Contains(gotBody, `"target_host_id":"host-b"`) {
+		t.Errorf("request body missing target_host_id: %s", gotBody)
+	}
+	if !strings.Contains(out, `"fuse-migrate-abc"`) {
+		t.Errorf("output missing new env id: %s", out)
+	}
+}
+
 func TestConnectAndContextCurrent(t *testing.T) {
 	cfg := filepath.Join(t.TempDir(), "config.yaml")
 	root := newRootCmd()

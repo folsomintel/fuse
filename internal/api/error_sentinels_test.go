@@ -317,6 +317,27 @@ func TestForkEnvironment_gpuEnvReturns409(t *testing.T) {
 	}
 }
 
+func TestMigrateEnvironment_returnsErrorWhenProviderNotForkable(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	env := createEnv(t, r, CreateEnvironmentRequest{
+		TaskID:         "task-1",
+		ManifestInline: encodeManifest(t),
+	})
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/"+env.ID+"?action=migrate", MigrateEnvironmentRequest{TargetHostID: "host-2"})
+	// the fake provider does not implement SnapshotForkable, so MigrateVM
+	// returns an error. the test verifies the endpoint dispatches correctly
+	// and does not 400 (unknown action).
+	if rr.Code == http.StatusBadRequest {
+		t.Fatalf("action=migrate returned 400, endpoint may not be wired. body: %s", rr.Body.String())
+	}
+	if rr.Code < 400 {
+		t.Fatalf("expected error status, got %d. body: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // ── Host precondition ─────────────────────────────────────────────
 
 // TestRemoveHost_withVMsReturns409 covers fleet_hosts.go:104. Removing a host
