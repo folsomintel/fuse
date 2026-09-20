@@ -193,6 +193,33 @@ func TestEnvironmentsRotateToken(t *testing.T) {
 	}
 }
 
+func TestEnvironmentsMigrate(t *testing.T) {
+	var got recordedRequest
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		got = recordedRequest{r.Method, r.URL.Path, r.URL.RawQuery}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"vm-2","state":"running","task_id":"migrate-abc","url":"u"}`)
+	})
+	defer cleanup()
+
+	env, err := c.Environments.Migrate(context.Background(), "vm-1", MigrateOptions{TargetHostID: "host-b"})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if got.method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", got.method)
+	}
+	if got.path != "/v1/environments/vm-1" {
+		t.Fatalf("path = %s, want /v1/environments/vm-1", got.path)
+	}
+	if got.query != "action=migrate" {
+		t.Fatalf("query = %s, want action=migrate", got.query)
+	}
+	if env.ID != "vm-2" || env.State != "running" {
+		t.Fatalf("decoded env = %+v", env)
+	}
+}
+
 func TestSnapshotsCreate(t *testing.T) {
 	var got recordedRequest
 	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
