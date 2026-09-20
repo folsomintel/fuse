@@ -181,6 +181,27 @@ def test_environment_decodes_egress_status() -> None:
 
 
 @respx.mock
+def test_environments_migrate() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            201,
+            json={"id": "vm-2", "state": "running", "task_id": "migrate-abc", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        env = client.environments.migrate(
+            "vm-1", fuse.MigrateOptions(target_host_id="host-b", live=True)
+        )
+
+    request = route.calls.last.request
+    assert request.method == "POST"
+    assert request.url.path == "/v1/environments/vm-1"
+    assert request.url.params.get("action") == "migrate"
+    assert json.loads(request.content) == {"target_host_id": "host-b", "live": True}
+    assert env.id == "vm-2"
+
+
+@respx.mock
 def test_environments_fork() -> None:
     route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
         return_value=httpx.Response(

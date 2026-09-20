@@ -215,6 +215,32 @@ describe("environments", () => {
     expect(env.id).toBe("vm-2");
   });
 
+  it("migrate posts action=migrate with a MigrateOptions body and decodes the result", async () => {
+    let method: string | undefined;
+    let path: string | undefined;
+    let query: string | undefined;
+    let body = "";
+    current = await serve(async (req, res) => {
+      method = req.method;
+      path = pathOf(req);
+      query = queryOf(req);
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-2","state":"running","task_id":"migrate-abc","url":"u"}`);
+    });
+
+    const env = await current.client.environments.migrate("vm-1", {
+      target_host_id: "host-b",
+      live: true,
+    });
+
+    expect(method).toBe("POST");
+    expect(path).toBe("/v1/environments/vm-1");
+    expect(query).toBe("action=migrate");
+    expect(JSON.parse(body)).toEqual({ target_host_id: "host-b", live: true });
+    expect(env.id).toBe("vm-2");
+  });
+
   it("exec posts action=exec with an argv body and decodes the result", async () => {
     let method: string | undefined;
     let path: string | undefined;
