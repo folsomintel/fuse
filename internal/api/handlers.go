@@ -957,7 +957,7 @@ func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 //	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, exec.
 //	@Tags			environments
 //	@Param			vmId	path	string	true	"VM identifier"
-//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, exec)
+//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, migrate, exec)
 //	@Success		200		{object}	Environment	"Drain succeeded; updated VM state returned"
 //	@Success		200		{object}	ExecEnvironmentResponse	"Exec ran; a non-zero exit_code is still a 200"
 //	@Success		201		{object}	Environment	"Fork succeeded; new environment returned"
@@ -976,6 +976,8 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 		h.drainEnvironment(w, r)
 	case "fork":
 		h.forkEnvironment(w, r)
+	case "migrate":
+		h.migrateEnvironment(w, r)
 	case "exec":
 		h.execEnvironment(w, r)
 	default:
@@ -1044,6 +1046,27 @@ func (h *Handler) forkEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		// fork reported success but the new vm is not readable yet; return
 		// 204 rather than synthesising a stale body.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toAPIEnvironment(info))
+}
+
+func (h *Handler) migrateEnvironment(w http.ResponseWriter, r *http.Request) {
+	vmID := chi.URLParam(r, "vmId")
+
+	var req MigrateEnvironmentRequest
+	if !decodeOptionalJSON(w, r, MaxJSONBodyBytes, &req) {
+		return
+	}
+
+	newID, err := h.Fleet.MigrateVM(r.Context(), vmID, req.TargetHostID)
+	if err != nil {
+		writeFleetError(w, err)
+		return
+	}
+	info, ok := h.Fleet.GetVM(newID)
+	if !ok {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

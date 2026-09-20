@@ -300,6 +300,12 @@ type ForkEnvironmentRequest struct {
 	Comment         string `json:"comment,omitempty"`
 }
 
+// MigrateEnvironmentRequest is the optional body for
+// POST /v1/environments/{vmId}?action=migrate.
+type MigrateEnvironmentRequest struct {
+	TargetHostID string `json:"target_host_id,omitempty"`
+}
+
 // SnapshotExport is the JSON shape of an optional exported snapshot artifact.
 type SnapshotExport struct {
 	Destination string    `json:"destination"`
