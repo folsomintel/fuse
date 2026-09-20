@@ -428,7 +428,8 @@ paths:
         required: false
         description: |
           Required for `exec`, which rejects an empty body with 400.
-          Optional for `fork` (ForkEnvironmentRequest). Ignored by
+          Optional for `fork` (ForkEnvironmentRequest) and `migrate`
+          (MigrateEnvironmentRequest). Ignored by
           `rotate-token` and `drain`.
         content:
           application/json:
@@ -436,13 +437,14 @@ paths:
               oneOf:
                 - $ref: "#/components/schemas/ExecEnvironmentRequest"
                 - $ref: "#/components/schemas/ForkEnvironmentRequest"
+                - $ref: "#/components/schemas/MigrateEnvironmentRequest"
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [rotate-token, drain, fork, exec]
+            enum: [rotate-token, drain, fork, migrate, exec]
           description: The action to perform.
       responses:
         "200":
@@ -2293,6 +2295,16 @@ components:
         comment:
           type: string
           description: Free-form note attached to the seed snapshot.
+
+    MigrateEnvironmentRequest:
+      type: object
+      description: Optional body of POST /v1/environments/{vmId}?action=migrate.
+      properties:
+        target_host_id:
+          type: string
+          description: |
+            Host to migrate the VM to. Empty means the orchestrator
+            picks one via its scheduler.
 
     CreateSnapshotRequest:
       type: object
