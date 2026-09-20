@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.32.0](https://github.com/folsomintel/fuse/compare/v0.31.0...v0.32.0) (2026-09-20)
+
+
+### Features
+
+* add migrate API handler, types, and OpenAPI spec ([#258](https://github.com/folsomintel/fuse/issues/258)) ([64270de](https://github.com/folsomintel/fuse/commit/64270de07720a06ef3e7db226f0958511d390f7f))
+* add migrate CLI command and Go SDK method ([#259](https://github.com/folsomintel/fuse/issues/259)) ([7bc9346](https://github.com/folsomintel/fuse/commit/7bc93463ad3fd70643f34f75c89d5b6799cbb300))
+* add MigrateVM orchestrator method ([#257](https://github.com/folsomintel/fuse/issues/257)) ([d18635a](https://github.com/folsomintel/fuse/commit/d18635aabbcc23446a41ab25032c4e5cfc2110da))
+
+
+### Bug Fixes
+
+* gofmt migrate.go ([ad17ff2](https://github.com/folsomintel/fuse/commit/ad17ff22ea8c36970b412b8bac1a17eda9a9bf9c))
+
 ## [0.31.0](https://github.com/folsomintel/fuse/compare/v0.30.0...v0.31.0) (2026-09-17)
 
 
