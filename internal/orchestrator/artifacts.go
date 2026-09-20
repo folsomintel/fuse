@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -68,6 +69,12 @@ type ArtifactMove struct {
 	SnapshotID string
 	From       ArtifactEndpoint
 	To         ArtifactEndpoint
+
+	// Files is the memory half of a live snapshot, file name to hex sha256, to
+	// be fetched and verified alongside the rootfs. Digest stays the rootfs
+	// digest and stays the artifact's identity; these ride under the same
+	// grant. empty for a disk artifact.
+	Files map[string]string
 }
 
 // ArtifactMoved is what the receiving host reports once the artifact is
@@ -75,6 +82,36 @@ type ArtifactMove struct {
 type ArtifactMoved struct {
 	SnapshotID string
 	SizeBytes  int64
+	// Kind is what the receiving host committed. an agent that predates moving
+	// live snapshots ignores Files and commits the rootfs alone, and says so
+	// here by reporting nothing, which reads as disk.
+	Kind SnapshotKind
+}
+
+// liveFilesMetadataKey is where a live snapshot record keeps the digests of
+// its memory half, as a JSON object inside the string-valued metadata blob.
+// metadata rather than a column because exactly one code path reads it, and it
+// is meaningless for the disk snapshots that are nearly every row.
+const liveFilesMetadataKey = "live_files"
+
+// withLiveFiles returns a copy of metadata carrying files.
+func withLiveFiles(metadata, files map[string]string) map[string]string {
+	out := make(map[string]string, len(metadata)+1)
+	for k, v := range metadata {
+		out[k] = v
+	}
+	raw, _ := json.Marshal(files)
+	out[liveFilesMetadataKey] = string(raw)
+	return out
+}
+
+// liveFiles reads back what withLiveFiles stored, or nil.
+func liveFiles(record SnapshotRecord) map[string]string {
+	var files map[string]string
+	if raw := snapshotMetadataString(record.Metadata, liveFilesMetadataKey); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &files)
+	}
+	return files
 }
 
 // ArtifactMover performs one host-to-host artifact transfer.
@@ -429,6 +466,15 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	if fm.artifactMover == nil {
 		return "", fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
 	}
+	// a live snapshot moves whole or not at all. its rootfs was copied from a
+	// paused guest with no sync and is only consistent next to the memory
+	// captured with it, so copying the disk half alone would plant something on
+	// the target that looks like a seed and cold-boots into a corrupt guest.
+	files := liveFiles(record)
+	if record.Kind == SnapshotKindLive && len(files) == 0 {
+		return "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (taken by a host agent that cannot move live snapshots)",
+			ErrArtifactImmovable, record.SnapshotID)
+	}
 
 	holders, err := fm.HostsHoldingArtifact(ctx, record.TenantID, record.Digest)
 	if err != nil {
@@ -470,7 +516,13 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		SnapshotID: localID,
 		From:       source.endpoint,
 		To:         target,
+		Files:      files,
 	})
+	if err == nil && record.Kind == SnapshotKindLive && moved.Kind != SnapshotKindLive {
+		// the target took the rootfs and dropped the rest. nothing is recorded,
+		// so nothing can seed from the half it committed.
+		err = fmt.Errorf("host %s committed only the rootfs of a live snapshot; its host agent cannot receive memory images", hostID)
+	}
 	if err != nil {
 		// Cancellation is reported as itself rather than as a transfer failure:
 		// the caller gave up, the peer did nothing wrong, and a dead-lettered
@@ -492,10 +544,15 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	}
 
 	now := time.Now()
-	metadata, _ := marshalSnapshotMetadata("", map[string]string{
+	replicaMetadata := map[string]string{
 		"source_snapshot_id": record.SnapshotID,
 		"source_host_id":     source.endpoint.HostID,
-	})
+	}
+	if len(files) > 0 {
+		// the copy can be a source for the next move, so it carries the digests.
+		replicaMetadata = withLiveFiles(replicaMetadata, files)
+	}
+	metadata, _ := marshalSnapshotMetadata("", replicaMetadata)
 	replica := SnapshotRecord{
 		SnapshotID: committedID,
 		// No VM: this copy was not checkpointed from anything running here, it
@@ -512,6 +569,7 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		LayerKey:  record.LayerKey,
 		Arch:      record.Arch,
 		Digest:    record.Digest,
+		Kind:      record.Kind,
 		State:     SnapshotStateReady,
 		SizeBytes: size,
 		Metadata:  metadata,

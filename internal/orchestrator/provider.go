@@ -111,6 +111,13 @@ type Spec struct {
 	// from Image. Mutually exclusive with Image.
 	SeedSnapshotID string
 
+	// ResumeSeed asks the provider to resume the guest from the seed's memory
+	// image instead of cold-booting its rootfs. only a live migration sets it,
+	// and only with a live SeedSnapshotID already copied to PinnedHostID. it is
+	// a request the host may refuse (wrong cpu, network slot taken), never a
+	// hint it may ignore: a live snapshot's rootfs is not bootable on its own.
+	ResumeSeed bool
+
 	// PinnedHostID restricts scheduling to a single host. Set when the VM must
 	// land where its host-local seed artifact already is. Empty means schedule
 	// across the fleet as usual.
@@ -485,6 +492,12 @@ type Checkpoint struct {
 	// empty, which callers read as SnapshotKindDisk; empty is not an error,
 	// it is an older agent (or a backend with nothing to distinguish).
 	Kind SnapshotKind
+
+	// Files is the memory half of a live checkpoint, file name to hex sha256.
+	// it plays the part Digest plays for the rootfs: what a receiving host
+	// verifies each file against when the snapshot moves. empty for a disk
+	// checkpoint, and for a live one from an agent that predates moving them.
+	Files map[string]string
 }
 
 // BootResult is returned after provisioning or restoring an environment.

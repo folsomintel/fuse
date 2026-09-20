@@ -304,6 +304,9 @@ type ForkEnvironmentRequest struct {
 // POST /v1/environments/{vmId}?action=migrate.
 type MigrateEnvironmentRequest struct {
 	TargetHostID string `json:"target_host_id,omitempty"`
+	// Live resumes the guest from its memory on the target instead of
+	// cold-booting it. requires target_host_id; never falls back to cold.
+	Live bool `json:"live,omitempty"`
 }
 
 // SnapshotExport is the JSON shape of an optional exported snapshot artifact.

@@ -2305,6 +2305,16 @@ components:
           description: |
             Host to migrate the VM to. Empty means the orchestrator
             picks one via its scheduler.
+        live:
+          type: boolean
+          description: |
+            Carry the guest's memory to the target and resume it there, so
+            processes survive the move, instead of cold-booting a disk
+            snapshot. Requires `target_host_id`, the same cpu and firecracker
+            build on both hosts, and the environment's network slot free on
+            the target. It never falls back to a cold migration: a target
+            that cannot resume the guest answers 409 and the source keeps
+            running.
 
     CreateSnapshotRequest:
       type: object
