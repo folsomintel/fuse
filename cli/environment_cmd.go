@@ -29,6 +29,7 @@ func newEnvironmentCmd() *cobra.Command {
 		newEnvExecCmd(),
 		newEnvShellCmd(),
 		newEnvForkCmd(),
+		newEnvMigrateCmd(),
 		newEnvRotateTokenCmd(),
 		newEnvWatchCmd(),
 	)
@@ -472,6 +473,36 @@ func newEnvForkCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&reuseSnapshot, "reuse-snapshot", "", "reuse an existing snapshot id instead of taking a new one")
 	cmd.Flags().StringVar(&comment, "comment", "", "comment to attach to the fork")
+	return cmd
+}
+
+func newEnvMigrateCmd() *cobra.Command {
+	var targetHost string
+	cmd := &cobra.Command{
+		Use:   "migrate <id>",
+		Short: "Migrate an environment to another host",
+		Long:  "Migrate an environment to another host (disk-only: ~10-20s downtime). The source VM is drained and destroyed after the migration completes.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cl, _, err := app.client()
+			if err != nil {
+				return err
+			}
+			e, err := cl.Environments.Migrate(cmd.Context(), args[0], fuse.MigrateOptions{
+				TargetHostID: targetHost,
+			})
+			if err != nil {
+				return friendly(err)
+			}
+			successf("migrated environment %q to %s", args[0], e.ID)
+			if app.isJSON() {
+				return printJSON(e)
+			}
+			renderEnvDetail(e, nil)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&targetHost, "target-host", "", "target host id (empty means the orchestrator picks)")
 	return cmd
 }
 
