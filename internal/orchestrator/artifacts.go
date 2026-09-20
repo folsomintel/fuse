@@ -96,7 +96,7 @@ const liveFilesMetadataKey = "live_files"
 
 // withLiveFiles returns a copy of metadata carrying files.
 func withLiveFiles(metadata, files map[string]string) map[string]string {
-	out := make(map[string]string, len(metadata)+1)
+	out := make(map[string]string)
 	for k, v := range metadata {
 		out[k] = v
 	}

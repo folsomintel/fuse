@@ -947,7 +947,7 @@ func snapshotMetadataString(raw json.RawMessage, key string) string {
 }
 
 func marshalSnapshotMetadata(comment string, extra map[string]string) (json.RawMessage, error) {
-	metadata := make(map[string]string, len(extra)+1)
+	metadata := make(map[string]string)
 	for k, v := range extra {
 		metadata[k] = v
 	}
