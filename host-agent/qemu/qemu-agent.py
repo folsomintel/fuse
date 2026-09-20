@@ -670,41 +670,58 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
-def _free_host_port() -> int:
-    """Bind to port 0, read it back, then close. Small race is acceptable."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+# Transports an expose entry can name. Kept in step with fusefile's
+# validProtocols and the firecracker agent's EXPOSE_PROTOCOLS; the parser is
+# the first gate, this is the re-check for a direct API caller.
+EXPOSE_PROTOCOLS = {"tcp", "udp"}
+
+
+def _free_host_port(protocol: str = "tcp") -> int:
+    """Bind to port 0, read it back, then close. Small race is acceptable.
+
+    The probe socket's type matches the protocol being published: the tcp and
+    udp port spaces are independent, so probing the wrong one can hand back a
+    port already bound on the transport that actually matters."""
+    kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET, kind) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
-    """DNAT host_port -> guest_ip:guest_port for a published (exposed) guest port."""
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
+    """DNAT host_port -> guest_ip:guest_port for a published (exposed) guest port.
+
+    protocol is "tcp" or "udp", defaulting to tcp so a caller that predates
+    the field installs exactly the rules it always did. Rules are
+    per-transport: a tcp rule forwards no udp traffic."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
+        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp",
+        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-I", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        ["iptables", "-I", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
         sudo(r, check=False)
 
 
-def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
     """Remove an expose DNAT rule (idempotent)."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp",
+        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", "tcp",
+        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-D", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        ["iptables", "-D", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
@@ -892,7 +909,14 @@ def create_vm(req: dict) -> dict:
     Returns the vm meta dict.
     """
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
-    vm_id = sanitize_name(name) 
+    vm_id = sanitize_name(name)
+    # this backend is one host with no one to test the proxy-mode netfilter
+    # work against, so it refuses anything but direct egress. a refusal is
+    # honest where a silent direct would leave the control plane believing
+    # the vm is proxied. checked before any allocation, like the image.
+    egress_mode = (req.get("egress") or {}).get("mode") or "direct"
+    if egress_mode != "direct":
+        raise HTTPError(400, f"egress mode {egress_mode!r} is not supported on the qemu backend; only direct egress is")
     
     # Resolve the source rootfs before any allocation, so a rejected or unknown
     # image fails fast with no vm dir, tap, forward, or gpu claim to roll back.
@@ -1020,7 +1044,9 @@ def destroy_vm(vm_id: str) -> None:
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     for endpoint in meta.get("expose_endpoints", []):
-        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
+        # endpoints written before the protocol field existed are tcp.
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"],
+                           endpoint["port"], endpoint.get("protocol", "tcp"))
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
@@ -1113,6 +1139,13 @@ def do_upload(vm_id: str, path: str, content_b64: str) -> None:
         raise HTTPError(500, f"upload failed: {err.decode(errors='replace')}")
 
 
+# sourced ahead of every exec'd command and every attach that names a
+# command, for parity with the firecracker agent: both run as a non-login
+# `bash -c` over ssh, which reads neither /etc/profile.d nor /fuse/env. the
+# guard keeps a guest booted by an older orchestrator unchanged.
+EGRESS_ENV_PREFIX = "[ -r /etc/profile.d/fuse-egress.sh ] && . /etc/profile.d/fuse-egress.sh; "
+
+
 def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     meta = load_meta(vm_id)
     if not meta:
@@ -1124,7 +1157,7 @@ def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     timeout = EXEC_TIMEOUT_MAX
     if timeout_ms and timeout_ms > 0:
         timeout = min(timeout_ms / 1000.0, EXEC_TIMEOUT_MAX)
-    remote = " ".join(shlex.quote(c) for c in cmd)
+    remote = EGRESS_ENV_PREFIX + " ".join(shlex.quote(c) for c in cmd)
     rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=timeout)
     return {
         "exit_code": rc,
@@ -1251,9 +1284,19 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                     f"(agent management port {FUSED_PORT} or SSH 22); "
                     f"this is blocked at fusefile parse time as well",
                 )
-            host_port = _free_host_port()
-            add_expose_forward(host_port, meta["guest_ip"], guest_port)
-            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port})
+            # an omitted protocol is tcp: that is what every expose entry
+            # written before the field existed meant, and the orchestrator
+            # normalizes it before sending, so this covers a direct caller.
+            protocol = str(entry.get("protocol") or "tcp").lower()
+            if protocol not in EXPOSE_PROTOCOLS:
+                raise HTTPError(
+                    500,
+                    f"unsupported expose protocol {protocol!r} "
+                    f"(want one of {sorted(EXPOSE_PROTOCOLS)})",
+                )
+            host_port = _free_host_port(protocol)
+            add_expose_forward(host_port, meta["guest_ip"], guest_port, protocol)
+            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port, "protocol": protocol})
         meta["expose_endpoints"] = endpoints
         save_meta(meta)
     return endpoints
@@ -1269,8 +1312,16 @@ class HTTPError(Exception):
 
 
 def vm_public(meta: dict) -> dict:
-    """Project a vm meta dict to the public {vm_id, url} response shape."""
-    return {"vm_id": meta["vm_id"], "url": meta.get("url", "")}
+    """Project a vm meta dict to the public response shape. host_ip and
+    guest_ip are the two ends of the vm's tap, carried for parity with the
+    firecracker agent; egress_mode is always direct on this backend."""
+    return {
+        "vm_id": meta["vm_id"],
+        "url": meta.get("url", ""),
+        "host_ip": meta.get("host_ip", ""),
+        "guest_ip": meta.get("guest_ip", ""),
+        "egress_mode": "direct",
+    }
 
 
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command
@@ -1387,9 +1438,13 @@ def attach_argv(guest_ip: str, cmd: list[str]) -> list[str]:
 
     -tt forces a pty on the far side even though ssh's own stdin is already
     one; without it a command given to ssh runs without a terminal. An empty
-    cmd means the guest's login shell.
+    cmd means the guest's login shell, which reads /etc/profile.d itself; a
+    named command runs non-login and gets the egress variables sourced ahead
+    of it, the same as do_exec.
     """
-    return SSH_BASE + ["-tt", f"root@{guest_ip}"] + list(cmd)
+    if cmd:
+        return SSH_BASE + ["-tt", f"root@{guest_ip}", EGRESS_ENV_PREFIX] + list(cmd)
+    return SSH_BASE + ["-tt", f"root@{guest_ip}"]
 
 
 def do_attach(handler, vm_id: str, spec: dict) -> None:
@@ -1752,6 +1807,17 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+                    # the egress wire exists here so the answer is explicit:
+                    # no backend can be brought up on this host, and there is
+                    # never anything to release. create_vm already refuses
+                    # proxy mode, so a release is a no-op by construction.
+                    if action == "egress" and method == "POST":
+                        self._read_json()
+                        raise HTTPError(501, "egress backends are not supported on the qemu backend; only direct egress is")
+                    if action == "egress" and method == "DELETE":
+                        if not load_meta(vm_id):
+                            raise HTTPError(404, "vm not found")
+                        return self._text(204, "")
             # Capacity
             if path == "/v1/capacity" and method == "GET":
                 return self._json(200, host_capacity())

@@ -53,15 +53,17 @@ type ResourceSpec struct {
 // ExposeSpec requests that a guest port be published as a reachable
 // endpoint.
 type ExposeSpec struct {
-	Port int    `json:"port"`
-	As   string `json:"as,omitempty"`
+	Port     int    `json:"port"`
+	As       string `json:"as,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // Endpoint is a published network endpoint for an environment.
 type Endpoint struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As       string `json:"as,omitempty"`
+	URL      string `json:"url"`
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 // HealthcheckSpec is the environment-level readiness probe (the Fusefile's
@@ -124,6 +126,53 @@ type Health struct {
 	Message string `json:"message,omitempty"`
 }
 
+// EgressSpec is the outbound networking policy a caller asks for.
+//
+// Mode is "direct" (the default when the whole block is absent: NAT straight
+// out of the host, exactly the pre-egress behaviour) or "proxy", which routes
+// every outbound connection through a backend the orchestrator provisions,
+// health-checks and tears down. In proxy mode the host installs no direct
+// route at all, so a workload that ignores the proxy gets no egress rather
+// than direct egress; that is the whole point of it being a policy.
+//
+// Provider names the backend and is required for proxy; the orchestrator
+// refuses a name it has not registered and the error lists the ones it has.
+// Protocol is "socks5" (the default) or "http". Proxy mode leaves the guest
+// with no working local DNS by design, so a client must resolve names at the
+// proxy (socks5h://, or http CONNECT).
+type EgressSpec struct {
+	Mode     string `json:"mode,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// EgressStatus is the resolved outbound policy of an environment. Mode is
+// always set; the rest is present only for proxy. Endpoint is the proxy url
+// the workload was handed, a host-local address useless to anyone not
+// already inside the sandbox, and never a credential.
+type EgressStatus struct {
+	Mode     string `json:"mode"`
+	Provider string `json:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// Health is the proxy endpoint's last probe verdict. Absent for direct
+	// egress, and "unknown" until the first probe has run. Like the
+	// environment healthcheck it reports and nothing acts on it: an
+	// unhealthy proxy leaves the environment running with no egress,
+	// never with direct egress.
+	Health *EgressHealth `json:"health,omitempty"`
+}
+
+// EgressHealth is one probe verdict on a proxy endpoint. State is one of
+// "unknown", "healthy", "unhealthy". Reason is the backend-level failure
+// ("dial tcp ...: connection refused"), empty while healthy, and never a
+// destination hostname or anything drawn from the traffic itself.
+type EgressHealth struct {
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	CheckedAt time.Time `json:"checked_at,omitempty"`
+}
+
 // CreateEnvironmentRequest is the JSON body accepted by
 // POST /v1/environments.
 //
@@ -149,6 +198,11 @@ type CreateEnvironmentRequest struct {
 	// environment with no desktop, in which case the image's baked default
 	// applies if the image has a desktop at all.
 	Desktop *DesktopSpec `json:"desktop,omitempty"`
+
+	// Egress is the outbound networking policy. Omit it for direct egress,
+	// which is also what an explicit {"mode": "direct"} means; the two
+	// produce identical behaviour and identical stored state.
+	Egress *EgressSpec `json:"egress,omitempty"`
 
 	// Files are caller-supplied guest files written before StartupScript
 	// runs, keyed by absolute guest path with base64-encoded content (the
@@ -195,6 +249,9 @@ type Environment struct {
 	// the environment declared no healthcheck, and absent until the first
 	// verdict has been read back from the guest.
 	Health *Health `json:"health,omitempty"`
+	// Egress is the resolved outbound policy. Always present: an environment
+	// created without asking reports direct.
+	Egress *EgressStatus `json:"egress,omitempty"`
 }
 
 // EnvironmentList is the response body for GET /v1/environments.

@@ -42,6 +42,30 @@ await client.environments.destroy(env.id);
   `code === "not_found"` rather than hanging or throwing something
   unrelated.
 
+## Proxied egress
+
+`egress` on the create request routes the environment's outbound traffic
+through a provider the orchestrator has registered; omit it for direct
+egress. Every read carries the resolved policy back, with the proxy's last
+probe verdict under `health`:
+
+```ts
+const env = await client.environments.create({
+  task_id: "scrape-1",
+  egress: { mode: "proxy", provider: "cloudflare-warp" },
+});
+
+const info = await client.environments.get(env.id);
+if (info.egress?.health?.state === "unhealthy") {
+  // the environment is still running, with no egress at all
+  console.warn(`proxy down: ${info.egress.health.reason}`);
+}
+```
+
+`mode`, `provider` and `state` are plain strings rather than unions, so a
+server that grows a new value does not turn into a compile error here. See
+the [egress guide](/docs/guides/egress) for what proxy mode enforces.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

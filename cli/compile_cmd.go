@@ -53,8 +53,9 @@ type compiledSpec struct {
 
 // compiledExpose mirrors fuse.ExposeSpec with yaml tags added.
 type compiledExpose struct {
-	Port int    `json:"port" yaml:"port"`
-	As   string `json:"as,omitempty" yaml:"as,omitempty"`
+	Port     int    `json:"port" yaml:"port"`
+	As       string `json:"as,omitempty" yaml:"as,omitempty"`
+	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
 }
 
 // compiledHealthcheck mirrors fuse.HealthcheckSpec with yaml tags added.
@@ -72,6 +73,13 @@ type compiledHealthcheck struct {
 type compiledHealthcheckHTTP struct {
 	Port int    `json:"port" yaml:"port"`
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+}
+
+// compiledEgress mirrors fuse.EgressSpec with yaml tags added.
+type compiledEgress struct {
+	Mode     string `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
 }
 
 // compiledDesktop mirrors fuse.DesktopSpec with yaml tags added.
@@ -110,8 +118,11 @@ type compiledRequest struct {
 	Healthcheck *compiledHealthcheck `json:"healthcheck,omitempty" yaml:"healthcheck,omitempty"`
 	// Desktop is the graphical session's geometry, absent when the Fusefile
 	// declared none.
-	Desktop        *compiledDesktop `json:"desktop,omitempty" yaml:"desktop,omitempty"`
-	SeedSnapshotID string           `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
+	Desktop *compiledDesktop `json:"desktop,omitempty" yaml:"desktop,omitempty"`
+	// Egress is the outbound traffic policy, absent when the Fusefile
+	// declared none, which the orchestrator reads as direct.
+	Egress         *compiledEgress `json:"egress,omitempty" yaml:"egress,omitempty"`
+	SeedSnapshotID string          `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
 	// StartupScriptTimeoutSeconds bounds setup + run. Zero means the author
 	// asked for no bound and the orchestrator's default applies.
 	StartupScriptTimeoutSeconds int64    `json:"startup_script_timeout_seconds,omitempty" yaml:"startup_script_timeout_seconds,omitempty"`
@@ -245,7 +256,7 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		req.ManifestInline = base64.StdEncoding.EncodeToString(c.ManifestJSON)
 	}
 	for _, e := range c.Expose {
-		req.Expose = append(req.Expose, compiledExpose{Port: e.Port, As: e.As})
+		req.Expose = append(req.Expose, compiledExpose{Port: e.Port, As: e.As, Protocol: string(e.Protocol)})
 	}
 	if hc := c.Healthcheck; hc != nil {
 		req.Healthcheck = &compiledHealthcheck{
@@ -261,6 +272,9 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 	}
 	if d := c.Desktop; d != nil {
 		req.Desktop = &compiledDesktop{Width: d.Width, Height: d.Height}
+	}
+	if eg := c.Egress; eg != nil {
+		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol)}
 	}
 	return req
 }
@@ -347,11 +361,18 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 	if len(c.Expose) > 0 {
 		_, _ = fmt.Fprintf(w, "\nexpose\n")
 		for _, e := range c.Expose {
+			// the protocol suffix is printed only for udp: tcp is the default
+			// and annotating every row with it would be noise in the common
+			// case, where no Fusefile mentions a protocol at all.
+			proto := ""
+			if e.Protocol == fusefile.ProtocolUDP {
+				proto = " udp"
+			}
 			if e.As != "" {
-				_, _ = fmt.Fprintf(w, "  %d as %s\n", e.Port, e.As)
+				_, _ = fmt.Fprintf(w, "  %d as %s%s\n", e.Port, e.As, proto)
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "  %d\n", e.Port)
+			_, _ = fmt.Fprintf(w, "  %d%s\n", e.Port, proto)
 		}
 	}
 
@@ -383,6 +404,17 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 		_, _ = fmt.Fprintf(w, "  %-15s %dx%d\n", "geometry", d.Width, d.Height)
 	}
 
+	if eg := req.Egress; eg != nil {
+		_, _ = fmt.Fprintf(w, "\negress\n")
+		_, _ = fmt.Fprintf(w, "  %-15s %s\n", "mode", eg.Mode)
+		// provider and protocol only mean something for proxy, and the
+		// compiler leaves both empty for direct.
+		if eg.Mode == string(fusefile.EgressModeProxy) {
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "provider", eg.Provider)
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "protocol", eg.Protocol)
+		}
+	}
+
 	if len(c.RequiredSecrets) > 0 {
 		_, _ = fmt.Fprintf(w, "\nrequired secrets (values supplied at `fuse up`)\n")
 		names := append([]string(nil), c.RequiredSecrets...)
@@ -412,7 +444,7 @@ func writeCompiledPart(w io.Writer, part string, c *fusefile.Compiled, req compi
 		return err
 	case "expose":
 		for _, e := range c.Expose {
-			if _, err := fmt.Fprintf(w, "%d %s\n", e.Port, e.As); err != nil {
+			if _, err := fmt.Fprintf(w, "%d %s %s\n", e.Port, e.As, e.Protocol); err != nil {
 				return err
 			}
 		}

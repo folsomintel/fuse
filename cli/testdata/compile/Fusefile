@@ -27,6 +27,10 @@ expose:
   - port: 8080
     as: http
 
+egress:
+  mode: proxy
+  provider: mock
+
 secrets:
   - pg_password
   - api_token

@@ -39,6 +39,31 @@ client.environments.destroy(env.id)
   second call on an already-gone environment raises `fuse.ApiError` with
   `code == "not_found"` rather than hanging or raising something unrelated.
 
+## Proxied egress
+
+`egress` on `CreateRequest` routes the environment's outbound traffic through
+a provider the orchestrator has registered; leave it `None` for direct
+egress. Every read carries the resolved policy back as an `EgressStatus`,
+with the proxy's last probe verdict under `health`:
+
+```python
+env = client.environments.create(
+    fuse.CreateRequest(
+        task_id="scrape-1",
+        egress=fuse.EgressSpec(mode="proxy", provider="cloudflare-warp"),
+    )
+)
+
+info = client.environments.get(env.id)
+if info.egress and info.egress.health and info.egress.health.state == "unhealthy":
+    # the environment is still running, with no egress at all
+    print(f"proxy down: {info.egress.health.reason}")
+```
+
+`mode`, `provider` and `state` are plain `str` rather than `Literal`, so a
+server that grows a new value still parses here. See the
+[egress guide](/docs/guides/egress) for what proxy mode enforces.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

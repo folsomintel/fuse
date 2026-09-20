@@ -176,10 +176,13 @@ run: ./start.sh
 # inherit it.
 workspace: /workspace
 
-# ports published to the outside world (ingress).
+# ports published to the outside world (ingress). a bare number is shorthand
+# for {port: N}; the mapping form adds a name and a transport.
 expose:
-  - port: 8080
-    as: http
+  - 8080
+  - port: 5353
+    as: dns
+    protocol: udp
 
 # environment-level readiness probe: one verdict for whether the whole sandbox
 # is doing its job, reported back to the control plane. exactly one of http and
@@ -193,6 +196,13 @@ healthcheck:
   timeout: 2s       # bound on one attempt; must not exceed interval
   retries: 12       # consecutive failures that flip the verdict to failing
   start_period: 10s # grace window before failures are counted
+
+# outbound traffic policy. omit the block for direct egress. proxy routes all
+# guest traffic through a provider on the host and installs no direct route.
+egress:
+  mode: proxy
+  provider: mock
+  protocol: socks5  # default for proxy; or http
 
 # secret names this environment requires. values are supplied out-of-band
 # (cli flag / env / secret store), never written in the Fusefile.
@@ -241,7 +251,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `run` | string or list of strings | The main entrypoint, compiled into `startup_script` after `build`. A string is interpreted by `sh -lc`; a list is an argv, each element shell-quoted into a single command line so no argument is subject to word splitting, globbing, or metacharacter reinterpretation. The list form is not a shell-less `execve`: the generated command still runs inside `sh -lc`, so it protects arguments from shell interpretation rather than removing the shell. Use it only when an argument would otherwise be reinterpreted (spaces, quotes, `$`, globs). |
 | `startup_timeout` | string | Go duration bounding `build` + `run`. Omit for the orchestrator default (30s). See [Startup timeout](#startup-timeout). |
 | `workspace` | string | Working directory for the `build` steps and `run`. Defaults to `/workspace`. Must be an absolute path with no `..` segments; the generated script `mkdir -p`s it and `cd`s into it. Services, `fuse environment exec`, and `fuse environment shell` do **not** inherit it. See [Workspace](#workspace). |
-| `expose` | list of `{port, as}` | Guest ports published externally. Each `port` is between 1 and 65535 and may appear only once. `as` is an optional name, unique across the list, in DNS-label form (lowercase letters, digits and dashes, alphanumeric at both ends, 63 chars max). |
+| `expose` | list of `{port, as, protocol, allow_reserved}`, or a bare port number | Guest ports published externally. A bare integer is shorthand for `{port: N}`. Each `port` is between 1 and 65535 and may appear only once. `as` is an optional name, unique across the list, in DNS-label form (lowercase letters, digits and dashes, alphanumeric at both ends, 63 chars max). `protocol` is `tcp` (the default) or `udp`; a forwarding rule is installed per transport, so a service that speaks both needs two entries, and an `http` healthcheck aimed at a port published only as `udp` is rejected. The guest agent's management port (9550) and SSH (22) are always refused, and ports below 1024 need `allow_reserved: true`. Published ports are unauthenticated pass-through NAT: see [Security](/docs/cloud/security). |
 | `healthcheck` | `{http \| exec, interval, timeout, retries, start_period}` | The environment-level readiness probe. Exactly one of `http` and `exec`. Omit the whole block for no probe. See [Healthcheck](#healthcheck). |
 | `healthcheck.http` | `{port, path}` | An HTTP GET inside the guest; a 2xx or 3xx response passes. `port` is between 1 and 65535 and needs no matching `expose` entry, because the probe runs in-guest. `path` must start with `/` and defaults to `/`. |
 | `healthcheck.exec` | list of strings | An argv run inside the guest; exit status 0 passes. An argv rather than a shell string, so no element can be reinterpreted as a pipeline, a redirect, or a glob. |
@@ -250,6 +260,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `healthcheck.retries` | int | Consecutive failures that flip the verdict to `failing`. Omit for the guest agent's default (`3`). A single failed attempt is never a verdict. |
 | `healthcheck.start_period` | string | Go duration measured from the first attempt, during which failures are not counted. It ends for good once the probe passes once. |
 | `desktop` | `{width, height}` | The geometry of the environment's graphical session, both required, 320 to 3840 each. Requires an image baked with the desktop stack; on any other image the block is inert. Omit the whole block to keep a desktop image's baked default. See [Desktop](#desktop). |
+| `egress` | `{mode, provider, protocol}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`. With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
 | `secrets` | list of strings | Secret *names* this environment requires. An empty name is rejected: nothing you could pass to `--secret` would satisfy it. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
 ## Naming an environment
@@ -484,6 +495,47 @@ unhealthy *inside the guest*: nothing about it reaches the orchestrator.
 The top-level `healthcheck:` is about the environment as a whole, is evaluated
 by the guest agent, and its verdict travels back to the control plane. Both can
 be set on the same Fusefile; they do not interact.
+
+## Egress
+
+```yaml
+egress:
+  mode: proxy
+  provider: cloudflare-warp
+  protocol: socks5 # the default for proxy; or http
+```
+
+`egress:` is the environment's outbound traffic policy. Omit the block, or
+write `mode: direct`, and the guest gets NAT straight out of the host, exactly
+as every environment did before the block existed. `mode: proxy` routes every
+outbound connection through a backend on the host: the orchestrator
+provisions it at boot, hands the guest its endpoint, probes it on every
+reconcile tick and releases it at teardown.
+
+With `proxy` the host installs **no direct route at all**: the forward rule
+that would carry the guest's packets out is replaced by a drop. A workload
+that ignores the proxy gets no egress rather than direct egress, and a proxy
+that dies after boot leaves the environment with no egress rather than
+falling back. That is why `provider` and `protocol` are rejected under
+`mode: direct` instead of ignored: an author who wrote them believes they
+asked for proxying and did not.
+
+`provider` is required for `proxy` and names a backend the orchestrator has
+registered. The vocabulary is open, the Fusefile parser does not know which
+backends exist, so an unknown name is refused by the orchestrator with a
+`400` listing the ones it has.
+
+| Provider | What it is |
+| --- | --- |
+| `mock` | An in-process socks5 server inside the orchestrator, for local development. No privacy or isolation. `fuse local` registers it. |
+| `cloudflare-warp` | Cloudflare WARP on the host, one connection shared by that host's proxy-mode environments. Speaks `socks5` and `http`. |
+
+`protocol` is how the workload talks to the proxy, `socks5` (the default) or
+`http`. Proxy mode leaves the guest with no working local resolver by design,
+so names have to be resolved at the proxy: `socks5h://`, which is what the
+injected variables carry, or http CONNECT, which always does. The
+[egress guide](/docs/guides/egress) covers the DNS consequences, which
+variables reach which surface, and what a failure looks like.
 
 ## Desktop
 

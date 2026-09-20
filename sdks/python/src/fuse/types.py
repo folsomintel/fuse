@@ -61,15 +61,26 @@ class Spec(_Model):
 class ExposeSpec(_Model):
     # a port to publish from the microvm. as_ maps to the wire key "as"
     # because as is a reserved python keyword.
+    #
+    # protocol is "tcp" (the default when omitted) or "udp". it is a plain
+    # str rather than a Literal so a server that grows a third transport
+    # does not fail to parse here. the host agent installs a separate
+    # forwarding rule per transport, so a service speaking both needs two
+    # entries.
     port: int
     as_: Optional[str] = Field(default=None, alias="as")
+    protocol: Optional[str] = None
 
 
 class Endpoint(_Model):
     # a published endpoint reported by the server. as_ maps to the wire
     # key "as" because as is a reserved python keyword.
+    #
+    # protocol is the transport actually published, not the one requested:
+    # an agent too old to know about the field publishes tcp and omits it.
     as_: Optional[str] = Field(default=None, alias="as")
     url: str = ""
+    protocol: str = ""
     port: int = 0
 
 
@@ -193,6 +204,42 @@ class Health(_Model):
     message: str = ""
 
 
+class EgressSpec(_Model):
+    # routes the environment's outbound traffic. none (or mode none) means
+    # direct egress, which is what every request written before this field
+    # existed meant. every field is a plain str rather than a Literal so a
+    # server that grows a new mode or provider does not fail to parse here.
+    #
+    # mode is "direct" (the default) or "proxy". provider is the proxy
+    # backend, required when mode is "proxy" (today "mock"; later
+    # "cloudflare-warp"). protocol is "socks5" (the default for proxy) or
+    # "http".
+    mode: Optional[str] = None
+    provider: Optional[str] = None
+    protocol: Optional[str] = None
+
+
+class EgressHealth(_Model):
+    # the proxy endpoint's last probe verdict. state is "unknown" until the
+    # first probe, then "healthy" or "unhealthy"; unhealthy means the
+    # environment currently has no egress at all, never direct egress.
+    # reason is the backend-level failure, empty while healthy.
+    state: str = ""
+    reason: str = ""
+    checked_at: Optional[datetime] = None
+
+
+class EgressStatus(_Model):
+    # how the environment's outbound traffic is actually routed. mode is
+    # always set; provider, protocol and endpoint are present only for proxy
+    # egress. endpoint is a host-local address, never a credential.
+    mode: str = ""
+    provider: str = ""
+    protocol: str = ""
+    endpoint: str = ""
+    health: Optional[EgressHealth] = None
+
+
 class CreateRequest(_Model):
     # body for client.environments.create.
     task_id: str
@@ -213,6 +260,8 @@ class CreateRequest(_Model):
     # evaluated inside create: the call returns as soon as the vm is up, and
     # the verdict arrives on later reads.
     healthcheck: Optional[HealthcheckSpec] = None
+    # routes the environment's outbound traffic. none for direct egress.
+    egress: Optional[EgressSpec] = None
     # graphical session geometry. none for an environment with no desktop, in
     # which case a desktop image keeps its baked default geometry.
     desktop: Optional[DesktopSpec] = None
@@ -235,6 +284,9 @@ class EnvironmentInfo(_Model):
     # been read back from the guest. the server refreshes it on its reconcile
     # tick (30s by default), so it lags the guest by up to a tick.
     health: Optional[Health] = None
+    # how outbound traffic is actually routed. none only from a server that
+    # predates the field; treat that as direct.
+    egress: Optional[EgressStatus] = None
 
 
 class ForkOptions(_Model):

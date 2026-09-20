@@ -374,6 +374,24 @@ func (_u *VMUpdate) ClearMigInstanceUuids() *VMUpdate {
 	return _u
 }
 
+// SetEgress sets the "egress" field.
+func (_u *VMUpdate) SetEgress(v json.RawMessage) *VMUpdate {
+	_u.mutation.SetEgress(v)
+	return _u
+}
+
+// AppendEgress appends value to the "egress" field.
+func (_u *VMUpdate) AppendEgress(v json.RawMessage) *VMUpdate {
+	_u.mutation.AppendEgress(v)
+	return _u
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (_u *VMUpdate) ClearEgress() *VMUpdate {
+	_u.mutation.ClearEgress()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdate) SetCreatedAt(v time.Time) *VMUpdate {
 	_u.mutation.SetCreatedAt(v)
@@ -566,6 +584,17 @@ func (_u *VMUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.MigInstanceUuidsCleared() {
 		_spec.ClearField(vm.FieldMigInstanceUuids, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Egress(); ok {
+		_spec.SetField(vm.FieldEgress, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedEgress(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldEgress, value)
+		})
+	}
+	if _u.mutation.EgressCleared() {
+		_spec.ClearField(vm.FieldEgress, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -937,6 +966,24 @@ func (_u *VMUpdateOne) ClearMigInstanceUuids() *VMUpdateOne {
 	return _u
 }
 
+// SetEgress sets the "egress" field.
+func (_u *VMUpdateOne) SetEgress(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.SetEgress(v)
+	return _u
+}
+
+// AppendEgress appends value to the "egress" field.
+func (_u *VMUpdateOne) AppendEgress(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.AppendEgress(v)
+	return _u
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (_u *VMUpdateOne) ClearEgress() *VMUpdateOne {
+	_u.mutation.ClearEgress()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdateOne) SetCreatedAt(v time.Time) *VMUpdateOne {
 	_u.mutation.SetCreatedAt(v)
@@ -1159,6 +1206,17 @@ func (_u *VMUpdateOne) sqlSave(ctx context.Context) (_node *VM, err error) {
 	}
 	if _u.mutation.MigInstanceUuidsCleared() {
 		_spec.ClearField(vm.FieldMigInstanceUuids, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Egress(); ok {
+		_spec.SetField(vm.FieldEgress, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedEgress(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldEgress, value)
+		})
+	}
+	if _u.mutation.EgressCleared() {
+		_spec.ClearField(vm.FieldEgress, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)

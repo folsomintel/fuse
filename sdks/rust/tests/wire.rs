@@ -2,8 +2,9 @@
 // the wire, so a refactor cannot silently drift from the server's schema.
 
 use fuse::{
-    Arch, ComputerAction, CreateRequest, EnvironmentState, Event, EventKind, ExecRequest,
-    ExposeSpec, HealthcheckHttp, HealthcheckSpec, MissReason, ScrollDirection, Snapshot,
+    Arch, ComputerAction, CreateRequest, EgressMode, EgressProtocol, EgressSpec, EgressStatus,
+    Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind, ExecRequest, ExposeSpec,
+    HealthcheckHttp, HealthcheckSpec, MissReason, Protocol, ScrollDirection, Snapshot,
     SnapshotKind, SnapshotRequest, Spec,
 };
 use serde_json::json;
@@ -188,4 +189,104 @@ fn snapshot_kind_decodes_and_survives_an_unknown_value() {
     }))
     .unwrap();
     assert_eq!(future.kind, Some(SnapshotKind::Other("filesystem".into())));
+}
+
+// An ExposeSpec with no protocol serializes without the key, so a request
+// built by this SDK is byte-identical to one built before the field existed.
+// Anything else would make an upgrade of the SDK alone a wire change.
+#[test]
+fn expose_spec_omits_an_unset_protocol() {
+    assert_eq!(
+        serde_json::to_value(ExposeSpec::named(8080, "web")).unwrap(),
+        json!({"port": 8080, "as": "web"})
+    );
+    assert_eq!(
+        serde_json::to_value(ExposeSpec::new(5353).protocol(Protocol::Udp)).unwrap(),
+        json!({"port": 5353, "protocol": "udp"})
+    );
+}
+
+// Protocol is a string_enum, so a transport this build has no variant for is
+// carried through as Other rather than failing the whole decode. The endpoint
+// list is part of every environment read, so a strict enum here would mean a
+// newer server could break `fuse environment get` outright.
+#[test]
+fn endpoint_protocol_round_trips_and_tolerates_the_unknown() {
+    let known: Endpoint =
+        serde_json::from_str(r#"{"as":"dns","url":"h:1","port":5353,"protocol":"udp"}"#).unwrap();
+    assert_eq!(known.protocol, Some(Protocol::Udp));
+
+    let unknown: Endpoint =
+        serde_json::from_str(r#"{"as":"x","url":"h:1","port":1,"protocol":"sctp"}"#).unwrap();
+    assert_eq!(unknown.protocol, Some(Protocol::Other("sctp".into())));
+    assert_eq!(unknown.protocol.unwrap().as_str(), "sctp");
+
+    // an agent that predates the field omits it entirely
+    let absent: Endpoint = serde_json::from_str(r#"{"url":"h:1","port":8080}"#).unwrap();
+    assert_eq!(absent.protocol, None);
+}
+
+// A CreateRequest with no egress serializes without the key, so a request
+// built by this SDK is byte-identical to one built before the field existed.
+#[test]
+fn create_request_omits_an_unset_egress() {
+    assert_eq!(
+        serde_json::to_value(CreateRequest::new("t-1")).unwrap(),
+        json!({"task_id": "t-1", "spec": {}})
+    );
+    assert_eq!(
+        serde_json::to_value(CreateRequest::new("t-1").egress(EgressSpec::proxy("mock"))).unwrap(),
+        json!({"task_id": "t-1", "spec": {}, "egress": {"mode": "proxy", "provider": "mock"}})
+    );
+    assert_eq!(
+        serde_json::to_value(EgressSpec::proxy("mock").protocol(EgressProtocol::Http)).unwrap(),
+        json!({"mode": "proxy", "provider": "mock", "protocol": "http"})
+    );
+}
+
+// EgressMode is a string_enum, so a mode this build has no variant for is
+// carried through as Other rather than failing the whole decode. Egress is
+// part of every environment read from a new server, so a strict enum here
+// would mean a newer server could break `fuse environment get` outright.
+#[test]
+fn egress_status_round_trips_and_tolerates_the_unknown() {
+    let proxied: EgressStatus = serde_json::from_value(json!({
+        "mode": "proxy", "provider": "mock", "protocol": "socks5",
+        "endpoint": "socks5h://10.200.3.1:1080",
+    }))
+    .unwrap();
+    assert_eq!(
+        proxied,
+        EgressStatus {
+            mode: EgressMode::Proxy,
+            provider: Some("mock".into()),
+            protocol: Some(EgressProtocol::Socks5),
+            endpoint: Some("socks5h://10.200.3.1:1080".into()),
+            health: None,
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&proxied).unwrap(),
+        json!({
+            "mode": "proxy", "provider": "mock", "protocol": "socks5",
+            "endpoint": "socks5h://10.200.3.1:1080",
+        })
+    );
+
+    // direct egress carries the mode alone
+    let direct: EgressStatus = serde_json::from_value(json!({"mode": "direct"})).unwrap();
+    assert_eq!(direct.mode, EgressMode::Direct);
+    assert_eq!(direct.endpoint, None);
+
+    let unknown: EgressStatus = serde_json::from_value(json!({"mode": "vpn"})).unwrap();
+    assert_eq!(unknown.mode, EgressMode::Other("vpn".into()));
+    assert_eq!(unknown.mode.as_str(), "vpn");
+
+    // a server that predates the field omits the whole object
+    let old: EnvironmentInfo = serde_json::from_value(json!({
+        "id": "vm-1", "state": "running", "url": "u",
+        "created_at": "2026-01-15T10:00:00Z", "updated_at": "2026-01-15T10:00:00Z",
+    }))
+    .unwrap();
+    assert_eq!(old.egress, None);
 }

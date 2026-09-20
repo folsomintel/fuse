@@ -68,6 +68,11 @@ func (VM) Fields() []ent.Field {
 			SchemaType(pgText),
 		field.JSON("mig_instance_uuids", json.RawMessage{}).Optional().
 			SchemaType(pgText),
+		// resolved egress policy and endpoint as a small json object,
+		// same treatment as endpoints_json: the store owns the shape.
+		field.JSON("egress", json.RawMessage{}).
+			StorageKey("egress_json").Optional().
+			SchemaType(pgText),
 		field.Time("created_at"),
 		field.Time("updated_at"),
 	}

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -51,6 +52,31 @@ func TestQEMURemoteEnv_notSnapshotCapable(t *testing.T) {
 }
 
 // TestProviderImplementsInterface asserts New returns an orchestrator.Provider.
+// TestQEMUProvider_notEgressHostAgent is the egress guardrail: the qemu agent
+// refuses proxy mode outright, so the provider must not answer
+// egress.HostAgent. the orchestrator asserts on that interface to decide
+// whether a host-side backend can be driven; a qemu provider that implemented
+// it would let a proxy-mode create reach a host that cannot enforce it.
+func TestQEMUProvider_notEgressHostAgent(t *testing.T) {
+	p := New(Config{})
+	if _, ok := any(p).(egress.HostAgent); ok {
+		t.Fatalf("qemu provider must NOT implement egress.HostAgent")
+	}
+}
+
+// TestCreateOmitsEgressForDirect pins that a direct spec sends byte-for-byte
+// the create request an older agent expects, and a proxy spec carries the
+// mode so the agent can refuse it explicitly.
+func TestCreateOmitsEgressForDirect(t *testing.T) {
+	if w := egressWireFor(orchestrator.Spec{}); w != nil {
+		t.Fatalf("direct spec produced egress wire %+v, want nil", w)
+	}
+	w := egressWireFor(orchestrator.Spec{Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "mock"}})
+	if w == nil || w.Mode != "proxy" {
+		t.Fatalf("proxy spec produced egress wire %+v, want mode proxy", w)
+	}
+}
+
 func TestProviderImplementsInterface(t *testing.T) {
 	var _ orchestrator.Provider = New(Config{})
 }
@@ -223,5 +249,76 @@ func TestStartAgentForwardsExposeAndReportsEndpoints(t *testing.T) {
 	endpoints := env.Endpoints()
 	if len(endpoints) != 1 || endpoints[0].URL != "gpu.test:20000" {
 		t.Fatalf("endpoints = %#v", endpoints)
+	}
+}
+
+// TestStartAgentSendsProtocol covers both directions of the protocol field:
+// what the orchestrator sends to the agent, and what it makes of the agent's
+// answer. An unset protocol is normalized to tcp on the way out, so the agent
+// never has to derive the default, and an empty protocol in the reply reads
+// back as tcp, which is what an agent predating the field always published.
+func TestStartAgentSendsProtocol(t *testing.T) {
+	cases := []struct {
+		name         string
+		spec         orchestrator.ExposeSpec
+		reply        string
+		wantSent     string
+		wantReported orchestrator.Protocol
+	}{
+		{
+			name:         "udp is sent and reported",
+			spec:         orchestrator.ExposeSpec{Port: 5353, As: "dns", Protocol: orchestrator.ProtocolUDP},
+			reply:        "udp",
+			wantSent:     "udp",
+			wantReported: orchestrator.ProtocolUDP,
+		},
+		{
+			name:         "an unset protocol is sent as tcp",
+			spec:         orchestrator.ExposeSpec{Port: 8080, As: "web"},
+			reply:        "tcp",
+			wantSent:     "tcp",
+			wantReported: orchestrator.ProtocolTCP,
+		},
+		{
+			name:         "an agent that omits the protocol reports tcp",
+			spec:         orchestrator.ExposeSpec{Port: 8080, As: "web", Protocol: orchestrator.ProtocolTCP},
+			reply:        "",
+			wantSent:     "tcp",
+			wantReported: orchestrator.ProtocolTCP,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got startAgentRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/vm/fuse-t1/start-agent" {
+					http.NotFound(w, r)
+					return
+				}
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(startAgentResponse{Endpoints: []endpointWire{{
+					As: tc.spec.As, URL: "gpu.test:20000", Port: tc.spec.Port, Protocol: tc.reply,
+				}}})
+			}))
+			defer srv.Close()
+
+			provider := New(Config{BaseURL: srv.URL})
+			env := &remoteEnv{id: "fuse-t1", client: provider}
+			if err := env.StartAgent(context.Background(), orchestrator.AgentSpec{
+				Expose: []orchestrator.ExposeSpec{tc.spec},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Expose) != 1 || got.Expose[0].Protocol != tc.wantSent {
+				t.Fatalf("sent expose = %#v, want protocol %q", got.Expose, tc.wantSent)
+			}
+			endpoints := env.Endpoints()
+			if len(endpoints) != 1 || endpoints[0].Protocol != tc.wantReported {
+				t.Fatalf("endpoints = %#v, want protocol %q", endpoints, tc.wantReported)
+			}
+		})
 	}
 }

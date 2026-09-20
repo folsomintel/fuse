@@ -51,6 +51,28 @@ else
 fi
 ok "packages installed"
 
+# --- cloudflare warp (optional egress backend) --------------------------------
+# Only installed when asked: it pulls in gtk/webkit as hard dependencies, and
+# a host that never runs proxy-mode egress has no use for it. The daemon is
+# not started here; fc-warp.sh runs it inside its own network namespace.
+if [ "${FUSE_WITH_WARP:-0}" = "1" ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    log "apt: installing cloudflare-warp"
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+      | $SUDO gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+      | $SUDO tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y cloudflare-warp
+    # the stock unit would run warp-svc in the host's own namespace, which
+    # is exactly what fc-warp.sh exists to avoid.
+    $SUDO systemctl disable --now warp-svc.service >/dev/null 2>&1 || true
+    ok "cloudflare-warp installed (warp-svc left stopped; fc-warp.sh install wires the fuse unit)"
+  else
+    warn "FUSE_WITH_WARP=1 is only automated for apt hosts; install cloudflare-warp by hand: https://pkg.cloudflareclient.com/"
+  fi
+fi
+
 # --- verify the tools the scripts actually shell out to ----------------------
 log "verifying required tools"
 missing=0

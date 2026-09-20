@@ -33,17 +33,36 @@ type Spec struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
+// Protocols an exposed port can be published on, carried in
+// ExposeSpec.Protocol and Endpoint.Protocol. Both fields are plain strings so
+// a server that grows a third transport does not turn into a decode error
+// here; compare against these rather than writing the literals.
+const (
+	ProtocolTCP = "tcp"
+	ProtocolUDP = "udp"
+)
+
 // ExposeSpec requests that a guest port be published as a reachable endpoint.
 type ExposeSpec struct {
 	Port int    `json:"port"`
 	As   string `json:"as,omitempty"`
+	// Protocol is ProtocolTCP or ProtocolUDP. Empty means tcp, which is what
+	// every request written before this field existed meant. The host agent
+	// installs a separate forwarding rule per transport, so a service that
+	// speaks both needs two entries.
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // Endpoint is a published network endpoint for an environment.
 type Endpoint struct {
-	As   string `json:"as,omitempty"`
-	URL  string `json:"url"`
-	Port int    `json:"port"`
+	As  string `json:"as,omitempty"`
+	URL string `json:"url"`
+	// Protocol is the transport this endpoint was actually published on,
+	// which is not always what was asked for: an agent too old to know about
+	// the field publishes tcp and answers with an empty value. Read it
+	// rather than assuming the request was honoured.
+	Protocol string `json:"protocol,omitempty"`
+	Port     int    `json:"port"`
 }
 
 // HealthcheckSpec is the environment-level readiness probe (the Fusefile's
@@ -73,6 +92,60 @@ type HealthcheckSpec struct {
 type HealthcheckHTTP struct {
 	Port int    `json:"port"`
 	Path string `json:"path,omitempty"`
+}
+
+// Egress modes and proxy protocols, carried in EgressSpec and EgressStatus.
+// Both are plain strings so a server that grows a new mode or provider does
+// not turn into a decode error here; compare against these rather than
+// writing the literals.
+const (
+	EgressModeDirect = "direct"
+	EgressModeProxy  = "proxy"
+
+	EgressProtocolSOCKS5 = "socks5"
+	EgressProtocolHTTP   = "http"
+
+	// Egress health states, carried in EgressHealth.State. Unknown until the
+	// orchestrator's first probe; unhealthy means the environment currently
+	// has no egress at all, never direct egress.
+	EgressHealthUnknown   = "unknown"
+	EgressHealthHealthy   = "healthy"
+	EgressHealthUnhealthy = "unhealthy"
+)
+
+// EgressHealth is the proxy endpoint's last probe verdict. Reason is the
+// backend-level failure, empty while healthy.
+type EgressHealth struct {
+	State     string    `json:"state"`
+	Reason    string    `json:"reason,omitempty"`
+	CheckedAt time.Time `json:"checked_at,omitempty"`
+}
+
+// EgressSpec routes the environment's outbound traffic. Omit it (or leave
+// Mode empty) for direct egress, which is what every request written before
+// this field existed meant.
+type EgressSpec struct {
+	// Mode is EgressModeDirect or EgressModeProxy.
+	Mode string `json:"mode,omitempty"`
+	// Provider is the proxy backend, required when Mode is proxy (today
+	// "mock"; later "cloudflare-warp").
+	Provider string `json:"provider,omitempty"`
+	// Protocol is EgressProtocolSOCKS5 (the default for proxy) or
+	// EgressProtocolHTTP.
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// EgressStatus is how the environment's outbound traffic is actually routed.
+// Mode is always set; Provider, Protocol and Endpoint are present only for
+// proxy egress. Endpoint is a host-local address, never a credential.
+type EgressStatus struct {
+	Mode     string `json:"mode"`
+	Provider string `json:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+	// Health is the endpoint's last probe verdict, present only for proxy
+	// egress and only from a server that probes.
+	Health *EgressHealth `json:"health,omitempty"`
 }
 
 // DesktopSpec is the geometry of the environment's graphical session (the
@@ -168,6 +241,10 @@ type CreateRequest struct {
 	// soon as the VM is up, and the verdict arrives on later reads.
 	Healthcheck *HealthcheckSpec `json:"healthcheck,omitempty"`
 
+	// Egress routes the environment's outbound traffic. Omit it for direct
+	// egress.
+	Egress *EgressSpec `json:"egress,omitempty"`
+
 	// Desktop is the graphical session's geometry. Omit it for an
 	// environment with no desktop, in which case a desktop image keeps its
 	// baked default geometry.
@@ -211,6 +288,9 @@ type EnvironmentInfo struct {
 	// its reconcile tick (30s by default), so it lags the guest by up to a
 	// tick.
 	Health *Health `json:"health,omitempty"`
+	// Egress is how outbound traffic is actually routed. Nil only from a
+	// server that predates the field; treat that as direct.
+	Egress *EgressStatus `json:"egress,omitempty"`
 }
 
 type environmentList struct {

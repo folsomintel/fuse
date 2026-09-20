@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -211,6 +212,57 @@ func TestToAPIHealth(t *testing.T) {
 
 	if toAPIHealth(nil) != nil {
 		t.Error("a nil verdict must convert to nil so the field is omitted")
+	}
+}
+
+// TestToOrchestratorEgress checks that an absent block and an explicit
+// direct one land as the same normalized spec, so the two produce identical
+// behaviour and identical stored state, and that a proxy block keeps its
+// provider and gets the socks5 default.
+func TestToOrchestratorEgress(t *testing.T) {
+	absent := toOrchestratorEgress(nil)
+	explicit := toOrchestratorEgress(&EgressSpec{Mode: "direct"})
+	if absent != explicit || absent.Mode != egress.ModeDirect {
+		t.Errorf("absent = %+v, explicit direct = %+v, want both {Mode: direct}", absent, explicit)
+	}
+	got := toOrchestratorEgress(&EgressSpec{Mode: "proxy", Provider: "mock"})
+	want := egress.Spec{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5}
+	if got != want {
+		t.Errorf("proxy = %+v, want %+v", got, want)
+	}
+}
+
+// TestToAPIEgress checks the resolved status reaches the wire and that a vm
+// with no recorded egress (one that predates the field) reports direct
+// rather than an empty mode.
+func TestToAPIEgress(t *testing.T) {
+	got := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"})
+	if got == nil || got.Mode != "proxy" || got.Provider != "mock" || got.Protocol != "socks5" || got.Endpoint != "socks5h://10.200.3.1:1080" {
+		t.Errorf("egress = %+v", got)
+	}
+	if got := toAPIEgress(egress.Status{}); got == nil || got.Mode != "direct" || got.Health != nil {
+		t.Errorf("zero status = %+v, want {Mode: direct} with no health", got)
+	}
+}
+
+// TestToAPIEgressHealth checks the probe verdict reaches the wire for a
+// proxy, reads as unknown before the first probe, and is omitted for direct,
+// which has no endpoint to probe.
+func TestToAPIEgressHealth(t *testing.T) {
+	checked := time.Now().UTC().Truncate(time.Second)
+	got := toAPIEgress(egress.Status{
+		Mode: egress.ModeProxy, Provider: "mock", Endpoint: "socks5h://10.200.3.1:1080",
+		Health: egress.Health{State: egress.HealthUnhealthy, Reason: "dial: connection refused", CheckedAt: checked},
+	})
+	if got.Health == nil || got.Health.State != "unhealthy" || got.Health.Reason != "dial: connection refused" || !got.Health.CheckedAt.Equal(checked) {
+		t.Errorf("health = %+v", got.Health)
+	}
+	fresh := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock"})
+	if fresh.Health == nil || fresh.Health.State != "unknown" {
+		t.Errorf("unprobed proxy health = %+v, want unknown", fresh.Health)
+	}
+	if direct := toAPIEgress(egress.Status{Mode: egress.ModeDirect}); direct.Health != nil {
+		t.Errorf("direct health = %+v, want omitted", direct.Health)
 	}
 }
 

@@ -184,6 +184,34 @@ func renderEnvDetail(e *fuse.EnvironmentInfo, display *fuse.ComputerDisplay) {
 		}
 		pairs = append(pairs, [2]string{"health", health})
 	}
+	// egress is how outbound traffic is actually routed. the provider and
+	// endpoint only exist for proxy, so a direct environment prints the mode
+	// alone.
+	if eg := e.Egress; eg != nil {
+		egress := eg.Mode
+		if eg.Mode == fuse.EgressModeProxy {
+			egress += "  " + dash(eg.Provider)
+			if eg.Endpoint != "" {
+				egress += "  " + eg.Endpoint
+			}
+			// the probe verdict, with its reason when the proxy is down:
+			// an unhealthy proxy means no egress, which is worth seeing.
+			if h := eg.Health; h != nil {
+				switch h.State {
+				case fuse.EgressHealthUnhealthy:
+					egress += "  " + styleBad.Render(h.State)
+					if h.Reason != "" {
+						egress += "  " + styleBad.Render(h.Reason)
+					}
+				case fuse.EgressHealthHealthy:
+					egress += "  " + h.State
+				default:
+					egress += "  " + styleWarn.Render(h.State)
+				}
+			}
+		}
+		pairs = append(pairs, [2]string{"egress", egress})
+	}
 	// the desktop is live state read from the guest, not a field of the
 	// environment record. a row appears when the display is up, or when it
 	// exists but is down (e.g. mid-restart after a geometry change); an image

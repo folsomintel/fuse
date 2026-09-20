@@ -639,5 +639,110 @@ class UploadRemoteCommandTest(unittest.TestCase):
         self.assertIn("cat > /etc/passwd", cmd)
 
 
+class EgressTest(unittest.TestCase):
+    """The qemu backend accepts the egress wire and refuses anything but
+    direct (epic #235, #239). A refusal is honest where a silent direct would
+    leave the control plane believing the vm is proxied."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.root = Path(self.temp_dir.name)
+        for name, value in (
+            ("QEMU_DIR", self.root),
+            ("STATE_DIR", self.root / "agent-state"),
+            ("VMS_DIR", self.root / "agent-state" / "vms"),
+            ("BASE_ROOTFS", self.root / "rootfs-cuda.qcow2"),
+            ("IMAGES_DIR", self.root / "images"),
+            ("VFIO_INVENTORY", self.root / "vfio-inventory.txt"),
+            ("MIG_INVENTORY", self.root / "mig-inventory.txt"),
+        ):
+            p = mock.patch.object(qemu_agent, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        qemu_agent.VMS_DIR.mkdir(parents=True)
+        qemu_agent.IMAGES_DIR.mkdir()
+        qemu_agent.BASE_ROOTFS.write_bytes(b"default")
+
+    def create(self, request):
+        with (
+            mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]),
+            mock.patch.object(qemu_agent, "host_iface", return_value="eth0"),
+            mock.patch.object(qemu_agent, "setup_tap", return_value=("qv1", "10.200.1.1", "10.200.1.2")),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            return qemu_agent.create_vm(request)
+
+    def test_absent_and_explicit_direct_both_create(self):
+        self.create({"name": "plain"})
+        self.create({"name": "direct", "egress": {"mode": "direct"}})
+        self.assertTrue(qemu_agent.vm_dir("plain").exists())
+        self.assertTrue(qemu_agent.vm_dir("direct").exists())
+
+    def test_proxy_mode_is_refused_before_anything_is_allocated(self):
+        with (
+            mock.patch.object(qemu_agent, "setup_tap") as setup_tap,
+            mock.patch.object(qemu_agent, "pick_gpu_slots") as pick_gpu_slots,
+        ):
+            with self.assertRaises(qemu_agent.HTTPError) as raised:
+                qemu_agent.create_vm({"name": "proxied", "egress": {"mode": "proxy", "provider": "mock"}})
+        self.assertEqual(raised.exception.code, 400)
+        self.assertIn("'proxy'", raised.exception.msg)
+        setup_tap.assert_not_called()
+        pick_gpu_slots.assert_not_called()
+        self.assertFalse(qemu_agent.vm_dir("proxied").exists())
+
+    def route(self, method, path, body=None):
+        """Drives Handler._route without a socket: auth passes, the body is
+        canned, and the two response writers are captured."""
+        handler = qemu_agent.Handler.__new__(qemu_agent.Handler)
+        handler.path = path
+        handler._auth = lambda: True
+        handler._read_json = lambda *a, **k: body or {}
+        handler._json = mock.Mock(return_value=None)
+        handler._text = mock.Mock(return_value=None)
+        handler._route(method)
+        return handler
+
+    def test_egress_wire_provision_is_a_501(self):
+        self.create({"name": "plain"})
+        handler = self.route("POST", "/v1/vm/plain/egress", {"provider": "cloudflare-warp"})
+        code, msg = handler._text.call_args.args
+        self.assertEqual(code, 501)
+        self.assertIn("direct", msg)
+        handler._json.assert_not_called()
+
+    def test_egress_wire_release_is_a_no_op(self):
+        self.create({"name": "plain"})
+        handler = self.route("DELETE", "/v1/vm/plain/egress")
+        self.assertEqual(handler._text.call_args.args, (204, ""))
+
+    def test_egress_wire_release_of_unknown_vm_is_a_404(self):
+        handler = self.route("DELETE", "/v1/vm/missing/egress")
+        self.assertEqual(handler._text.call_args.args[0], 404)
+
+    def test_exec_sources_the_egress_hook_first(self):
+        self.create({"name": "plain"})
+        with mock.patch.object(qemu_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+            qemu_agent.do_exec("plain", ["env"])
+        remote = ssh.call_args.args[1]
+        self.assertTrue(remote.startswith(qemu_agent.EGRESS_ENV_PREFIX), remote)
+        self.assertTrue(remote.endswith("env"), remote)
+
+    def test_attach_with_command_sources_the_hook_and_bare_attach_does_not(self):
+        with_cmd = qemu_agent.attach_argv("10.200.1.2", ["bash"])
+        self.assertEqual(with_cmd[-2:], [qemu_agent.EGRESS_ENV_PREFIX, "bash"])
+        bare = qemu_agent.attach_argv("10.200.1.2", [])
+        self.assertEqual(bare[-2:], ["-tt", "root@10.200.1.2"])
+
+    def test_vm_public_reports_tap_ends_and_direct(self):
+        pub = qemu_agent.vm_public({"vm_id": "vm-a", "url": "u", "host_ip": "10.200.1.1", "guest_ip": "10.200.1.2"})
+        self.assertEqual(pub["egress_mode"], "direct")
+        self.assertEqual((pub["host_ip"], pub["guest_ip"]), ("10.200.1.1", "10.200.1.2"))
+
+
 if __name__ == "__main__":
     unittest.main()

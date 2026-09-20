@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -21,7 +22,50 @@ func toAPIEnvironment(v orchestrator.VMInfo) Environment {
 		Error:     v.Error,
 		Endpoints: toAPIEndpoints(v.Endpoints),
 		Health:    toAPIHealth(v.Health),
+		Egress:    toAPIEgress(v.Egress),
 	}
+}
+
+// toAPIEgress converts the resolved egress policy into the wire shape. it is
+// never nil: a vm created before the field existed, or without asking,
+// reports direct rather than nothing, so a caller can tell "not proxied"
+// from "this server predates egress".
+func toAPIEgress(s egress.Status) *EgressStatus {
+	mode := s.Mode
+	if mode == "" {
+		mode = egress.ModeDirect
+	}
+	out := &EgressStatus{
+		Mode:     string(mode),
+		Provider: s.Provider,
+		Protocol: string(s.Protocol),
+		Endpoint: s.Endpoint,
+	}
+	// health only means something for a proxy: direct has no endpoint to
+	// probe, so the field is omitted rather than reporting "unknown".
+	if mode == egress.ModeProxy {
+		state := s.Health.State
+		if state == "" {
+			state = egress.HealthUnknown
+		}
+		out.Health = &EgressHealth{State: string(state), Reason: s.Health.Reason, CheckedAt: s.Health.CheckedAt}
+	}
+	return out
+}
+
+// toOrchestratorEgress converts a wire egress block into the orchestrator
+// spec. nil in, zero out: the zero egress.Spec is direct, so an absent block
+// and an explicit direct one land as the same value and the same stored
+// state.
+func toOrchestratorEgress(e *EgressSpec) egress.Spec {
+	if e == nil {
+		return egress.Spec{}.Normalize()
+	}
+	return egress.Spec{
+		Mode:     egress.Mode(e.Mode),
+		Provider: e.Provider,
+		Protocol: egress.Protocol(e.Protocol),
+	}.Normalize()
 }
 
 // toAPIHealth converts the orchestrator's health verdict into the wire shape.
@@ -133,7 +177,11 @@ func toOrchestratorExpose(in []ExposeSpec) []orchestrator.ExposeSpec {
 	}
 	out := make([]orchestrator.ExposeSpec, len(in))
 	for i, e := range in {
-		out[i] = orchestrator.ExposeSpec{Port: e.Port, As: e.As}
+		proto := e.Protocol
+		if proto == "" {
+			proto = string(orchestrator.ProtocolTCP)
+		}
+		out[i] = orchestrator.ExposeSpec{Port: e.Port, As: e.As, Protocol: orchestrator.Protocol(proto)}
 	}
 	return out
 }
@@ -145,7 +193,7 @@ func toAPIEndpoints(in []orchestrator.Endpoint) []Endpoint {
 	}
 	out := make([]Endpoint, len(in))
 	for i, e := range in {
-		out[i] = Endpoint{As: e.As, URL: e.URL, Port: e.Port}
+		out[i] = Endpoint{As: e.As, URL: e.URL, Port: e.Port, Protocol: string(e.Protocol)}
 	}
 	return out
 }

@@ -40,6 +40,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/apikeys"
+	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/firecracker"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/metrics"
@@ -260,6 +261,10 @@ func run() error {
 		`force the Secure flag on session cookies: "true" behind a TLS-terminating `+
 			`proxy, "false" for plaintext local development, empty = derive from -tls-cert/-tls-key`)
 
+	var egressMock bool
+	flag.BoolVar(&egressMock, "egress-mock", env("ORCH_EGRESS_MOCK", "") == "true",
+		"register the in-process mock egress backend (no privacy or isolation; local development only)")
+
 	var showVersion bool
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 
@@ -415,12 +420,44 @@ func run() error {
 		})
 	}
 
+	// Egress backends. The registry is explicit: an orchestrator with nothing
+	// registered refuses proxy-mode creates with "unknown provider" rather
+	// than failing at boot. The mock is opt-in because it provides no privacy
+	// or isolation; it exists so the whole lifecycle can be exercised without
+	// a cloudflare account, and `fuse local` turns it on.
+	egressRegistry := egress.NewRegistry()
+	if egressMock {
+		mock := egress.NewMock()
+		// the stub provider has no tap, so the only address the mock can
+		// bind there is loopback.
+		mock.AllowLoopback = fcBaseURL == ""
+		egressRegistry.Register(mock)
+		logger.Warn("egress: mock backend registered; it provides no privacy or isolation and is for local development only")
+	}
+	// cloudflare warp is registered only when a credential is configured:
+	// a zero trust service token (enrolled headlessly on the host through
+	// mdm.xml) or a consumer warp+ license. the credential lives here and
+	// travels to the host per request; it is never persisted by the host or
+	// shown to the guest.
+	warpCfg := egress.WarpConfig{
+		Organization:     env("ORCH_EGRESS_WARP_ORG", ""),
+		AuthClientID:     env("ORCH_EGRESS_WARP_CLIENT_ID", ""),
+		AuthClientSecret: env("ORCH_EGRESS_WARP_CLIENT_SECRET", ""),
+		License:          env("ORCH_EGRESS_WARP_LICENSE", ""),
+		ProxyPort:        envInt("ORCH_EGRESS_WARP_PROXY_PORT", 0),
+	}
+	if warpCfg.Enabled() {
+		egressRegistry.Register(egress.NewWarp(warpCfg))
+		logger.Info("egress: cloudflare-warp backend registered")
+	}
+
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
 		Provider:            provider,
 		StateStore:          store,
 		Prefix:              prefix,
 		TokenEncryptionKey:  tokenEncKey,
 		HostProviderFactory: hostProviderFactory,
+		EgressRegistry:      egressRegistry,
 		Metrics:             promMetrics,
 		Logger:              logger,
 

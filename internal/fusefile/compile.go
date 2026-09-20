@@ -44,11 +44,12 @@ type ResourceSpec struct {
 	Labels map[string]string
 }
 
-// ExposeSpec requests that a guest port be published as a reachable
+// ExposeSpec requests that a guest port be published as a reafhable
 // endpoint. Mirrors Fusefile's Expose entries one-for-one.
 type ExposeSpec struct {
-	Port int
-	As   string
+	Port     int
+	As       string
+	Protocol Protocol
 }
 
 // HealthcheckSpec is the compiled environment-level probe. It mirrors
@@ -84,6 +85,16 @@ type DesktopSpec struct {
 	Height int
 }
 
+// EgressSpec is the compiled egress block. It mirrors internal/api.EgressSpec
+// field-for-field, the same arrangement HealthcheckSpec and DesktopSpec use.
+// Mode is always set once compiled, and Protocol is always set for proxy, so
+// a reader downstream never has to know what the defaults were.
+type EgressSpec struct {
+	Mode     EgressMode     `json:"mode,omitempty"`
+	Provider string         `json:"provider,omitempty"`
+	Protocol EgressProtocol `json:"protocol,omitempty"`
+}
+
 // Compiled is the result of compiling a Fusefile: the resource spec, the
 // manifest json to upload to the guest, the startup script to run, the
 // secrets the environment needs at create time, and any ports to expose.
@@ -104,6 +115,10 @@ type Compiled struct {
 	// it: the manifest describes services, and the desktop is about the
 	// environment.
 	Desktop *DesktopSpec
+
+	// Egress is the outbound traffic policy, or nil when the author declared
+	// none, which the orchestrator reads as direct.
+	Egress *EgressSpec
 
 	// Copy is the compiled `copy` block: one entry per authored entry, with
 	// its guest path resolved against the workspace. The sources are named,
@@ -517,6 +532,7 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		Expose:                compileExpose(f),
 		Healthcheck:           healthcheck,
 		Desktop:               compileDesktop(f),
+		Egress:                compileEgress(f),
 		StartupTimeoutSeconds: startupTimeoutSeconds,
 	}, nil
 }
@@ -529,6 +545,25 @@ func compileDesktop(f *Fusefile) *DesktopSpec {
 		return nil
 	}
 	return &DesktopSpec{Width: f.Desktop.Width, Height: f.Desktop.Height}
+}
+
+// compileEgress turns the authored egress block into its wire form. It
+// returns nil when the author declared none. The defaults land here rather
+// than in Parse for the reason TestCompileExposeProtocolDefault gives: Decode
+// and Validate are separable, so defaulting upstream of Compile would leave
+// `fuse up` and `fuse compile` emitting different wires for identical input.
+func compileEgress(f *Fusefile) *EgressSpec {
+	if f.Egress == nil {
+		return nil
+	}
+	spec := &EgressSpec{Mode: f.Egress.Mode, Provider: f.Egress.Provider, Protocol: f.Egress.Protocol}
+	if spec.Mode == "" {
+		spec.Mode = EgressModeDirect
+	}
+	if spec.Mode == EgressModeProxy && spec.Protocol == "" {
+		spec.Protocol = EgressProtocolSOCKS5
+	}
+	return spec
 }
 
 // compileHealthcheck turns the authored healthcheck block into its wire form,
@@ -615,7 +650,11 @@ func compileExpose(f *Fusefile) []ExposeSpec {
 	}
 	out := make([]ExposeSpec, len(f.Expose))
 	for i, e := range f.Expose {
-		out[i] = ExposeSpec{Port: e.Port, As: e.As}
+		proto := e.Protocol
+		if proto == "" {
+			proto = ProtocolTCP
+		}
+		out[i] = ExposeSpec{Port: e.Port, As: e.As, Protocol: proto}
 	}
 	return out
 }

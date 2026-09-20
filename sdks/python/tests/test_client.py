@@ -7,6 +7,7 @@ import pytest
 import respx
 
 import fuse
+from fuse import EgressSpec
 
 BASE_URL = "https://fuse.test"
 
@@ -58,9 +59,125 @@ def test_environments_create_with_image_and_expose() -> None:
 
     body = json.loads(route.calls.last.request.content)
     assert body["spec"]["image"] == "my/image:latest"
+    # an unset protocol is omitted, so an SDK upgrade alone is not a wire
+    # change for a caller that never mentions the field.
     assert body["expose"] == [{"port": 8080, "as": "web"}]
     # keyword alias must serialize to the wire key "as", not "as_".
     assert "as_" not in body["expose"][0]
+
+
+@respx.mock
+def test_environments_create_with_udp_expose() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="task-1",
+                expose=[fuse.ExposeSpec(port=5353, as_="dns", protocol="udp")],
+            )
+        )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["expose"] == [{"port": 5353, "as": "dns", "protocol": "udp"}]
+
+
+@respx.mock
+def test_environment_endpoints_decode_protocol() -> None:
+    # protocol is a plain str, not a Literal, so a transport this build has
+    # never heard of decodes rather than raising. the endpoint list is part of
+    # every environment read, so a strict type here would let a newer server
+    # break reads outright.
+    respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "vm-1",
+                "state": "running",
+                "task_id": "task-1",
+                "url": "u",
+                "endpoints": [
+                    {"as": "dns", "url": "h:1", "port": 5353, "protocol": "udp"},
+                    {"as": "web", "url": "h:2", "port": 8080},
+                    {"as": "x", "url": "h:3", "port": 1, "protocol": "sctp"},
+                ],
+            },
+        )
+    )
+    with new_client() as client:
+        env = client.environments.get("vm-1")
+
+    assert [e.protocol for e in env.endpoints] == ["udp", "", "sctp"]
+
+
+@respx.mock
+def test_environments_create_carries_egress_and_omits_it_when_unset() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="task-1",
+                egress=EgressSpec(mode="proxy", provider="mock", protocol="socks5"),
+            )
+        )
+        client.environments.create(fuse.CreateRequest(task_id="task-1"))
+
+    proxied = json.loads(route.calls[0].request.content)
+    assert proxied["egress"] == {"mode": "proxy", "provider": "mock", "protocol": "socks5"}
+    # a request that never mentions egress serializes exactly as it did before
+    # the field existed, so an SDK upgrade alone is not a wire change.
+    assert "egress" not in json.loads(route.calls[1].request.content)
+
+
+@respx.mock
+def test_environment_decodes_egress_status() -> None:
+    # mode is a plain str, not a Literal, so a mode or provider this build has
+    # never heard of decodes rather than raising. egress is part of every
+    # environment read from a new server, so a strict type here would let a
+    # newer server break reads outright.
+    respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "vm-1",
+                "state": "running",
+                "task_id": "task-1",
+                "url": "u",
+                "egress": {
+                    "mode": "proxy",
+                    "provider": "mock",
+                    "protocol": "socks5",
+                    "endpoint": "socks5h://10.200.3.1:1080",
+                },
+            },
+        )
+    )
+    # a server that predates the field omits the whole object.
+    respx.get(f"{BASE_URL}/v1/environments/vm-old").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-old", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        env = client.environments.get("vm-1")
+        old = client.environments.get("vm-old")
+
+    assert env.egress is not None
+    assert env.egress.mode == "proxy"
+    assert env.egress.provider == "mock"
+    assert env.egress.protocol == "socks5"
+    assert env.egress.endpoint == "socks5h://10.200.3.1:1080"
+    assert old.egress is None
 
 
 @respx.mock

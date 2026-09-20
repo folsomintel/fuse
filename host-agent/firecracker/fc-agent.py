@@ -297,7 +297,7 @@ def tap_name(idx: int) -> str:
     return f"fcv{idx}"
 
 
-def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
+def setup_tap(idx: int, iface: str, egress_mode: str = "direct") -> tuple[str, str, str]:
     tap = tap_name(idx)
     host_ip = f"10.200.{idx}.1"
     guest_ip = f"10.200.{idx}.2"
@@ -306,18 +306,44 @@ def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    # the guest's outbound leg is the only rule that depends on egress_mode.
+    # direct installs the tap -> iface accept it always has. proxy installs a
+    # drop in its place: not merely omitting the accept, because the FORWARD
+    # chain has no default-deny (issue #208) and omission alone would enforce
+    # nothing on a host whose policy is ACCEPT. the RELATED,ESTABLISHED return
+    # rule is -I'd after it and so sits above it, which is what keeps the
+    # reply leg of the orchestrator's dnat'd connection to fused working.
+    if egress_mode == "proxy":
+        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"],
+                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"])
+        # iptables rules outlive the tap they name, so a direct vm that held
+        # this index earlier can have left its accept behind. an accept above
+        # the drop wins, so it has to go first.
+        purge_forward_rule(tap, iface, "ACCEPT")
+    else:
+        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
+                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"])
     # NAT rules (idempotent)
     for chk, add in [
         (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
          ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
-        (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"]),
+        outbound,
         (["iptables", "-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
          ["iptables", "-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
     ]:
         if sudo(chk, check=False).returncode != 0:
             sudo(add)
     return tap, host_ip, guest_ip
+
+
+def purge_forward_rule(tap: str, iface: str, target: str) -> None:
+    """Deletes every FORWARD tap -> iface rule with the given target. -D
+    removes one match per call, so loop until there is nothing left; bounded
+    so a chain that somehow keeps matching cannot spin this forever."""
+    rule = ["iptables", "-D", "FORWARD", "-i", tap, "-o", iface, "-j", target]
+    for _ in range(16):
+        if sudo(rule, check=False).returncode != 0:
+            return
 
 
 def teardown_tap(tap: str) -> None:
@@ -367,31 +393,185 @@ def del_agent_forward(host_port: int, guest_ip: str) -> None:
         sudo(r, check=False)
 
 
-def _free_host_port() -> int:
+# Transports an expose entry can name. Kept in step with fusefile's
+# validProtocols and fc-expose.sh's own check; the parser is the first gate,
+# this is the re-check for a direct API caller.
+EXPOSE_PROTOCOLS = {"tcp", "udp"}
+
+EGRESS_MODES = {"direct", "proxy"}
+EGRESS_PROVIDERS: dict[str, tuple] = {}
+
+# sourced ahead of every exec'd command and every attach that names a
+# command. both run as a non-login `bash -c` over ssh, which reads neither
+# /etc/profile.d nor /fuse/env, so the proxy variables the orchestrator
+# writes to /etc/profile.d/fuse-egress.sh would otherwise reach the startup
+# script and a login shell but not `fuse exec`. the guard keeps a guest
+# booted by an older orchestrator, which wrote no such file, unchanged.
+EGRESS_ENV_PREFIX = "[ -r /etc/profile.d/fuse-egress.sh ] && . /etc/profile.d/fuse-egress.sh; "
+
+def parse_egress_mode(req: dict) -> str:
+    egress = req.get("egress") or {}
+    mode = egress.get("mode") or "direct"
+    if mode not in EGRESS_MODES:
+        raise HTTPError(400, f"unknown egress mode {mode!r} (want one of {sorted(EGRESS_MODES)})")
+    return mode
+
+def guest_network_fixup(host_ip: str, egress_mode: str) -> str:
+    route = f"ip route show default | grep -q . || ip route add default via {host_ip}; "
+    if egress_mode == "proxy":
+        return route + "echo nameserver 127.0.0.1 > /etc/resolv.conf"
+    return route + "grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || echo nameserver 1.1.1.1 > /etc/resolv.conf"
+
+def provision_egress(vm_id: str, body: dict) -> dict:
+    meta = load_meta(vm_id)
+    if not meta:
+        raise HTTPError(404, "vm not found")
+    if meta.get("egress_mode") != "proxy":
+        raise HTTPError(409, f"vm {vm_id} was created with direct egress; a backend needs a proxy-mode vm")
+    if meta.get("egress"):
+        raise HTTPError(409, f"vm {vm_id} already has egress provisioned; release it first")
+    provider = body.get("provider") or ""
+    backend = EGRESS_PROVIDERS.get(provider)
+    if backend is None:
+        known = ", ".join(sorted(EGRESS_PROVIDERS)) or "none"
+        raise HTTPError(400, f"unknown egress provider {provider!r} (this host has: {known})")
+    listen_ip = body.get("listen_ip") or meta["host_ip"]
+    if listen_ip != meta["host_ip"]:
+        raise HTTPError(400, f"listen_ip must be the vm's tap address {meta['host_ip']}, not {listen_ip}")
+
+    provision, _ = backend
+    endpoint = provision(meta, body)
+    meta["egress"] = {
+        "provider": provider,
+        "protocol": endpoint.get("protocol") or body.get("protocol") or "socks5",
+        "url": endpoint["url"],
+    }
+    save_meta(meta)
+    return meta["egress"]
+
+def release_egress(meta: dict) -> None:
+    """Releases whatever backend meta records, idempotently. DELETE
+    /v1/vm/{id}/egress and destroy_vm both land here. Best effort by design
+    (mirrors del_agent_forward): a vm being torn down must not fail to tear
+    down over a backend that is already gone."""
+    rec = meta.get("egress")
+    if not rec:
+        return
+    backend = EGRESS_PROVIDERS.get(rec.get("provider", ""))
+    if backend is not None:
+        try:
+            backend[1](meta)
+        except Exception as e:
+            print(f"[fc-agent] egress release failed for {meta['vm_id']}: {e}", flush=True)
+    # the record goes even when the backend is no longer registered: there is
+    # nothing left to release and a stale record would block re-provisioning.
+    meta.pop("egress", None)
+    save_meta(meta)
+
+
+# -- cloudflare warp backend --------------------------------------------------
+# one warp-svc per host in its own network namespace, refcounted across the
+# host's proxy-mode vms: the first provision brings it up, the last release
+# tears it down. fc-warp.sh owns every host-side mechanism (namespace, veth,
+# unit, registration, per-tap rules); this table entry owns the refcount and
+# the credential's one-way trip from the request to the script's stdin.
+
+WARP_PROVIDER = "cloudflare-warp"
+WARP_SCRIPT = FC_DIR / "fc-warp.sh"
+# the port the proxy is published on at each vm's tap address. one port for
+# every vm, because the tap address already differs per vm.
+WARP_GUEST_PORT = int(os.environ.get("FUSE_WARP_GUEST_PORT", "1080"))
+WARP_REFS_DIR = STATE_DIR / "warp-refs"
+WARP_CONFIG_KEYS = {"WARP_ORG", "WARP_CLIENT_ID", "WARP_CLIENT_SECRET", "WARP_LICENSE", "WARP_PROXY_PORT"}
+
+
+def warp_refs() -> set[str]:
+    """the vm ids currently holding the host's warp. a file per vm, so the
+    count survives an agent restart and a crash mid-teardown leaves a
+    visible stale ref rather than a leaked daemon."""
+    if not WARP_REFS_DIR.exists():
+        return set()
+    return {p.name for p in WARP_REFS_DIR.iterdir()}
+
+
+def warp_provision(meta: dict, body: dict) -> dict:
+    protocol = body.get("protocol") or "socks5"
+    if protocol not in ("socks5", "http"):
+        raise HTTPError(400, f"cloudflare-warp: unsupported protocol {protocol!r} (want socks5 or http)")
+    config = body.get("config") or {}
+    unknown = sorted(set(config) - WARP_CONFIG_KEYS)
+    if unknown:
+        raise HTTPError(400, f"cloudflare-warp: unknown config keys {unknown}")
+    if not (config.get("WARP_LICENSE") or config.get("WARP_CLIENT_SECRET")):
+        raise HTTPError(400, "cloudflare-warp: the request carries no credential")
+    # the credential rides stdin as KEY=value lines. an argument or a sudo
+    # env assignment would put it in every process listing on the host.
+    lines = "".join(f"{k}={v}\n" for k, v in config.items())
+    if not warp_refs():
+        cp = run(["sudo", "-n", "bash", str(WARP_SCRIPT), "up"], check=False, input_bytes=lines.encode())
+        if cp.returncode != 0:
+            detail = cp.stderr.decode(errors="replace").strip().splitlines()
+            reason = detail[-1] if detail else f"exit {cp.returncode}"
+            for v in config.values():
+                if len(v) >= 8:
+                    reason = reason.replace(v, "[REDACTED]")
+            raise HTTPError(502, f"cloudflare-warp: {reason}")
+    sudo(["bash", str(WARP_SCRIPT), "attach", meta["tap"], meta["host_ip"], str(WARP_GUEST_PORT)])
+    WARP_REFS_DIR.mkdir(parents=True, exist_ok=True)
+    (WARP_REFS_DIR / meta["vm_id"]).touch()
+    scheme = "socks5h" if protocol == "socks5" else "http"
+    return {"url": f"{scheme}://{meta['host_ip']}:{WARP_GUEST_PORT}", "protocol": protocol}
+
+
+def warp_destroy(meta: dict) -> None:
+    sudo(["bash", str(WARP_SCRIPT), "detach", meta["tap"], meta["host_ip"], str(WARP_GUEST_PORT)], check=False)
+    (WARP_REFS_DIR / meta["vm_id"]).unlink(missing_ok=True)
+    if not warp_refs():
+        sudo(["bash", str(WARP_SCRIPT), "down"], check=False)
+
+
+EGRESS_PROVIDERS[WARP_PROVIDER] = (warp_provision, warp_destroy)
+
+def _free_host_port(protocol: str = "tcp") -> int:
     """Picks a free host port by binding to port 0 and reading it back, then
     closing the socket. There is an inherent (small) race between this and
     the DNAT rule being installed; acceptable for this host agent's level of
     simplicity, matching fc-expose.sh's own lack of allocation/conflict
-    detection."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    detection.
+
+    The probe socket's type matches the protocol being published, so a udp
+    endpoint is allocated from the udp port space. The two spaces are
+    independent, and probing the wrong one can hand back a port already bound
+    by another listener on the transport that actually matters."""
+    kind = socket.SOCK_DGRAM if protocol == "udp" else socket.SOCK_STREAM
+    with socket.socket(socket.AF_INET, kind) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
 
 
-def add_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
-    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh."""
+def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
+    """Publishes <host_port> -> guest_ip:guest_port via fc-expose.sh.
+
+    protocol is "tcp" or "udp". It defaults to tcp so a caller that predates
+    the field (an older orchestrator, or a direct API client) installs exactly
+    the rules it always did.
+    """
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip, str(guest_port)],
+        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip,
+         str(guest_port), protocol],
         check=True,
     )
 
 
-def del_expose_forward(host_port: int, guest_ip: str, guest_port: int) -> None:
+def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
+                       protocol: str = "tcp") -> None:
     """Removes a forward previously installed by add_expose_forward. Best
     effort (mirrors del_agent_forward): a vm being destroyed should not fail
     to tear down over a stale firewall rule."""
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip, str(guest_port)],
+        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip,
+         str(guest_port), protocol],
         check=False,
     )
 
@@ -566,11 +746,21 @@ def sock_path(vm_id: str) -> Path:
     # suffix keeps truncated names collision-free. vm_id has been through
     # sanitize_name(), so it is filesystem-safe.
     SOCK_DIR.mkdir(parents=True, exist_ok=True)
+    # budget the name against the resolved root rather than SOCK_DIR itself:
+    # firecracker binds the path we hand it, and where SOCK_DIR sits behind a
+    # symlink (macOS $TMPDIR) the resolved form is the longer of the two.
+    sock_root = os.path.realpath(str(SOCK_DIR))
     name = vm_id
-    if len(str(SOCK_DIR / f"{name}.sock")) > 100:
+    if len(os.path.join(sock_root, f"{name}.sock")) > 100:
         digest = hashlib.sha256(vm_id.encode()).hexdigest()[:12]
         name = f"{vm_id[:24]}-{digest}"
-    return SOCK_DIR / f"{name}.sock"
+    # this is the second vm_id-derived path in the agent. vm_dir is the other
+    # one and already re-checks containment; this one builds off the raw id
+    # rather than off vm_dir's contained result, so it needs its own check.
+    resolved = os.path.realpath(os.path.join(sock_root, f"{name}.sock"))
+    if not resolved.startswith(sock_root + os.sep):
+        raise HTTPError(400, f"invalid vm id: {vm_id!r}")
+    return Path(resolved)
 
 
 def spawn_firecracker(meta: dict) -> None:
@@ -667,6 +857,7 @@ def stop_firecracker(meta: dict) -> None:
 
 def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
+    egress_mode = parse_egress_mode(req)
     vm_id = sanitize_name(name)
 
     # Resolve the source rootfs before any allocation, so an unknown named
@@ -707,7 +898,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
 
     idx = pick_index()
     iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(idx, iface)
+    tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
     add_agent_forward(host_port, guest_ip, iface)
@@ -732,6 +923,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "memory_mb": int(req.get("memory_mb", 512)),
         "storage_gb": int(req.get("storage_gb", 0)),
         "region": req.get("region", ""),
+        "egress_mode": egress_mode,
         "tap": tap,
         "host_ip": host_ip,
         "guest_ip": guest_ip,
@@ -752,16 +944,14 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         else:
             meta["ssh_ready"] = True
             # Fix up guest networking: add default route + DNS if missing.
-            ssh_exec(guest_ip, (
-                "ip route show default | grep -q . || ip route add default via "
-                f"{host_ip}; grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || "
-                "echo nameserver 1.1.1.1 > /etc/resolv.conf"
-            ))
+            ssh_exec(guest_ip, guest_network_fixup(host_ip, egress_mode))
         save_meta(meta)
     except Exception:
         # Roll back on failure.
         stop_firecracker(meta)
         del_agent_forward(host_port, guest_ip)
+        if egress_mode == "proxy":
+            purge_forward_rule(tap, iface, "DROP")
         teardown_tap(tap)
         shutil.rmtree(d, ignore_errors=True)
         raise
@@ -776,7 +966,14 @@ def destroy_vm(vm_id: str) -> None:
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     for endpoint in meta.get("expose_endpoints", []):
-        del_expose_forward(endpoint["host_port"], meta["guest_ip"], endpoint["port"])
+        # endpoints written before the protocol field existed are tcp.
+        del_expose_forward(endpoint["host_port"], meta["guest_ip"],
+                           endpoint["port"], endpoint.get("protocol", "tcp"))
+    release_egress(meta)
+    if meta.get("egress_mode") == "proxy":
+        # the drop would otherwise outlive the tap and block the next direct
+        # vm that lands on this index.
+        purge_forward_rule(meta["tap"], host_iface(), "DROP")
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     # Snapshots are NOT under vm_dir any more (see SNAPSHOTS_DIR), so this
@@ -1019,7 +1216,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])
     iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
+    tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
     meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
     if "host_port" in meta:
         add_agent_forward(meta["host_port"], guest_ip, iface)
@@ -1451,7 +1648,7 @@ def do_exec(vm_id: str, cmd: list[str], timeout_ms: int = 0) -> dict:
     timeout = EXEC_TIMEOUT_MAX
     if timeout_ms and timeout_ms > 0:
         timeout = min(timeout_ms / 1000.0, EXEC_TIMEOUT_MAX)
-    remote = " ".join(shlex.quote(c) for c in cmd)
+    remote = EGRESS_ENV_PREFIX + " ".join(shlex.quote(c) for c in cmd)
     rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=timeout)
     return {
         "exit_code": rc,
@@ -1590,9 +1787,19 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                     f"(agent management port {FUSED_PORT} or SSH 22); "
                     f"this is blocked at fusefile parse time as well",
                 )
-            host_port = _free_host_port()
-            add_expose_forward(host_port, meta["guest_ip"], guest_port)
-            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port})
+            # an omitted protocol is tcp: that is what every expose entry
+            # written before the field existed meant, and the orchestrator
+            # normalizes it before sending, so this covers a direct caller.
+            protocol = str(entry.get("protocol") or "tcp").lower()
+            if protocol not in EXPOSE_PROTOCOLS:
+                raise HTTPError(
+                    500,
+                    f"unsupported expose protocol {protocol!r} "
+                    f"(want one of {sorted(EXPOSE_PROTOCOLS)})",
+                )
+            host_port = _free_host_port(protocol)
+            add_expose_forward(host_port, meta["guest_ip"], guest_port, protocol)
+            endpoints.append({"as": entry.get("as", ""), "url": host_authority(PUBLIC_HOST, host_port), "port": guest_port, "host_port": host_port, "protocol": protocol})
         meta["expose_endpoints"] = endpoints
         save_meta(meta)
     return endpoints
@@ -1622,7 +1829,17 @@ class HTTPError(Exception):
 
 
 def vm_public(meta: dict) -> dict:
-    return {"vm_id": meta["vm_id"], "url": meta.get("url", "")}
+    # host_ip and guest_ip are the two ends of the vm's tap. the orchestrator
+    # needs them to bind an in-process egress backend where the guest can
+    # reach it and to name the guest's own addresses in NO_PROXY. additive:
+    # a reader that predates them ignores them.
+    return {
+        "vm_id": meta["vm_id"],
+        "url": meta.get("url", ""),
+        "host_ip": meta.get("host_ip", ""),
+        "guest_ip": meta.get("guest_ip", ""),
+        "egress_mode": meta.get("egress_mode", "direct"),
+    }
 
 
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command
@@ -1739,9 +1956,13 @@ def attach_argv(guest_ip: str, cmd: list[str]) -> list[str]:
 
     -tt forces a pty on the far side even though ssh's own stdin is already
     one; without it a command given to ssh runs without a terminal. An empty
-    cmd means the guest's login shell.
+    cmd means the guest's login shell, which reads /etc/profile.d itself; a
+    named command runs non-login and gets the egress variables sourced ahead
+    of it, the same as do_exec.
     """
-    return SSH_BASE + ["-tt", f"root@{guest_ip}"] + list(cmd)
+    if cmd:
+        return SSH_BASE + ["-tt", f"root@{guest_ip}", EGRESS_ENV_PREFIX] + list(cmd)
+    return SSH_BASE + ["-tt", f"root@{guest_ip}"]
 
 
 def do_attach(handler, vm_id: str, spec: dict) -> None:
@@ -2175,6 +2396,15 @@ class Handler(BaseHTTPRequestHandler):
                         body = self._read_json()
                         snapshot_restore(vm_id, body["snapshot_id"])
                         return self._json(200, {"ok": True})
+                    if action == "egress" and method == "POST":
+                        body = self._read_json()
+                        return self._json(200, provision_egress(vm_id, body))
+                    if action == "egress" and method == "DELETE":
+                        meta = load_meta(vm_id)
+                        if not meta:
+                            raise HTTPError(404, "vm not found")
+                        release_egress(meta)
+                        return self._text(204, "")
                     if action == "fork" and method == "POST":
                         # Seeds a NEW vm from vm_id's snapshot. Holds vm_id's
                         # lock (the source must not be restored/destroyed
@@ -2243,7 +2473,7 @@ def reattach_vms() -> None:
             # Recreate TAP + DNAT using the stored index/ports.
             teardown_tap(meta["tap"])
             iface = host_iface()
-            tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
+            tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
             if "host_port" in meta:
                 del_agent_forward(meta["host_port"], guest_ip)

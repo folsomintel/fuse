@@ -1017,6 +1017,9 @@
         "api.CreateEnvironmentRequest": {
             "type": "object",
             "properties": {
+                "egress": {
+                    "$ref": "#/definitions/api.EgressSpec"
+                },
                 "expose": {
                     "type": "array",
                     "items": {
@@ -1084,7 +1087,58 @@
                 "port": {
                     "type": "integer"
                 },
+                "protocol": {
+                    "type": "string"
+                },
                 "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.EgressSpec": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.EgressHealth": {
+            "type": "object",
+            "properties": {
+                "checked_at": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.EgressStatus": {
+            "type": "object",
+            "properties": {
+                "endpoint": {
+                    "type": "string"
+                },
+                "health": {
+                    "$ref": "#/definitions/api.EgressHealth"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "provider": {
                     "type": "string"
                 }
             }
@@ -1094,6 +1148,9 @@
             "properties": {
                 "created_at": {
                     "type": "string"
+                },
+                "egress": {
+                    "$ref": "#/definitions/api.EgressStatus"
                 },
                 "endpoints": {
                     "type": "array",
@@ -1171,6 +1228,9 @@
                 },
                 "port": {
                     "type": "integer"
+                },
+                "protocol": {
+                    "type": "string"
                 }
             }
         },

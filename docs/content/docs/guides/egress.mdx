@@ -1,0 +1,287 @@
+---
+title: Egress
+sidebar:
+  icon: globe
+description: Direct or proxied outbound traffic per environment, and what proxy mode actually enforces
+---
+
+Every environment gets outbound network access one of two ways. `direct` is
+NAT straight out of the host, the behaviour every environment had before the
+field existed. `proxy` routes every outbound connection through a backend the
+orchestrator provisions, health-checks and tears down, and installs no direct
+route at all. This guide is about the second one: what it costs, how to ask
+for it, and how a workload inside the guest is expected to use it.
+
+## The two modes
+
+| Mode | What the guest gets |
+| --- | --- |
+| `direct` | A default route via the host's tap, `MASQUERADE` out of the host's interface, a public resolver in `resolv.conf`. Omitting the block means this. |
+| `proxy` | A proxy endpoint on the host side of its tap, and nothing else. The forward rule that would carry its packets out of the host is replaced by a `DROP`. |
+
+Proxy mode is a policy, not a preference. The host agent does not merely skip
+installing the `FORWARD` accept for the tap; it installs an explicit drop in
+its place, so a workload that ignores the proxy gets **no egress rather than
+direct egress**. A bare `curl http://1.1.1.1/` from inside a proxy-mode guest
+hangs and times out. That is the whole point: the proxy is the only way out,
+and nothing inside the guest can change that.
+
+Two things follow from that and are easy to miss:
+
+- **The proxy is the only way out, so everything has to use it.** A library
+  that does not read the proxy variables, a binary that opens raw sockets, a
+  package manager configured to bypass proxies for its mirrors: all of them
+  get nothing. Read the [environment variables](#environment-variables)
+  section for where the variables reach and where they do not.
+- **A dead proxy does not fall back to direct.** If the backend dies after
+  boot the environment keeps running with no egress, and the API tells you
+  so. See [When it fails](#when-it-fails).
+
+## Asking for it
+
+In a [Fusefile](/docs/concepts/fusefile#egress):
+
+```yaml
+version: 1
+
+egress:
+  mode: proxy
+  provider: cloudflare-warp
+  # protocol: socks5   # the default; or http
+
+run: |
+  curl -s https://example.com/ > /workspace/page.html
+```
+
+`provider` is required for `proxy`, and `protocol` defaults to `socks5`. A
+`provider` or `protocol` on a `direct` block is rejected by `fuse validate`
+rather than ignored, because an author who wrote one believes they asked for
+proxying and did not.
+
+Over the API, or from a [SDK](/reference/typescript/environments), the same
+block goes on the create request:
+
+```ts
+const env = await client.environments.create({
+  task_id: "scrape-1",
+  egress: { mode: "proxy", provider: "cloudflare-warp" },
+});
+```
+
+A request that never mentions `egress` serializes exactly as it did before the
+field existed, so upgrading an SDK is not a wire change.
+
+What comes back on every read is the resolved policy, never a credential:
+
+```ts
+const info = await client.environments.get(env.id);
+// info.egress:
+// {
+//   mode: "proxy",
+//   provider: "cloudflare-warp",
+//   protocol: "socks5",
+//   endpoint: "socks5h://10.200.3.1:1080",
+//   health: { state: "healthy", checked_at: "2026-09-17T10:00:30Z" }
+// }
+```
+
+`endpoint` is the host side of the vm's tap, an address that means nothing to
+anyone not already inside the sandbox. `health` reads `unknown` until the
+orchestrator's reconcile tick (30s by default) has probed the endpoint once.
+A direct environment reports `{ mode: "direct" }` and nothing else, so a
+caller can tell "not proxied" from "this server predates the field".
+
+## DNS
+
+Proxy mode leaves the guest with **no working local resolver, by design**.
+`/etc/resolv.conf` points at `127.0.0.1`, and nothing listens there. A name
+lookup done inside the guest fails instead of leaking to a resolver outside
+the tunnel, which is the only honest answer when the policy is "nothing leaves
+except through the proxy".
+
+The consequence is that names have to be resolved **at the proxy**, and
+whether that happens depends on how the client talks to it:
+
+- **`socks5h://` resolves at the proxy.** The `h` is the difference. The
+  client hands the proxy a hostname and the proxy resolves it on the far
+  side. This is what the environment variables carry.
+- **`socks5://` resolves locally, and fails.** A client that strips the `h`,
+  or a library that only knows plain `socks5`, will try to resolve the name
+  in the guest first, get nothing, and never reach the proxy.
+- **http CONNECT always resolves at the proxy.** With `protocol: http` the
+  client sends `CONNECT host:port` and the proxy does the lookup. There is no
+  local-resolution variant to get wrong.
+
+Put the symptom next to the cause, because the symptom looks like a network
+outage:
+
+| You see | It means |
+| --- | --- |
+| `Temporary failure in name resolution` | Something resolved locally. The guest has no resolver on purpose. |
+| curl: `Could not resolve host: example.com` | curl was run without `--proxy`, with `--noproxy`, or with a `socks5://` (no `h`) proxy url. |
+| `getent hosts example.com` prints nothing | Expected. That is the resolver failing closed. |
+| A fetch by ip hangs, a fetch by name fails instantly | The ip fetch is hitting the `DROP`; the name fetch never got that far. Both mean the client is not using the proxy. |
+
+The guest's own addresses are still reachable by ip without the proxy:
+loopback, and the two ends of its tap, are in `NO_PROXY` for exactly that
+reason. Anything a compose service publishes on the vm's loopback works as
+before.
+
+## Environment variables
+
+Both modes write the same three files at boot. In direct mode two of them are
+empty, so no variable is set (unset, not empty; an empty `HTTP_PROXY` is not
+the same thing to every client that reads it).
+
+In proxy mode the guest gets, in both cases because the ecosystem is split on
+which one to read:
+
+```
+HTTP_PROXY=socks5h://10.200.3.1:1080
+HTTPS_PROXY=socks5h://10.200.3.1:1080
+ALL_PROXY=socks5h://10.200.3.1:1080
+NO_PROXY=10.200.3.1,10.200.3.2,127.0.0.1,::1,localhost
+http_proxy=...    # and the same four lowercased
+```
+
+`NO_PROXY` is a list of **bare addresses**, never a cidr. Many clients
+silently ignore cidr notation in `NO_PROXY`, so a `10.200.0.0/16` there would
+look like coverage and provide none. The set is loopback in every spelling
+plus the guest's own tap address and the host side of it.
+
+Where they reach:
+
+| Surface | How |
+| --- | --- |
+| The startup script (`run:`) | Runs under `sh -lc`, a login shell, which reads `/etc/profile.d/fuse-egress.sh`. |
+| `fuse environment exec` | Non-login, so the host agent sources the same file ahead of every command. |
+| `fuse environment shell` and attach | A bare attach is a login shell; an attach naming a command gets the same prefix as exec. |
+| `services:` containers | Every compose service gets `env_file: /etc/fuse/egress.env`. Containers do not inherit a shell's environment, so this is the only way a container sees the proxy. |
+
+Not every client honours a socks url in `HTTP_PROXY`. curl does, Go's
+`net/http` does, a Python `requests` needs the `socks` extra. When yours does
+not, ask for `protocol: http` and a provider that speaks it (`cloudflare-warp`
+does; the mock does not), or read the endpoint as data and configure the
+client yourself.
+
+## Reading the policy as data
+
+The resolved policy is also written to `/etc/fuse/egress.json`, world-readable
+on purpose. It lives outside `/fuse` (which is mode `0700` and holds
+credentials) because the endpoint is not a secret and a non-root browser
+harness has to be able to read it:
+
+```json
+{
+  "mode": "proxy",
+  "provider": "cloudflare-warp",
+  "protocol": "socks5",
+  "endpoint": "socks5h://10.200.3.1:1080",
+  "no_proxy": ["10.200.3.1", "10.200.3.2", "127.0.0.1", "::1", "localhost"]
+}
+```
+
+A direct environment writes `{"mode":"direct"}`, so a harness can tell "not
+proxied" from "predates this file". Browser automation is the usual reader,
+because a browser does not take its proxy from the environment:
+
+```js
+import fs from "node:fs";
+import { chromium } from "playwright";
+
+const policy = JSON.parse(fs.readFileSync("/etc/fuse/egress.json", "utf8"));
+
+// chromium always hands a socks5 proxy the hostname (it never resolves
+// locally) but only knows the socks5:// scheme, so drop the h. an http
+// endpoint is passed through as is.
+const server = policy.endpoint.replace(/^socks5h:/, "socks5:");
+
+const browser = await chromium.launch({
+  proxy: policy.mode === "proxy" ? { server } : undefined,
+});
+```
+
+With puppeteer the equivalent is `args: ["--proxy-server=" + server]`. A
+browser that resolves names locally before opening the socks connection needs
+its remote-dns option turned on (Firefox: `network.proxy.socks_remote_dns`),
+or it hits the [DNS](#dns) wall above.
+
+## Providers
+
+| Provider | What it is | Protocols | Registered when |
+| --- | --- | --- | --- |
+| `mock` | A real socks5 server running **inside the orchestrator process**, egressing from wherever that process is. No privacy or isolation whatsoever. It exists so the whole lifecycle can be exercised without an account or a configured host. | `socks5` | `ORCH_EGRESS_MOCK=true` on the orchestrator. [`fuse local`](/docs/guides/local-development) sets it. |
+| `cloudflare-warp` | One `warp-svc` per host, in its own network namespace, shared and refcounted across that host's proxy-mode environments. Traffic exits through Cloudflare's network. | `socks5`, `http` | The orchestrator has WARP credentials configured. See [WARP egress host setup](/docs/cloud/warp-host-setup). |
+
+The mock binds the host side of each vm's tap, which is only reachable when
+the orchestrator and the host agent share a machine, which is why it is a
+local-development tool and not a small production option. The orchestrator
+logs a warning at startup whenever it is registered.
+
+Adding a backend is a name and three methods: `Provision`, `Healthcheck` and
+`Destroy` on the `Provider` interface in `internal/egress/egress.go`. The
+registry handles validation, the unknown-provider error, endpoint sanity
+checks and release on the teardown paths, so a backend only has to bring a
+listener up on the address it is given, say whether it is still answering,
+and take it down.
+
+## When it fails
+
+Each failure mode has one shape, and none of them is "fell back to direct".
+
+- **Unknown provider** is a `400` before any environment exists, and the
+  error names what is registered: `egress: unknown provider "warp"
+  (registered: mock)`. A fleet with no backend configured refuses every
+  proxy-mode create this way. That is the correct answer and not a bug in the
+  request.
+- **A backend that fails to come up** is a failed create with no surviving
+  environment. The error is wrapped so you can tell it from every other boot
+  failure and it names the provider: `egress: provision mock for fuse-abc123:
+  mock speaks socks5 only, not http`.
+- **A proxy that dies after boot** is reported, not repaired. The reconcile
+  loop probes every proxy-mode endpoint each tick (a full socks5 method
+  negotiation, not just a tcp connect, bounded at 5 seconds) and a failure
+  becomes `egress.health.state: unhealthy` with the backend-level reason. The
+  environment keeps running with **no egress, never direct egress**: the
+  `DROP` on the tap was never conditional on the proxy being up.
+
+How to read it:
+
+```bash
+$ fuse environment get fuse-abc123
+...
+egress          proxy  cloudflare-warp  socks5h://10.200.3.1:1080  unhealthy  dial tcp 10.200.3.1:1080: connection refused
+```
+
+The same verdict is `egress.health` on every SDK's environment type, and the
+transition to `unhealthy` emits a `vm.egress_degraded` event carrying the
+provider and the reason, so a watcher does not have to poll for it. `reason`
+is always a backend-level failure and never a destination hostname or
+anything drawn from the sandbox's traffic.
+
+## What this is not
+
+Proxy egress is a routing policy. It decides which path packets take out of
+the host and makes every other path impossible. It is not:
+
+- **An anti-bot or captcha capability.** Traffic through `cloudflare-warp`
+  exits from Cloudflare's network and is identifiable as such. Nothing here
+  makes a browser look like a person.
+- **IP rotation.** Fuse provides none. One host's proxy-mode environments
+  share one WARP connection, and the exit address is whatever Cloudflare
+  assigns it.
+- **A content filter or allowlist.** Nothing inspects what goes through the
+  proxy. See
+  [Security hardening](/docs/cloud/security#proxy-egress-is-a-policy-not-a-filter)
+  for the exact guarantee.
+
+## Read next
+
+- [Fusefile: egress](/docs/concepts/fusefile#egress) for the block's
+  fields and validation rules.
+- [Reconciliation: egress health](/docs/concepts/reconcile#egress-health)
+  for how the probe runs and what it does not do.
+- [WARP egress host setup](/docs/cloud/warp-host-setup) to bring up the
+  `cloudflare-warp` provider on a host.
+- [Computer use](/docs/guides/computer-use) for the browser harness this is
+  usually paired with.

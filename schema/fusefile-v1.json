@@ -87,6 +87,7 @@
     },
     "healthcheck": { "$ref": "#/$defs/envHealthcheck" },
     "desktop": { "$ref": "#/$defs/desktop" },
+    "egress": { "$ref": "#/$defs/egress" },
     "startup_timeout": {
       "allOf": [{ "$ref": "#/$defs/duration" }],
       "description": "Go duration bounding build + run. Omit for the orchestrator default (30s)."
@@ -377,6 +378,29 @@
         }
       }
     },
+    "egress": {
+      "type": "object",
+      "description": "Outbound traffic policy. Omit the block for direct egress. With mode proxy the host installs no direct route at all, so a workload that ignores the proxy gets no egress rather than direct egress.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["direct", "proxy"],
+          "default": "direct",
+          "description": "direct sends guest traffic straight out of the host; proxy routes it through a provider on the host. Defaults to direct."
+        },
+        "provider": {
+          "type": "string",
+          "description": "The proxy backend on the host, e.g. \"mock\". Required when mode is proxy and rejected when it is direct."
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["socks5", "http"],
+          "default": "socks5",
+          "description": "What the proxy speaks. Only valid with mode proxy. Defaults to socks5."
+        }
+      }
+    },
     "envValue": {
       "type": "object",
       "description": "Either a literal value or a secret reference. Exactly one is set.",
@@ -391,26 +415,43 @@
       }
     },
     "expose": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["port"],
-      "properties": {
-        "port": {
+      "description": "One published guest port: either a bare port number or a mapping.",
+      "oneOf": [
+        {
           "type": "integer",
           "minimum": 1,
           "maximum": 65535,
-          "description": "The guest port to publish. Reserved guest control-plane ports (the agent's management port 9550 and SSH 22) are always rejected. Privileged ports below 1024 are rejected by default; set allow_reserved to true to publish one."
+          "description": "Shorthand for a mapping with only port set: the port is published as tcp under no name."
         },
-        "as": {
-          "type": "string",
-          "description": "An optional name for the published endpoint."
-        },
-        "allow_reserved": {
-          "type": "boolean",
-          "default": false,
-          "description": "Opt in to exposing a privileged guest port (below 1024) that is otherwise blocked by default. The guest agent's management port (9550, FUSED_PORT) and SSH (22) are always blocked and cannot be opted in to."
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["port"],
+          "properties": {
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "description": "The guest port to publish. Reserved guest control-plane ports (the agent's management port 9550 and SSH 22) are always rejected. Privileged ports below 1024 are rejected by default; set allow_reserved to true to publish one."
+            },
+            "as": {
+              "type": "string",
+              "description": "An optional name for the published endpoint."
+            },
+            "protocol": {
+              "type": "string",
+              "enum": ["tcp", "udp"],
+              "default": "tcp",
+              "description": "The transport to publish this port on. The host agent installs a separate forwarding rule per protocol, so a service that speaks both needs two expose entries. Defaults to tcp."
+            },
+            "allow_reserved": {
+              "type": "boolean",
+              "default": false,
+              "description": "Opt in to exposing a privileged guest port (below 1024) that is otherwise blocked by default. The guest agent's management port (9550, FUSED_PORT) and SSH (22) are always blocked and cannot be opted in to."
+            }
+          }
         }
-      }
+      ]
     }
   }
 }

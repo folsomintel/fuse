@@ -86,6 +86,13 @@ type Fusefile struct {
 	// stays nil all the way down, the same contract Healthcheck has.
 	Desktop *Desktop `yaml:"desktop,omitempty"`
 
+	// Egress routes the environment's outbound traffic. Nil means direct,
+	// which is what every Fusefile written before the block existed meant,
+	// and it stays nil all the way down, the same contract Healthcheck and
+	// Desktop have: nothing downstream has to tell "no block" apart from
+	// "a block that asked for the default".
+	Egress *Egress `yaml:"egress,omitempty"`
+
 	// StartupTimeout bounds the generated startup script (build + run) as a
 	// go duration, e.g. "45s". Empty means the orchestrator's default. The
 	// orchestrator rejects a value above its configured ceiling rather than
@@ -485,6 +492,30 @@ type Desktop struct {
 	Height int `yaml:"height"`
 }
 
+// Egress is the outbound traffic policy: direct (the default) or proxied
+// through a provider on the host.
+//
+// The three fields are a policy, not a preference: with `mode: proxy` the
+// host installs no direct route at all, so a workload that ignores the proxy
+// gets no egress rather than direct egress. That is why a provider or a
+// protocol on a direct block is rejected instead of ignored; the author
+// believes they asked for proxying and did not.
+type Egress struct {
+	// Mode is "direct" or "proxy". Empty means direct, filled in by
+	// compileEgress so the wire always carries an explicit value.
+	Mode EgressMode `yaml:"mode,omitempty"`
+
+	// Provider names the proxy backend on the host ("mock" today). It is
+	// required when Mode is proxy and rejected otherwise. The vocabulary is
+	// open: which providers exist is the host's business, not the parser's.
+	Provider string `yaml:"provider,omitempty"`
+
+	// Protocol is what the proxy speaks: "socks5" (the default for proxy)
+	// or "http". Empty means socks5, applied in compileEgress for the same
+	// reason expose's tcp default is applied in compileExpose.
+	Protocol EgressProtocol `yaml:"protocol,omitempty"`
+}
+
 // EnvValue is either a literal value or a secret reference. exactly one is set.
 type EnvValue struct {
 	Value  string `yaml:"value,omitempty"`
@@ -496,6 +527,17 @@ type Expose struct {
 	Port int    `yaml:"port"`
 	As   string `yaml:"as,omitempty"`
 
+	// Protocol is the transport this entry publishes: "tcp" (the default) or
+	// "udp". It is the transport the host agent's DNAT rule matches on, so it
+	// has to be decided at authoring time: a rule installed for one protocol
+	// forwards nothing for the other.
+	//
+	// Empty means tcp. The default is applied in compileExpose, so the
+	// compiled wire always carries an explicit value no matter which entry
+	// point produced it, and a reader downstream never has to know what the
+	// default was.
+	Protocol Protocol `yaml:"protocol,omitempty"`
+
 	// AllowReserved opts in to exposing a privileged guest port (below 1024)
 	// that is otherwise blocked by default. The guest agent's management port
 	// (9550, FUSED_PORT) and SSH (22) are always blocked — they cannot be
@@ -503,4 +545,51 @@ type Expose struct {
 	// hands the outside world the guest's control plane or bypasses the
 	// environment's access model.
 	AllowReserved bool `yaml:"allow_reserved,omitempty"`
+}
+
+// exposeFields is the set of keys the mapping form accepts. Parse's decoder
+// runs with KnownFields(true), but a custom UnmarshalYAML decodes through a
+// yaml.Node and does not inherit that, so unknown keys are rejected here or
+// `- prot: udp` would silently parse as a tcp entry.
+var exposeFields = map[string]bool{"port": true, "as": true, "protocol": true, "allow_reserved": true}
+
+// UnmarshalYAML decodes either a bare scalar port (the shorthand, `- 8080`) or
+// the mapping form. The shorthand exists because publishing one port with no
+// name and no options is the common case, and three lines of yaml for it reads
+// as ceremony.
+//
+// The scalar decodes through int rather than through the mapping, so `- 8080`
+// and `- {port: 8080}` produce an identical Expose and validate identically:
+// range, reserved ports and duplicates are all checked later in validate,
+// which never learns which form was written.
+func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		var port int
+		if err := node.Decode(&port); err != nil {
+			return fmt.Errorf("expose: %w", err)
+		}
+		*e = Expose{Port: port}
+		return nil
+	}
+
+	if node.Kind != yaml.MappingNode {
+		return fmt.Errorf("expose: must be a port number or a mapping")
+	}
+
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !exposeFields[key] {
+			return fmt.Errorf("line %d: field %s not found in expose entry", node.Content[i].Line, key)
+		}
+	}
+
+	// expose is an alias without the method set, so decoding it does not
+	// recurse back into UnmarshalYAML.
+	type expose Expose
+	var raw expose
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*e = Expose(raw)
+	return nil
 }

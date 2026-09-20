@@ -26,6 +26,11 @@ manifest (decoded; sent base64 as manifest_inline)
 expose
   8080 as http
 
+egress
+  mode            proxy
+  provider        mock
+  protocol        socks5
+
 required secrets (values supplied at `fuse up`)
   api_token
   pg_password

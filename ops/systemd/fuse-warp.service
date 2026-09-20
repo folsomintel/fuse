@@ -1,0 +1,32 @@
+[Unit]
+Description=Fuse egress: cloudflare warp-svc inside the fuse-warp network namespace
+Documentation=https://github.com/folsomintel/fuse
+# the namespace is created by fc-warp.sh before this unit starts; the agent
+# starts the unit on the first proxy-mode vm and stops it after the last.
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/run/netns/fuse-warp
+
+[Service]
+Type=simple
+# warp-svc runs entirely inside the namespace, so its wireguard interface and
+# routes cannot capture the host's own traffic, including the orchestrator's
+# control-plane connections. NetworkNamespacePath switches only the network
+# namespace, not the mount namespace, so the namespace's resolver has to be
+# bound over /etc/resolv.conf explicitly or warp-svc reads the host's.
+NetworkNamespacePath=/run/netns/fuse-warp
+BindReadOnlyPaths=/etc/netns/fuse-warp/resolv.conf:/etc/resolv.conf:norbind
+ExecStart=/usr/bin/warp-svc --accept-tos
+Restart=on-failure
+RestartSec=2
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=false
+PrivateTmp=true
+ProtectHome=true
+# the registration and mdm.xml live here; nothing else on the host holds the
+# credential.
+ReadWritePaths=/var/lib/cloudflare-warp /run/cloudflare-warp
+
+[Install]
+WantedBy=multi-user.target

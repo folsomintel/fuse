@@ -1605,6 +1605,8 @@ type VMMutation struct {
 	appendgpu_uuids          json.RawMessage
 	mig_instance_uuids       *json.RawMessage
 	appendmig_instance_uuids json.RawMessage
+	egress                   *json.RawMessage
+	appendegress             json.RawMessage
 	created_at               *time.Time
 	updated_at               *time.Time
 	clearedFields            map[string]struct{}
@@ -2706,6 +2708,71 @@ func (m *VMMutation) ResetMigInstanceUuids() {
 	delete(m.clearedFields, vm.FieldMigInstanceUuids)
 }
 
+// SetEgress sets the "egress" field.
+func (m *VMMutation) SetEgress(jm json.RawMessage) {
+	m.egress = &jm
+	m.appendegress = nil
+}
+
+// Egress returns the value of the "egress" field in the mutation.
+func (m *VMMutation) Egress() (r json.RawMessage, exists bool) {
+	v := m.egress
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldEgress returns the old "egress" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldEgress(ctx context.Context) (v json.RawMessage, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldEgress is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldEgress requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldEgress: %w", err)
+	}
+	return oldValue.Egress, nil
+}
+
+// AppendEgress adds jm to the "egress" field.
+func (m *VMMutation) AppendEgress(jm json.RawMessage) {
+	m.appendegress = append(m.appendegress, jm...)
+}
+
+// AppendedEgress returns the list of values that were appended to the "egress" field in this mutation.
+func (m *VMMutation) AppendedEgress() (json.RawMessage, bool) {
+	if len(m.appendegress) == 0 {
+		return nil, false
+	}
+	return m.appendegress, true
+}
+
+// ClearEgress clears the value of the "egress" field.
+func (m *VMMutation) ClearEgress() {
+	m.egress = nil
+	m.appendegress = nil
+	m.clearedFields[vm.FieldEgress] = struct{}{}
+}
+
+// EgressCleared returns if the "egress" field was cleared in this mutation.
+func (m *VMMutation) EgressCleared() bool {
+	_, ok := m.clearedFields[vm.FieldEgress]
+	return ok
+}
+
+// ResetEgress resets all changes to the "egress" field.
+func (m *VMMutation) ResetEgress() {
+	m.egress = nil
+	m.appendegress = nil
+	delete(m.clearedFields, vm.FieldEgress)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *VMMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -2812,7 +2879,7 @@ func (m *VMMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *VMMutation) Fields() []string {
-	fields := make([]string, 0, 23)
+	fields := make([]string, 0, 24)
 	if m.host_id != nil {
 		fields = append(fields, vm.FieldHostID)
 	}
@@ -2876,6 +2943,9 @@ func (m *VMMutation) Fields() []string {
 	if m.mig_instance_uuids != nil {
 		fields = append(fields, vm.FieldMigInstanceUuids)
 	}
+	if m.egress != nil {
+		fields = append(fields, vm.FieldEgress)
+	}
 	if m.created_at != nil {
 		fields = append(fields, vm.FieldCreatedAt)
 	}
@@ -2932,6 +3002,8 @@ func (m *VMMutation) Field(name string) (ent.Value, bool) {
 		return m.GpuUuids()
 	case vm.FieldMigInstanceUuids:
 		return m.MigInstanceUuids()
+	case vm.FieldEgress:
+		return m.Egress()
 	case vm.FieldCreatedAt:
 		return m.CreatedAt()
 	case vm.FieldUpdatedAt:
@@ -2987,6 +3059,8 @@ func (m *VMMutation) OldField(ctx context.Context, name string) (ent.Value, erro
 		return m.OldGpuUuids(ctx)
 	case vm.FieldMigInstanceUuids:
 		return m.OldMigInstanceUuids(ctx)
+	case vm.FieldEgress:
+		return m.OldEgress(ctx)
 	case vm.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case vm.FieldUpdatedAt:
@@ -3147,6 +3221,13 @@ func (m *VMMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetMigInstanceUuids(v)
 		return nil
+	case vm.FieldEgress:
+		v, ok := value.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetEgress(v)
+		return nil
 	case vm.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -3281,6 +3362,9 @@ func (m *VMMutation) ClearedFields() []string {
 	if m.FieldCleared(vm.FieldMigInstanceUuids) {
 		fields = append(fields, vm.FieldMigInstanceUuids)
 	}
+	if m.FieldCleared(vm.FieldEgress) {
+		fields = append(fields, vm.FieldEgress)
+	}
 	return fields
 }
 
@@ -3309,6 +3393,9 @@ func (m *VMMutation) ClearField(name string) error {
 		return nil
 	case vm.FieldMigInstanceUuids:
 		m.ClearMigInstanceUuids()
+		return nil
+	case vm.FieldEgress:
+		m.ClearEgress()
 		return nil
 	}
 	return fmt.Errorf("unknown VM nullable field %s", name)
@@ -3380,6 +3467,9 @@ func (m *VMMutation) ResetField(name string) error {
 		return nil
 	case vm.FieldMigInstanceUuids:
 		m.ResetMigInstanceUuids()
+		return nil
+	case vm.FieldEgress:
+		m.ResetEgress()
 		return nil
 	case vm.FieldCreatedAt:
 		m.ResetCreatedAt()
