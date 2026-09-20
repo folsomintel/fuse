@@ -383,6 +383,13 @@ type ForkOptions struct {
 	Comment         string `json:"comment,omitempty"`
 }
 
+// MigrateOptions is the optional body for env.Migrate.
+type MigrateOptions struct {
+	// TargetHostID is the host to migrate the VM to. Empty means
+	// the orchestrator picks one via its scheduler.
+	TargetHostID string `json:"target_host_id,omitempty"`
+}
+
 // SnapshotRequest is the optional body for env.Snapshot.
 type SnapshotRequest struct {
 	Comment          string            `json:"comment,omitempty"`

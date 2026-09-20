@@ -302,6 +302,35 @@ func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOp
 	return &env, nil
 }
 
+func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts MigrateOptions) (*EnvironmentInfo, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("environments service is not configured")
+	}
+	if vmID == "" {
+		return nil, errors.New("vm id is required")
+	}
+	path := "/v1/environments/" + url.PathEscape(vmID)
+	values := url.Values{}
+	values.Set("action", "migrate")
+	req, err := s.t.newRequest(ctx, http.MethodPost, path, values, opts)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.t.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckResponse(resp); err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var env EnvironmentInfo
+	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
+		return nil, fmt.Errorf("decode environment: %w", err)
+	}
+	return &env, nil
+}
+
 func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) error {
 	if s == nil || s.t == nil {
 		return errors.New("environments service is not configured")
