@@ -1805,6 +1805,73 @@ def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
     return endpoints
 
 
+# -- Tunnel sidecar -----------------------------------------------------------
+# An environment published through fuse-proxy is reached by the guest dialing
+# OUT to the proxy, not by anything dialing in through this host's dnat. The
+# thing that dials is `fused tunnel`, the agent binary in a second role.
+#
+# It gets a unit of its own rather than riding inside fused.service, because
+# the two have opposite lifetimes. fused is restarted every time its
+# credentials change, which is every fork and every migrate; the sidecar
+# carries connections for whatever else the guest runs and has to stay up
+# through exactly those moments. Being a unit on the rootfs is also what
+# brings it back after a reboot, and after a cold migrate boots a copy of this
+# disk somewhere else.
+TUNNEL_UNIT = "fuse-tunnel"
+_TUNNEL_CONFIG_RE = re.compile(r"/fuse/[A-Za-z0-9._-]+")
+
+
+def tunnel_unit(binary_path: str, config_path: str) -> str:
+    """The sidecar's systemd unit. Restart=always, not on-failure: the sidecar
+    exits 0 when told to stop, and there is no state in which a published
+    guest should be left without one."""
+    return (
+        "[Unit]\n"
+        "Description=Fuse tunnel sidecar (fused tunnel)\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={binary_path} tunnel -config {config_path}\n"
+        "Restart=always\n"
+        "RestartSec=1\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+
+def start_tunnel(vm_id: str, config_path: str, binary_path: str = "/usr/local/bin/fused") -> None:
+    meta = load_meta(vm_id)
+    if not meta:
+        raise HTTPError(404, "vm not found")
+    # The path lands in a unit file and a shell line, so it is held to the one
+    # shape the orchestrator ever sends.
+    if not _TUNNEL_CONFIG_RE.fullmatch(config_path):
+        raise HTTPError(400, f"invalid tunnel config path: {config_path!r}")
+    unit = tunnel_unit(binary_path, config_path)
+    remote = (
+        "export LC_ALL=C; set -e; "
+        f"test -s {shlex.quote(config_path)} || {{ echo 'tunnel config not found at {config_path}' >&2; exit 66; }}; "
+        # A fused that predates the sidecar does not know `tunnel`: it would
+        # take the word for a stray argument and try to start a second agent.
+        # Ask for the subcommand's own help and look for its flag, under a
+        # timeout so an old binary cannot sit there serving.
+        f"timeout 3 {shlex.quote(binary_path)} tunnel -h 2>&1 | grep -q -- '-config' || "
+        f"{{ echo 'fused at {binary_path} predates the tunnel sidecar; rebake the rootfs or update the binary' >&2; exit 65; }}; "
+        f"cat > /etc/systemd/system/{TUNNEL_UNIT}.service <<'EOF'\n{unit}EOF\n"
+        "systemctl daemon-reload; "
+        f"systemctl enable {TUNNEL_UNIT} >/dev/null 2>&1 || true; "
+        # restart, not start: on a fork or a migrate the unit is already
+        # running from the copied disk, holding the SOURCE's identity.
+        f"systemctl restart {TUNNEL_UNIT}; "
+        f"sleep 0.3; systemctl is-active {TUNNEL_UNIT}"
+    )
+    rc, out, err = ssh_exec(meta["guest_ip"], remote, timeout=30.0)
+    if rc != 0:
+        detail = err.decode(errors="replace").strip() or out.decode(errors="replace").strip()
+        raise HTTPError(500, f"tunnel start failed: {detail or f'unknown error (rc={rc})'}")
+
+
 def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
                    gateway: str | None = None, extra_args: str | None = None,
                    tls_cert_path: str | None = None, tls_key_path: str | None = None,
@@ -2362,7 +2429,16 @@ class Handler(BaseHTTPRequestHandler):
                             listen=body.get("listen") or "0.0.0.0:9550",
                             expose=body.get("expose"),
                         )
-                        return self._json(200, {"ok": True, "endpoints": endpoints})
+                        # tunnel is echoed so the orchestrator can tell an
+                        # agent that started the sidecar from one too old to
+                        # know the field, which would otherwise look the same.
+                        tunnel_config = body.get("tunnel_config_path") or ""
+                        if tunnel_config:
+                            start_tunnel(
+                                vm_id, tunnel_config,
+                                binary_path=body.get("binary_path") or "/usr/local/bin/fused",
+                            )
+                        return self._json(200, {"ok": True, "endpoints": endpoints, "tunnel": bool(tunnel_config)})
                     if action == "snapshot" and method == "POST":
                         body = self._read_json()
                         # live rides on the existing verb as an optional flag
