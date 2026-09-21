@@ -488,6 +488,7 @@ func TestRemote_checkpointLive(t *testing.T) {
 			Digest:     "abc",
 			Kind:       "live",
 			SizeBytes:  4096,
+			Files:      map[string]string{"mem": "def"},
 		})
 	}))
 	defer srv.Close()
@@ -505,6 +506,41 @@ func TestRemote_checkpointLive(t *testing.T) {
 	}
 	if cp.Kind != orchestrator.SnapshotKindLive {
 		t.Fatalf("kind = %q, want live", cp.Kind)
+	}
+	// the only moment the memory half's digests exist; see Checkpoint.Files.
+	if cp.Files["mem"] != "def" {
+		t.Fatalf("files = %v, want the per-file digests from the response", cp.Files)
+	}
+}
+
+// TestProvider_createResume asserts ResumeSeed reaches the agent, and that an
+// ordinary create still sends the request an older agent has always seen.
+func TestProvider_createResume(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode create request: %v", err)
+		}
+		bodies = append(bodies, body)
+		json.NewEncoder(w).Encode(createVMResponse{VMID: "vm-1"})
+	}))
+	defer srv.Close()
+
+	p := New(Config{BaseURL: srv.URL})
+	for _, spec := range []orchestrator.Spec{
+		{Name: "vm-1", SeedSnapshotID: "art-1", ResumeSeed: true},
+		{Name: "vm-1", SeedSnapshotID: "art-1"},
+	} {
+		if _, err := p.Create(context.Background(), spec); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	if bodies[0]["resume"] != true || bodies[0]["seed_snapshot"] != "art-1" {
+		t.Errorf("resume create = %v, want resume=true with the seed", bodies[0])
+	}
+	if _, present := bodies[1]["resume"]; present {
+		t.Errorf("plain create = %v, want no resume field at all", bodies[1])
 	}
 }
 

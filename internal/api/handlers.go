@@ -1060,7 +1060,10 @@ func (h *Handler) migrateEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newID, err := h.Fleet.MigrateVM(r.Context(), vmID, req.TargetHostID)
+	newID, err := h.Fleet.MigrateVM(r.Context(), vmID, orchestrator.MigrateOptions{
+		TargetHostID: req.TargetHostID,
+		Live:         req.Live,
+	})
 	if err != nil {
 		writeFleetError(w, err)
 		return

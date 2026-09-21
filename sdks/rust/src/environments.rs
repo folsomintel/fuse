@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::error::Error;
 use crate::events::EventStream;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
-use crate::types::{CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions};
+use crate::types::{CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, MigrateOptions};
 
 // mirrors the orchestrator's own default guest-command bound. it is what the
 // server applies when the timeout is omitted, so the client waits at least
@@ -269,6 +269,22 @@ impl Environments {
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "fork")])
+            .json(&options);
+        self.t.send_json(request).await
+    }
+
+    /// Moves an environment to another host and returns the new environment.
+    /// The source is drained and destroyed once the new one is running.
+    pub async fn migrate(
+        &self,
+        vm_id: &str,
+        options: MigrateOptions,
+    ) -> Result<EnvironmentInfo, Error> {
+        require(vm_id, "vm id")?;
+        let request = self
+            .t
+            .request(Method::POST, &["v1", "environments", vm_id])
+            .query(&[("action", "migrate")])
             .json(&options);
         self.t.send_json(request).await
     }

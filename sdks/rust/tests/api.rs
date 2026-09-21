@@ -2,8 +2,8 @@
 // envelope handling, pagination walking, and the sse event stream.
 
 use fuse::{
-    Arch, Client, CreateRequest, Error, ExecRequest, ForkOptions, ListEnvironmentsOptions, Spec,
-    ToolResultBlock,
+    Arch, Client, CreateRequest, Error, ExecRequest, ForkOptions, ListEnvironmentsOptions,
+    MigrateOptions, Spec, ToolResultBlock,
 };
 use serde_json::json;
 use wiremock::matchers::{body_partial_json, header, method, path, query_param};
@@ -220,6 +220,31 @@ async fn fork_posts_options_body() {
         .await
         .unwrap();
     assert_eq!(forked.id, "vm-2");
+}
+
+#[tokio::test]
+async fn migrate_posts_options_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments/vm-1"))
+        .and(query_param("action", "migrate"))
+        .and(body_partial_json(
+            json!({"target_host_id": "host-b", "live": true}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(env_body("vm-2", "running")))
+        .mount(&server)
+        .await;
+
+    let migrated = client(&server)
+        .await
+        .environments()
+        .migrate(
+            "vm-1",
+            MigrateOptions::new().target_host_id("host-b").live(true),
+        )
+        .await
+        .unwrap();
+    assert_eq!(migrated.id, "vm-2");
 }
 
 #[tokio::test]

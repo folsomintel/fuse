@@ -78,6 +78,6 @@ pub use types::{
     EgressMode, EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo,
     EnvironmentState, Event, EventKind, ExposeSpec, ForkOptions, GpuDevice, Health, HealthState,
     HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, Host, HostBackend, HostCapacity, HostState,
-    MigInstance, MissReason, Protocol, RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind,
-    SnapshotMode, SnapshotRequest, SnapshotState, Spec, VersionInfo,
+    MigInstance, MigrateOptions, MissReason, Protocol, RegisterHostRequest, Snapshot,
+    SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, VersionInfo,
 };
