@@ -1,3 +1,7 @@
+# Reference copy. ops/install-proxy.sh writes an equivalent unit (with the
+# admin token generated and the public host filled in) to
+# /etc/systemd/system/fuse-proxy.service, so a curl'd standalone install needs
+# no repo on disk. Keep the two in step.
 [Unit]
 Description=Fuse proxy (stable ingress for environments)
 Documentation=https://github.com/folsomintel/fuse
