@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
@@ -365,6 +366,46 @@ func TestStartAgent_spec_download_url_overrides_provider(t *testing.T) {
 	}
 	if gotDownloadURL != "https://spec.example/fused" {
 		t.Fatalf("expected spec download_url to win, got %q", gotDownloadURL)
+	}
+}
+
+// the tunnel sidecar is the one start-agent field an old host agent must not
+// be allowed to ignore quietly: by this point the environment's url is on the
+// proxy, and a guest with no sidecar is unreachable.
+func TestStartAgent_tunnel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status  int
+		body    string
+		wantErr string
+	}{
+		"agent starts the sidecar":    {http.StatusOK, `{"ok":true,"tunnel":true}`, ""},
+		"agent predates the field":    {http.StatusOK, `{"ok":true}`, "did not start the tunnel sidecar"},
+		"agent only has the old wire": {http.StatusNotFound, `not found`, "frozen start-surfd wire"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got startAgentRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/vm/vm-1/start-agent" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				_ = json.NewDecoder(r.Body).Decode(&got)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			env := &remoteEnv{id: "vm-1", client: New(Config{BaseURL: srv.URL})}
+			err := env.StartAgent(context.Background(), orchestrator.AgentSpec{TunnelConfigPath: "/fuse/tunnel.json"})
+			if got.TunnelConfig != "/fuse/tunnel.json" {
+				t.Errorf("tunnel_config_path on the wire = %q", got.TunnelConfig)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want one mentioning %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 

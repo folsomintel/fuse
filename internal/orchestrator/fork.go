@@ -18,6 +18,7 @@ func (fm *FleetManager) discardFork(vmID, hostID string, spec Spec) {
 		fm.deallocateOnHost(hostID, spec)
 	}
 	fm.mu.Unlock()
+	fm.unpublishIngress(context.Background(), vmID)
 }
 
 // abandonFork tears down a fork that was created on the provider but could not
@@ -342,6 +343,17 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	// like Boot, this is a no-op without a 32-byte encryption key (dev mode):
 	// the source then had no credentials either, so the fork inherits none and
 	// stays consistent with it.
+	// a fork is a new environment, so it gets ports of its own; the tunnel
+	// identity is fresh for the same reason the credentials below are.
+	var plan *ingressPlan
+	if fm.ingressSupported(targetHostID, spec) {
+		plan, err = fm.publishIngress(ctx, newVMID, nil, "")
+	}
+	if err != nil {
+		fm.abandonFork(ctx, targetProvider, targetHostID, newVMID, spec)
+		return "", err
+	}
+
 	var encToken []byte
 	drainCommand := DefaultFusedDrainCommand
 	if len(fm.tokenEncryptionKey) == 32 {
@@ -350,7 +362,7 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 			fm.abandonFork(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("generate credentials for forked vm %s: %w", newVMID, credErr)
 		}
-		if upErr := uploadFiles(ctx, newEnv, fusedCredentialFiles(creds)); upErr != nil {
+		if upErr := uploadFiles(ctx, newEnv, plan.withTunnelFiles(fusedCredentialFiles(creds))); upErr != nil {
 			fm.abandonFork(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("upload credentials to forked vm %s: %w", newVMID, upErr)
 		}
@@ -361,12 +373,16 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 			return "", fmt.Errorf("encrypt token for forked vm %s: %w", newVMID, err)
 		}
 		if agentErr := newEnv.StartAgent(ctx, AgentSpec{
-			AuthToken:    creds.AuthToken,
-			DrainCommand: drainCommand,
+			AuthToken:        creds.AuthToken,
+			DrainCommand:     drainCommand,
+			TunnelConfigPath: plan.tunnelConfigPath(),
 		}); agentErr != nil {
 			fm.abandonFork(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("restart guest agent on forked vm %s with its own credentials: %w", newVMID, agentErr)
 		}
+	} else if tunnelErr := fm.retunnelWithoutCredentials(ctx, newEnv, plan, drainCommand); tunnelErr != nil {
+		fm.abandonFork(ctx, targetProvider, targetHostID, newVMID, spec)
+		return "", fmt.Errorf("start tunnel on forked vm %s: %w", newVMID, tunnelErr)
 	}
 
 	// promote the placeholder to running and persist it, mirroring the
@@ -379,6 +395,9 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 	v.authTokenEncrypted = encToken
 	v.drainCommand = drainCommand
 	v.updatedAt = time.Now()
+	if plan != nil {
+		v.applyIngress(plan.grant)
+	}
 	fm.mu.Unlock()
 
 	// persisting the running state is load-bearing: roll the in-memory

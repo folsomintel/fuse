@@ -40,17 +40,21 @@ A="$ROOT/host-agent/firecracker/fc-update.sh"
 B="$ROOT/ops/install-orchestrator.sh"
 C="$ROOT/host-agent/firecracker/fc-agent.sh"
 D="$ROOT/host-agent/local/fuse-local-setup.sh"
+E="$ROOT/ops/install-proxy.sh"
 extract "$A" > "$WORK/a.sh"
 extract "$B" > "$WORK/b.sh"
 extract "$C" > "$WORK/c.sh"
 extract "$D" > "$WORK/d.sh"
+extract "$E" > "$WORK/e.sh"
 [ -s "$WORK/a.sh" ] || { echo "  FAIL  no helper block found in $A"; exit 1; }
 [ -s "$WORK/b.sh" ] || { echo "  FAIL  no helper block found in $B"; exit 1; }
 [ -s "$WORK/c.sh" ] || { echo "  FAIL  no helper block found in $C"; exit 1; }
 [ -s "$WORK/d.sh" ] || { echo "  FAIL  no helper block found in $D"; exit 1; }
+[ -s "$WORK/e.sh" ] || { echo "  FAIL  no helper block found in $E"; exit 1; }
 check "fc-update.sh and install-orchestrator.sh carry the same helper" 0 "$(rc cmp -s "$WORK/a.sh" "$WORK/b.sh")"
 check "fc-agent.sh carries the same helper" 0 "$(rc cmp -s "$WORK/a.sh" "$WORK/c.sh")"
 check "fuse-local-setup.sh carries the same helper" 0 "$(rc cmp -s "$WORK/a.sh" "$WORK/d.sh")"
+check "install-proxy.sh carries the same helper" 0 "$(rc cmp -s "$WORK/a.sh" "$WORK/e.sh")"
 
 # shellcheck source=/dev/null
 source "$WORK/a.sh"

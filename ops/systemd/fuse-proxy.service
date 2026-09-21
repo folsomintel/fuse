@@ -1,0 +1,44 @@
+# Reference copy. ops/install-proxy.sh writes an equivalent unit (with the
+# admin token generated and the public host filled in) to
+# /etc/systemd/system/fuse-proxy.service, so a curl'd standalone install needs
+# no repo on disk. Keep the two in step.
+[Unit]
+Description=Fuse proxy (stable ingress for environments)
+Documentation=https://github.com/folsomintel/fuse
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Configuration comes from this file:
+#   FUSE_PROXY_ADMIN_TOKEN   required. the orchestrator's FUSE_PROXY_ADMIN_TOKEN
+#                            must equal it.
+#   FUSE_PROXY_PUBLIC_HOST   required. the name or address clients and guests
+#                            reach this machine by; it is the host part of
+#                            every environment url.
+#   FUSE_PROXY_TUNNEL_LISTEN udp, guests dial in here (default :7443). open it
+#                            to every firecracker host.
+#   FUSE_PROXY_ADMIN_LISTEN  tcp, the orchestrator's admin api (default
+#                            127.0.0.1:7080). never expose it publicly.
+#   FUSE_PROXY_PORTS         public port range (default 20000-29999). open it
+#                            to clients.
+#   FUSE_PROXY_STATE_DIR     routes.json and the tunnel certificate. keep it:
+#                            losing it changes every url and locks out every
+#                            running guest.
+EnvironmentFile=/etc/fuse/proxy.env
+ExecStart=/usr/local/bin/fuse-proxy
+Restart=on-failure
+RestartSec=2
+StateDirectory=fuse-proxy
+LimitNOFILE=65536
+
+DynamicUser=false
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

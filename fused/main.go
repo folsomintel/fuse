@@ -88,6 +88,12 @@ func parseFlags() config {
 }
 
 func main() {
+	// `fused tunnel` is a different process from the agent, on purpose: see
+	// tunnel.go. it is dispatched before the agent's flags are parsed because
+	// it shares none of them.
+	if len(os.Args) > 1 && os.Args[1] == "tunnel" {
+		os.Exit(runTunnel(os.Args[2:]))
+	}
 	c := parseFlags()
 	if c.showVersion {
 		fmt.Println(version)
