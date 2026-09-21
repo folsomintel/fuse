@@ -120,6 +120,7 @@ func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.A
 		PeerURL:    move.From.URL,
 		Grant:      grant,
 		SnapshotID: move.SnapshotID,
+		Files:      move.Files,
 	})
 	if err != nil {
 		return orchestrator.ArtifactMoved{}, err
@@ -127,7 +128,11 @@ func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.A
 	m.logger.Info("artifact copied between hosts",
 		"digest", move.Digest, "from", move.From.HostID, "to", move.To.HostID,
 		"snapshot", res.SnapshotID, "bytes", res.SizeBytes)
-	return orchestrator.ArtifactMoved{SnapshotID: res.SnapshotID, SizeBytes: res.SizeBytes}, nil
+	return orchestrator.ArtifactMoved{
+		SnapshotID: res.SnapshotID,
+		SizeBytes:  res.SizeBytes,
+		Kind:       orchestrator.SnapshotKind(res.Kind),
+	}, nil
 }
 
 // envInt parses an int env var, returning fallback on miss or parse error.

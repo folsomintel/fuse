@@ -10,6 +10,7 @@ import type {
   ExecRequest,
   ExecResult,
   ForkOptions,
+  MigrateOptions,
   ToolResultBlock,
 } from "./types.js";
 import { FuseError, isFuseApiError } from "./errors.js";
@@ -117,6 +118,23 @@ export class EnvironmentsService {
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       { query: { action: "fork" }, body, signal: opts.signal },
+    );
+  }
+
+  /**
+   * Migrate an environment to another host; returns the new environment. The
+   * source is drained and destroyed once the new one is running.
+   */
+  async migrate(
+    vmId: string,
+    body: MigrateOptions = {},
+    opts: CallOptions = {},
+  ): Promise<EnvironmentInfo> {
+    requireArg(vmId, "vm id");
+    return this.t.json<EnvironmentInfo>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      { query: { action: "migrate" }, body, signal: opts.signal },
     );
   }
 

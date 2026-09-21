@@ -41,7 +41,7 @@ func TestMigrateVM_happyPath(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	newID, err := fm.MigrateVM(context.Background(), srcID, "")
+	newID, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestMigrateVM_sameHost(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	newID, err := fm.MigrateVM(context.Background(), srcID, "")
+	newID, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestMigrateVM_rejectsGPU(t *testing.T) {
 	fm2.vms[srcID].spec.GPUs = 1
 	fm2.mu.Unlock()
 
-	_, err = fm2.MigrateVM(context.Background(), srcID, "")
+	_, err = fm2.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if !errors.Is(err, ErrGPUUnsupported) {
 		t.Fatalf("err = %v, want ErrGPUUnsupported", err)
 	}
@@ -155,7 +155,7 @@ func TestMigrateVM_rejectsNotRunning(t *testing.T) {
 	fm.vms[srcID].state = VMStateDraining
 	fm.mu.Unlock()
 
-	_, err := fm.MigrateVM(context.Background(), srcID, "")
+	_, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err == nil {
 		t.Fatal("expected migrate of non-running vm to fail")
 	}
@@ -168,7 +168,7 @@ func TestMigrateVM_notFound(t *testing.T) {
 		Prefix:   "fuse-",
 	})
 
-	_, err := fm.MigrateVM(context.Background(), "fuse-nonexistent", "")
+	_, err := fm.MigrateVM(context.Background(), "fuse-nonexistent", MigrateOptions{})
 	if !errors.Is(err, ErrVMNotFound) {
 		t.Fatalf("err = %v, want ErrVMNotFound", err)
 	}
@@ -186,7 +186,7 @@ func TestMigrateVM_providerNotForkable(t *testing.T) {
 	}
 	srcID := "fuse-task-1"
 
-	_, err = fm.MigrateVM(context.Background(), srcID, "")
+	_, err = fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err == nil {
 		t.Fatal("expected migrate to fail when provider does not implement SnapshotForkable")
 	}
@@ -201,7 +201,7 @@ func TestMigrateVM_cleanupOnCreateFromCheckpointFailure(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	_, err := fm.MigrateVM(context.Background(), srcID, "")
+	_, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err == nil {
 		t.Fatal("expected migrate to fail when CreateFromCheckpoint fails")
 	}

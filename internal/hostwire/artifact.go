@@ -380,6 +380,14 @@ type ArtifactPullRequest struct {
 	// records key on and letting the agent invent one means the control plane
 	// has to read it back to know what it now has.
 	SnapshotID string `json:"snapshot_id,omitempty"`
+
+	// Files is the memory half of a live snapshot, file name to hex sha256. the
+	// agent fetches each under the same grant, verifies it against the digest
+	// given here, and commits either every file or none. the digests are the
+	// ones the orchestrator recorded when the snapshot was taken, never ones
+	// the peer reports about itself. empty for a disk artifact, and omitted so
+	// an older agent sees the request it always did.
+	Files map[string]string `json:"files,omitempty"`
 }
 
 // ArtifactPullResponse is what the pulling agent answers once the artifact is
@@ -390,6 +398,10 @@ type ArtifactPullResponse struct {
 	Digest     string `json:"digest"`
 	SizeBytes  int64  `json:"bytes"`
 	CreatedAt  string `json:"created_at,omitempty"`
+	// Kind is "live" when the agent committed the memory half too. an agent
+	// that predates Files ignores it, commits the rootfs alone and sends no
+	// kind, which is how the caller finds out.
+	Kind string `json:"kind,omitempty"`
 	// SourcePeer is the peer the bytes came from. Provenance matters here in
 	// a way it does not for a locally built snapshot: there is no origin VM on
 	// this host to point at.
@@ -413,6 +425,11 @@ func PullArtifact(ctx context.Context, client *http.Client, baseURL, token strin
 	}
 	if req.PeerURL == "" || req.Grant == "" {
 		return ArtifactPullResponse{}, errors.New("artifact pull: peer url and grant are required")
+	}
+	for name, digest := range req.Files {
+		if !validArtifactDigest(digest) {
+			return ArtifactPullResponse{}, fmt.Errorf("artifact pull: digest of %q is not a sha256 digest", name)
+		}
 	}
 
 	body, err := json.Marshal(req)

@@ -18,6 +18,7 @@ from ..types import (
     ExecRequest,
     ExecResult,
     ForkOptions,
+    MigrateOptions,
 )
 from .events import stream_events
 
@@ -94,6 +95,19 @@ class EnvironmentsService:
         path = f"/v1/environments/{quote(vm_id, safe='')}"
         resp = self._t.request(
             "POST", path, params={"action": "fork"}, body=options or ForkOptions()
+        )
+        return EnvironmentInfo.model_validate(resp.json())
+
+    def migrate(
+        self, vm_id: str, options: MigrateOptions | None = None
+    ) -> EnvironmentInfo:
+        # moves the environment to another host and returns the new one. the
+        # source is drained and destroyed once the new one is running.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request(
+            "POST", path, params={"action": "migrate"}, body=options or MigrateOptions()
         )
         return EnvironmentInfo.model_validate(resp.json())
 

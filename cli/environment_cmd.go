@@ -478,10 +478,11 @@ func newEnvForkCmd() *cobra.Command {
 
 func newEnvMigrateCmd() *cobra.Command {
 	var targetHost string
+	var live bool
 	cmd := &cobra.Command{
 		Use:   "migrate <id>",
 		Short: "Migrate an environment to another host",
-		Long:  "Migrate an environment to another host (disk-only: ~10-20s downtime). The source VM is drained and destroyed after the migration completes.",
+		Long:  "Migrate an environment to another host (disk-only: ~10-20s downtime). The source VM is drained and destroyed after the migration completes.\n\nWith --live the guest's memory moves too and it resumes on the target with its processes intact. That needs --target-host, the same cpu and firecracker build on both hosts, and the environment's network slot free on the target; if the target cannot resume it the migrate fails and the source keeps running.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, _, err := app.client()
@@ -490,6 +491,7 @@ func newEnvMigrateCmd() *cobra.Command {
 			}
 			e, err := cl.Environments.Migrate(cmd.Context(), args[0], fuse.MigrateOptions{
 				TargetHostID: targetHost,
+				Live:         live,
 			})
 			if err != nil {
 				return friendly(err)
@@ -503,6 +505,7 @@ func newEnvMigrateCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&targetHost, "target-host", "", "target host id (empty means the orchestrator picks)")
+	cmd.Flags().BoolVar(&live, "live", false, "carry the guest's memory across and resume it instead of cold-booting (requires --target-host)")
 	return cmd
 }
 

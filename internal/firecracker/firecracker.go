@@ -96,6 +96,7 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		Region:       spec.Region,
 		Image:        spec.Image,
 		SeedSnapshot: spec.SeedSnapshotID,
+		Resume:       spec.ResumeSeed,
 		Egress:       egressWireFor(spec),
 	}
 	var resp createVMResponse
@@ -526,6 +527,7 @@ func (e *remoteEnv) snapshot(ctx context.Context, comment string, live bool) (or
 		Digest:    resp.Digest,
 		SizeBytes: resp.SizeBytes,
 		Kind:      snapshotKind(resp.Kind),
+		Files:     resp.Files,
 	}, nil
 }
 
@@ -580,6 +582,9 @@ type createVMRequest struct {
 	// than a named base image. The agent treats it as winning over Image, but
 	// the orchestrator rejects a request carrying both before it gets here.
 	SeedSnapshot string `json:"seed_snapshot,omitempty"`
+	// Resume resumes the guest from SeedSnapshot's memory image instead of
+	// cold-booting it. the agent refuses with 409 when it cannot.
+	Resume bool `json:"resume,omitempty"`
 	// Egress carries the vm's egress mode. the agent decides the tap's
 	// forward rule at create time, so this has to travel with the create and
 	// not with the later egress call. omitted for direct so an older agent
@@ -772,6 +777,10 @@ type snapshotResponse struct {
 	// time because a live snapshot is a different order of size from a disk
 	// one (a full memory image every time) and nothing upstream can stat it.
 	SizeBytes int64 `json:"size_bytes,omitempty"`
+
+	// Files is the memory half of a live snapshot, file name to hex sha256.
+	// absent for a disk snapshot and from an agent that cannot move live ones.
+	Files map[string]string `json:"files,omitempty"`
 }
 
 // restoreRequest carries only the id. Whether a restore resumes from memory or

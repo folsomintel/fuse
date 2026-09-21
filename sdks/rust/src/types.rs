@@ -885,6 +885,37 @@ impl ForkOptions {
     }
 }
 
+/// The optional body of [`Environments::migrate`](crate::Environments::migrate).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MigrateOptions {
+    /// The host to migrate to. `None` means the orchestrator picks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_host_id: Option<String>,
+    /// Resumes the guest from its memory on the target, so processes survive
+    /// the move, instead of cold-booting it. Requires `target_host_id` and
+    /// never falls back to a cold migration: a target that cannot resume the
+    /// guest answers 409 and the source keeps running.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
+}
+
+impl MigrateOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn target_host_id(mut self, host_id: impl Into<String>) -> Self {
+        self.target_host_id = Some(host_id.into());
+        self
+    }
+
+    pub fn live(mut self, live: bool) -> Self {
+        self.live = live;
+        self
+    }
+}
+
 /// The optional body of [`Snapshots::create`](crate::Snapshots::create).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
