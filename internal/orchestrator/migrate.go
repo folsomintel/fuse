@@ -15,6 +15,7 @@ func (fm *FleetManager) discardProvisionedVM(vmID, hostID string, spec Spec) {
 		fm.deallocateOnHost(hostID, spec)
 	}
 	fm.mu.Unlock()
+	fm.unpublishIngress(context.Background(), vmID)
 }
 
 func (fm *FleetManager) abandonProvisionedVM(ctx context.Context, provider Provider, hostID, vmID string, spec Spec) {
@@ -143,6 +144,17 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 		return "", fmt.Errorf("migrate vm %s from snapshot %s: %w", vmID, seed.SnapshotID, err)
 	}
 
+	// published under ports of its own first. the source's ports are adopted
+	// at the very end (adoptIngress), once nothing can fail any more.
+	var plan *ingressPlan
+	if fm.ingressSupported(targetHostID, spec) {
+		plan, err = fm.publishIngress(ctx, newVMID, nil, "")
+	}
+	if err != nil {
+		fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
+		return "", err
+	}
+
 	var encToken []byte
 	drainCommand := DefaultFusedDrainCommand
 	if len(fm.tokenEncryptionKey) == 32 {
@@ -151,7 +163,7 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("generate credentials for migrated vm %s: %w", newVMID, credErr)
 		}
-		if upErr := uploadFiles(ctx, newEnv, fusedCredentialFiles(creds)); upErr != nil {
+		if upErr := uploadFiles(ctx, newEnv, plan.withTunnelFiles(fusedCredentialFiles(creds))); upErr != nil {
 			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("upload credentials to migrated vm %s: %w", newVMID, upErr)
 		}
@@ -162,12 +174,16 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 			return "", fmt.Errorf("encrypt token for migrated vm %s: %w", newVMID, err)
 		}
 		if agentErr := newEnv.StartAgent(ctx, AgentSpec{
-			AuthToken:    creds.AuthToken,
-			DrainCommand: drainCommand,
+			AuthToken:        creds.AuthToken,
+			DrainCommand:     drainCommand,
+			TunnelConfigPath: plan.tunnelConfigPath(),
 		}); agentErr != nil {
 			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
 			return "", fmt.Errorf("restart guest agent on migrated vm %s with its own credentials: %w", newVMID, agentErr)
 		}
+	} else if tunnelErr := fm.retunnelWithoutCredentials(ctx, newEnv, plan, drainCommand); tunnelErr != nil {
+		fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
+		return "", fmt.Errorf("start tunnel on migrated vm %s: %w", newVMID, tunnelErr)
 	}
 
 	fm.mu.Lock()
@@ -193,6 +209,13 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 		}); err != nil {
 			fm.logger.Warn("persist migrated task running state failed", "vm", newVMID, "task", migrateTaskID, "err", err)
 		}
+	}
+	// the cutover: from here a client of the source's url reaches the new vm.
+	fm.adoptIngress(ctx, plan, vmID)
+	if plan != nil {
+		fm.mu.Lock()
+		v.applyIngress(plan.grant)
+		fm.mu.Unlock()
 	}
 	fm.publishStateChange(newVMID, "")
 

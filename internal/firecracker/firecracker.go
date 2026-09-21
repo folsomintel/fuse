@@ -415,16 +415,26 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		GatewayToken: spec.GatewayToken,
 		DownloadURL:  downloadURL,
 		Expose:       toWireExpose(spec.Expose),
+		TunnelConfig: spec.TunnelConfigPath,
 	}
 	var resp startAgentResponse
 	err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp)
 	if err == nil {
+		// an agent that predates the tunnel ignores the field and says nothing
+		// back. the environment's url is on the proxy by now, so a guest with
+		// no sidecar is an environment nobody can reach; fail the boot instead.
+		if agentReq.TunnelConfig != "" && !resp.Tunnel {
+			return errors.New("host agent did not start the tunnel sidecar: it predates fuse-proxy ingress and needs updating")
+		}
 		e.setEndpoints(resp.Endpoints)
 		return nil
 	}
 	var statusErr *orchestrator.HTTPStatusError
 	if !errors.As(err, &statusErr) || statusErr.Code != http.StatusNotFound {
 		return err
+	}
+	if agentReq.TunnelConfig != "" {
+		return errors.New("host agent only speaks the frozen start-surfd wire, which cannot start the tunnel sidecar")
 	}
 
 	// Fall back to the FROZEN /start-surfd wire (unchanged payload, no
@@ -698,6 +708,9 @@ type startAgentRequest struct {
 	BinaryPath   string       `json:"binary_path,omitempty"`
 	Listen       string       `json:"listen,omitempty"`
 	Expose       []exposeWire `json:"expose,omitempty"`
+	// TunnelConfig is the guest path of the tunnel sidecar's config. omitted
+	// when there is none, so an older agent sees the request it always did.
+	TunnelConfig string `json:"tunnel_config_path,omitempty"`
 }
 
 // exposeWire/endpointWire are the host-agent wire shapes for ingress,
@@ -726,6 +739,8 @@ type endpointWire struct {
 // agent published them.
 type startAgentResponse struct {
 	Endpoints []endpointWire `json:"endpoints,omitempty"`
+	// Tunnel is true when the agent started the tunnel sidecar.
+	Tunnel bool `json:"tunnel,omitempty"`
 }
 
 type snapshotRequest struct {

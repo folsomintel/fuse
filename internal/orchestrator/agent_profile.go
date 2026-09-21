@@ -158,6 +158,10 @@ func FusedAgentSpec(manifest []byte, secretMap map[string]string, creds *secrets
 		files[fuseEnvPath] = env
 	}
 
+	if len(opts.TunnelConfig) > 0 {
+		files[TunnelConfigGuestPath] = opts.TunnelConfig
+	}
+
 	spec := AgentSpec{
 		Files:        files,
 		Command:      buildFusedCommand(creds, opts),
@@ -168,6 +172,9 @@ func FusedAgentSpec(manifest []byte, secretMap map[string]string, creds *secrets
 	}
 	if creds != nil {
 		spec.AuthToken = creds.AuthToken
+	}
+	if len(opts.TunnelConfig) > 0 {
+		spec.TunnelConfigPath = TunnelConfigGuestPath
 	}
 	return spec
 }
