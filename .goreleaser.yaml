@@ -42,6 +42,22 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
 
+  # fuse-proxy: the stable-ingress proxy (see proxy/main.go). linux only; it
+  # runs on a machine with a public address, beside or apart from the
+  # orchestrator.
+  - id: fuse-proxy
+    main: ./proxy
+    binary: fuse-proxy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
   - id: fuse-cli
     main: ./cli
     binary: fuse
@@ -84,6 +100,19 @@ archives:
       - binary
     name_template: >-
       fused_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+
+  # fuse-proxy as a raw binary, for the same reason fused is one.
+  - id: fuse-proxy
+    ids:
+      - fuse-proxy
+    formats:
+      - binary
+    name_template: >-
+      fuse-proxy_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
