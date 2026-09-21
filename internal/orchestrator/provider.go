@@ -390,6 +390,12 @@ type AgentSpec struct {
 	GatewayToken string            // pass-through gateway token
 	DrainCommand string            // command run inside the guest for graceful shutdown ('' => skip)
 	Expose       []ExposeSpec      // guest ports to publish as reachable endpoints, if any
+
+	// TunnelConfigPath is the guest path of an uploaded tunnel config (see
+	// ingress.go). when set, the host agent runs the tunnel sidecar against it
+	// as a unit of its own, so it outlives restarts of the agent. empty means
+	// no sidecar, which is every environment when no proxy is configured.
+	TunnelConfigPath string
 }
 
 type BootOptions struct {
@@ -409,6 +415,10 @@ type BootOptions struct {
 	// FusedAgentSpec) and applied there; the orchestrator never renders
 	// anything. See desktop.go.
 	Desktop *DesktopSpec
+
+	// TunnelConfig is the sidecar's config for an environment published
+	// through fuse-proxy, or nil. set by the fleet, never by a caller.
+	TunnelConfig []byte
 
 	// Files are caller-supplied guest files (a Fusefile's `copy` block),
 	// keyed by absolute guest path. The agent profile merges them into

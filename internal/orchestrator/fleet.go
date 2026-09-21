@@ -168,6 +168,7 @@ type vm struct {
 	hostID             string // scheduler-assigned host, empty in single-provider mode
 	env                Environment
 	url                string // last-known reachable URL (cached for recovery before env is rehydrated)
+	publicURL          string // stable url on fuse-proxy, when published through it; reported instead of url
 	spec               Spec
 	authTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token
 	secretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
@@ -218,6 +219,9 @@ func (v *vm) toInfo() VMInfo {
 	}
 	if v.env != nil {
 		info.URL = v.env.URL()
+	}
+	if v.publicURL != "" {
+		info.URL = v.publicURL
 	}
 	// copied rather than aliased so a reader of the snapshot can never observe
 	// the next reconcile tick rewriting the verdict underneath it.
@@ -357,6 +361,11 @@ type FleetConfig struct {
 	// behaviour that predates peer-to-peer distribution. See ArtifactMover.
 	ArtifactMover ArtifactMover
 
+	// Ingress publishes environments through fuse-proxy so their urls survive
+	// a migrate. nil means every url is the host's dnat port, as it always
+	// was. See ingress.go.
+	Ingress IngressProxy
+
 	// ArtifactPullTimeout bounds a single host-to-host artifact transfer.
 	// Zero inherits the caller's context, which for a create is the HTTP
 	// request. Transfer time scales with artifact size and link speed, so any
@@ -434,6 +443,7 @@ type FleetManager struct {
 	// ephemeral facts live in memory.
 
 	artifactMover        ArtifactMover
+	ingress              IngressProxy
 	artifactPullTimeout  time.Duration
 	artifactIdleTTL      time.Duration
 	artifactMaxPerTenant int
@@ -554,6 +564,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		snapshotQuotaMaxCount:    cfg.SnapshotQuotaMaxCount,
 		snapshotQuotaMaxBytes:    cfg.SnapshotQuotaMaxBytes,
 		artifactMover:            cfg.ArtifactMover,
+		ingress:                  cfg.Ingress,
 		artifactPullTimeout:      cfg.ArtifactPullTimeout,
 		artifactIdleTTL:          cfg.ArtifactIdleTTL,
 		artifactMaxPerTenant:     cfg.ArtifactMaxPerTenant,
@@ -915,8 +926,22 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	// which egress backends exist; Boot needs both to provision egress.
 	opts.HostID = v.hostID
 	opts.EgressRegistry = fm.egressRegistry
-	result, err := Boot(ctx, bootProvider, spec, manifest, secretMap, opts, fm.tokenEncryptionKey)
+	// published before boot so the guest's tunnel config goes up with the rest
+	// of its files and the sidecar starts with the agent.
+	var plan *ingressPlan
+	var err error
+	if fm.ingressSupported(v.hostID, spec) {
+		plan, err = fm.publishIngress(ctx, vmID, opts.Expose, "")
+	}
+	var result *BootResult
+	if err == nil {
+		if plan != nil {
+			opts.TunnelConfig = plan.tunnelConfig
+		}
+		result, err = Boot(ctx, bootProvider, spec, manifest, secretMap, opts, fm.tokenEncryptionKey)
+	}
 	if err != nil {
+		fm.unpublishIngress(context.Background(), vmID)
 		releaseReservation()
 		redactedErr := secrets.RedactSecretValues(err.Error(), secretMap)
 		fm.logger.Error("provision failed", "vm", vmID, "task", taskID, "err", redactedErr)
@@ -1000,6 +1025,9 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	v.endpoints = result.Endpoints
 	v.egress = result.Egress
 	v.updatedAt = time.Now()
+	if plan != nil {
+		v.applyIngress(plan.grant)
+	}
 	fm.mu.Unlock()
 	fm.publishStateChange(vmID, "")
 
@@ -1231,6 +1259,7 @@ func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 		fm.logger.Error("destroy failed", "vm", vmID, "err", err)
 		return fmt.Errorf("destroy vm %s: %w", vmID, err)
 	}
+	fm.unpublishIngress(ctx, vmID)
 
 	fm.mu.Lock()
 	if v.hostID != "" {
@@ -1585,6 +1614,14 @@ func (fm *FleetManager) reattachVMFromProvider(ctx context.Context, v *vm) error
 	}
 	v.env = env
 	v.url = env.URL()
+	// the proxy, not the state store, remembers routes; ask it again.
+	if fm.ingress != nil {
+		if grant, lookupErr := fm.ingress.Lookup(ctx, v.id); lookupErr == nil {
+			v.applyIngress(grant)
+		} else if !errors.Is(lookupErr, ErrIngressNotFound) {
+			fm.logger.Warn("ingress lookup failed; reporting the host url", "vm", v.id, "err", lookupErr)
+		}
+	}
 	if len(v.authTokenEncrypted) > 0 && len(fm.tokenEncryptionKey) == 32 {
 		if plain, decErr := secrets.DecryptToken(v.authTokenEncrypted, fm.tokenEncryptionKey); decErr == nil {
 			if ts, ok := env.(TokenSetter); ok {

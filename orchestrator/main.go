@@ -43,6 +43,7 @@ import (
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/firecracker"
 	"github.com/folsomintel/fuse/internal/hostwire"
+	"github.com/folsomintel/fuse/internal/ingress"
 	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/qemu"
@@ -451,6 +452,20 @@ func run() error {
 		logger.Info("egress: cloudflare-warp backend registered")
 	}
 
+	// stable ingress through fuse-proxy is opt-in: with no admin url every
+	// environment keeps the host dnat url it always had. the interface value
+	// stays nil in that case rather than holding a nil *Client, which the fleet
+	// would take for a configured proxy.
+	var ingressProxy orchestrator.IngressProxy
+	if adminURL := env("FUSE_PROXY_ADMIN_URL", ""); adminURL != "" {
+		adminToken := env("FUSE_PROXY_ADMIN_TOKEN", "")
+		if adminToken == "" {
+			return errors.New("FUSE_PROXY_ADMIN_URL is set but FUSE_PROXY_ADMIN_TOKEN is not")
+		}
+		ingressProxy = ingress.NewClient(adminURL, adminToken)
+		logger.Info("publishing environments through fuse-proxy", "admin", adminURL)
+	}
+
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
 		Provider:            provider,
 		StateStore:          store,
@@ -471,6 +486,8 @@ func run() error {
 		ArtifactPullTimeout:  artifactPullTimeout,
 		ArtifactIdleTTL:      artifactIdleTTL,
 		ArtifactMaxPerTenant: artifactMaxPerTenant,
+
+		Ingress: ingressProxy,
 	})
 
 	// Reconcile loop starts with the binary.
