@@ -64,7 +64,7 @@ func (c *Client) do(ctx context.Context, method, owner string, body any) (orches
 	if err := json.NewDecoder(res.Body).Decode(&view); err != nil {
 		return orchestrator.IngressGrant{}, fmt.Errorf("fuse-proxy: decode response: %w", err)
 	}
-	grant := orchestrator.IngressGrant{ProxyAddr: view.ProxyAddr, ServerCertSHA256: view.ServerCertSHA256}
+	grant := orchestrator.IngressGrant{ProxyAddr: view.ProxyAddr, ServerCertPEM: view.ServerCertPEM}
 	for _, r := range view.Routes {
 		grant.Routes = append(grant.Routes, orchestrator.IngressRoute{Name: r.Name, GuestPort: r.GuestPort, URL: r.URL})
 	}

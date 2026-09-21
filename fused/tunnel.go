@@ -37,8 +37,8 @@ func runTunnel(args []string) int {
 		logger.Error("parse tunnel config", "path", *configPath, "err", err)
 		return 1
 	}
-	if cfg.ProxyAddr == "" || cfg.Owner == "" || cfg.Token == "" || cfg.ServerCertSHA256 == "" {
-		logger.Error(fmt.Sprintf("%s is missing proxy_addr, owner, token or server_cert_sha256", *configPath))
+	if cfg.ProxyAddr == "" || cfg.Owner == "" || cfg.Token == "" || cfg.ServerCertPEM == "" {
+		logger.Error(fmt.Sprintf("%s is missing proxy_addr, owner, token or server_cert_pem", *configPath))
 		return 1
 	}
 

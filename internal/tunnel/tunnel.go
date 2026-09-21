@@ -18,11 +18,10 @@ package tunnel
 
 import (
 	"bufio"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"io"
 	"net"
@@ -65,9 +64,12 @@ const (
 type Config struct {
 	// ProxyAddr is the proxy's quic listener, host:port.
 	ProxyAddr string `json:"proxy_addr"`
-	// ServerCertSHA256 pins the proxy's certificate. the proxy's cert is
-	// self-signed, so this fingerprint IS the trust anchor.
-	ServerCertSHA256 string `json:"server_cert_sha256"`
+	// ServerCertPEM is the proxy's certificate, and the only one this guest
+	// will accept. the proxy's cert is self-signed, so this IS the trust
+	// anchor: it is used as the sole root, which makes trusting it exactly
+	// equivalent to pinning it, with ordinary chain and name verification
+	// doing the work rather than a bypass.
+	ServerCertPEM string `json:"server_cert_pem"`
 	// Owner names the guest to the proxy; Token proves it.
 	Owner string `json:"owner"`
 	Token string `json:"token"`
@@ -101,31 +103,43 @@ func quicConfig() *quic.Config {
 	}
 }
 
-// CertFingerprint is the pin a Config carries for cert.
-func CertFingerprint(cert tls.Certificate) string {
-	sum := sha256.Sum256(cert.Certificate[0])
-	return hex.EncodeToString(sum[:])
+// ServerName is the name the proxy's certificate carries, and the name a
+// guest verifies it against.
+//
+// it is a fixed internal name rather than the proxy's address on purpose. the
+// proxy is reached by whatever ip or dns name the deployment gives it, and
+// that is not what a guest is checking: the question is "is this the
+// certificate the orchestrator told me about", which the root pool below
+// already answers. a constant keeps that from turning into a hostname the
+// operator has to keep in step with the certificate.
+const ServerName = "fuse-proxy"
+
+// CertPEM encodes cert for a Config to carry.
+func CertPEM(cert tls.Certificate) (string, error) {
+	if len(cert.Certificate) == 0 {
+		return "", errors.New("tunnel: certificate has no bytes")
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})), nil
 }
 
-// pinnedTLS trusts exactly one certificate, by fingerprint. chain verification
-// is off because there is no chain: the proxy's cert is self-signed and the
-// fingerprint arrived over the orchestrator's authenticated channel.
-func pinnedTLS(fingerprint string) *tls.Config {
-	return &tls.Config{
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{alpn},
-		InsecureSkipVerify: true, // #nosec G402 -- replaced by the pin below
-		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-			if len(rawCerts) == 0 {
-				return errors.New("tunnel: proxy presented no certificate")
-			}
-			sum := sha256.Sum256(rawCerts[0])
-			if hex.EncodeToString(sum[:]) != fingerprint {
-				return errors.New("tunnel: proxy certificate does not match the pinned fingerprint")
-			}
-			return nil
-		},
+// pinnedTLS trusts exactly one certificate: the proxy's own, used as the sole
+// root of an otherwise ordinary verification.
+//
+// this is a pin, not a relaxation. the pool holds one self-signed certificate,
+// so nothing any public ca issues can satisfy it, and the guest still performs
+// full chain and name checking rather than bypassing it. the certificate
+// arrived over the orchestrator's authenticated channel.
+func pinnedTLS(certPEM string) (*tls.Config, error) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM([]byte(certPEM)) {
+		return nil, errors.New("tunnel: proxy certificate is not valid pem")
 	}
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		NextProtos: []string{alpn},
+		RootCAs:    pool,
+		ServerName: ServerName,
+	}, nil
 }
 
 func writeJSONLine(w io.Writer, v any) error {

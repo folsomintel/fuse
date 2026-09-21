@@ -32,10 +32,10 @@ type routeView struct {
 
 // ownerView is the answer to a publish or a look up.
 type ownerView struct {
-	// ProxyAddr and ServerCertSHA256 go into the guest's tunnel.json.
-	ProxyAddr        string      `json:"proxy_addr"`
-	ServerCertSHA256 string      `json:"server_cert_sha256"`
-	Routes           []routeView `json:"routes"`
+	// ProxyAddr and ServerCertPEM go into the guest's tunnel.json.
+	ProxyAddr     string      `json:"proxy_addr"`
+	ServerCertPEM string      `json:"server_cert_pem"`
+	Routes        []routeView `json:"routes"`
 }
 
 // AdminConfig is what the admin api needs beyond the proxy itself.
@@ -43,18 +43,18 @@ type AdminConfig struct {
 	Token string
 	// PublicHost is the name or address clients and guests reach this machine
 	// by. TunnelPort is the udp port guests dial.
-	PublicHost       string
-	TunnelPort       int
-	ServerCertSHA256 string
+	PublicHost    string
+	TunnelPort    int
+	ServerCertPEM string
 }
 
 // AdminHandler serves the admin api.
 func AdminHandler(p *Proxy, cfg AdminConfig) http.Handler {
 	view := func(routes []Route) ownerView {
 		out := ownerView{
-			ProxyAddr:        net.JoinHostPort(cfg.PublicHost, strconv.Itoa(cfg.TunnelPort)),
-			ServerCertSHA256: cfg.ServerCertSHA256,
-			Routes:           make([]routeView, 0, len(routes)),
+			ProxyAddr:     net.JoinHostPort(cfg.PublicHost, strconv.Itoa(cfg.TunnelPort)),
+			ServerCertPEM: cfg.ServerCertPEM,
+			Routes:        make([]routeView, 0, len(routes)),
 		}
 		for _, r := range routes {
 			out.Routes = append(out.Routes, routeView{

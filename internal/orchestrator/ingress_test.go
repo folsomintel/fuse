@@ -29,7 +29,7 @@ func newFakeIngress() *fakeIngress {
 }
 
 func (f *fakeIngress) grantLocked(owner string, ports []IngressPort) IngressGrant {
-	grant := IngressGrant{ProxyAddr: "proxy.test:7443", ServerCertSHA256: "pin"}
+	grant := IngressGrant{ProxyAddr: "proxy.test:7443", ServerCertPEM: "pem"}
 	for _, p := range ports {
 		grant.Routes = append(grant.Routes, IngressRoute{Name: p.Name, GuestPort: p.GuestPort, URL: f.routes[owner][p.Name]})
 	}
@@ -122,7 +122,7 @@ func TestProvision_publishesAndReportsTheStableURL(t *testing.T) {
 	if cfg.Owner != vmID || cfg.Token == "" || cfg.Token != proxy.tokens[vmID] {
 		t.Errorf("guest config owner %q token %q, want this vm's identity and the token the proxy was given", cfg.Owner, cfg.Token)
 	}
-	if cfg.ProxyAddr != "proxy.test:7443" || cfg.ServerCertSHA256 != "pin" || len(cfg.Ports) != 1 || cfg.Ports[0] != fusedGuestPort {
+	if cfg.ProxyAddr != "proxy.test:7443" || cfg.ServerCertPEM != "pem" || len(cfg.Ports) != 1 || cfg.Ports[0] != fusedGuestPort {
 		t.Errorf("guest config = %+v", cfg)
 	}
 	// the orchestrator's own path to the guest does not go through the proxy.
@@ -173,8 +173,11 @@ func TestProvision_aPublishFailureFailsTheCreate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "proxy is down") {
 		t.Fatalf("err = %v, want the publish failure", err)
 	}
-	if len(provider.envs) != 0 {
-		t.Error("a vm was created although it could not be published")
+	if vms := fm.ListFleet(); len(vms) != 0 {
+		t.Errorf("%d vms tracked, want none: a vm outlived a create that could not be published", len(vms))
+	}
+	if owners := proxy.owners(); len(owners) != 0 {
+		t.Errorf("owners = %v, want none", owners)
 	}
 }
 

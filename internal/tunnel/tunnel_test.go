@@ -15,6 +15,22 @@ import (
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+// otherCertPEM is a valid certificate that is not the server's, so a guest
+// carrying it is rejected for the right reason rather than for being malformed.
+func otherCertPEM(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	cert, err := LoadOrCreateCert(filepath.Join(dir, "other.pem"), filepath.Join(dir, "other.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pem, err := CertPEM(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem
+}
+
 // echoServer is the guest-side service: it echoes lines.
 func echoServer(t *testing.T) int {
 	t.Helper()
@@ -63,11 +79,15 @@ func startServer(t *testing.T) *harness {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); _ = udp.Close() })
 	go func() { _ = h.srv.Serve(ctx) }()
+	certPEM, err := CertPEM(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
 	h.cfg = Config{
-		ProxyAddr:        h.srv.Addr().String(),
-		ServerCertSHA256: CertFingerprint(cert),
-		Owner:            "vm-1",
-		Token:            "secret",
+		ProxyAddr:     h.srv.Addr().String(),
+		ServerCertPEM: certPEM,
+		Owner:         "vm-1",
+		Token:         "secret",
 	}
 	return h
 }
@@ -129,7 +149,7 @@ func TestSidecarRefusesAPortThatIsNotPublished(t *testing.T) {
 func TestWrongTokenAndWrongPinNeverRegister(t *testing.T) {
 	for name, mutate := range map[string]func(*Config){
 		"token": func(c *Config) { c.Token = "wrong" },
-		"pin":   func(c *Config) { c.ServerCertSHA256 = "00" },
+		"pin":   func(c *Config) { c.ServerCertPEM = otherCertPEM(t) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := startServer(t)

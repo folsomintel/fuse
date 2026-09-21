@@ -69,9 +69,9 @@ type IngressRoute struct {
 // IngressGrant is what the proxy answers: where the guest should dial, how to
 // recognise the proxy, and the public side of each route.
 type IngressGrant struct {
-	ProxyAddr        string
-	ServerCertSHA256 string
-	Routes           []IngressRoute
+	ProxyAddr     string
+	ServerCertPEM string
+	Routes        []IngressRoute
 }
 
 // IngressProxy is the orchestrator's view of fuse-proxy's admin api. the
@@ -120,11 +120,11 @@ func (fm *FleetManager) publishIngress(ctx context.Context, vmID string, expose 
 		guestPorts = append(guestPorts, p.GuestPort)
 	}
 	config, err := json.Marshal(tunnel.Config{
-		ProxyAddr:        grant.ProxyAddr,
-		ServerCertSHA256: grant.ServerCertSHA256,
-		Owner:            vmID,
-		Token:            token,
-		Ports:            guestPorts,
+		ProxyAddr:     grant.ProxyAddr,
+		ServerCertPEM: grant.ServerCertPEM,
+		Owner:         vmID,
+		Token:         token,
+		Ports:         guestPorts,
 	})
 	if err != nil {
 		return nil, err

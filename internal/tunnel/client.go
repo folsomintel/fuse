@@ -41,9 +41,13 @@ func Run(ctx context.Context, cfg Config, logger *slog.Logger) error {
 }
 
 func runOnce(ctx context.Context, cfg Config, logger *slog.Logger) error {
+	tlsConf, err := pinnedTLS(cfg.ServerCertPEM)
+	if err != nil {
+		return err
+	}
 	qc := quicConfig()
 	qc.KeepAlivePeriod = keepAlive
-	conn, err := quic.DialAddr(ctx, cfg.ProxyAddr, pinnedTLS(cfg.ServerCertSHA256), qc)
+	conn, err := quic.DialAddr(ctx, cfg.ProxyAddr, tlsConf, qc)
 	if err != nil {
 		return err
 	}
