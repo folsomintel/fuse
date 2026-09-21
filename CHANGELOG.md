@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.33.0](https://github.com/folsomintel/fuse/compare/v0.32.0...v0.33.0) (2026-09-21)
+
+
+### Features
+
+* move live snapshots between hosts and resume them (live migrate) ([#269](https://github.com/folsomintel/fuse/issues/269)) ([1d2b2b3](https://github.com/folsomintel/fuse/commit/1d2b2b351f138293d232737f7be11de06e6ce0b2))
+* stable environment urls via fuse-proxy and a quic tunnel ([#271](https://github.com/folsomintel/fuse/issues/271)) ([ac2e2dd](https://github.com/folsomintel/fuse/commit/ac2e2ddfaa93db3c99a616ebf8ffb6e0376ced0c))
+
 ## [0.32.0](https://github.com/folsomintel/fuse/compare/v0.31.0...v0.32.0) (2026-09-20)
 
 
