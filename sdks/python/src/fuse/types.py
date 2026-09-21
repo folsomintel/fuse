@@ -295,6 +295,18 @@ class ForkOptions(_Model):
     comment: Optional[str] = None
 
 
+class MigrateOptions(_Model):
+    # optional body for environments.migrate.
+    #
+    # target_host_id empty means the orchestrator picks. live resumes the guest
+    # from its memory on the target, so processes survive the move, instead of
+    # cold-booting it. it requires target_host_id and never falls back to a
+    # cold migration: a target that cannot resume the guest answers 409 and the
+    # source keeps running.
+    target_host_id: Optional[str] = None
+    live: Optional[bool] = None
+
+
 class ExecRequest(_Model):
     # body for environments.exec. exactly one of cmd or shell must be set.
     #

@@ -312,6 +312,19 @@ export interface ForkOptions {
   comment?: string;
 }
 
+/** MigrateOptions is the optional body for environments.migrate. */
+export interface MigrateOptions {
+  /** Host to migrate to. Empty means the orchestrator picks. */
+  target_host_id?: string;
+  /**
+   * Resume the guest from its memory on the target, so processes survive the
+   * move, instead of cold-booting it. Requires target_host_id and never falls
+   * back to a cold migration: a target that cannot resume the guest answers
+   * 409 and the source keeps running.
+   */
+  live?: boolean;
+}
+
 /** ExecRequest is the body for environments.exec. Exactly one of cmd or shell must be set. */
 export interface ExecRequest {
   /**

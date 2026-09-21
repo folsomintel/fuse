@@ -256,6 +256,15 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 	if kind == "" {
 		kind = SnapshotKindDisk
 	}
+	if len(created.Files) > 0 {
+		// same reasoning as the digest: this response is the only moment the
+		// per-file digests exist, and a live snapshot recorded without them can
+		// never be verified on another host, so it can never leave this one.
+		metadataJSON, err = marshalSnapshotMetadata(opts.Comment, withLiveFiles(opts.Metadata, created.Files))
+		if err != nil {
+			return SnapshotRecord{}, fmt.Errorf("marshal snapshot metadata: %w", err)
+		}
+	}
 	checkpoint, _ := lookupCheckpoint(ctx, env, snapshotID)
 	sizeBytes := checkpoint.SizeBytes
 	if sizeBytes == 0 {
@@ -938,7 +947,7 @@ func snapshotMetadataString(raw json.RawMessage, key string) string {
 }
 
 func marshalSnapshotMetadata(comment string, extra map[string]string) (json.RawMessage, error) {
-	metadata := make(map[string]string, len(extra)+1)
+	metadata := make(map[string]string)
 	for k, v := range extra {
 		metadata[k] = v
 	}

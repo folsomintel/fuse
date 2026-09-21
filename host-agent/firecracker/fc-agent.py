@@ -278,7 +278,7 @@ def fc_vm_state(sock_path: str, state: str) -> None:
 
 # -- Networking ---------------------------------------------------------------
 
-def pick_index() -> int:
+def used_indices() -> set[int]:
     used = set()
     for d in VMS_DIR.iterdir() if VMS_DIR.exists() else []:
         meta_p = d / "meta.json"
@@ -287,6 +287,11 @@ def pick_index() -> int:
                 used.add(json.loads(meta_p.read_text())["index"])
             except Exception:
                 pass
+    return used
+
+
+def pick_index() -> int:
+    used = used_indices()
     for i in range(1, 250):
         if i not in used:
             return i
@@ -875,6 +880,13 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         seed = req.get("seed_snapshot") or ""
         if seed:
             source_rootfs = snapshot_rootfs("", seed)
+    # resume is explicit, never inferred from the seed's kind: a caller that
+    # did not ask for it keeps the cold boot it always got, and one that did
+    # gets a refusal below rather than a quiet cold boot of a rootfs that is
+    # only consistent alongside its memory image.
+    resume = None
+    if req.get("resume"):
+        resume = resume_plan(req.get("seed_snapshot") or "")
     if source_rootfs is None:
         image = req.get("image") or ""
         source_rootfs = BASE_ROOTFS
@@ -896,7 +908,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     d.mkdir(parents=True)
     (d / "snapshots").mkdir()
 
-    idx = pick_index()
+    idx = resume["index"] if resume else pick_index()
     iface = host_iface()
     tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode)
     mac = f"06:00:AC:10:{idx:02x}:02"
@@ -936,7 +948,10 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     }
     save_meta(meta)
     try:
-        start_firecracker(meta)
+        if resume:
+            resume_firecracker(meta, resume)
+        else:
+            start_firecracker(meta)
         save_meta(meta)
         if not wait_for_ssh(guest_ip, timeout=30.0):
             # Non-fatal: VM booted but SSH didn't come up in time. Still report created.
@@ -945,6 +960,8 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
             meta["ssh_ready"] = True
             # Fix up guest networking: add default route + DNS if missing.
             ssh_exec(guest_ip, guest_network_fixup(host_ip, egress_mode))
+            if resume:
+                resync_guest_clock(guest_ip)
         save_meta(meta)
     except Exception:
         # Roll back on failure.
@@ -999,6 +1016,51 @@ def destroy_vm(vm_id: str) -> None:
 # socket problem rather than a snapshot that is still running. Snapshot calls
 # get a budget measured in minutes instead.
 SNAPSHOT_API_TIMEOUT = float(os.environ.get("FC_AGENT_SNAPSHOT_API_TIMEOUT", "600"))
+
+# the memory half of a live snapshot: everything beyond rootfs.ext4 that has to
+# travel with it for another host to resume the guest instead of cold-booting
+# it. the names are a closed set on purpose. they are the only file names a
+# peer may ask this agent for and the only ones a pull will write, so a name
+# off the wire is always compared against this tuple and never joined onto a
+# path.
+#
+# live.json is the resume manifest, the three facts about the source that the
+# memory image silently depends on and does not say:
+#   index        the network slot. the frozen guest holds its ip, gateway and
+#                mac in memory and all three derive from this, so a resume has
+#                to get the same slot (there is no network remapping yet).
+#   rootfs_path  the drive path firecracker recorded in vmstate, which it
+#                reopens by name on load.
+#   host         the cpu and firecracker build that wrote the image.
+LIVE_MANIFEST = "live.json"
+LIVE_FILES = ("vmstate", "mem", LIVE_MANIFEST)
+
+
+def host_fingerprint() -> dict:
+    """what a memory image is pinned to: cpu model and firecracker build.
+
+    A guest has already probed cpuid and assumes that feature set from then on,
+    so resuming on a different cpu fails as an illegal instruction somewhere
+    unpredictable rather than as a refusal, and firecracker's snapshot format
+    carries no guarantee across versions. exact string equality is cruder than
+    a feature-subset check, but it cannot be wrong in the dangerous direction.
+    """
+    cpu = ""
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            key, _, value = line.partition(":")
+            # x86 names the model; arm only identifies the part.
+            if key.strip() in ("model name", "CPU part"):
+                cpu = value.strip()
+                break
+    except OSError:
+        pass
+    try:
+        out = run([FC_BIN, "--version"], check=False).stdout.decode().splitlines()
+        firecracker = out[0].strip() if out else ""
+    except OSError:
+        firecracker = ""
+    return {"arch": goarch(), "cpu": cpu, "firecracker": firecracker}
 
 
 def snapshot_file(vm_id: str, snapshot_id: str, name: str, required: bool = True) -> Path | None:
@@ -1154,6 +1216,14 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
         extra_bytes = (
             os.path.getsize(snap_dir / "vmstate") + os.path.getsize(snap_dir / "mem")
         )
+        # written before it is hashed below, so the manifest travels under a
+        # digest like the two files it describes. see the live artifact
+        # section for what each field is for.
+        (snap_dir / LIVE_MANIFEST).write_text(json.dumps({
+            "index": meta["index"],
+            "rootfs_path": meta["rootfs"],
+            "host": host_fingerprint(),
+        }))
     else:
         # Quiesce guest FS then copy.
         ssh_exec(meta["guest_ip"], "sync; sync", timeout=10.0)
@@ -1162,10 +1232,14 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
     # until its digest is known. A digest that arrives later is a digest that
     # some caller has already raced past.
     #
-    # It covers the rootfs and only the rootfs, on both kinds. The artifact
-    # transfer path moves one file, so a live snapshot handed to another host
-    # arrives as its disk half; the digest describes exactly what travels.
+    # it covers the rootfs and only the rootfs, on both kinds, because it is
+    # also the artifact's identity on the wire. the memory half of a live
+    # snapshot gets a digest per file instead (`files` below), so a peer can
+    # verify each one as it arrives without the identity changing meaning
+    # between kinds. hashed after the resume: the guest is not kept stopped
+    # for it.
     digest = file_digest(snap_rootfs)
+    files = {name: file_digest(snap_dir / name) for name in LIVE_FILES} if live else {}
     # origin_vm_id records provenance only. It is deliberately NOT a lifetime
     # link: the origin vm may be destroyed while this artifact stays usable.
     record = {
@@ -1185,6 +1259,8 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
         # rather than left for a caller to stat.
         "size_bytes": os.path.getsize(snap_rootfs) + extra_bytes,
     }
+    if files:
+        record["files"] = files
     (snap_dir / "meta.json").write_text(json.dumps(record))
     meta.setdefault("snapshots", []).append(record)
     save_meta(meta)
@@ -1273,6 +1349,94 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     start_firecracker(meta)
     save_meta(meta)
     wait_for_ssh(meta["guest_ip"], timeout=30.0)
+
+
+def resume_plan(snapshot_id: str) -> dict:
+    """decide whether this host can resume a live snapshot into a NEW vm, and
+    return its manifest if so. runs before anything is allocated, under
+    _create_lock like the rest of create_vm, so a refusal leaves nothing to
+    roll back and the slot it checks cannot be taken in between.
+
+    every refusal is a 409 naming the reason. the caller still has the source
+    vm running, so a clear no is cheap and a wrong yes is a guest that dies
+    somewhere unpredictable.
+    """
+    if not snapshot_id:
+        raise HTTPError(400, "resume requires seed_snapshot")
+    if snapshot_kind("", snapshot_id) != "live":
+        raise HTTPError(409, f"snapshot {snapshot_id} has no memory image to resume from")
+    try:
+        manifest = json.loads(snapshot_file("", snapshot_id, LIVE_MANIFEST).read_text())
+        index = int(manifest["index"])
+        rootfs_path = str(manifest["rootfs_path"])
+        host = manifest["host"]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise HTTPError(409, f"snapshot {snapshot_id} has no usable resume manifest")
+
+    here = host_fingerprint()
+    if host != here:
+        raise HTTPError(409, f"snapshot {snapshot_id} was taken on {host} and cannot resume on {here}")
+    if not 1 <= index < 250 or index in used_indices():
+        raise HTTPError(409, f"network slot {index} is in use on this host; the frozen guest cannot be given another")
+
+    # rootfs_path came off another host and is about to become a symlink made
+    # with sudo, so it is held to the one shape create_vm ever produces: a
+    # rootfs.ext4 one directory under VMS_DIR, in a directory that is not
+    # already somebody's vm here.
+    vms_root = os.path.realpath(str(VMS_DIR))
+    parent = os.path.dirname(rootfs_path)
+    if (os.path.basename(rootfs_path) != "rootfs.ext4"
+            or os.path.dirname(parent) != vms_root
+            or os.path.realpath(parent) != parent
+            or os.path.lexists(parent)):
+        raise HTTPError(409, f"snapshot {snapshot_id} names a drive path this host cannot recreate")
+    return {
+        "index": index,
+        "rootfs_path": rootfs_path,
+        "vmstate": snapshot_file("", snapshot_id, "vmstate"),
+        "mem": snapshot_file("", snapshot_id, "mem"),
+    }
+
+
+def resume_firecracker(meta: dict, resume: dict) -> None:
+    """Resume a guest from a memory image into this (new) vm.
+
+    the counterpart of start_firecracker for a vm that did not exist on this
+    host when the image was taken. the network needs nothing said about it:
+    resume_plan only lets this run when the vm got the source's slot, so the
+    tap, ips and mac setup_tap built are the ones the guest remembers. the
+    drive is the part that does not line up. firecracker reopens the rootfs by
+    the path recorded in vmstate, which is the SOURCE vm's directory, so that
+    path exists as a symlink for exactly as long as the load takes and the
+    drive is then re-pointed at this vm's own rootfs. left alone, the next live
+    snapshot of this vm would record a path that no longer exists.
+    """
+    # the vm keeps its own copy of the memory image. firecracker maps the file
+    # it is given for the life of the process, so loading straight out of the
+    # store would make deleting a snapshot kill a running guest.
+    mem = vm_dir(meta["vm_id"]) / "mem"
+    copy_rootfs(str(resume["mem"]), mem)
+    link = Path(resume["rootfs_path"])
+    spawn_firecracker(meta)
+    link.parent.mkdir()
+    try:
+        link.symlink_to(meta["rootfs"])
+        sock = meta["sock"]
+        for method, path, body in [
+            ("PUT", "/snapshot/load", {
+                "snapshot_path": str(resume["vmstate"]),
+                "mem_backend": {"backend_type": "File", "backend_path": str(mem)},
+                "resume_vm": False,
+            }),
+            ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
+        ]:
+            code, resp = fc_api(sock, method, path, body, timeout=SNAPSHOT_API_TIMEOUT)
+            if code >= 300:
+                raise RuntimeError(f"firecracker API {path} -> {code}: {resp!r}")
+    finally:
+        shutil.rmtree(link.parent, ignore_errors=True)
+    fc_vm_state(meta["sock"], "Resumed")
+    meta["resumed_from"] = str(resume["vmstate"].parent.name)
 
 
 def fork_vm(src_vm_id: str, req: dict) -> dict:
@@ -1391,8 +1555,13 @@ def verify_artifact_grant(grant: str, digest: str) -> bool:
     return hmac.compare_digest(artifact_grant_mac(g_digest, expiry, nonce), mac)
 
 
-def artifact_rootfs(digest: str) -> tuple[Path, str]:
-    """Resolve a content digest to a local artifact rootfs.
+def artifact_file(digest: str, name: str = "rootfs.ext4") -> tuple[Path, str]:
+    """resolve a content digest to one file of a local artifact.
+
+    `digest` is always the ROOTFS digest: it is the artifact's identity, and
+    `name` picks which of that artifact's files is wanted. name is either the
+    default literal or a member of LIVE_FILES the caller has already checked,
+    never a string straight off the wire.
 
     The digest arrives over the wire from another host, so it is never used to
     build a path: the store is listed and digests are compared as strings. The
@@ -1422,7 +1591,7 @@ def artifact_rootfs(digest: str) -> tuple[Path, str]:
             continue
         if not isinstance(rec, dict) or rec.get("digest") != digest:
             continue
-        resolved = os.path.realpath(os.path.join(store_root, entry, "rootfs.ext4"))
+        resolved = os.path.realpath(os.path.join(store_root, entry, name))
         if not resolved.startswith(store_root + os.sep):
             continue
         if os.path.exists(resolved):
@@ -1451,47 +1620,28 @@ def _peer_connection(peer_url: str) -> http.client.HTTPConnection:
     return cls(u.hostname, u.port, timeout=ARTIFACT_IO_TIMEOUT)
 
 
-def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "") -> dict:
-    """Fetch an artifact from a peer agent and commit it only if it verifies.
-
-    Every failure mode (peer refusal, short read, wrong bytes, full disk,
-    stall) has to end with nothing in SNAPSHOTS_DIR: a rootfs that is subtly
-    not what its digest claims would be seeded into guests forever after, and
-    no later step re-checks it. So the stream lands in a temp file outside the
-    store, is hashed as it arrives, and only a matching digest earns the
-    rename into place.
+def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
+                    deadline: float, limit: int) -> tuple[Path, int]:
+    """stream one file from a peer into a temp file and return it only if its
+    sha256 is `expected`. on any failure the temp file is removed and nothing
+    is returned; the caller owns the file on success.
     """
-    if not _DIGEST_RE.fullmatch(digest):
-        raise HTTPError(400, "digest must be a lowercase hex sha256")
-    if not grant:
-        raise HTTPError(400, "grant required")
-    # Committing under the id the orchestrator already knows is what makes a
-    # pulled artifact indistinguishable from a locally created one: a later
-    # create with seed_snapshot=<id> resolves it through snapshot_rootfs with
-    # no special case. The digest-derived fallback keeps the endpoint usable
-    # for a caller that has no id to impose.
-    snapshot_id = snapshot_id or f"art-{digest[:16]}"
-    if not _SNAP_ID_RE.fullmatch(snapshot_id):
-        raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
-    dest_dir = _artifact_dest(snapshot_id)
-
     # The name is built from a fresh uuid alone. A digest prefix would have been
     # a nicer thing to read in a directory listing, but it puts request-derived
     # bytes into a filesystem path, and "the regex above makes that safe" is a
     # property that survives exactly until someone moves the validation. The
     # uuid is already unique, so the prefix bought nothing that mattered.
     tmp = ARTIFACT_TMP_DIR / f"pull-{uuid.uuid4().hex}.tmp"
-    deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
     running = hashlib.sha256()
     total = 0
     conn = _peer_connection(peer_url)
     try:
         # B presents the grant and NOTHING else. It has no bearer token for the
         # peer and must never be given one.
-        conn.request("GET", f"/v1/artifacts/{digest}", headers={ARTIFACT_GRANT_HEADER: grant})
+        conn.request("GET", url_path, headers={ARTIFACT_GRANT_HEADER: grant})
         resp = conn.getresponse()
         if resp.status != 200:
-            raise HTTPError(422, f"peer returned {resp.status} for artifact {digest}")
+            raise HTTPError(422, f"peer returned {resp.status} for {url_path}")
 
         declared = -1
         raw_len = resp.getheader("Content-Length")
@@ -1500,7 +1650,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "")
                 declared = int(raw_len)
             except ValueError:
                 raise HTTPError(422, "peer sent an invalid Content-Length")
-        if declared > MAX_ARTIFACT_BYTES:
+        if declared > limit:
             raise HTTPError(
                 422,
                 f"artifact of {declared} bytes exceeds the {MAX_ARTIFACT_BYTES} byte limit",
@@ -1525,7 +1675,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "")
                 if not chunk:
                     break
                 total += len(chunk)
-                if total > MAX_ARTIFACT_BYTES:
+                if total > limit:
                     raise HTTPError(
                         422, f"artifact exceeds the {MAX_ARTIFACT_BYTES} byte limit"
                     )
@@ -1542,16 +1692,85 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "")
 
         if declared >= 0 and total != declared:
             raise HTTPError(422, f"short read: got {total} of {declared} bytes")
-        if not hmac.compare_digest(running.hexdigest(), digest):
+        if not hmac.compare_digest(running.hexdigest(), expected):
             raise HTTPError(422, "artifact digest mismatch; nothing committed")
+        return tmp, total
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        conn.close()
+
+
+def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
+                  files: dict | None = None) -> dict:
+    """fetch an artifact from a peer agent and commit it only if it verifies.
+
+    every failure mode (peer refusal, short read, wrong bytes, full disk,
+    stall) has to end with nothing in SNAPSHOTS_DIR: a rootfs that is subtly
+    not what its digest claims would be seeded into guests forever after, and
+    no later step re-checks it. so each stream lands in a temp file outside the
+    store, is hashed as it arrives, and only a matching digest earns the
+    rename into place.
+
+    `files` is the memory half of a live snapshot, name -> expected sha256. the
+    digests come from the orchestrator, which recorded them when the snapshot
+    was taken, and not from the peer: a peer vouching for its own bytes
+    verifies nothing. it is all or nothing. a live snapshot's rootfs was copied
+    from a paused guest without a sync and is only consistent next to the
+    memory captured with it, so committing the disk half alone would publish
+    something that looks bootable and is not.
+    """
+    if not _DIGEST_RE.fullmatch(digest):
+        raise HTTPError(400, "digest must be a lowercase hex sha256")
+    if not grant:
+        raise HTTPError(400, "grant required")
+    files = files or {}
+    if not isinstance(files, dict):
+        raise HTTPError(400, "files must be an object of name -> sha256")
+    if files and set(files) != set(LIVE_FILES):
+        raise HTTPError(400, f"files must name exactly {sorted(LIVE_FILES)}")
+    for expected in files.values():
+        if not isinstance(expected, str) or not _DIGEST_RE.fullmatch(expected):
+            raise HTTPError(400, "file digests must be lowercase hex sha256")
+    # committing under the id the orchestrator already knows is what makes a
+    # pulled artifact indistinguishable from a locally created one: a later
+    # create with seed_snapshot=<id> resolves it through snapshot_rootfs with
+    # no special case. the digest-derived fallback keeps the endpoint usable
+    # for a caller that has no id to impose.
+    snapshot_id = snapshot_id or f"art-{digest[:16]}"
+    if not _SNAP_ID_RE.fullmatch(snapshot_id):
+        raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
+    dest_dir = _artifact_dest(snapshot_id)
+
+    deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
+    # iterating LIVE_FILES rather than `files` keeps the names that reach a url
+    # or a path our own literals, whatever the request body spelled.
+    wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}", digest)] + [
+        (name, f"/v1/artifacts/{digest}/files/{name}", files[name])
+        for name in LIVE_FILES if name in files
+    ]
+    staged: list[tuple[str, Path]] = []
+    total = 0
+    try:
+        for name, url_path, expected in wanted:
+            tmp, size = _fetch_verified(
+                peer_url, url_path, grant, expected, deadline, MAX_ARTIFACT_BYTES - total
+            )
+            staged.append((name, tmp))
+            total += size
 
         # Same fresh-inode-plus-mv commit as snapshot_restore: the bytes are
         # written to a brand-new inode and renamed into place, never written
         # over a file another process may already have open or cached.
+        # nothing moves until every file has verified, and meta.json goes last:
+        # it is what makes the directory an artifact (artifact_file lists by
+        # it) and what records the kind, so a crash part way through leaves
+        # files nothing resolves as live.
         dest_dir.mkdir(parents=True, exist_ok=True)
-        rootfs = dest_dir / "rootfs.ext4"
-        sudo(["mv", str(tmp), str(rootfs)])
-        sudo(["chmod", "666", str(rootfs)], check=False)
+        for name, tmp in staged:
+            sudo(["mv", str(tmp), str(dest_dir / name)])
+            sudo(["chmod", "666", str(dest_dir / name)], check=False)
         record = {
             "snapshot_id": snapshot_id,
             "comment": f"pulled from {peer_url}",
@@ -1559,9 +1778,12 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "")
             # No origin vm on this host; provenance is the peer, not a builder.
             "origin_vm_id": "",
             "digest": digest,
+            "kind": "live" if files else "disk",
             "bytes": total,
             "source_peer": peer_url,
         }
+        if files:
+            record["files"] = {name: files[name] for name in LIVE_FILES}
         (dest_dir / "meta.json").write_text(json.dumps(record))
         return record
     except HTTPError:
@@ -1572,10 +1794,10 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "")
         # digest mismatch does.
         raise HTTPError(422, f"artifact pull failed: {e}")
     finally:
-        conn.close()
-        # Unconditional: on every failure path this is the partial file, and
-        # on the success path it is already gone.
-        tmp.unlink(missing_ok=True)
+        # unconditional: on a failure path these are verified files that will
+        # never be committed, and on the success path they are already gone.
+        for _, tmp in staged:
+            tmp.unlink(missing_ok=True)
 
 
 # -- Upload / Exec / start-agent ---------------------------------------------
@@ -2272,8 +2494,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             raise HTTPError(400, f"bad JSON: {e}")
 
-    def _serve_artifact(self, digest: str) -> None:
-        """Stream a local artifact to a peer agent, authorized by a grant.
+    def _serve_artifact(self, digest: str, name: str = "rootfs.ext4") -> None:
+        """stream one file of a local artifact to a peer agent, authorized by a
+        grant.
+
+        the grant names the artifact (its rootfs digest) and covers every file
+        of it. that does not widen the grant: the memory half of a live
+        snapshot is part of the same artifact, and a peer entitled to resume a
+        guest is already entitled to the disk that guest was running on.
 
         This is the one endpoint on this agent that does NOT require
         `Bearer $FC_AGENT_TOKEN`, and that is the point: the pulling host must
@@ -2283,7 +2511,9 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_artifact_grant(self.headers.get(ARTIFACT_GRANT_HEADER, ""), digest):
             # One undifferentiated answer for every verification failure.
             return self._text(403, "forbidden")
-        path, stored_digest = artifact_rootfs(digest)
+        if name != "rootfs.ext4" and name not in LIVE_FILES:
+            return self._text(404, "artifact not found")
+        path, stored_digest = artifact_file(digest, name)
         size = path.stat().st_size
         self.send_response(200)
         self.send_header("Content-Type", "application/octet-stream")
@@ -2333,6 +2563,9 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/v1/artifacts/([^/]+)", path)
             if m and method == "GET":
                 return self._serve_artifact(m.group(1))
+            m = re.fullmatch(r"/v1/artifacts/([^/]+)/files/([^/]+)", path)
+            if m and method == "GET":
+                return self._serve_artifact(m.group(1), m.group(2))
 
             if not self._auth():
                 return self._text(401, "unauthorized")
@@ -2464,6 +2697,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "digest": rec.get("digest", ""),
                                 "kind": rec.get("kind", "disk"),
                                 "size_bytes": rec.get("size_bytes", 0),
+                                "files": rec.get("files", {}),
                             },
                         )
                     if action == "snapshots" and method == "GET":
@@ -2502,6 +2736,7 @@ class Handler(BaseHTTPRequestHandler):
                     body["peer_url"],
                     body["grant"],
                     body.get("snapshot_id", ""),
+                    body.get("files") or {},
                 ))
             # Capacity
             if path == "/v1/capacity" and method == "GET":

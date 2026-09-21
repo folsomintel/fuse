@@ -53,6 +53,7 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrSnapshotInvalidState),
 		errors.Is(err, orchestrator.ErrSnapshotHasChildren),
 		errors.Is(err, orchestrator.ErrSnapshotNotSeedable),
+		errors.Is(err, orchestrator.ErrLiveMigrateRefused),
 		errors.Is(err, orchestrator.ErrVMNotRunning),
 		errors.Is(err, orchestrator.ErrGPUUnsupported),
 		errors.Is(err, orchestrator.ErrHostHasVMs):

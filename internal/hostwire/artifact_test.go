@@ -442,6 +442,43 @@ func TestPullArtifact(t *testing.T) {
 	}
 }
 
+// TestPullArtifact_liveFiles covers the memory half of a live snapshot: the
+// digests go out in the body, the committed kind comes back, and a digest that
+// is not a sha256 never reaches the agent.
+func TestPullArtifact_liveFiles(t *testing.T) {
+	var gotBody ArtifactPullRequest
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_, _ = w.Write([]byte(`{"snapshot_id":"art-abc","digest":"` + testDigest + `","kind":"live","bytes":8192}`))
+	}))
+	defer srv.Close()
+
+	req := ArtifactPullRequest{
+		Digest: testDigest, PeerURL: "http://10.0.0.7:8090", Grant: "v1.some-grant",
+		Files: map[string]string{"mem": testDigest, "vmstate": testDigest},
+	}
+	res, err := PullArtifact(context.Background(), NewClient(), srv.URL, "host-b-token", req)
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if len(gotBody.Files) != 2 || gotBody.Files["mem"] != testDigest {
+		t.Errorf("files on the wire: got %v", gotBody.Files)
+	}
+	if res.Kind != "live" {
+		t.Errorf("kind: got %q, want live", res.Kind)
+	}
+
+	req.Files["mem"] = "../../etc/shadow"
+	if _, err := PullArtifact(context.Background(), NewClient(), srv.URL, "host-b-token", req); err == nil {
+		t.Error("a file digest that is not a sha256 was accepted")
+	}
+	if calls != 1 {
+		t.Errorf("%d requests reached the agent, want 1", calls)
+	}
+}
+
 func TestPullArtifact_Errors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "peer unreachable", http.StatusBadGateway)

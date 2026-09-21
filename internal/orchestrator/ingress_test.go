@@ -185,7 +185,7 @@ func TestMigrateVM_adoptsTheSourcesURLLast(t *testing.T) {
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 	before, _ := fm.GetVM(srcID)
 
-	newID, err := fm.MigrateVM(context.Background(), srcID, "")
+	newID, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{})
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestMigrateVM_aFailedMigrateLeavesTheSourcesURLAlone(t *testing.T) {
 	before, _ := fm.GetVM(srcID)
 
 	provider.failCreateFromCheckpoint = true
-	if _, err := fm.MigrateVM(context.Background(), srcID, ""); err == nil {
+	if _, err := fm.MigrateVM(context.Background(), srcID, MigrateOptions{}); err == nil {
 		t.Fatal("migrate succeeded")
 	}
 	if after, _ := fm.GetVM(srcID); after.URL != before.URL {

@@ -37,6 +37,9 @@ type recordingMover struct {
 	mu    sync.Mutex
 	moves []ArtifactMove
 	err   error
+	// dropFiles makes the receiving host behave like an agent that predates
+	// moving live snapshots: it commits the rootfs and ignores the rest.
+	dropFiles bool
 }
 
 func (m *recordingMover) MoveArtifact(_ context.Context, move ArtifactMove) (ArtifactMoved, error) {
@@ -46,7 +49,11 @@ func (m *recordingMover) MoveArtifact(_ context.Context, move ArtifactMove) (Art
 		return ArtifactMoved{}, m.err
 	}
 	m.moves = append(m.moves, move)
-	return ArtifactMoved{SnapshotID: move.SnapshotID, SizeBytes: 4096}, nil
+	moved := ArtifactMoved{SnapshotID: move.SnapshotID, SizeBytes: 4096}
+	if len(move.Files) > 0 && !m.dropFiles {
+		moved.Kind = SnapshotKindLive
+	}
+	return moved, nil
 }
 
 func (m *recordingMover) calls() []ArtifactMove {

@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -25,7 +27,34 @@ func (fm *FleetManager) abandonProvisionedVM(ctx context.Context, provider Provi
 	fm.discardProvisionedVM(vmID, hostID, spec)
 }
 
-func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID string) (string, error) {
+// ErrLiveMigrateRefused is returned when a live migrate cannot be done as
+// asked: no distinct target host, or the target host agent declined to resume
+// the guest (different cpu or firecracker build, or the guest's network slot is
+// taken there). the source vm is untouched and still running, which is what
+// makes this a conflict to report rather than a failure to clean up after.
+var ErrLiveMigrateRefused = errors.New("live migrate refused")
+
+// MigrateOptions tunes a MigrateVM call. all fields are optional.
+type MigrateOptions struct {
+	// TargetHostID is the host to migrate to. empty means the source's host.
+	TargetHostID string
+
+	// Live carries the guest's memory across and resumes it on the target, so
+	// processes survive the move, instead of cold-booting a disk snapshot.
+	//
+	// it is opt-in and never falls back to a cold migration. the seed it takes
+	// is a live snapshot, whose rootfs is not bootable without its memory, so
+	// there is nothing to fall back onto; and a caller who asked for processes
+	// to survive should hear that they would not, while the source is still
+	// running, rather than find out afterwards. it needs a target other than
+	// the source's host, the same cpu and firecracker build on both, and the
+	// source's network slot free on the target (the frozen guest keeps its
+	// addresses and nothing remaps them yet).
+	Live bool
+}
+
+func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
+	targetHostID := opts.TargetHostID
 	fm.mu.RLock()
 	src, ok := fm.vms[vmID]
 	if !ok {
@@ -75,9 +104,17 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 		return "", fmt.Errorf("provider does not support migrate for vm %s", vmID)
 	}
 
-	seed, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed"})
+	if opts.Live && (targetHostID == "" || targetHostID == srcHostID) {
+		return "", fmt.Errorf("%w: it needs a target host other than the source's (%s)", ErrLiveMigrateRefused, srcHostID)
+	}
+
+	seed, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live})
 	if err != nil {
 		return "", err
+	}
+	if opts.Live && seed.Kind != SnapshotKindLive {
+		// an agent too old for live snapshots answers with a disk one.
+		return "", fmt.Errorf("%w: host %s took a %s snapshot for a live migrate of vm %s", ErrSnapshotUnsupported, srcHostID, seed.Kind, vmID)
 	}
 
 	migrateTaskID := "migrate-" + NewEventID()
@@ -130,9 +167,11 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 		if err == nil {
 			spec.SeedSnapshotID = localID
 			spec.PinnedHostID = targetHostID
+			spec.ResumeSeed = opts.Live
 			fm.mu.Lock()
 			v.spec.SeedSnapshotID = localID
 			v.spec.PinnedHostID = targetHostID
+			v.spec.ResumeSeed = opts.Live
 			fm.mu.Unlock()
 			fm.touchArtifact(localID, seed.SnapshotID)
 			newEnv, err = targetProvider.Create(ctx, spec)
@@ -141,6 +180,11 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 
 	if err != nil {
 		fm.discardProvisionedVM(newVMID, targetHostID, spec)
+		var httpErr *HTTPStatusError
+		if opts.Live && errors.As(err, &httpErr) && httpErr.Code == http.StatusConflict {
+			// the target agent's resume checks all answer 409; see resume_plan.
+			return "", fmt.Errorf("%w: host %s cannot resume vm %s: %w", ErrLiveMigrateRefused, targetHostID, vmID, err)
+		}
 		return "", fmt.Errorf("migrate vm %s from snapshot %s: %w", vmID, seed.SnapshotID, err)
 	}
 
@@ -242,6 +286,7 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, targetHostID
 		"source_host_id":   srcHostID,
 		"target_host_id":   targetHostID,
 		"seed_snapshot_id": seed.SnapshotID,
+		"live":             opts.Live,
 	})
 
 	if drainErr := fm.Drain(ctx, vmID); drainErr != nil {
