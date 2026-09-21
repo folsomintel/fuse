@@ -108,13 +108,17 @@ func run(logger *slog.Logger, stateDir, publicHost, tunnelAddr, adminAddr, portR
 	}
 	proxy.Start(server)
 
+	certPEM, err := tunnel.CertPEM(cert)
+	if err != nil {
+		return err
+	}
 	admin := &http.Server{
 		Addr: adminAddr,
 		Handler: ingress.AdminHandler(proxy, ingress.AdminConfig{
-			Token:            adminToken,
-			PublicHost:       publicHost,
-			TunnelPort:       udp.LocalAddr().(*net.UDPAddr).Port,
-			ServerCertSHA256: tunnel.CertFingerprint(cert),
+			Token:         adminToken,
+			PublicHost:    publicHost,
+			TunnelPort:    udp.LocalAddr().(*net.UDPAddr).Port,
+			ServerCertPEM: certPEM,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

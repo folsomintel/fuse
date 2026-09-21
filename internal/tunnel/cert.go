@@ -16,11 +16,11 @@ import (
 // LoadOrCreateCert returns the proxy's certificate, creating and saving a
 // self-signed one on first use.
 //
-// it has to be stable across restarts: every guest pins its fingerprint, so a
-// proxy that minted a new one each start would lock out every running guest
-// until the orchestrator rewrote its tunnel.json. nothing validates the
-// subject or the dates, only the fingerprint, so the cert is long-lived and
-// names nothing.
+// it has to be stable across restarts: every guest pins this exact
+// certificate, so a proxy that minted a new one each start would lock out
+// every running guest until the orchestrator rewrote its tunnel.json. it is
+// therefore long-lived, and carries a fixed internal name rather than the
+// deployment's own, which may change.
 func LoadOrCreateCert(certPath, keyPath string) (tls.Certificate, error) {
 	if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
 		return cert, nil
@@ -38,11 +38,18 @@ func LoadOrCreateCert(certPath, keyPath string) (tls.Certificate, error) {
 	}
 	template := &x509.Certificate{
 		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "fuse-proxy"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().AddDate(20, 0, 0),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		Subject:      pkix.Name{CommonName: ServerName},
+		// the name guests verify against (see tunnel.ServerName). a bare
+		// CommonName is not enough: go has required a subject alternative
+		// name for years.
+		DNSNames: []string{ServerName},
+		// self-signed and used as its own root, so it has to be a ca.
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(20, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {

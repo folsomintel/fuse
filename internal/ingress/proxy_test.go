@@ -3,6 +3,7 @@ package ingress
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
@@ -18,6 +19,15 @@ import (
 )
 
 var quiet = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+func mustCertPEM(t *testing.T, cert tls.Certificate) string {
+	t.Helper()
+	pem, err := tunnel.CertPEM(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem
+}
 
 // rig is a whole fuse-proxy: routes, tunnel listener and admin api, on
 // loopback, with its state in a directory the test can start a second one from.
@@ -58,10 +68,10 @@ func newRig(t *testing.T, dir string) *rig {
 	proxy.Start(server)
 
 	web := httptest.NewServer(AdminHandler(proxy, AdminConfig{
-		Token:            "admin-token",
-		PublicHost:       "127.0.0.1",
-		TunnelPort:       udp.LocalAddr().(*net.UDPAddr).Port,
-		ServerCertSHA256: tunnel.CertFingerprint(cert),
+		Token:         "admin-token",
+		PublicHost:    "127.0.0.1",
+		TunnelPort:    udp.LocalAddr().(*net.UDPAddr).Port,
+		ServerCertPEM: mustCertPEM(t, cert),
 	}))
 	t.Cleanup(func() { web.Close(); cancel(); proxy.Close(); _ = udp.Close() })
 	return &rig{proxy: proxy, admin: NewClient(web.URL, "admin-token"), dir: dir}
@@ -116,7 +126,7 @@ func runSidecar(t *testing.T, grant orchestrator.IngressGrant, owner string, gue
 	t.Cleanup(cancel)
 	go func() {
 		_ = tunnel.Run(ctx, tunnel.Config{
-			ProxyAddr: grant.ProxyAddr, ServerCertSHA256: grant.ServerCertSHA256,
+			ProxyAddr: grant.ProxyAddr, ServerCertPEM: grant.ServerCertPEM,
 			Owner: owner, Token: "token-" + owner, Ports: []int{guestPort},
 		}, quiet)
 	}()
@@ -225,7 +235,7 @@ func TestRoutesKeepTheirPortsAcrossARestart(t *testing.T) {
 	if after.Routes[0].URL != before.Routes[0].URL {
 		t.Fatalf("url moved from %s to %s across a restart", before.Routes[0].URL, after.Routes[0].URL)
 	}
-	if after.ServerCertSHA256 != before.ServerCertSHA256 {
+	if after.ServerCertPEM != before.ServerCertPEM {
 		t.Fatal("the tunnel certificate changed across a restart; every running guest pins the old one")
 	}
 	// the token survived too: the same guest can dial back in.
