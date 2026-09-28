@@ -93,6 +93,10 @@ ARTIFACT_TMP_DIR = Path(
     os.environ.get("FC_AGENT_ARTIFACT_TMP_DIR", str(SNAPSHOTS_DIR.parent / "artifact-pull-tmp"))
 )
 FC_BIN = os.environ.get("FC_BIN", "/usr/local/bin/firecracker")
+# the page fault handler for a guest resumed from a 2M memory image. its own
+# process so an agent restart does not take a half-filled guest down with it.
+UFFD_SCRIPT = Path(os.environ.get("FC_UFFD_SCRIPT", str(Path(__file__).with_name("fc-uffd.py"))))
+HUGE_PAGE_BYTES = 2 << 20
 # Guest kernel log verbosity. Every boot message goes out an emulated 115200
 # baud UART, so printing them costs real wall clock on a path we are trying to
 # measure in milliseconds. Quiet is the default; set FC_VERBOSE_BOOT=1 to get
@@ -824,20 +828,23 @@ def boot_firecracker(meta: dict) -> None:
         + ("" if VERBOSE_BOOT else "quiet loglevel=0 ")
         + f"ip={meta['guest_ip']}::{meta['host_ip']}:255.255.255.252::eth0:off"
     )
+    # track_dirty_pages is set at boot on every VM, not just ones that will
+    # be snapshotted, because it cannot be backfilled: firecracker only
+    # honours it from the first boot, so a VM booted without it can never
+    # take a diff snapshot for the rest of its life. The cost is one dirty
+    # bitmap in the host's KVM slot, which is cheap next to re-booting a
+    # guest to gain the capability.
+    machine = {"vcpu_count": meta["cpus"], "mem_size_mib": meta["memory_mb"],
+               "track_dirty_pages": True}
+    if meta.get("huge_pages"):
+        machine["huge_pages"] = "2M"
     steps = [
         ("/boot-source", {"kernel_image_path": str(KERNEL), "boot_args": boot_args}),
         ("/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"],
                              "is_root_device": True, "is_read_only": False}),
         ("/network-interfaces/eth0", {"iface_id": "eth0", "host_dev_name": meta["tap"],
                                         "guest_mac": meta["mac"]}),
-        # track_dirty_pages is set at boot on every VM, not just ones that will
-        # be snapshotted, because it cannot be backfilled: firecracker only
-        # honours it from the first boot, so a VM booted without it can never
-        # take a diff snapshot for the rest of its life. The cost is one dirty
-        # bitmap in the host's KVM slot, which is cheap next to re-booting a
-        # guest to gain the capability.
-        ("/machine-config", {"vcpu_count": meta["cpus"], "mem_size_mib": meta["memory_mb"],
-                              "track_dirty_pages": True}),
+        ("/machine-config", machine),
         ("/actions", {"action_type": "InstanceStart"}),
     ]
     for path, body in steps:
@@ -855,6 +862,10 @@ def stop_firecracker(meta: dict) -> None:
     pid = meta.get("pid")
     if pid and pid_alive(pid):
         sudo(["kill", "-9", str(pid)], check=False)
+    upid = meta.pop("uffd_pid", None)
+    if upid and pid_alive(upid):
+        os.kill(upid, signal.SIGKILL)
+    meta.pop("uffd_status", None)
     sock = meta.get("sock")
     if sock:
         sudo(["rm", "-f", sock], check=False)
@@ -902,6 +913,11 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
+    # a resumed guest keeps whatever page size its memory image was taken with.
+    huge_pages = resume["huge_pages"] if resume else bool(req.get("huge_pages"))
+    if huge_pages and free_hugepages_mb() < int(req.get("memory_mb", 512)):
+        raise HTTPError(409, "not enough free 2M hugepages on this host for this vm")
+
     d = vm_dir(vm_id)
     if d.exists():
         raise HTTPError(409, f"vm {vm_id} already exists")
@@ -933,6 +949,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "index": idx,
         "cpus": int(req.get("cpus", 1)),
         "memory_mb": int(req.get("memory_mb", 512)),
+        "huge_pages": huge_pages,
         "storage_gb": int(req.get("storage_gb", 0)),
         "region": req.get("region", ""),
         "egress_mode": egress_mode,
@@ -1155,6 +1172,61 @@ def file_digest(path: Path | str) -> str:
         return cp.stdout.decode().split()[0]
 
 
+def free_hugepages_mb() -> int:
+    try:
+        n = int(Path("/sys/kernel/mm/hugepages/hugepages-2048kB/free_hugepages").read_text())
+    except (OSError, ValueError):
+        return 0
+    return n * 2
+
+
+def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
+    """sha256 of every 2M chunk of a memory image, and which chunks are all
+    zero. fc-uffd checks pages one chunk at a time as they arrive, which a
+    digest over the whole file cannot do."""
+    sudo(["chmod", "644", str(path)], check=False)
+    zero = bytes(HUGE_PAGE_BYTES)
+    chunks, zeros = [], []
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(HUGE_PAGE_BYTES)
+            if not b:
+                break
+            if b == zero[:len(b)]:
+                zeros.append(len(chunks))
+            chunks.append(hashlib.sha256(b).hexdigest())
+    return chunks, zeros
+
+
+def start_uffd(meta: dict, manifest: Path, mem: Path | None, lazy: dict | None) -> dict:
+    """start fc-uffd for this vm and return the mem_backend that points
+    firecracker at it. mem is a local memory image; lazy names the source
+    host to fetch from instead."""
+    d = vm_dir(meta["vm_id"])
+    # sock_path is sized to fit sun_path; swapping .sock for .uffd keeps the length.
+    sock = sock_path(meta["vm_id"]).with_suffix(".uffd")
+    status = d / "uffd.json"
+    args = [sys.executable, str(UFFD_SCRIPT), "--sock", str(sock),
+            "--manifest", str(manifest), "--status", str(status)]
+    env = dict(os.environ)
+    if lazy:
+        args += ["--peer", f"{lazy['peer_url'].rstrip('/')}/v1/artifacts/{lazy['digest']}/files/mem"]
+        # env, not argv, so the grant is not visible in ps.
+        env["FC_UFFD_GRANT"] = lazy["grant"]
+    else:
+        args += ["--mem-file", str(mem)]
+    cmd = f"setsid {shlex.join(args)} >>{shlex.quote(str(d / 'uffd.log'))} 2>&1 & echo $!"
+    meta["uffd_pid"] = int(subprocess.check_output(["bash", "-c", cmd], env=env).decode().strip())
+    meta["uffd_status"] = str(status)
+    for _ in range(100):
+        if sock.exists():
+            break
+        time.sleep(0.02)
+    else:
+        raise RuntimeError(f"fc-uffd did not open {sock} (see {d / 'uffd.log'})")
+    return {"backend_type": "Uffd", "backend_path": str(sock)}
+
+
 def copy_rootfs(src: str, dst: Path) -> None:
     """Copy a rootfs image, reflinking when the filesystem allows it.
 
@@ -1219,11 +1291,16 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
         # written before it is hashed below, so the manifest travels under a
         # digest like the two files it describes. see the live artifact
         # section for what each field is for.
-        (snap_dir / LIVE_MANIFEST).write_text(json.dumps({
+        live_manifest = {
             "index": meta["index"],
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
-        }))
+        }
+        if meta.get("huge_pages"):
+            # after the resume above, so the guest is not paused while this hashes.
+            chunks, zeros = chunk_digests(snap_dir / "mem")
+            live_manifest.update(page_size=HUGE_PAGE_BYTES, chunks=chunks, zero_chunks=zeros)
+        (snap_dir / LIVE_MANIFEST).write_text(json.dumps(live_manifest))
     else:
         # Quiesce guest FS then copy.
         ssh_exec(meta["guest_ip"], "sync; sync", timeout=10.0)
@@ -1323,12 +1400,18 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
         # place, so setup_tap above derived the same tap name, IPs and MAC from
         # the same meta["index"] the frozen guest was using, and the device the
         # memory image expects to find is the device that now exists.
+        # firecracker cannot restore hugepage memory from a file backend, so a
+        # 2M vm is always resumed through fc-uffd, even here on its own host.
+        if meta.get("huge_pages"):
+            backend = start_uffd(meta, snapshot_file(vm_id, snapshot_id, LIVE_MANIFEST), mem, None)
+        else:
+            backend = {"backend_type": "File", "backend_path": str(mem)}
         spawn_firecracker(meta)
         code, resp = fc_api(
             meta["sock"], "PUT", "/snapshot/load",
             {
                 "snapshot_path": str(vmstate),
-                "mem_backend": {"backend_type": "File", "backend_path": str(mem)},
+                "mem_backend": backend,
                 "resume_vm": True,
             },
             timeout=SNAPSHOT_API_TIMEOUT,
@@ -1370,8 +1453,14 @@ def resume_plan(snapshot_id: str) -> dict:
         index = int(manifest["index"])
         rootfs_path = str(manifest["rootfs_path"])
         host = manifest["host"]
+        lazy = json.loads(snapshot_file("", snapshot_id, "meta.json").read_text()).get("lazy")
     except (OSError, ValueError, KeyError, TypeError):
         raise HTTPError(409, f"snapshot {snapshot_id} has no usable resume manifest")
+    # a chunk table is only written for a guest booted with 2M pages, and a
+    # lazy seed has no memory image to fall back on without one.
+    huge_pages = bool(manifest.get("chunks"))
+    if lazy and not huge_pages:
+        raise HTTPError(409, f"snapshot {snapshot_id} was not taken with 2M pages and cannot resume lazily")
 
     here = host_fingerprint()
     if host != here:
@@ -1394,7 +1483,10 @@ def resume_plan(snapshot_id: str) -> dict:
         "index": index,
         "rootfs_path": rootfs_path,
         "vmstate": snapshot_file("", snapshot_id, "vmstate"),
-        "mem": snapshot_file("", snapshot_id, "mem"),
+        "mem": snapshot_file("", snapshot_id, "mem", required=not lazy),
+        "manifest": snapshot_file("", snapshot_id, LIVE_MANIFEST),
+        "huge_pages": huge_pages,
+        "lazy": lazy,
     }
 
 
@@ -1411,11 +1503,18 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
     drive is then re-pointed at this vm's own rootfs. left alone, the next live
     snapshot of this vm would record a path that no longer exists.
     """
-    # the vm keeps its own copy of the memory image. firecracker maps the file
-    # it is given for the life of the process, so loading straight out of the
-    # store would make deleting a snapshot kill a running guest.
-    mem = vm_dir(meta["vm_id"]) / "mem"
-    copy_rootfs(str(resume["mem"]), mem)
+    if resume["huge_pages"]:
+        # fc-uffd fills the guest's memory from the seed, or from the source
+        # host when the seed is lazy. it opens the file itself, so deleting the
+        # snapshot later cannot pull pages out from under the guest.
+        backend = start_uffd(meta, resume["manifest"], resume["mem"], resume["lazy"])
+    else:
+        # the vm keeps its own copy of the memory image. firecracker maps the file
+        # it is given for the life of the process, so loading straight out of the
+        # store would make deleting a snapshot kill a running guest.
+        mem = vm_dir(meta["vm_id"]) / "mem"
+        copy_rootfs(str(resume["mem"]), mem)
+        backend = {"backend_type": "File", "backend_path": str(mem)}
     link = Path(resume["rootfs_path"])
     spawn_firecracker(meta)
     link.parent.mkdir()
@@ -1425,7 +1524,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         for method, path, body in [
             ("PUT", "/snapshot/load", {
                 "snapshot_path": str(resume["vmstate"]),
-                "mem_backend": {"backend_type": "File", "backend_path": str(mem)},
+                "mem_backend": backend,
                 "resume_vm": False,
             }),
             ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
@@ -1437,6 +1536,10 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         shutil.rmtree(link.parent, ignore_errors=True)
     fc_vm_state(meta["sock"], "Resumed")
     meta["resumed_from"] = str(resume["vmstate"].parent.name)
+    if resume["lazy"]:
+        # a lazy seed has no memory image, so nothing may boot from it, and
+        # the orchestrator never recorded it. fc-uffd already read the manifest.
+        sudo(["rm", "-rf", str(resume["manifest"].parent)], check=False)
 
 
 def fork_vm(src_vm_id: str, req: dict) -> dict:
@@ -1460,7 +1563,7 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     snap_rootfs = snapshot_rootfs(src_vm_id, snapshot_id)
 
     fork_req = dict(req)
-    for field in ("cpus", "memory_mb", "storage_gb", "region"):
+    for field in ("cpus", "memory_mb", "storage_gb", "region", "huge_pages"):
         if not fork_req.get(field) and src_meta.get(field):
             fork_req[field] = src_meta[field]
     # The rootfs comes from the snapshot, so any "image" in the request is
@@ -1703,7 +1806,7 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
 
 
 def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
-                  files: dict | None = None) -> dict:
+                  files: dict | None = None, lazy: bool = False) -> dict:
     """fetch an artifact from a peer agent and commit it only if it verifies.
 
     every failure mode (peer refusal, short read, wrong bytes, full disk,
@@ -1733,6 +1836,10 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     for expected in files.values():
         if not isinstance(expected, str) or not _DIGEST_RE.fullmatch(expected):
             raise HTTPError(400, "file digests must be lowercase hex sha256")
+    # lazy leaves mem on the peer: fc-uffd fetches it chunk by chunk after the
+    # guest resumes, checked against the chunk table in live.json.
+    if lazy and not files:
+        raise HTTPError(400, "lazy needs the live files")
     # committing under the id the orchestrator already knows is what makes a
     # pulled artifact indistinguishable from a locally created one: a later
     # create with seed_snapshot=<id> resolves it through snapshot_rootfs with
@@ -1748,7 +1855,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     # or a path our own literals, whatever the request body spelled.
     wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}", digest)] + [
         (name, f"/v1/artifacts/{digest}/files/{name}", files[name])
-        for name in LIVE_FILES if name in files
+        for name in LIVE_FILES if name in files and not (lazy and name == "mem")
     ]
     staged: list[tuple[str, Path]] = []
     total = 0
@@ -1759,6 +1866,9 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             )
             staged.append((name, tmp))
             total += size
+
+        if lazy and not json.loads(dict(staged)[LIVE_MANIFEST].read_text()).get("chunks"):
+            raise HTTPError(409, "snapshot has no chunk table; it was not taken with 2M pages")
 
         # Same fresh-inode-plus-mv commit as snapshot_restore: the bytes are
         # written to a brand-new inode and renamed into place, never written
@@ -1784,6 +1894,9 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
         }
         if files:
             record["files"] = {name: files[name] for name in LIVE_FILES}
+        if lazy:
+            # what fc-uffd needs to reach the peer once this seed is resumed.
+            record["lazy"] = {"peer_url": peer_url, "digest": digest, "grant": grant}
         (dest_dir / "meta.json").write_text(json.dumps(record))
         return record
     except HTTPError:
@@ -2515,9 +2628,23 @@ class Handler(BaseHTTPRequestHandler):
             return self._text(404, "artifact not found")
         path, stored_digest = artifact_file(digest, name)
         size = path.stat().st_size
-        self.send_response(200)
+        # a lazy resume on another host asks for mem one aligned 2M chunk at a
+        # time. nothing else is ever fetched by range, so nothing else may be.
+        start, end = 0, size
+        rng = self.headers.get("Range", "")
+        if rng:
+            m = re.fullmatch(r"bytes=(\d+)-(\d+)", rng)
+            if name != "mem" or not m:
+                return self._text(416, "range not satisfiable")
+            start, end = int(m.group(1)), int(m.group(2)) + 1
+            if start % HUGE_PAGE_BYTES or end - start != HUGE_PAGE_BYTES or end > size:
+                return self._text(416, "range must be one aligned 2M chunk")
+        length = end - start
+        self.send_response(206 if rng else 200)
         self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Length", str(length))
+        if rng:
+            self.send_header("Content-Range", f"bytes {start}-{end - 1}/{size}")
         # The stored digest, not the requested one. Both are the same string by
         # the time we are here, but echoing request data straight into a header
         # is a response-splitting shape whether or not the validation upstream
@@ -2533,10 +2660,11 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         try:
             with open(path, "rb", buffering=0) as f:
-                while sent < size:
+                f.seek(start)
+                while sent < length:
                     if time.monotonic() > deadline:
                         break
-                    chunk = f.read(min(ARTIFACT_CHUNK_BYTES, size - sent))
+                    chunk = f.read(min(ARTIFACT_CHUNK_BYTES, length - sent))
                     if not chunk:
                         break
                     self.wfile.write(chunk)
@@ -2547,7 +2675,7 @@ class Handler(BaseHTTPRequestHandler):
             # of a response whose headers and part of whose body are already on
             # the wire.
             pass
-        if sent < size:
+        if sent < length:
             # Fewer bytes than the Content-Length promised. Drop the connection
             # so the peer cannot mistake the next response for the remainder;
             # its digest check would have rejected the body regardless.
@@ -2586,6 +2714,19 @@ class Handler(BaseHTTPRequestHandler):
                 prefix = query.get("prefix", "")
                 vms = [vm_public(m) for m in list_vms() if m["name"].startswith(prefix)]
                 return self._json(200, {"vms": vms})
+            # /v1/vm/{id}/memory: fc-uffd's progress. a vm with no handler
+            # has all of its memory already, so it reads as done.
+            m = re.fullmatch(r"/v1/vm/([^/]+)/memory", path)
+            if m and method == "GET":
+                meta = load_meta(sanitize_name(m.group(1)))
+                if not meta:
+                    raise HTTPError(404, "vm not found")
+                if not meta.get("uffd_status"):
+                    return self._json(200, {"done": True})
+                try:
+                    return self._json(200, json.loads(Path(meta["uffd_status"]).read_text()))
+                except (OSError, ValueError):
+                    return self._json(200, {"done": False})
             # /v1/vm/{id}
             m = re.fullmatch(r"/v1/vm/([^/]+)", path)
             if m:
@@ -2737,6 +2878,7 @@ class Handler(BaseHTTPRequestHandler):
                     body["grant"],
                     body.get("snapshot_id", ""),
                     body.get("files") or {},
+                    bool(body.get("lazy")),
                 ))
             # Capacity
             if path == "/v1/capacity" and method == "GET":
