@@ -3,7 +3,7 @@
 host-agent/firecracker/fc-uffd.py: fill a live-migrated guests memory while it runs.
 
 The new VM on the target resumes with an empty memory. Firecracker hands this
-process a userfaultfd ofver a unix socket, and every page the guest touches
+process a userfaultfd over a unix socket, and every page the guest touches
 is fetched from the source in 2M chunks, checked against live.json, and copied in. A background thread pulls the rest,
 and --status reports done once the source is no longer needed
 """
@@ -71,7 +71,7 @@ class PeerSource:
             resp = conn.getresponse()
             if resp.status != 206:
                 raise OSError(f"http {resp.status}")
-            return resp.head(self.size)
+            return resp.read(self.size)
         finally:
             conn.close()
 
@@ -108,7 +108,7 @@ class Pager:
         for r in self.regions:
             base, size = r["base_host_virt_addr"], r["size"]
             if base <= addr < base + size:
-                return (r["offset"] + addr - base)
+                return (r["offset"] + addr - base) // self.page
         return None 
 
     def fetch(self, i: int) -> bytes:
@@ -152,9 +152,9 @@ class Pager:
             self.fail(e)
             return 
         self.write_status()
-        log(f"all {len(self.chunkls)} chunks resident")
+        log(f"all {len(self.chunks)} chunks resident")
 
-    def serve_fault(self, conn: socket.socket) -> None:
+    def serve_faults(self, conn: socket.socket) -> None:
         poller = select.poll()
         poller.register(self.uffd, select.POLLIN)
         poller.register(conn.fileno(), select.POLLIN)
@@ -198,7 +198,7 @@ class Pager:
 
     def fail(self, e: Exception) -> None:
         with self.lock:
-            self.error = self.eror or str(e)
+            self.error = self.error or str(e)
         self.write_status()
         log(f"failed: {e}")
 
