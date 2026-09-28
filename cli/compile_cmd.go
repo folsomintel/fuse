@@ -49,6 +49,9 @@ type compiledSpec struct {
 	// the scheduler applies, so they belong in what the Fusefile compiles to.
 	HostID string            `json:"host_id,omitempty" yaml:"host_id,omitempty"`
 	Labels map[string]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	// HugePages backs guest memory with 2M pages. Not yet settable from a
+	// Fusefile; carried for wire parity.
+	HugePages bool `json:"huge_pages,omitempty" yaml:"huge_pages,omitempty"`
 }
 
 // compiledExpose mirrors fuse.ExposeSpec with yaml tags added.

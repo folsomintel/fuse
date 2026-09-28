@@ -2,6 +2,7 @@ package fuse
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -217,6 +218,29 @@ func TestEnvironmentsMigrate(t *testing.T) {
 	}
 	if env.ID != "vm-2" || env.State != "running" {
 		t.Fatalf("decoded env = %+v", env)
+	}
+}
+
+func TestEnvironmentsMigrateSendsLiveAndLazy(t *testing.T) {
+	var body map[string]any
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"vm-2","state":"running","task_id":"migrate-abc","url":"u"}`)
+	})
+	defer cleanup()
+
+	if _, err := c.Environments.Migrate(context.Background(), "vm-1", MigrateOptions{TargetHostID: "host-b", Live: true, Lazy: true}); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	want := map[string]any{"target_host_id": "host-b", "live": true, "lazy": true}
+	if len(body) != len(want) {
+		t.Fatalf("body = %v, want %v", body, want)
+	}
+	for k, v := range want {
+		if body[k] != v {
+			t.Fatalf("body[%s] = %v, want %v", k, body[k], v)
+		}
 	}
 }
 
