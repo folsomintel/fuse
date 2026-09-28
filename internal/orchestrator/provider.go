@@ -118,6 +118,11 @@ type Spec struct {
 	// hint it may ignore: a live snapshot's rootfs is not bootable on its own.
 	ResumeSeed bool
 
+	// HugePages backs guest memory with 2M pages. it is fixed at boot, the
+	// host needs that much memory reserved as hugepages, and only a vm booted
+	// with it can be migrated lazily (MigrateOptions.Lazy).
+	HugePages bool
+
 	// PinnedHostID restricts scheduling to a single host. Set when the VM must
 	// land where its host-local seed artifact already is. Empty means schedule
 	// across the fleet as usual.
@@ -279,6 +284,22 @@ type SnapshotCapable interface {
 // host wire endpoint exists.
 type SnapshotForkable interface {
 	CreateFromCheckpoint(ctx context.Context, spec Spec, srcVMID, checkpointID string) (Environment, error)
+}
+
+// MemoryWatcher is implemented by providers whose guests can resume before all
+// of their memory has arrived, so a caller can tell when the source of that
+// memory is no longer needed.
+type MemoryWatcher interface {
+	MemoryStatus(ctx context.Context, vmID string) (MemoryStatus, error)
+}
+
+// MemoryStatus is how much of a lazily resumed guest's memory has arrived.
+// Done means all of it, and Error means the transfer stopped for good.
+type MemoryStatus struct {
+	ResidentChunks int    `json:"resident_chunks"`
+	TotalChunks    int    `json:"total_chunks"`
+	Done           bool   `json:"done"`
+	Error          string `json:"error,omitempty"`
 }
 
 // SnapshotDeleter is implemented by environments that can delete a

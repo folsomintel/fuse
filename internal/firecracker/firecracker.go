@@ -97,6 +97,7 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		Image:        spec.Image,
 		SeedSnapshot: spec.SeedSnapshotID,
 		Resume:       spec.ResumeSeed,
+		HugePages:    spec.HugePages,
 		Egress:       egressWireFor(spec),
 	}
 	var resp createVMResponse
@@ -193,6 +194,17 @@ func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environme
 		return nil, fmt.Errorf("firecracker get vm: %w", err)
 	}
 	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
+}
+
+// MemoryStatus reports how much of a lazily resumed vm's memory has arrived.
+// a vm that was not resumed lazily has all of it and reads as done.
+func (p *Provider) MemoryStatus(ctx context.Context, vmID string) (orchestrator.MemoryStatus, error) {
+	if p.stub != nil {
+		return orchestrator.MemoryStatus{Done: true}, nil
+	}
+	var st orchestrator.MemoryStatus
+	err := p.doJSON(ctx, http.MethodGet, fmt.Sprintf("/v1/vm/%s/memory", vmID), nil, &st)
+	return st, err
 }
 
 // Destroy tears down a sandbox.
@@ -585,6 +597,9 @@ type createVMRequest struct {
 	// Resume resumes the guest from SeedSnapshot's memory image instead of
 	// cold-booting it. the agent refuses with 409 when it cannot.
 	Resume bool `json:"resume,omitempty"`
+	// HugePages boots the guest with 2M pages. the agent refuses with 409
+	// when the host has not reserved enough of them.
+	HugePages bool `json:"huge_pages,omitempty"`
 	// Egress carries the vm's egress mode. the agent decides the tap's
 	// forward rule at create time, so this has to travel with the create and
 	// not with the later egress call. omitted for direct so an older agent

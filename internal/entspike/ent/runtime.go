@@ -136,4 +136,8 @@ func init() {
 	vmDescGpuProfile := vmFields[19].Descriptor()
 	// vm.DefaultGpuProfile holds the default value on creation for the gpu_profile field.
 	vm.DefaultGpuProfile = vmDescGpuProfile.Default.(string)
+	// vmDescHugePages is the schema descriptor for huge_pages field.
+	vmDescHugePages := vmFields[23].Descriptor()
+	// vm.DefaultHugePages holds the default value on creation for the huge_pages field.
+	vm.DefaultHugePages = vmDescHugePages.Default.(bool)
 }

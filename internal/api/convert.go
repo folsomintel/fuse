@@ -132,6 +132,7 @@ func toAPIResourceSpec(s orchestrator.Spec) ResourceSpec {
 		GPUProfile:         s.GPUProfile,
 		HostID:             s.HostID,
 		Labels:             copyLabels(s.Labels),
+		HugePages:          s.HugePages,
 	}
 }
 
@@ -153,6 +154,7 @@ func toOrchestratorSpec(s ResourceSpec) orchestrator.Spec {
 		GPUProfile:  strings.ToLower(s.GPUProfile),
 		HostID:      s.HostID,
 		Labels:      copyLabels(s.Labels),
+		HugePages:   s.HugePages,
 	}
 }
 

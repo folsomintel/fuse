@@ -392,6 +392,20 @@ func (_u *VMUpdate) ClearEgress() *VMUpdate {
 	return _u
 }
 
+// SetHugePages sets the "huge_pages" field.
+func (_u *VMUpdate) SetHugePages(v bool) *VMUpdate {
+	_u.mutation.SetHugePages(v)
+	return _u
+}
+
+// SetNillableHugePages sets the "huge_pages" field if the given value is not nil.
+func (_u *VMUpdate) SetNillableHugePages(v *bool) *VMUpdate {
+	if v != nil {
+		_u.SetHugePages(*v)
+	}
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdate) SetCreatedAt(v time.Time) *VMUpdate {
 	_u.mutation.SetCreatedAt(v)
@@ -595,6 +609,9 @@ func (_u *VMUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.EgressCleared() {
 		_spec.ClearField(vm.FieldEgress, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.HugePages(); ok {
+		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -984,6 +1001,20 @@ func (_u *VMUpdateOne) ClearEgress() *VMUpdateOne {
 	return _u
 }
 
+// SetHugePages sets the "huge_pages" field.
+func (_u *VMUpdateOne) SetHugePages(v bool) *VMUpdateOne {
+	_u.mutation.SetHugePages(v)
+	return _u
+}
+
+// SetNillableHugePages sets the "huge_pages" field if the given value is not nil.
+func (_u *VMUpdateOne) SetNillableHugePages(v *bool) *VMUpdateOne {
+	if v != nil {
+		_u.SetHugePages(*v)
+	}
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdateOne) SetCreatedAt(v time.Time) *VMUpdateOne {
 	_u.mutation.SetCreatedAt(v)
@@ -1217,6 +1248,9 @@ func (_u *VMUpdateOne) sqlSave(ctx context.Context) (_node *VM, err error) {
 	}
 	if _u.mutation.EgressCleared() {
 		_spec.ClearField(vm.FieldEgress, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.HugePages(); ok {
+		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)

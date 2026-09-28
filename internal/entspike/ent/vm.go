@@ -62,6 +62,8 @@ type VM struct {
 	MigInstanceUuids json.RawMessage `json:"mig_instance_uuids,omitempty"`
 	// Egress holds the value of the "egress" field.
 	Egress json.RawMessage `json:"egress,omitempty"`
+	// HugePages holds the value of the "huge_pages" field.
+	HugePages bool `json:"huge_pages,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -76,6 +78,8 @@ func (*VM) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress:
 			values[i] = new([]byte)
+		case vm.FieldHugePages:
+			values[i] = new(sql.NullBool)
 		case vm.FieldCpus, vm.FieldRAMMB, vm.FieldStorageGB, vm.FieldMaxRuntimeSeconds, vm.FieldIdleTimeoutSeconds, vm.FieldGpus:
 			values[i] = new(sql.NullInt64)
 		case vm.FieldID, vm.FieldHostID, vm.FieldNetworkHost, vm.FieldState, vm.FieldURL, vm.FieldTaskID, vm.FieldTenantID, vm.FieldRegion, vm.FieldLastError, vm.FieldGpuKind, vm.FieldGpuProfile:
@@ -243,6 +247,12 @@ func (_m *VM) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field egress: %w", err)
 				}
 			}
+		case vm.FieldHugePages:
+			if value, ok := values[i].(*sql.NullBool); !ok {
+				return fmt.Errorf("unexpected type %T for field huge_pages", values[i])
+			} else if value.Valid {
+				_m.HugePages = value.Bool
+			}
 		case vm.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -356,6 +366,9 @@ func (_m *VM) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("egress=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Egress))
+	builder.WriteString(", ")
+	builder.WriteString("huge_pages=")
+	builder.WriteString(fmt.Sprintf("%v", _m.HugePages))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

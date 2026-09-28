@@ -75,6 +75,9 @@ type ArtifactMove struct {
 	// digest and stays the artifact's identity; these ride under the same
 	// grant. empty for a disk artifact.
 	Files map[string]string
+
+	// Lazy leaves mem on the source; the target pages it in after resume.
+	Lazy bool
 }
 
 // ArtifactMoved is what the receiving host reports once the artifact is
@@ -453,7 +456,12 @@ func (fm *FleetManager) planSeedPlacement(ctx context.Context, spec Spec) seedPl
 // unless the receiving agent reported the artifact verified and committed, and
 // the agent itself streams to a temp file outside its snapshot store and only
 // renames into place on a digest match.
-func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record SnapshotRecord, hostID string) (string, error) {
+//
+// lazy leaves the memory image of a live snapshot on the source: the target
+// commits everything else and its resumed vm pages memory in from the source
+// afterwards. the source it pages from is the record itself, so the caller can
+// pin exactly that snapshot until the target reports its memory resident.
+func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record SnapshotRecord, hostID string, lazy bool) (string, error) {
 	if hostID == "" {
 		return "", fmt.Errorf("%w: no target host", ErrArtifactImmovable)
 	}
@@ -492,6 +500,10 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	if err != nil {
 		return "", err
 	}
+	if lazy && source.snapshotID != record.SnapshotID {
+		return "", fmt.Errorf("%w: lazy move of %s would page from a copy on host %s rather than the snapshot itself",
+			ErrArtifactImmovable, record.SnapshotID, source.endpoint.HostID)
+	}
 
 	localID := replicaSnapshotID(record.Digest, hostID)
 
@@ -517,6 +529,7 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		From:       source.endpoint,
 		To:         target,
 		Files:      files,
+		Lazy:       lazy,
 	})
 	if err == nil && record.Kind == SnapshotKindLive && moved.Kind != SnapshotKindLive {
 		// the target took the rootfs and dropped the rest. nothing is recorded,
@@ -537,6 +550,12 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	committedID := moved.SnapshotID
 	if committedID == "" {
 		committedID = localID
+	}
+	if lazy {
+		// the target holds no memory image, so it can never be the source of
+		// the next move or a seed for anything else, and its agent deletes the
+		// seed once the vm has resumed. recording it would say otherwise.
+		return committedID, nil
 	}
 	size := moved.SizeBytes
 	if size <= 0 {

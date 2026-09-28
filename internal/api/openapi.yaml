@@ -1676,6 +1676,13 @@ components:
             Every pair must match the target host's operator-declared
             labels. A selector that matches no host is rejected with 503,
             never queued.
+        huge_pages:
+          type: boolean
+          description: |
+            Back guest memory with 2M pages. The host must have that much
+            memory reserved as hugepages, or the create answers 409. Fixed
+            for the life of the environment, and required for a lazy
+            migrate.
         max_runtime_seconds:
           type: integer
           format: int64
@@ -2315,6 +2322,17 @@ components:
             the target. It never falls back to a cold migration: a target
             that cannot resume the guest answers 409 and the source keeps
             running.
+        lazy:
+          type: boolean
+          description: |
+            Resume the guest on the target before its memory has arrived and
+            page it in from the source afterwards, so the move does not wait
+            on a full copy of the memory image. Requires `live` and an
+            environment created with `huge_pages`, otherwise 409. Until the
+            target reports every page resident (the `vm.memory_resident`
+            event) the guest still depends on the source host; if the
+            transfer fails, `vm.memory_transfer_failed` is emitted and the
+            guest hangs on its next missing page.
 
     CreateSnapshotRequest:
       type: object

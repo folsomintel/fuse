@@ -79,6 +79,7 @@ var (
 		{Name: "gpu_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "mig_instance_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "egress_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "huge_pages", Type: field.TypeBool, Default: false},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 	}
