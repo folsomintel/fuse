@@ -276,6 +276,20 @@ func (_c *VMCreate) SetEgress(v json.RawMessage) *VMCreate {
 	return _c
 }
 
+// SetHugePages sets the "huge_pages" field.
+func (_c *VMCreate) SetHugePages(v bool) *VMCreate {
+	_c.mutation.SetHugePages(v)
+	return _c
+}
+
+// SetNillableHugePages sets the "huge_pages" field if the given value is not nil.
+func (_c *VMCreate) SetNillableHugePages(v *bool) *VMCreate {
+	if v != nil {
+		_c.SetHugePages(*v)
+	}
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *VMCreate) SetCreatedAt(v time.Time) *VMCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -389,6 +403,10 @@ func (_c *VMCreate) defaults() {
 		v := vm.DefaultGpuProfile
 		_c.mutation.SetGpuProfile(v)
 	}
+	if _, ok := _c.mutation.HugePages(); !ok {
+		v := vm.DefaultHugePages
+		_c.mutation.SetHugePages(v)
+	}
 }
 
 // check runs all checks and user-defined validators on the builder.
@@ -445,6 +463,9 @@ func (_c *VMCreate) check() error {
 	}
 	if _, ok := _c.mutation.GpuProfile(); !ok {
 		return &ValidationError{Name: "gpu_profile", err: errors.New(`ent: missing required field "VM.gpu_profile"`)}
+	}
+	if _, ok := _c.mutation.HugePages(); !ok {
+		return &ValidationError{Name: "huge_pages", err: errors.New(`ent: missing required field "VM.huge_pages"`)}
 	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "VM.created_at"`)}
@@ -575,6 +596,10 @@ func (_c *VMCreate) createSpec() (*VM, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Egress(); ok {
 		_spec.SetField(vm.FieldEgress, field.TypeJSON, value)
 		_node.Egress = value
+	}
+	if value, ok := _c.mutation.HugePages(); ok {
+		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
+		_node.HugePages = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -969,6 +994,18 @@ func (u *VMUpsert) UpdateEgress() *VMUpsert {
 // ClearEgress clears the value of the "egress" field.
 func (u *VMUpsert) ClearEgress() *VMUpsert {
 	u.SetNull(vm.FieldEgress)
+	return u
+}
+
+// SetHugePages sets the "huge_pages" field.
+func (u *VMUpsert) SetHugePages(v bool) *VMUpsert {
+	u.Set(vm.FieldHugePages, v)
+	return u
+}
+
+// UpdateHugePages sets the "huge_pages" field to the value that was provided on create.
+func (u *VMUpsert) UpdateHugePages() *VMUpsert {
+	u.SetExcluded(vm.FieldHugePages)
 	return u
 }
 
@@ -1433,6 +1470,20 @@ func (u *VMUpsertOne) UpdateEgress() *VMUpsertOne {
 func (u *VMUpsertOne) ClearEgress() *VMUpsertOne {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearEgress()
+	})
+}
+
+// SetHugePages sets the "huge_pages" field.
+func (u *VMUpsertOne) SetHugePages(v bool) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHugePages(v)
+	})
+}
+
+// UpdateHugePages sets the "huge_pages" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateHugePages() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHugePages()
 	})
 }
 
@@ -2068,6 +2119,20 @@ func (u *VMUpsertBulk) UpdateEgress() *VMUpsertBulk {
 func (u *VMUpsertBulk) ClearEgress() *VMUpsertBulk {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearEgress()
+	})
+}
+
+// SetHugePages sets the "huge_pages" field.
+func (u *VMUpsertBulk) SetHugePages(v bool) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHugePages(v)
+	})
+}
+
+// UpdateHugePages sets the "huge_pages" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateHugePages() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHugePages()
 	})
 }
 

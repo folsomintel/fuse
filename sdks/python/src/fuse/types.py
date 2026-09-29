@@ -56,6 +56,9 @@ class Spec(_Model):
     # placement label selectors (the fusefile's placement.labels); every pair
     # must match the target host's declared labels.
     labels: Optional[dict[str, str]] = None
+    # back guest memory with 2M pages. the host must have them reserved; only
+    # an environment created with this can be migrated lazily.
+    huge_pages: Optional[bool] = None
 
 
 class ExposeSpec(_Model):
@@ -303,8 +306,14 @@ class MigrateOptions(_Model):
     # cold-booting it. it requires target_host_id and never falls back to a
     # cold migration: a target that cannot resume the guest answers 409 and the
     # source keeps running.
+    #
+    # lazy resumes the guest before its memory has arrived and pages it in from
+    # the source afterwards. it requires live and an environment created with
+    # huge_pages; until the vm.memory_resident event the guest still depends on
+    # the source host.
     target_host_id: Optional[str] = None
     live: Optional[bool] = None
+    lazy: Optional[bool] = None
 
 
 class ExecRequest(_Model):

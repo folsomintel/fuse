@@ -57,6 +57,8 @@ const (
 	FieldMigInstanceUuids = "mig_instance_uuids"
 	// FieldEgress holds the string denoting the egress field in the database.
 	FieldEgress = "egress_json"
+	// FieldHugePages holds the string denoting the huge_pages field in the database.
+	FieldHugePages = "huge_pages"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -90,6 +92,7 @@ var Columns = []string{
 	FieldGpuUuids,
 	FieldMigInstanceUuids,
 	FieldEgress,
+	FieldHugePages,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }
@@ -135,6 +138,8 @@ var (
 	DefaultGpuKind string
 	// DefaultGpuProfile holds the default value on creation for the "gpu_profile" field.
 	DefaultGpuProfile string
+	// DefaultHugePages holds the default value on creation for the "huge_pages" field.
+	DefaultHugePages bool
 )
 
 // State defines the type for the "state" enum field.
@@ -250,6 +255,11 @@ func ByGpuKind(opts ...sql.OrderTermOption) OrderOption {
 // ByGpuProfile orders the results by the gpu_profile field.
 func ByGpuProfile(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldGpuProfile, opts...).ToFunc()
+}
+
+// ByHugePages orders the results by the huge_pages field.
+func ByHugePages(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldHugePages, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

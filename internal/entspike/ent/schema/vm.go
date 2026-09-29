@@ -73,6 +73,10 @@ func (VM) Fields() []ent.Field {
 		field.JSON("egress", json.RawMessage{}).
 			StorageKey("egress_json").Optional().
 			SchemaType(pgText),
+		// guest memory backed by 2M pages. fixed at boot and needed again at
+		// migrate time, so it outlives an orchestrator restart like the rest
+		// of the spec.
+		field.Bool("huge_pages").Default(false),
 		field.Time("created_at"),
 		field.Time("updated_at"),
 	}

@@ -111,7 +111,14 @@ type peerArtifactMover struct {
 // serving agent verifies once, at request time, so a short grant does not kill
 // a long transfer.
 func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.ArtifactMove) (orchestrator.ArtifactMoved, error) {
-	grant, err := hostwire.MintArtifactGrant(move.From.Token, move.Digest, hostwire.DefaultArtifactGrantTTL)
+	// a lazy move is the exception to the ttl note above: the target keeps
+	// fetching chunks under this grant after the pull returns, so it has to
+	// last as long as the memory takes to arrive.
+	ttl := hostwire.DefaultArtifactGrantTTL
+	if move.Lazy {
+		ttl = hostwire.LazyArtifactGrantTTL
+	}
+	grant, err := hostwire.MintArtifactGrant(move.From.Token, move.Digest, ttl)
 	if err != nil {
 		return orchestrator.ArtifactMoved{}, fmt.Errorf("mint grant for host %s: %w", move.From.HostID, err)
 	}
@@ -121,6 +128,7 @@ func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.A
 		Grant:      grant,
 		SnapshotID: move.SnapshotID,
 		Files:      move.Files,
+		Lazy:       move.Lazy,
 	})
 	if err != nil {
 		return orchestrator.ArtifactMoved{}, err

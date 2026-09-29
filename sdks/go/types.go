@@ -31,6 +31,9 @@ type Spec struct {
 	// Labels are placement label selectors (the Fusefile's placement.labels):
 	// every pair must match the target host's declared labels.
 	Labels map[string]string `json:"labels,omitempty"`
+	// HugePages backs guest memory with 2M pages. the host must have enough
+	// reserved; only an environment created with it can be migrated lazily.
+	HugePages bool `json:"huge_pages,omitempty"`
 }
 
 // Protocols an exposed port can be published on, carried in
@@ -393,6 +396,11 @@ type MigrateOptions struct {
 	// never falls back to a cold migration: a target that cannot resume the
 	// guest answers 409 and the source keeps running.
 	Live bool `json:"live,omitempty"`
+	// Lazy resumes the guest before its memory has arrived and pages it in
+	// from the source afterwards. requires Live and an environment created
+	// with Spec.HugePages; until the vm.memory_resident event the guest still
+	// depends on the source host.
+	Lazy bool `json:"lazy,omitempty"`
 }
 
 // SnapshotRequest is the optional body for env.Snapshot.

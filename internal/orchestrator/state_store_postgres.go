@@ -167,6 +167,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		SetGpuUuids(json.RawMessage(gpuUUIDsJSON)).
 		SetMigInstanceUuids(json.RawMessage(migInstanceUUIDsJSON)).
 		SetEgress(json.RawMessage(egressJSON)).
+		SetHugePages(vm.Spec.HugePages).
 		SetCreatedAt(vm.CreatedAt.UTC()).
 		SetUpdatedAt(vm.UpdatedAt.UTC()).
 		OnConflictColumns(entvm.FieldID).
@@ -216,6 +217,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		record.Spec.GPUs = row.Gpus
 		record.Spec.GPUKind = row.GpuKind
 		record.Spec.GPUProfile = row.GpuProfile
+		record.Spec.HugePages = row.HugePages
 		if row.MaxRuntimeSeconds > 0 {
 			record.Spec.MaxRuntime = time.Duration(row.MaxRuntimeSeconds) * time.Second
 		}

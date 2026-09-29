@@ -33,6 +33,9 @@ export interface Spec {
   /** Placement label selectors (the Fusefile's placement.labels): every pair
    * must match the target host's declared labels. */
   labels?: Record<string, string>;
+  /** Back guest memory with 2M pages. The host must have them reserved; only
+   * an environment created with this can be migrated lazily. */
+  huge_pages?: boolean;
 }
 
 /** ExposeSpec requests that a guest port be published at boot. */
@@ -323,6 +326,13 @@ export interface MigrateOptions {
    * 409 and the source keeps running.
    */
   live?: boolean;
+  /**
+   * Resume the guest before its memory has arrived and page it in from the
+   * source afterwards. Requires live and an environment created with
+   * huge_pages; until the vm.memory_resident event the guest still depends on
+   * the source host.
+   */
+  lazy?: boolean;
 }
 
 /** ExecRequest is the body for environments.exec. Exactly one of cmd or shell must be set. */

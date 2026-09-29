@@ -303,7 +303,7 @@ func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opt
 		// the same rootfs CreateFromCheckpoint would have used, so the fork's
 		// contents are identical; only the transport differs.
 		var localID string
-		localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID)
+		localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, false)
 		if err == nil {
 			spec.SeedSnapshotID = localID
 			spec.PinnedHostID = targetHostID

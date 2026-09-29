@@ -51,6 +51,14 @@ type MigrateOptions struct {
 	// source's network slot free on the target (the frozen guest keeps its
 	// addresses and nothing remaps them yet).
 	Live bool
+
+	// Lazy resumes the guest on the target before its memory has arrived and
+	// pages it in from the source afterwards, so the move does not wait on a
+	// full copy of the memory image. it needs Live and a vm booted with
+	// HugePages. until the target reports every page resident the guest still
+	// depends on the source's seed snapshot, which stays pinned until then;
+	// if the source host is lost first, the guest is lost with it.
+	Lazy bool
 }
 
 func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
@@ -106,6 +114,12 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 
 	if opts.Live && (targetHostID == "" || targetHostID == srcHostID) {
 		return "", fmt.Errorf("%w: it needs a target host other than the source's (%s)", ErrLiveMigrateRefused, srcHostID)
+	}
+	if opts.Lazy && !opts.Live {
+		return "", fmt.Errorf("%w: lazy needs live", ErrLiveMigrateRefused)
+	}
+	if opts.Lazy && !srcSpec.HugePages {
+		return "", fmt.Errorf("%w: vm %s was not booted with huge pages, which a lazy migrate needs", ErrLiveMigrateRefused, vmID)
 	}
 
 	seed, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live})
@@ -163,7 +177,7 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		newEnv, err = forkable.CreateFromCheckpoint(ctx, spec, vmID, seed.SnapshotID)
 	} else {
 		var localID string
-		localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID)
+		localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, opts.Lazy)
 		if err == nil {
 			spec.SeedSnapshotID = localID
 			spec.PinnedHostID = targetHostID
@@ -287,7 +301,16 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		"target_host_id":   targetHostID,
 		"seed_snapshot_id": seed.SnapshotID,
 		"live":             opts.Live,
+		"lazy":             opts.Lazy,
 	})
+
+	if opts.Lazy {
+		// the seed on the source is now the only copy of every page the new
+		// vm has not touched yet, so it is held until the target has them all.
+		// taken before the source vm goes, and released by the watcher.
+		fm.beginArtifactPull(seed.SnapshotID)
+		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID)
+	}
 
 	if drainErr := fm.Drain(ctx, vmID); drainErr != nil {
 		fm.logger.Warn("drain source vm during migration failed; destroying anyway", "vm", vmID, "err", drainErr)
@@ -297,4 +320,63 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 	}
 
 	return newVMID, nil
+}
+
+// lazyMemoryWatchTimeout matches hostwire.LazyArtifactGrantTTL: past it the
+// target's grant is dead and no further chunk can arrive.
+const lazyMemoryWatchTimeout = 30 * time.Minute
+
+// lazyMemoryPollInterval is how often the target is asked how far along it is.
+var lazyMemoryPollInterval = 2 * time.Second
+
+// watchLazyMemory polls a lazily resumed vm until its memory is all on the
+// target, then releases the seed it was paging from. the outcome is an event
+// either way: a failed transfer leaves a guest that will hang on its next
+// missing page, and the only thing the orchestrator can do is say so.
+func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string) {
+	defer fm.endArtifactPull(seedID)
+	w, ok := provider.(MemoryWatcher)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), lazyMemoryWatchTimeout)
+	defer cancel()
+	t := time.NewTicker(lazyMemoryPollInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fm.appendEventBackground("vm", vmID, "vm.memory_transfer_failed", map[string]any{
+				"seed_snapshot_id": seedID,
+				"error":            "timed out waiting for the memory image",
+			})
+			return
+		case <-t.C:
+		}
+		st, err := w.MemoryStatus(ctx, vmID)
+		var httpErr *HTTPStatusError
+		if errors.As(err, &httpErr) && httpErr.Code == http.StatusNotFound {
+			// the vm was destroyed before its memory finished arriving; nothing
+			// depends on the seed any more.
+			return
+		}
+		if err != nil {
+			// transient: the agent may be restarting. the timeout bounds it.
+			continue
+		}
+		if st.Error != "" {
+			fm.appendEventBackground("vm", vmID, "vm.memory_transfer_failed", map[string]any{
+				"seed_snapshot_id": seedID,
+				"error":            st.Error,
+			})
+			return
+		}
+		if st.Done {
+			fm.appendEventBackground("vm", vmID, "vm.memory_resident", map[string]any{
+				"seed_snapshot_id": seedID,
+				"chunks":           st.TotalChunks,
+			})
+			return
+		}
+	}
 }

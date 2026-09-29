@@ -149,6 +149,11 @@ func GpuProfile(v string) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldGpuProfile, v))
 }
 
+// HugePages applies equality check predicate on the "huge_pages" field. It's identical to HugePagesEQ.
+func HugePages(v bool) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldHugePages, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldCreatedAt, v))
@@ -1142,6 +1147,16 @@ func EgressIsNil() predicate.VM {
 // EgressNotNil applies the NotNil predicate on the "egress" field.
 func EgressNotNil() predicate.VM {
 	return predicate.VM(sql.FieldNotNull(FieldEgress))
+}
+
+// HugePagesEQ applies the EQ predicate on the "huge_pages" field.
+func HugePagesEQ(v bool) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldHugePages, v))
+}
+
+// HugePagesNEQ applies the NEQ predicate on the "huge_pages" field.
+func HugePagesNEQ(v bool) predicate.VM {
+	return predicate.VM(sql.FieldNEQ(FieldHugePages, v))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

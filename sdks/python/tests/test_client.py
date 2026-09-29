@@ -190,14 +190,14 @@ def test_environments_migrate() -> None:
     )
     with new_client() as client:
         env = client.environments.migrate(
-            "vm-1", fuse.MigrateOptions(target_host_id="host-b", live=True)
+            "vm-1", fuse.MigrateOptions(target_host_id="host-b", live=True, lazy=True)
         )
 
     request = route.calls.last.request
     assert request.method == "POST"
     assert request.url.path == "/v1/environments/vm-1"
     assert request.url.params.get("action") == "migrate"
-    assert json.loads(request.content) == {"target_host_id": "host-b", "live": True}
+    assert json.loads(request.content) == {"target_host_id": "host-b", "live": True, "lazy": True}
     assert env.id == "vm-2"
 
 

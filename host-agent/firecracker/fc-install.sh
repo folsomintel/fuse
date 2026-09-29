@@ -21,4 +21,13 @@ fi
 [ -f rootfs.ext4 ]  || curl -fsSL -o rootfs.ext4  "$CI_BASE/ubuntu-22.04.ext4"
 [ -f ubuntu.id_rsa ] || { curl -fsSL -o ubuntu.id_rsa "$CI_BASE/ubuntu-22.04.id_rsa"; chmod 600 ubuntu.id_rsa; }
 
+# opt-in: reserve 2M hugepages for vms created with huge_pages. the kernel
+# takes this memory away from everything else, so it is sized by the operator
+# (FC_HUGEPAGES_MB=16384 reserves 16 GiB), never guessed.
+if [ -n "${FC_HUGEPAGES_MB:-}" ]; then
+  echo "[install] reserving ${FC_HUGEPAGES_MB} MiB of 2M hugepages"
+  echo "vm.nr_hugepages = $(( FC_HUGEPAGES_MB / 2 ))" | sudo tee /etc/sysctl.d/90-fuse-hugepages.conf >/dev/null
+  sudo sysctl --system >/dev/null
+fi
+
 echo "[install] ready. Next: ./fc-up.sh && ./fc-test.sh"

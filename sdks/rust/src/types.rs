@@ -187,6 +187,10 @@ pub struct Spec {
     /// pair must match the target host's declared labels.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
+    /// Back guest memory with 2M pages. The host must have them reserved;
+    /// only an environment created with this can be migrated lazily.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub huge_pages: bool,
 }
 
 impl Spec {
@@ -197,6 +201,11 @@ impl Spec {
 
     pub fn cpus(mut self, cpus: u32) -> Self {
         self.cpus = Some(cpus);
+        self
+    }
+
+    pub fn huge_pages(mut self, huge_pages: bool) -> Self {
+        self.huge_pages = huge_pages;
         self
     }
 
@@ -898,6 +907,12 @@ pub struct MigrateOptions {
     /// guest answers 409 and the source keeps running.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub live: bool,
+    /// Resume the guest before its memory has arrived and page it in from the
+    /// source afterwards. Requires `live` and an environment created with
+    /// `huge_pages`; until the `vm.memory_resident` event the guest still
+    /// depends on the source host.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub lazy: bool,
 }
 
 impl MigrateOptions {
@@ -912,6 +927,11 @@ impl MigrateOptions {
 
     pub fn live(mut self, live: bool) -> Self {
         self.live = live;
+        self
+    }
+
+    pub fn lazy(mut self, lazy: bool) -> Self {
+        self.lazy = lazy;
         self
     }
 }

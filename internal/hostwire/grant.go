@@ -94,6 +94,13 @@ const (
 // time, so a multi-hour 40 GiB transfer is not killed by a five minute grant.
 const DefaultArtifactGrantTTL = 5 * time.Minute
 
+// LazyArtifactGrantTTL is the grant lifetime for a lazy memory move. unlike a
+// bulk pull, the target fetches the memory image one chunk per request for as
+// long as the guest is filling in, and every request is checked against the
+// grant, so it has to outlast the whole transfer, not just its start. it is
+// also the ceiling on how long that transfer may take.
+const LazyArtifactGrantTTL = 30 * time.Minute
+
 // Grant verification failures. Every specific reason wraps
 // ErrArtifactGrantInvalid so a caller can reject with one check, which is what
 // the HTTP layer wants: the response is a bare 403 that says nothing about

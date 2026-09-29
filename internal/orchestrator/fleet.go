@@ -899,7 +899,7 @@ func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, s
 	// resolves a seed id out of its own snapshot store, so a create issued
 	// before the bytes land would fail with a bare "snapshot not found".
 	if seed.needsMove(v.hostID) {
-		localID, mvErr := fm.ensureArtifactOnHost(ctx, seed.record, v.hostID)
+		localID, mvErr := fm.ensureArtifactOnHost(ctx, seed.record, v.hostID, false)
 		if mvErr != nil {
 			return nil, abandonProvision(fmt.Errorf("provision vm %s: %w", vmID, mvErr))
 		}

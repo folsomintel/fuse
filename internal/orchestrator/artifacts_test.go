@@ -484,11 +484,11 @@ func TestEnsureArtifactOnHost_isIdempotent(t *testing.T) {
 	}
 	record := seedArtifactRecord(t, fm, "art-1", "tenant-1", "h-a", "d1")
 
-	first, err := fm.ensureArtifactOnHost(ctx, record, "h-b")
+	first, err := fm.ensureArtifactOnHost(ctx, record, "h-b", false)
 	if err != nil {
 		t.Fatalf("first copy: %v", err)
 	}
-	second, err := fm.ensureArtifactOnHost(ctx, record, "h-b")
+	second, err := fm.ensureArtifactOnHost(ctx, record, "h-b", false)
 	if err != nil {
 		t.Fatalf("second copy: %v", err)
 	}
@@ -499,7 +499,7 @@ func TestEnsureArtifactOnHost_isIdempotent(t *testing.T) {
 		t.Errorf("%d transfers, want 1: the second call must reuse the copy", n)
 	}
 	// The artifact's own host needs no transfer at all.
-	if got, err := fm.ensureArtifactOnHost(ctx, record, "h-a"); err != nil || got != record.SnapshotID {
+	if got, err := fm.ensureArtifactOnHost(ctx, record, "h-a", false); err != nil || got != record.SnapshotID {
 		t.Errorf("ensureArtifactOnHost on the origin host = (%q, %v), want (%q, nil)", got, err, record.SnapshotID)
 	}
 	if n := len(mover.calls()); n != 1 {

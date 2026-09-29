@@ -229,7 +229,7 @@ async fn migrate_posts_options_body() {
         .and(path("/v1/environments/vm-1"))
         .and(query_param("action", "migrate"))
         .and(body_partial_json(
-            json!({"target_host_id": "host-b", "live": true}),
+            json!({"target_host_id": "host-b", "live": true, "lazy": true}),
         ))
         .respond_with(ResponseTemplate::new(201).set_body_json(env_body("vm-2", "running")))
         .mount(&server)
@@ -240,7 +240,10 @@ async fn migrate_posts_options_body() {
         .environments()
         .migrate(
             "vm-1",
-            MigrateOptions::new().target_host_id("host-b").live(true),
+            MigrateOptions::new()
+                .target_host_id("host-b")
+                .live(true)
+                .lazy(true),
         )
         .await
         .unwrap();

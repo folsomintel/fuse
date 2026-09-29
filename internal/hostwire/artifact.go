@@ -388,6 +388,12 @@ type ArtifactPullRequest struct {
 	// the peer reports about itself. empty for a disk artifact, and omitted so
 	// an older agent sees the request it always did.
 	Files map[string]string `json:"files,omitempty"`
+
+	// Lazy commits everything but mem and leaves the memory image on the peer.
+	// the vm resumed from it pages memory in on demand through fc-uffd, which
+	// fetches mem from the peer under the same grant. omitted when false so an
+	// older agent sees the request it always did.
+	Lazy bool `json:"lazy,omitempty"`
 }
 
 // ArtifactPullResponse is what the pulling agent answers once the artifact is

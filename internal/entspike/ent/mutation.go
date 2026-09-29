@@ -1607,6 +1607,7 @@ type VMMutation struct {
 	appendmig_instance_uuids json.RawMessage
 	egress                   *json.RawMessage
 	appendegress             json.RawMessage
+	huge_pages               *bool
 	created_at               *time.Time
 	updated_at               *time.Time
 	clearedFields            map[string]struct{}
@@ -2773,6 +2774,42 @@ func (m *VMMutation) ResetEgress() {
 	delete(m.clearedFields, vm.FieldEgress)
 }
 
+// SetHugePages sets the "huge_pages" field.
+func (m *VMMutation) SetHugePages(b bool) {
+	m.huge_pages = &b
+}
+
+// HugePages returns the value of the "huge_pages" field in the mutation.
+func (m *VMMutation) HugePages() (r bool, exists bool) {
+	v := m.huge_pages
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHugePages returns the old "huge_pages" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldHugePages(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHugePages is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHugePages requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHugePages: %w", err)
+	}
+	return oldValue.HugePages, nil
+}
+
+// ResetHugePages resets all changes to the "huge_pages" field.
+func (m *VMMutation) ResetHugePages() {
+	m.huge_pages = nil
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *VMMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -2879,7 +2916,7 @@ func (m *VMMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *VMMutation) Fields() []string {
-	fields := make([]string, 0, 24)
+	fields := make([]string, 0, 25)
 	if m.host_id != nil {
 		fields = append(fields, vm.FieldHostID)
 	}
@@ -2946,6 +2983,9 @@ func (m *VMMutation) Fields() []string {
 	if m.egress != nil {
 		fields = append(fields, vm.FieldEgress)
 	}
+	if m.huge_pages != nil {
+		fields = append(fields, vm.FieldHugePages)
+	}
 	if m.created_at != nil {
 		fields = append(fields, vm.FieldCreatedAt)
 	}
@@ -3004,6 +3044,8 @@ func (m *VMMutation) Field(name string) (ent.Value, bool) {
 		return m.MigInstanceUuids()
 	case vm.FieldEgress:
 		return m.Egress()
+	case vm.FieldHugePages:
+		return m.HugePages()
 	case vm.FieldCreatedAt:
 		return m.CreatedAt()
 	case vm.FieldUpdatedAt:
@@ -3061,6 +3103,8 @@ func (m *VMMutation) OldField(ctx context.Context, name string) (ent.Value, erro
 		return m.OldMigInstanceUuids(ctx)
 	case vm.FieldEgress:
 		return m.OldEgress(ctx)
+	case vm.FieldHugePages:
+		return m.OldHugePages(ctx)
 	case vm.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case vm.FieldUpdatedAt:
@@ -3227,6 +3271,13 @@ func (m *VMMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetEgress(v)
+		return nil
+	case vm.FieldHugePages:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHugePages(v)
 		return nil
 	case vm.FieldCreatedAt:
 		v, ok := value.(time.Time)
@@ -3470,6 +3521,9 @@ func (m *VMMutation) ResetField(name string) error {
 		return nil
 	case vm.FieldEgress:
 		m.ResetEgress()
+		return nil
+	case vm.FieldHugePages:
+		m.ResetHugePages()
 		return nil
 	case vm.FieldCreatedAt:
 		m.ResetCreatedAt()
