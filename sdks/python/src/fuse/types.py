@@ -131,10 +131,13 @@ class DesktopSpec(_Model):
     # any other image the declaration is inert and the computer surface
     # reports the display as absent.
     #
-    # both fields are required, 320 to 3840 each: a guessed dimension would
-    # silently shift every coordinate a computer-use model emits.
+    # width and height are required, 320 to 3840 each: a guessed dimension
+    # would silently shift every coordinate a computer-use model emits.
     width: int
     height: int
+    # window manager to run: "mutter", "xfwm4" or "openbox". none keeps the
+    # image's baked default.
+    wm: Optional[str] = None
 
 
 class ComputerAction(_Model):
@@ -176,6 +179,9 @@ class ComputerDisplay(_Model):
     # live display size in pixels, 0 when the display is down.
     width: int = 0
     height: int = 0
+    # the window manager actually running, which can differ from
+    # DesktopSpec.wm when the image does not carry the one asked for.
+    wm: str = ""
     # why the display is down, when it is.
     error: str = ""
 

@@ -444,17 +444,39 @@ impl HealthcheckSpec {
 /// on any other image the declaration is inert and the computer surface
 /// reports the display as absent.
 ///
-/// Both fields are required, 320 to 3840 each: a guessed dimension would
-/// silently shift every coordinate a computer-use model emits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// `width` and `height` are required, 320 to 3840 each: a guessed dimension
+/// would silently shift every coordinate a computer-use model emits. `wm` is
+/// optional; unset keeps the image's baked window manager.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopSpec {
     pub width: u32,
     pub height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wm: Option<DesktopWm>,
 }
 
 impl DesktopSpec {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height }
+        Self {
+            width,
+            height,
+            wm: None,
+        }
+    }
+
+    pub fn wm(mut self, wm: DesktopWm) -> Self {
+        self.wm = Some(wm);
+        self
+    }
+}
+
+string_enum! {
+    /// Window managers a desktop image can run. The image must carry the one
+    /// named; the standard desktop bake installs all of them.
+    pub enum DesktopWm {
+        Mutter => "mutter",
+        Xfwm4 => "xfwm4",
+        Openbox => "openbox",
     }
 }
 
@@ -705,6 +727,13 @@ impl CreateRequest {
 
     pub fn desktop(mut self, width: u32, height: u32) -> Self {
         self.desktop = Some(DesktopSpec::new(width, height));
+        self
+    }
+
+    /// Sets the full desktop block, for a window manager alongside the
+    /// geometry: `.desktop_spec(DesktopSpec::new(1280, 800).wm(DesktopWm::Openbox))`.
+    pub fn desktop_spec(mut self, desktop: DesktopSpec) -> Self {
+        self.desktop = Some(desktop);
         self
     }
 

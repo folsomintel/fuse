@@ -490,7 +490,15 @@ type Desktop struct {
 	Width int `yaml:"width"`
 	// Height is the display height in pixels.
 	Height int `yaml:"height"`
+	// WM is the window manager to run: one of DesktopWMs. Empty keeps the
+	// image's baked default. The image must carry the named wm; the standard
+	// desktop bake installs all of them.
+	WM string `yaml:"wm,omitempty"`
 }
+
+// DesktopWMs are the window managers a desktop image can run, matching what
+// fc-bake-desktop-rootfs.sh installs and fuse-wm-run knows how to start.
+var DesktopWMs = []string{"mutter", "xfwm4", "openbox"}
 
 // Egress is the outbound traffic policy: direct (the default) or proxied
 // through a provider on the host.

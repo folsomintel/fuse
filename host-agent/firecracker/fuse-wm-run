@@ -1,12 +1,30 @@
 #!/bin/sh
 # starts the fuse desktop window manager on :1.
 #
-# which wm runs is FUSE_DESKTOP_WM from /etc/default/fuse-desktop, written by
-# fc-bake-desktop-rootfs.sh as the first entry of FC_DESKTOP_WMS. an image can
-# carry several wms; this picks the one that starts.
+# wm resolution order:
+#   1. "wm" in /fuse/desktop.json   uploaded by the orchestrator when the
+#                                   fusefile desktop block names one
+#   2. /etc/default/fuse-desktop    baked default (FUSE_DESKTOP_WM), the first
+#                                   entry of FC_DESKTOP_WMS at bake time
+#   3. mutter
+#
+# a declared wm this image does not carry falls back to the baked default
+# rather than leaving the desktop with no wm at all. the wm that actually
+# starts is recorded in /run/fuse-desktop/wm, where fused reads it to decide
+# whether a restart is needed and to report it on /v1/computer/display.
 
 [ -f /etc/default/fuse-desktop ] && . /etc/default/fuse-desktop
-wm="${FUSE_DESKTOP_WM:-mutter}"
+default="${FUSE_DESKTOP_WM:-mutter}"
+
+wm=""
+if [ -f /fuse/desktop.json ]; then
+  wm=$(sed -n 's/.*"wm"[^"]*"\([a-z0-9]*\)".*/\1/p' /fuse/desktop.json)
+fi
+if [ -n "$wm" ] && [ ! -x "/usr/bin/$wm" ]; then
+  echo "fuse-wm-run: wm '$wm' is not installed in this image; starting '$default'" >&2
+  wm=""
+fi
+wm="${wm:-$default}"
 
 case "$wm" in
   mutter) set -- /usr/bin/dbus-run-session -- /usr/bin/mutter --x11 --sm-disable ;;
@@ -15,9 +33,8 @@ case "$wm" in
   *) echo "fuse-wm-run: unknown wm '$wm' (want mutter, xfwm4 or openbox)" >&2; exit 1 ;;
 esac
 
-# the image may carry only some wms; say which one is missing instead of
-# leaving systemd to report a bare exec failure
-bin="$1"; [ "$bin" = /usr/bin/dbus-run-session ] && bin="$3"
-[ -x "$bin" ] || { echo "fuse-wm-run: wm '$wm' is not installed in this image ($bin)" >&2; exit 1; }
+[ -x "/usr/bin/$wm" ] || { echo "fuse-wm-run: wm '$wm' is not installed in this image" >&2; exit 1; }
 
+# fuse-wm.service creates this directory as its RuntimeDirectory
+echo "$wm" > /run/fuse-desktop/wm
 exec "$@"

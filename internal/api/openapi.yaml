@@ -1812,6 +1812,13 @@ components:
           minimum: 320
           maximum: 3840
           description: Display height in pixels.
+        wm:
+          type: string
+          enum: [mutter, xfwm4, openbox]
+          description: |
+            Window manager to run. Omit to keep the image's baked default.
+            An image that does not carry the named window manager keeps its
+            default; ComputerDisplay.wm reports the one actually running.
 
     ComputerActionRequest:
       type: object
@@ -1901,6 +1908,13 @@ components:
         height:
           type: integer
           description: Live display height in pixels, 0 when the display is down.
+        wm:
+          type: string
+          description: |
+            The window manager actually running, absent when the display is
+            down. Can differ from the desktop block's wm when the image does
+            not carry the one asked for.
+          example: mutter
         error:
           type: string
           description: Why the display is down, when it is.

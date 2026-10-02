@@ -24,7 +24,11 @@ const GuestDesktopPath = "/fuse/desktop.json"
 // same shape by construction. Both fields are required and validated at the
 // API boundary; there is no "unset means default" here, because a guessed
 // dimension would silently shift every coordinate a computer-use model emits.
+//
+// WM is the one optional field: empty keeps the image's baked window manager,
+// and omitempty keeps it out of the file so the guest sees no override.
 type DesktopSpec struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	WM     string `json:"wm,omitempty"`
 }

@@ -83,6 +83,7 @@ type HealthcheckHTTP struct {
 type DesktopSpec struct {
 	Width  int
 	Height int
+	WM     string
 }
 
 // EgressSpec is the compiled egress block. It mirrors internal/api.EgressSpec
@@ -544,7 +545,7 @@ func compileDesktop(f *Fusefile) *DesktopSpec {
 	if f.Desktop == nil {
 		return nil
 	}
-	return &DesktopSpec{Width: f.Desktop.Width, Height: f.Desktop.Height}
+	return &DesktopSpec{Width: f.Desktop.Width, Height: f.Desktop.Height, WM: f.Desktop.WM}
 }
 
 // compileEgress turns the authored egress block into its wire form. It

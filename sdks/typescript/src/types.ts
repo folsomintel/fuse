@@ -107,7 +107,7 @@ export interface HealthcheckSpec {
  * stack; on any other image the declaration is inert and the computer surface
  * reports the display as absent.
  *
- * Both fields are required, 320 to 3840 each: a guessed dimension would
+ * width and height are required, 320 to 3840 each: a guessed dimension would
  * silently shift every coordinate a computer-use model emits.
  */
 export interface DesktopSpec {
@@ -115,6 +115,10 @@ export interface DesktopSpec {
   width: number;
   /** Display height in pixels. */
   height: number;
+  /** Window manager to run: "mutter", "xfwm4" or "openbox". Omit to keep the
+   * image's baked default. A string rather than a union so a server that
+   * grows a window manager does not turn into a compile error here. */
+  wm?: string;
 }
 
 /**
@@ -165,6 +169,9 @@ export interface ComputerDisplay {
   width: number;
   /** Live display height in pixels, 0 when the display is down. */
   height: number;
+  /** The window manager actually running, which can differ from
+   * DesktopSpec.wm when the image does not carry the one asked for. */
+  wm?: string;
   /** Why the display is down, when it is. */
   error?: string;
 }

@@ -63,3 +63,36 @@ func TestNeedsDisplayRestart(t *testing.T) {
 		t.Fatal("mismatched geometry must restart the display")
 	}
 }
+
+func TestNeedsWMRestart(t *testing.T) {
+	spec := &desktopSpec{Width: 1280, Height: 800, WM: "openbox"}
+	if needsWMRestart(nil, "mutter") {
+		t.Fatal("nil spec must never restart the wm")
+	}
+	if needsWMRestart(&desktopSpec{Width: 1280, Height: 800}, "mutter") {
+		t.Fatal("an undeclared wm must keep the image default")
+	}
+	if needsWMRestart(spec, "openbox") {
+		t.Fatal("the declared wm already running must not restart")
+	}
+	if !needsWMRestart(spec, "mutter") {
+		t.Fatal("a different wm running must restart")
+	}
+	if !needsWMRestart(spec, "") {
+		t.Fatal("no recorded wm must restart into the declared one")
+	}
+}
+
+func TestLoadDesktopSpecWM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "desktop.json")
+	if err := os.WriteFile(path, []byte(`{"width":1280,"height":800,"wm":"xfwm4"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec, err := loadDesktopSpec(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if spec.WM != "xfwm4" {
+		t.Fatalf("wm = %q, want xfwm4", spec.WM)
+	}
+}

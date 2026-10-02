@@ -53,7 +53,7 @@ func TestComputerDisplay(t *testing.T) {
 			t.Errorf("request = %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"display":":1","up":true,"width":1280,"height":800}`))
+		_, _ = w.Write([]byte(`{"display":":1","up":true,"width":1280,"height":800,"wm":"openbox"}`))
 	}))
 	defer srv.Close()
 
@@ -65,8 +65,24 @@ func TestComputerDisplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ComputerDisplay: %v", err)
 	}
-	if !res.Up || res.Width != 1280 || res.Height != 800 {
+	if !res.Up || res.Width != 1280 || res.Height != 800 || res.WM != "openbox" {
 		t.Fatalf("display = %+v", res)
+	}
+}
+
+// wm is optional on the wire: set, it travels as "wm"; unset, the key is
+// absent so the server keeps the image's default.
+func TestDesktopSpecWMWire(t *testing.T) {
+	raw, err := json.Marshal(DesktopSpec{Width: 1280, Height: 800, WM: DesktopWMXfwm4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"width":1280,"height":800,"wm":"xfwm4"}` {
+		t.Fatalf("wire = %s", raw)
+	}
+	raw, _ = json.Marshal(DesktopSpec{Width: 1280, Height: 800})
+	if string(raw) != `{"width":1280,"height":800}` {
+		t.Fatalf("wire without wm = %s", raw)
 	}
 }
 

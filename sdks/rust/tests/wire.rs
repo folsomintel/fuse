@@ -2,10 +2,10 @@
 // the wire, so a refactor cannot silently drift from the server's schema.
 
 use fuse::{
-    Arch, ComputerAction, CreateRequest, EgressMode, EgressProtocol, EgressSpec, EgressStatus,
-    Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind, ExecRequest, ExposeSpec,
-    HealthcheckHttp, HealthcheckSpec, MissReason, Protocol, ScrollDirection, Snapshot,
-    SnapshotKind, SnapshotRequest, Spec,
+    Arch, ComputerAction, ComputerDisplay, CreateRequest, DesktopSpec, DesktopWm, EgressMode,
+    EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event,
+    EventKind, ExecRequest, ExposeSpec, HealthcheckHttp, HealthcheckSpec, MissReason, Protocol,
+    ScrollDirection, Snapshot, SnapshotKind, SnapshotRequest, Spec,
 };
 use serde_json::json;
 
@@ -40,6 +40,20 @@ fn create_request_wire_shape() {
             "seed_snapshot_id": "snap-1",
         })
     );
+}
+
+#[test]
+fn desktop_wm_is_optional_on_the_wire() {
+    let request =
+        CreateRequest::new("t-1").desktop_spec(DesktopSpec::new(1280, 800).wm(DesktopWm::Openbox));
+    assert_eq!(
+        serde_json::to_value(&request).unwrap()["desktop"],
+        json!({"width": 1280, "height": 800, "wm": "openbox"})
+    );
+    let display: ComputerDisplay =
+        serde_json::from_value(json!({"up": true, "width": 1280, "height": 800, "wm": "xfwm4"}))
+            .unwrap();
+    assert_eq!(display.wm, Some(DesktopWm::Xfwm4));
 }
 
 #[test]

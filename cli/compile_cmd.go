@@ -87,8 +87,9 @@ type compiledEgress struct {
 
 // compiledDesktop mirrors fuse.DesktopSpec with yaml tags added.
 type compiledDesktop struct {
-	Width  int `json:"width" yaml:"width"`
-	Height int `json:"height" yaml:"height"`
+	Width  int    `json:"width" yaml:"width"`
+	Height int    `json:"height" yaml:"height"`
+	WM     string `json:"wm,omitempty" yaml:"wm,omitempty"`
 }
 
 // compiledRequest is the create-environment body a Fusefile compiles into. it
@@ -274,7 +275,7 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		}
 	}
 	if d := c.Desktop; d != nil {
-		req.Desktop = &compiledDesktop{Width: d.Width, Height: d.Height}
+		req.Desktop = &compiledDesktop{Width: d.Width, Height: d.Height, WM: d.WM}
 	}
 	if eg := c.Egress; eg != nil {
 		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol)}
@@ -405,6 +406,9 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 	if d := req.Desktop; d != nil {
 		_, _ = fmt.Fprintf(w, "\ndesktop\n")
 		_, _ = fmt.Fprintf(w, "  %-15s %dx%d\n", "geometry", d.Width, d.Height)
+		if d.WM != "" {
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "wm", d.WM)
+		}
 	}
 
 	if eg := req.Egress; eg != nil {

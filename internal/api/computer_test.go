@@ -199,4 +199,23 @@ func TestCreateEnvironmentValidatesDesktop(t *testing.T) {
 	if e := decodeError(t, rr.Body); !strings.Contains(e.Error.Message, "desktop.width") {
 		t.Fatalf("message = %q, want a desktop.width complaint", e.Error.Message)
 	}
+
+	rr = doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-desk-wm",
+		ManifestInline: encodeManifest(t),
+		Desktop:        &DesktopSpec{Width: 1280, Height: 800, WM: "fluxbox"},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", rr.Code, rr.Body.String())
+	}
+	if e := decodeError(t, rr.Body); !strings.Contains(e.Error.Message, "desktop.wm") {
+		t.Fatalf("message = %q, want a desktop.wm complaint", e.Error.Message)
+	}
+}
+
+func TestToOrchestratorDesktopCarriesWM(t *testing.T) {
+	got := toOrchestratorDesktop(&DesktopSpec{Width: 1280, Height: 800, WM: "xfwm4"})
+	if got.WM != "xfwm4" {
+		t.Fatalf("wm = %q, want xfwm4", got.WM)
+	}
 }

@@ -52,6 +52,25 @@ describe("environments", () => {
     });
   });
 
+  it("create serializes the desktop block with its window manager", async () => {
+    let body = "";
+    current = await serve(async (req, res) => {
+      body = await readBody(req);
+      res.setHeader("Content-Type", "application/json");
+      res.end(`{"id":"vm-1","state":"running","task_id":"task-1","url":"https://x"}`);
+    });
+
+    await current.client.environments.create({
+      task_id: "task-1",
+      desktop: { width: 1280, height: 800, wm: "xfwm4" },
+    });
+
+    expect(JSON.parse(body)).toEqual({
+      task_id: "task-1",
+      desktop: { width: 1280, height: 800, wm: "xfwm4" },
+    });
+  });
+
   it("create serializes spec.image and expose to snake_case JSON", async () => {
     let body = "";
     current = await serve(async (req, res) => {

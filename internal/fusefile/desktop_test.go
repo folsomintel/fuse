@@ -76,6 +76,11 @@ func TestParseDesktopRejections(t *testing.T) {
 			body: "desktop:\n  width: 1280\n  height: 800\n  display: 2\n",
 			want: "display",
 		},
+		{
+			name: "unknown wm",
+			body: "desktop:\n  width: 1280\n  height: 800\n  wm: fluxbox\n",
+			want: `desktop.wm: must be one of mutter, xfwm4, openbox, got "fluxbox"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +100,7 @@ func TestCompileDesktop(t *testing.T) {
 desktop:
   width: 1920
   height: 1080
+  wm: openbox
 `)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -103,7 +109,7 @@ desktop:
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	want := &DesktopSpec{Width: 1920, Height: 1080}
+	want := &DesktopSpec{Width: 1920, Height: 1080, WM: "openbox"}
 	if !reflect.DeepEqual(c.Desktop, want) {
 		t.Fatalf("compiled desktop = %+v, want %+v", c.Desktop, want)
 	}

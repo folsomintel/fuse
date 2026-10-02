@@ -107,9 +107,13 @@ type HealthcheckHTTP struct {
 // guessed dimension would silently shift every coordinate a computer-use
 // model emits, which presents as model failure rather than as the config
 // error it is.
+//
+// WM optionally names the window manager (mutter, xfwm4 or openbox); empty
+// keeps the image's baked default.
 type DesktopSpec struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	WM     string `json:"wm,omitempty"`
 }
 
 // Health is the last verdict of an environment's healthcheck.
@@ -493,11 +497,15 @@ type ComputerActionResponse struct {
 // geometry, so a caller can populate display_width_px / display_height_px in
 // its tool definition without hardcoding them. Up is false with a reason in
 // Error on an image with no desktop.
+//
+// WM is the window manager actually running, which can differ from the one
+// the desktop block asked for when the image does not carry it.
 type ComputerDisplay struct {
 	Display string `json:"display,omitempty"`
 	Up      bool   `json:"up"`
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
+	WM      string `json:"wm,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 

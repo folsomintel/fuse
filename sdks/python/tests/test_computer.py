@@ -34,13 +34,15 @@ def test_computer_posts_action() -> None:
 def test_computer_display() -> None:
     respx.get(f"{BASE_URL}/v1/environments/vm-1/computer").mock(
         return_value=httpx.Response(
-            200, json={"display": ":1", "up": True, "width": 1280, "height": 800}
+            200,
+            json={"display": ":1", "up": True, "width": 1280, "height": 800, "wm": "openbox"},
         )
     )
     with new_client() as client:
         res = client.environments.computer_display("vm-1")
     assert res.up is True
     assert (res.width, res.height) == (1280, 800)
+    assert res.wm == "openbox"
 
 
 def test_computer_validates_before_request() -> None:
@@ -69,3 +71,21 @@ def test_create_carries_desktop() -> None:
         )
     sent = json.loads(route.calls.last.request.content)
     assert sent["desktop"] == {"width": 1280, "height": 800}
+
+
+@respx.mock
+def test_create_carries_desktop_wm() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "t", "url": "https://x"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="t", desktop=fuse.DesktopSpec(width=1280, height=800, wm="xfwm4")
+            )
+        )
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["desktop"] == {"width": 1280, "height": 800, "wm": "xfwm4"}
