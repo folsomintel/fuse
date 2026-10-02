@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.34.0](https://github.com/folsomintel/fuse/compare/v0.33.0...v0.34.0) (2026-10-02)
+
+
+### Features
+
+* **desktop:** choose the window manager at bake time via FC_DESKTOP_WMS ([#275](https://github.com/folsomintel/fuse/issues/275)) ([88c4dfa](https://github.com/folsomintel/fuse/commit/88c4dfa82ec4e4df346162dc41e0b2fba1bd5f4a))
+* **desktop:** pick the window manager per environment with desktop.wm ([#276](https://github.com/folsomintel/fuse/issues/276)) ([8ce510e](https://github.com/folsomintel/fuse/commit/8ce510e263cfc3c82e34bc0126ddead9389dbd22))
+
 ## [0.33.0](https://github.com/folsomintel/fuse/compare/v0.32.0...v0.33.0) (2026-10-02)
 
 
