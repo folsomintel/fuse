@@ -129,6 +129,10 @@ func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.A
 		SnapshotID: move.SnapshotID,
 		Files:      move.Files,
 		Lazy:       move.Lazy,
+
+		SourceSnapshotID: move.SourceSnapshotID,
+		Base:             move.Base,
+		DropBase:         move.DropBase,
 	})
 	if err != nil {
 		return orchestrator.ArtifactMoved{}, err
@@ -212,6 +216,7 @@ func run() error {
 		maxStartupScriptTimeout time.Duration
 
 		artifactPullTimeout  time.Duration
+		checkpointInterval   time.Duration
 		artifactIdleTTL      time.Duration
 		artifactMaxPerTenant int
 
@@ -246,6 +251,10 @@ func run() error {
 	flag.DurationVar(&artifactPullTimeout, "artifact-pull-timeout",
 		time.Duration(envInt("ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS", 0))*time.Second,
 		"bound on one host-to-host artifact copy (0 = bound only by the request context)")
+	flag.DurationVar(&checkpointInterval, "checkpoint-interval",
+		time.Duration(envInt("ORCH_CHECKPOINT_INTERVAL_SECONDS", 0))*time.Second,
+		"take a background diff checkpoint of every firecracker vm this often and keep it merged on "+
+			"another host, so a live migrate there only moves what changed (0 = off)")
 	flag.DurationVar(&artifactIdleTTL, "artifact-idle-ttl",
 		time.Duration(envInt("ORCH_ARTIFACT_IDLE_TTL_SECONDS", 0))*time.Second,
 		"collect a build layer artifact after this long with no environment referencing it "+
@@ -497,6 +506,7 @@ func run() error {
 		// silently pin every artifact-seeded environment to one host.
 		ArtifactMover:        peerArtifactMover{control: hostwire.NewClient(), logger: logger},
 		ArtifactPullTimeout:  artifactPullTimeout,
+		CheckpointInterval:   checkpointInterval,
 		ArtifactIdleTTL:      artifactIdleTTL,
 		ArtifactMaxPerTenant: artifactMaxPerTenant,
 

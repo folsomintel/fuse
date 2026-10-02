@@ -78,6 +78,17 @@ type ArtifactMove struct {
 
 	// Lazy leaves mem on the source; the target pages it in after resume.
 	Lazy bool
+
+	// SourceSnapshotID is the snapshot on From the files are read out of. a
+	// live snapshot's identity is its rootfs digest, and checkpoints of an
+	// idle guest can share one, so the peer is told exactly which to serve.
+	SourceSnapshotID string
+
+	// Base, when set, makes this a delta move: Files are a diff snapshot's
+	// delta files and the receiving host merges them onto Base, a complete
+	// live snapshot it already holds. DropBase removes Base after the merge.
+	Base     string
+	DropBase bool
 }
 
 // ArtifactMoved is what the receiving host reports once the artifact is
@@ -96,6 +107,16 @@ type ArtifactMoved struct {
 // metadata rather than a column because exactly one code path reads it, and it
 // is meaningless for the disk snapshots that are nearly every row.
 const liveFilesMetadataKey = "live_files"
+
+// diffParentMetadataKey is where a diff live snapshot records the snapshot it
+// was taken against. a record carrying it is not restorable or movable on its
+// own; it only merges onto a copy of that parent.
+const diffParentMetadataKey = "diff_parent"
+
+// diffParent is the parent a diff snapshot was taken against, "" otherwise.
+func diffParent(record SnapshotRecord) string {
+	return snapshotMetadataString(record.Metadata, diffParentMetadataKey)
+}
 
 // withLiveFiles returns a copy of metadata carrying files.
 func withLiveFiles(metadata, files map[string]string) map[string]string {
@@ -478,6 +499,10 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	// paused guest with no sync and is only consistent next to the memory
 	// captured with it, so copying the disk half alone would plant something on
 	// the target that looks like a seed and cold-boots into a corrupt guest.
+	if parent := diffParent(record); parent != "" {
+		return "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
+			ErrArtifactImmovable, record.SnapshotID, parent)
+	}
 	files := liveFiles(record)
 	if record.Kind == SnapshotKindLive && len(files) == 0 {
 		return "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (taken by a host agent that cannot move live snapshots)",
@@ -487,6 +512,9 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	holders, err := fm.HostsHoldingArtifact(ctx, record.TenantID, record.Digest)
 	if err != nil {
 		return "", err
+	}
+	if record.Kind == SnapshotKindLive {
+		holders = fm.copiesOfLiveSnapshot(ctx, record, holders)
 	}
 	if holder, ok := holders[hostID]; ok {
 		// Already there, under whatever id that host committed it as. Nothing to
@@ -506,6 +534,9 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 	}
 
 	localID := replicaSnapshotID(record.Digest, hostID)
+	if record.Kind == SnapshotKindLive {
+		localID = liveReplicaSnapshotID(record.SnapshotID, hostID)
+	}
 
 	// Both ends are held for the duration: the source is being read and the
 	// destination is being written, and collecting either mid-flight leaves a
@@ -530,6 +561,8 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		To:         target,
 		Files:      files,
 		Lazy:       lazy,
+
+		SourceSnapshotID: source.snapshotID,
 	})
 	if err == nil && record.Kind == SnapshotKindLive && moved.Kind != SnapshotKindLive {
 		// the target took the rootfs and dropped the rest. nothing is recorded,
@@ -694,6 +727,37 @@ func (fm *FleetManager) artifactEndpoints(record SnapshotRecord, holders map[str
 // The shape is constrained by the host agent, which accepts a snapshot id of
 // [A-Za-z0-9][A-Za-z0-9._-]{0,127} and turns it into a directory name. Only
 // lowercase hex and hyphens are emitted here, so nothing can escape that.
+// liveReplicaSnapshotID names a pulled copy of one live snapshot. a live
+// snapshot cannot be named by its digest like a disk artifact: the digest
+// covers the rootfs alone, and two checkpoints of an idle guest share a rootfs
+// while holding different memory.
+func liveReplicaSnapshotID(snapshotID, hostID string) string {
+	src := sha256.Sum256([]byte(snapshotID))
+	host := sha256.Sum256([]byte(hostID))
+	return "art-live-" + hex.EncodeToString(src[:8]) + "-" + hex.EncodeToString(host[:4])
+}
+
+// copiesOfLiveSnapshot narrows holders, which matched on the rootfs digest, to
+// the hosts holding this exact live snapshot: the record itself, or a replica
+// pulled from it. see liveReplicaSnapshotID for why the digest is not enough.
+func (fm *FleetManager) copiesOfLiveSnapshot(ctx context.Context, record SnapshotRecord, holders map[string]ArtifactHolder) map[string]ArtifactHolder {
+	out := make(map[string]ArtifactHolder, len(holders))
+	for hostID, holder := range holders {
+		if holder.SnapshotID == record.SnapshotID {
+			out[hostID] = holder
+			continue
+		}
+		replica, err := fm.GetSnapshotByID(ctx, holder.SnapshotID)
+		if err != nil {
+			continue
+		}
+		if snapshotMetadataString(replica.Metadata, "source_snapshot_id") == record.SnapshotID {
+			out[hostID] = holder
+		}
+	}
+	return out
+}
+
 func replicaSnapshotID(digest, hostID string) string {
 	short := digest
 	if len(short) > 16 {
@@ -903,10 +967,8 @@ func (fm *FleetManager) pruneArtifactUse(all []SnapshotRecord) {
 // second, so a failure never leaves a record pointing at bytes that are gone.
 //
 // A pulled copy has no origin VM on its host (it arrived over the wire), so
-// there is no environment handle to ask for a delete. Those are dropped from
-// the store directly. The bytes then rely on the host agent's own artifact
-// housekeeping, which is a real gap and is logged as one rather than silently
-// treated as reclaimed.
+// there is no environment handle to ask for a delete; its host's provider
+// deletes it from the store by id instead (deleteFreeArtifact).
 func (fm *FleetManager) evictArtifact(ctx context.Context, record SnapshotRecord) {
 	record.State = SnapshotStateDeleting
 	record.UpdatedAt = time.Now()
@@ -928,9 +990,15 @@ func (fm *FleetManager) evictArtifact(ctx context.Context, record SnapshotRecord
 			})
 			return
 		}
-	} else {
-		fm.logger.Info("evicting a pulled artifact copy; host-side bytes are reclaimed by the agent",
-			"snapshot", record.SnapshotID, "host", record.HostID)
+	} else if err := fm.deleteFreeArtifact(ctx, record.HostID, record.SnapshotID); err != nil && !IsNotFound(err) {
+		// the record stays, marked, so the next sweep retries rather than
+		// forgetting bytes that are still on the host.
+		record.State = SnapshotStateError
+		record.LastError = err.Error()
+		record.UpdatedAt = time.Now()
+		_ = fm.upsertSnapshotRecord(ctx, record)
+		fm.logger.Warn("delete pulled artifact copy failed", "snapshot", record.SnapshotID, "host", record.HostID, "err", err)
+		return
 	}
 
 	if fm.store != nil {

@@ -72,6 +72,7 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 	state := src.state
 	srcSpec := src.spec
 	srcHostID := src.hostID
+	srcEnv := src.env
 	provider := fm.provider
 	if srcHostID != "" {
 		if hostProvider, ok := fm.providerForHost(srcHostID); ok {
@@ -122,13 +123,48 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		return "", fmt.Errorf("%w: vm %s was not booted with huge pages, which a lazy migrate needs", ErrLiveMigrateRefused, vmID)
 	}
 
-	seed, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live})
-	if err != nil {
-		return "", err
+	// a live, non-lazy migrate from a source that can take diff snapshots
+	// copies the bulk while the guest keeps running, then pauses it only for
+	// the pages and blocks that changed since, so nothing the guest writes
+	// during the copy is lost and the pause is as long as the diff, not the
+	// whole image.
+	srcDelta, _ := srcEnv.(DeltaSnapshotCapable)
+	delta := opts.Live && !opts.Lazy && srcDelta != nil && fm.artifactMover != nil
+	var chain *checkpointChain
+	if delta {
+		// held for the whole migrate so the checkpoint loop cannot take a live
+		// snapshot of this vm in between, which would break the diff's parent.
+		chain = fm.chainFor(vmID)
+		chain.mu.Lock()
+		defer chain.mu.Unlock()
 	}
-	if opts.Live && seed.Kind != SnapshotKindLive {
-		// an agent too old for live snapshots answers with a disk one.
-		return "", fmt.Errorf("%w: host %s took a %s snapshot for a live migrate of vm %s", ErrSnapshotUnsupported, srcHostID, seed.Kind, vmID)
+	frozen, committed := false, false
+	defer func() {
+		if frozen && !committed {
+			// a failed migrate must never leave the source stopped: until the
+			// target is running it is the only copy of the guest.
+			if err := srcDelta.Resume(context.Background()); err != nil {
+				fm.logger.Error("resume source vm after a failed delta migrate", "vm", vmID, "err", err)
+			}
+		}
+	}()
+
+	var seed SnapshotRecord
+	var stagedBase string
+	var err error
+	if delta && chain.standby == targetHostID && chain.base != "" {
+		// the checkpoint loop already keeps a merged copy of this vm on the
+		// target, so the bulk copy happened before this call did.
+		seed, stagedBase = chain.head, chain.base
+	} else {
+		seed, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live})
+		if err != nil {
+			return "", err
+		}
+		if opts.Live && seed.Kind != SnapshotKindLive {
+			// an agent too old for live snapshots answers with a disk one.
+			return "", fmt.Errorf("%w: host %s took a %s snapshot for a live migrate of vm %s", ErrSnapshotUnsupported, srcHostID, seed.Kind, vmID)
+		}
 	}
 
 	migrateTaskID := "migrate-" + NewEventID()
@@ -176,8 +212,24 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 	if targetHostID == srcHostID {
 		newEnv, err = forkable.CreateFromCheckpoint(ctx, spec, vmID, seed.SnapshotID)
 	} else {
-		var localID string
-		localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, opts.Lazy)
+		localID := stagedBase
+		if localID == "" {
+			localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, opts.Lazy)
+		}
+		if err == nil && delta {
+			var child SnapshotRecord
+			child, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+				Comment: "migration delta", Live: true, Diff: true,
+				Parent: seed.SnapshotID, KeepPaused: true, NoLineage: true,
+			})
+			if err == nil {
+				frozen = true
+				localID, err = fm.moveDeltaToHost(ctx, child, localID, targetHostID, true)
+			}
+			// the chain's base on the target was consumed by the merge, or is
+			// out of step with a source that just took another live snapshot.
+			fm.resetChainLocked(chain)
+		}
 		if err == nil {
 			spec.SeedSnapshotID = localID
 			spec.PinnedHostID = targetHostID
@@ -302,6 +354,7 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		"seed_snapshot_id": seed.SnapshotID,
 		"live":             opts.Live,
 		"lazy":             opts.Lazy,
+		"delta":            delta,
 	})
 
 	if opts.Lazy {
@@ -312,11 +365,19 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID)
 	}
 
-	if drainErr := fm.Drain(ctx, vmID); drainErr != nil {
+	// from here the target is the guest; the source is only torn down.
+	committed = true
+	if frozen {
+		// drain runs a command inside the guest, which a frozen guest cannot
+		// do. nothing needs flushing either: its state is already on the target.
+	} else if drainErr := fm.Drain(ctx, vmID); drainErr != nil {
 		fm.logger.Warn("drain source vm during migration failed; destroying anyway", "vm", vmID, "err", drainErr)
 	}
 	if destroyErr := fm.DestroyVM(ctx, vmID); destroyErr != nil {
 		fm.logger.Warn("destroy source vm during migration failed", "vm", vmID, "err", destroyErr)
+	}
+	if chain != nil {
+		fm.dropChain(vmID, chain)
 	}
 
 	return newVMID, nil
