@@ -1,0 +1,23 @@
+#!/bin/sh
+# starts the fuse desktop window manager on :1.
+#
+# which wm runs is FUSE_DESKTOP_WM from /etc/default/fuse-desktop, written by
+# fc-bake-desktop-rootfs.sh as the first entry of FC_DESKTOP_WMS. an image can
+# carry several wms; this picks the one that starts.
+
+[ -f /etc/default/fuse-desktop ] && . /etc/default/fuse-desktop
+wm="${FUSE_DESKTOP_WM:-mutter}"
+
+case "$wm" in
+  mutter) set -- /usr/bin/dbus-run-session -- /usr/bin/mutter --x11 --sm-disable ;;
+  xfwm4)  set -- /usr/bin/dbus-run-session -- /usr/bin/xfwm4 --compositor=off --sm-client-disable ;;
+  openbox) set -- /usr/bin/openbox --sm-disable ;;
+  *) echo "fuse-wm-run: unknown wm '$wm' (want mutter, xfwm4 or openbox)" >&2; exit 1 ;;
+esac
+
+# the image may carry only some wms; say which one is missing instead of
+# leaving systemd to report a bare exec failure
+bin="$1"; [ "$bin" = /usr/bin/dbus-run-session ] && bin="$3"
+[ -x "$bin" ] || { echo "fuse-wm-run: wm '$wm' is not installed in this image ($bin)" >&2; exit 1; }
+
+exec "$@"

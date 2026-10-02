@@ -279,7 +279,8 @@ Contents added on top of the base image:
 - Xvfb on display `:1` (software framebuffer — no GPU, no extra devices), default
   geometry `1024x768x24`, override at bake time with `FC_DESKTOP_GEOMETRY`
 - mutter (window manager) and tint2 (panel), matching Anthropic's computer-use
-  reference image so behaviour is comparable
+  reference image so behaviour is comparable; `FC_DESKTOP_WMS` swaps or adds
+  window managers at bake time (`mutter`, `xfwm4`, `openbox`; the first starts)
 - `xdotool`, `scrot`, `xclip` — the input/capture/clipboard primitives
 - Firefox ESR (from the mozillateam PPA; the archive `firefox` on 22.04 is a
   snap shim and snaps cannot run in the guest), pcmanfm, xterm
