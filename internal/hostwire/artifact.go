@@ -394,6 +394,19 @@ type ArtifactPullRequest struct {
 	// fetches mem from the peer under the same grant. omitted when false so an
 	// older agent sees the request it always did.
 	Lazy bool `json:"lazy,omitempty"`
+
+	// SourceSnapshotID pins every file of the pull to one snapshot on the
+	// peer. a live snapshot is identified by its rootfs digest, and two
+	// checkpoints of an idle guest can share one, so without it the peer could
+	// serve one snapshot's vmstate next to another's memory.
+	SourceSnapshotID string `json:"source_snapshot_id,omitempty"`
+
+	// Base makes this a delta pull: Files then names a diff snapshot's files
+	// (vmstate, mem.delta, rootfs.delta, live.json), and the agent merges them
+	// onto Base, a complete live snapshot it already holds, committing the
+	// result as SnapshotID. DropBase removes Base once that has committed.
+	Base     string `json:"base,omitempty"`
+	DropBase bool   `json:"drop_base,omitempty"`
 }
 
 // ArtifactPullResponse is what the pulling agent answers once the artifact is

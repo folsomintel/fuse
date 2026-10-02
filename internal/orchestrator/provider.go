@@ -369,6 +369,24 @@ type LiveSnapshotCapable interface {
 	CheckpointLive(ctx context.Context, comment string) (Checkpoint, error)
 }
 
+// ArtifactDeleter is implemented by providers that can delete a free-standing
+// copy in their host's snapshot store by id: a pulled artifact or a
+// checkpoint base, neither of which has a vm to ask.
+type ArtifactDeleter interface {
+	DeleteArtifact(ctx context.Context, snapshotID string) error
+}
+
+// DeltaSnapshotCapable is implemented by environments that can take a diff
+// live snapshot: only the memory pages and rootfs blocks changed since parent,
+// which has to be the last live snapshot the environment took. keepPaused
+// leaves the guest frozen afterwards, for the last hop of a migrate; Resume
+// thaws it again if that migrate fails. a separate interface for the same
+// reason LiveSnapshotCapable is one: most backends cannot do it.
+type DeltaSnapshotCapable interface {
+	CheckpointDiff(ctx context.Context, comment, parent string, keepPaused bool) (Checkpoint, error)
+	Resume(ctx context.Context) error
+}
+
 // CapacityProber is implemented by providers that can report the real
 // hardware capacity of the host they front (CPU count, total RAM, free
 // disk, GPU inventory) instead of trusting operator-declared numbers. The
@@ -528,7 +546,13 @@ type Checkpoint struct {
 	// it plays the part Digest plays for the rootfs: what a receiving host
 	// verifies each file against when the snapshot moves. empty for a disk
 	// checkpoint, and for a live one from an agent that predates moving them.
+	// for a diff checkpoint the names are the delta files instead.
 	Files map[string]string
+
+	// Parent is the checkpoint a diff was taken against, "" for a complete
+	// one. a diff is not restorable on its own; it only merges onto a copy of
+	// its parent on another host.
+	Parent string
 }
 
 // BootResult is returned after provisioning or restoring an environment.

@@ -207,6 +207,14 @@ func (p *Provider) MemoryStatus(ctx context.Context, vmID string) (orchestrator.
 	return st, err
 }
 
+// DeleteArtifact removes a free-standing copy from the agent's snapshot store.
+func (p *Provider) DeleteArtifact(ctx context.Context, snapshotID string) error {
+	if p.stub != nil {
+		return nil
+	}
+	return p.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", snapshotID), nil, nil)
+}
+
 // Destroy tears down a sandbox.
 func (p *Provider) Destroy(ctx context.Context, name string) error {
 	if p.stub != nil {
@@ -505,7 +513,7 @@ func (e *remoteEnv) Checkpoint(ctx context.Context, comment string) (string, err
 // hashes the artifact inline as it writes it, so this response is the only
 // place the digest is ever available; nothing recomputes it later.
 func (e *remoteEnv) CheckpointWithDigest(ctx context.Context, comment string) (orchestrator.Checkpoint, error) {
-	return e.snapshot(ctx, comment, false)
+	return e.snapshot(ctx, snapshotRequest{Comment: comment})
 }
 
 // CheckpointLive implements orchestrator.LiveSnapshotCapable: rootfs plus vCPU
@@ -519,12 +527,23 @@ func (e *remoteEnv) CheckpointWithDigest(ctx context.Context, comment string) (o
 // caller sees what it actually got rather than a success that quietly means
 // something else.
 func (e *remoteEnv) CheckpointLive(ctx context.Context, comment string) (orchestrator.Checkpoint, error) {
-	return e.snapshot(ctx, comment, true)
+	return e.snapshot(ctx, snapshotRequest{Comment: comment, Live: true})
 }
 
-// snapshot is the one wire call behind both checkpoint paths.
-func (e *remoteEnv) snapshot(ctx context.Context, comment string, live bool) (orchestrator.Checkpoint, error) {
-	req := snapshotRequest{Comment: comment, Live: live}
+// CheckpointDiff takes a diff live snapshot against parent, which the agent
+// refuses with 409 unless parent is the last live snapshot this vm took.
+func (e *remoteEnv) CheckpointDiff(ctx context.Context, comment, parent string, keepPaused bool) (orchestrator.Checkpoint, error) {
+	return e.snapshot(ctx, snapshotRequest{Comment: comment, Live: true, Diff: true, Parent: parent, KeepPaused: keepPaused})
+}
+
+// Resume thaws a guest a keepPaused diff left frozen.
+func (e *remoteEnv) Resume(ctx context.Context) error {
+	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/resume", e.id), struct{}{}, nil)
+}
+
+// snapshot is the one wire call behind every checkpoint path.
+func (e *remoteEnv) snapshot(ctx context.Context, req snapshotRequest) (orchestrator.Checkpoint, error) {
+	comment := req.Comment
 	var resp snapshotResponse
 	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/snapshot", e.id), req, &resp); err != nil {
 		return orchestrator.Checkpoint{}, fmt.Errorf("snapshot: %w", err)
@@ -540,6 +559,7 @@ func (e *remoteEnv) snapshot(ctx context.Context, comment string, live bool) (or
 		SizeBytes: resp.SizeBytes,
 		Kind:      snapshotKind(resp.Kind),
 		Files:     resp.Files,
+		Parent:    resp.Parent,
 	}, nil
 }
 
@@ -771,6 +791,12 @@ type snapshotRequest struct {
 	// snapshot, which is what every caller predating this got and what an
 	// agent that does not read the field will do anyway.
 	Live bool `json:"live,omitempty"`
+
+	// Diff, Parent and KeepPaused ask for a diff live snapshot against
+	// Parent, optionally leaving the guest frozen afterwards.
+	Diff       bool   `json:"diff,omitempty"`
+	Parent     string `json:"parent,omitempty"`
+	KeepPaused bool   `json:"keep_paused,omitempty"`
 }
 
 type snapshotResponse struct {
@@ -796,6 +822,9 @@ type snapshotResponse struct {
 	// Files is the memory half of a live snapshot, file name to hex sha256.
 	// absent for a disk snapshot and from an agent that cannot move live ones.
 	Files map[string]string `json:"files,omitempty"`
+
+	// Parent is the snapshot a diff was taken against, "" for a complete one.
+	Parent string `json:"parent,omitempty"`
 }
 
 // restoreRequest carries only the id. Whether a restore resumes from memory or

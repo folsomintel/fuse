@@ -71,6 +71,23 @@ type SnapshotOptions struct {
 	// it per snapshot and branches on it there, so RestoreSnapshot needs to
 	// know nothing about this field; see LiveSnapshotCapable.
 	Live bool
+
+	// Diff takes a diff live snapshot: only the memory pages and rootfs
+	// blocks changed since Parent, which must be the last live snapshot this
+	// vm took (the host refuses with 409 otherwise). requires Live. a diff is
+	// never restorable on its own; it merges onto a copy of Parent elsewhere.
+	Diff   bool
+	Parent string
+
+	// KeepPaused leaves the guest frozen after a diff, for the last hop of a
+	// migrate. whoever asks for it owns resuming the guest if that migrate
+	// does not finish (DeltaSnapshotCapable.Resume).
+	KeepPaused bool
+
+	// NoLineage leaves ParentSnapshotID empty. checkpoint and migrate
+	// snapshots are removed by the code that took them, and a lineage link to
+	// the previous one would make each undeletable while its successor lives.
+	NoLineage bool
 }
 
 // SnapshotFilter narrows ListSnapshotsFiltered results on exact-match
@@ -210,6 +227,9 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 		return SnapshotRecord{}, err
 	}
 	parentSnapshotID := latestReadySnapshotID(vmSnapshots, vmID)
+	if opts.NoLineage {
+		parentSnapshotID = ""
+	}
 	metadataJSON, err := marshalSnapshotMetadata(opts.Comment, opts.Metadata)
 	if err != nil {
 		return SnapshotRecord{}, fmt.Errorf("marshal snapshot metadata: %w", err)
@@ -231,7 +251,18 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 	// neither interface, and "your gpu cannot be checkpointed at all" is the
 	// useful answer to `--live` on one, not "live snapshots are unsupported".
 	var created Checkpoint
-	if opts.Live {
+	if opts.Diff && opts.Live {
+		dc, ok := env.(DeltaSnapshotCapable)
+		if !ok {
+			return SnapshotRecord{}, fmt.Errorf("%w: provider does not support diff snapshots for vm %s", ErrSnapshotUnsupported, vmID)
+		}
+		created, err = dc.CheckpointDiff(ctx, opts.Comment, opts.Parent, opts.KeepPaused)
+		if err != nil {
+			return SnapshotRecord{}, fmt.Errorf("diff checkpoint %s: %w", vmID, err)
+		}
+	} else if opts.Diff {
+		return SnapshotRecord{}, fmt.Errorf("diff snapshot of vm %s requires live", vmID)
+	} else if opts.Live {
 		lc, ok := env.(LiveSnapshotCapable)
 		if !ok {
 			return SnapshotRecord{}, fmt.Errorf("%w: provider does not support live snapshots for vm %s: retry without live to take a disk snapshot", ErrSnapshotUnsupported, vmID)
@@ -260,7 +291,11 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 		// same reasoning as the digest: this response is the only moment the
 		// per-file digests exist, and a live snapshot recorded without them can
 		// never be verified on another host, so it can never leave this one.
-		metadataJSON, err = marshalSnapshotMetadata(opts.Comment, withLiveFiles(opts.Metadata, created.Files))
+		metadata := withLiveFiles(opts.Metadata, created.Files)
+		if created.Parent != "" {
+			metadata[diffParentMetadataKey] = created.Parent
+		}
+		metadataJSON, err = marshalSnapshotMetadata(opts.Comment, metadata)
 		if err != nil {
 			return SnapshotRecord{}, fmt.Errorf("marshal snapshot metadata: %w", err)
 		}

@@ -374,6 +374,14 @@ type FleetConfig struct {
 	// links are known.
 	ArtifactPullTimeout time.Duration
 
+	// CheckpointInterval turns on background checkpoints: every interval each
+	// firecracker vm takes a diff live snapshot that is merged onto a copy
+	// kept on another host, so a live migrate to that host only moves what
+	// changed since. each tick pauses the guest briefly and sends its dirty
+	// pages over the network; the first tick of a chain sends the whole
+	// memory image and rootfs. zero, the default, disables it.
+	CheckpointInterval time.Duration
+
 	// ArtifactIdleTTL is how long a layer artifact may go unreferenced and
 	// unused before the reconcile loop collects it. "Used" includes cache hits,
 	// not just environments holding it open. Zero (the default) disables idle
@@ -459,6 +467,11 @@ type FleetManager struct {
 	// at BOTH ends. It is what stops the collector deleting an artifact that
 	// is currently being read from or written to.
 	artifactPulls map[string]int
+
+	// checkpoint chains, one per vm, see checkpoints.go.
+	checkpointInterval time.Duration
+	chainsMu           sync.Mutex
+	chains             map[string]*checkpointChain
 
 	// orphanRetries tracks consecutive destroy failures per orphan VM
 	// name. Cleared when the orphan disappears from the provider.
@@ -570,6 +583,8 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		artifactMaxPerTenant:     cfg.ArtifactMaxPerTenant,
 		artifactUse:              make(map[string]time.Time),
 		artifactPulls:            make(map[string]int),
+		checkpointInterval:       cfg.CheckpointInterval,
+		chains:                   make(map[string]*checkpointChain),
 		orphanRetries:            make(map[string]int),
 		stuckStrikes:             make(map[string]int),
 		idleStrikes:              make(map[string]int),
@@ -686,6 +701,9 @@ func (fm *FleetManager) Start(ctx context.Context) {
 	// Trigger a boot-time converge so recovered state is reconciled immediately.
 	fm.reconcile(ctx)
 	go fm.reconcileLoop(ctx)
+	if fm.checkpointInterval > 0 {
+		go fm.checkpointLoop(ctx)
+	}
 }
 
 // Stop cancels the reconciliation loop and waits for it to finish.
