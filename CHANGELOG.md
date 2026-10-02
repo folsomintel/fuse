@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.33.0](https://github.com/folsomintel/fuse/compare/v0.32.0...v0.33.0) (2026-10-02)
+
+
+### Features
+
+* delta live migrate and background checkpoint chains ([#273](https://github.com/folsomintel/fuse/issues/273)) ([75365da](https://github.com/folsomintel/fuse/commit/75365da4f07828f53d58b6e9f0836ffad566ee61))
+* lazy live migrate via userfaultfd demand paging ([#272](https://github.com/folsomintel/fuse/issues/272)) ([408077a](https://github.com/folsomintel/fuse/commit/408077a1798b168fea9c4d88dc618109a0d61501))
+* move live snapshots between hosts and resume them (live migrate) ([#269](https://github.com/folsomintel/fuse/issues/269)) ([1d2b2b3](https://github.com/folsomintel/fuse/commit/1d2b2b351f138293d232737f7be11de06e6ce0b2))
+* stable environment urls via fuse-proxy and a quic tunnel ([#271](https://github.com/folsomintel/fuse/issues/271)) ([ac2e2dd](https://github.com/folsomintel/fuse/commit/ac2e2ddfaa93db3c99a616ebf8ffb6e0376ced0c))
+
 ## [0.32.0](https://github.com/folsomintel/fuse/compare/v0.31.0...v0.32.0) (2026-09-20)
 
 
