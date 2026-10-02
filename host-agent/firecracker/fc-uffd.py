@@ -55,7 +55,9 @@ class PeerSource:
             raise ValueError(f"invalid peer url: {url!r}")
         if not grant:
             raise ValueError("FC_UFFD_GRANT is not set")
-        self.scheme, self.host, self.port, self.path = u.scheme, u.hostname, u.port, u.path
+        # the query pins the source snapshot (see artifact_file in fc-agent).
+        path = u.path + (f"?{u.query}" if u.query else "")
+        self.scheme, self.host, self.port, self.path = u.scheme, u.hostname, u.port, path
         self.grant = grant 
         self.size = size 
 

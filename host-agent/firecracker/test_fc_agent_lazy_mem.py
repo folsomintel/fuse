@@ -153,7 +153,8 @@ class LazyPullTest(AgentServer, unittest.TestCase):
         grant = grant_for(digest)
         rec = fc_agent.pull_artifact(digest, self.peer, grant, f"dst-{self.name}", files, lazy=True)
         self.assertEqual(rec["kind"], "live")
-        self.assertEqual(rec["lazy"], {"peer_url": self.peer, "digest": digest, "grant": grant})
+        self.assertEqual(rec["lazy"], {"peer_url": self.peer, "digest": digest, "grant": grant,
+                                       "source_snapshot_id": ""})
         dest = fc_agent.SNAPSHOTS_DIR / f"dst-{self.name}"
         self.assertEqual(sorted(p.name for p in dest.iterdir()),
                          ["live.json", "meta.json", "rootfs.ext4", "vmstate"])

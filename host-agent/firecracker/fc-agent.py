@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import fcntl
 import copy
+import errno
 import hashlib
 import hmac
 import ipaddress
@@ -866,6 +867,10 @@ def stop_firecracker(meta: dict) -> None:
     if upid and pid_alive(upid):
         os.kill(upid, signal.SIGKILL)
     meta.pop("uffd_status", None)
+    # the dirty bitmap lives in the firecracker process, so a diff against the
+    # old head would miss every page the next process touches.
+    meta.pop("chain_head", None)
+    meta.pop("paused", None)
     sock = meta.get("sock")
     if sock:
         sudo(["rm", "-f", sock], check=False)
@@ -1052,6 +1057,19 @@ SNAPSHOT_API_TIMEOUT = float(os.environ.get("FC_AGENT_SNAPSHOT_API_TIMEOUT", "60
 LIVE_MANIFEST = "live.json"
 LIVE_FILES = ("vmstate", "mem", LIVE_MANIFEST)
 
+# the files a diff snapshot is moved as. it has no standalone memory image or
+# rootfs worth sending: mem.delta is the pages dirtied since its parent and
+# rootfs.delta the blocks whose hashes changed, each as (offset, length)
+# records that apply_delta writes onto a copy of the parent. a closed set like
+# LIVE_FILES, and the only other names a peer may ask for.
+DELTA_FILES = ("vmstate", "mem.delta", "rootfs.delta", LIVE_MANIFEST)
+ROOTFS_BLOCK_BYTES = 4 << 20
+DELTA_HEADER = struct.Struct(">QQ")
+# the /snapshot/load field that keeps dirty page tracking on in a restored or
+# resumed guest. without it a migrated vm can never take a diff again. older
+# firecracker releases spelled it enable_diff_snapshots and reject this name.
+LOAD_TRACK_DIRTY_FIELD = "track_dirty_pages"
+
 
 def host_fingerprint() -> dict:
     """what a memory image is pinned to: cpu model and firecracker build.
@@ -1198,6 +1216,128 @@ def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
     return chunks, zeros
 
 
+
+def file_extents(path: Path) -> list[tuple[int, int]]:
+    """the (offset, length) data regions of a sparse file. firecracker writes a
+    diff snapshot's memory as a full-size file with holes where the guest did
+    not write, so these are exactly the dirty pages."""
+    sudo(["chmod", "644", str(path)], check=False)
+    size = path.stat().st_size 
+    out = []
+    with open(path, "rb") as f:
+        fd, pos = f.fileno(), 0 
+        while pos < size:
+            try:
+                start = os.lseek(fd, pos, os.SEEK_DATA)
+            except OSError as e:
+                if e.errno == errno.ENXIO:
+                    break 
+                raise 
+            end = os.lseek(fd, start, os.SEEK_HOLE)
+            out.append((start, end - start))
+            pos = end
+    return out
+
+
+_holes_probe: bool | None = None
+
+
+def snapshot_fs_reports_holes() -> bool:
+    """whether the snapshot store's filesystem reports holes through SEEK_DATA.
+
+    a diff snapshot is a full-size file where only the dirty pages were
+    written, and file_extents is the only way to tell them apart. on a
+    filesystem that cannot report holes the whole file reads as data, the
+    clean pages read as zeros, and merging that onto a base would overwrite
+    real memory with zeros. so a host whose store fails this probe never takes
+    a diff at all. probed once, with a real file in the store, the way
+    firecracker's own writes land."""
+    global _holes_probe
+    if _holes_probe is None:
+        probe = SNAPSHOTS_DIR / f".holes-probe-{uuid.uuid4().hex}"
+        try:
+            with open(probe, "wb") as f:
+                f.truncate(2 << 20)
+                f.seek(1 << 20)
+                f.write(b"x" * 4096)
+                f.flush()
+                os.fsync(f.fileno())
+            with open(probe, "rb") as f:
+                _holes_probe = os.lseek(f.fileno(), 0, os.SEEK_DATA) >= (1 << 20)
+        except OSError:
+            _holes_probe = False
+        finally:
+            probe.unlink(missing_ok=True)
+    return _holes_probe
+
+
+def rootfs_digests(path: Path) -> tuple[str, list[str]]:
+    """one read of a rootfs for both its digest (the artifact's identity) and a
+    sha256 per ROOTFS_BLOCK_BYTES block. firecracker tracks dirty memory, not
+    dirty disk, so comparing block hashes is the only signal of what changed."""
+    whole, blocks = hashlib.sha256(), []
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(ROOTFS_BLOCK_BYTES)
+            if not b:
+                break
+            whole.update(b)
+            blocks.append(hashlib.sha256(b).hexdigest())
+    return whole.hexdigest(), blocks
+
+
+def write_delta(src: Path, ranges: list[tuple[int, int]], out: Path) -> None:
+    """copy the given byte ranges of src into out as (offset, length) records,
+    each followed by its bytes. one format for memory and rootfs diffs, and
+    apply_delta is its only reader."""
+    sudo(["chmod", "644", str(src)], check=False)
+    with open(src, "rb") as f, open(out, "wb") as o:
+        for off, n in ranges:
+            o.write(DELTA_HEADER.pack(off, n))
+            f.seek(off)
+            left = n
+            while left:
+                b = f.read(min(ARTIFACT_CHUNK_BYTES, left))
+                if not b:
+                    raise RuntimeError(f"{src} ended inside a delta range at {off}")
+                o.write(b)
+                left -= len(b)
+
+
+def apply_delta(delta: Path, target: Path, size: int) -> None:
+    """write every record of a delta into target in place. a record reaching
+    past size is refused: its digest verified, but an offset off the wire is
+    still not something to hand to pwrite unchecked."""
+    with open(delta, "rb") as d, open(target, "r+b") as t:
+        while True:
+            head = d.read(DELTA_HEADER.size)
+            if not head:
+                return
+            if len(head) != DELTA_HEADER.size:
+                raise HTTPError(422, "truncated delta record")
+            off, n = DELTA_HEADER.unpack(head)
+            if off + n > size:
+                raise HTTPError(422, f"delta record at {off} reaches past the {size} byte image")
+            while n:
+                b = d.read(min(ARTIFACT_CHUNK_BYTES, n))
+                if not b:
+                    raise HTTPError(422, "truncated delta record")
+                os.pwrite(t.fileno(), b, off)
+                off += len(b)
+                n -= len(b)
+
+
+def snapshot_parent(vm_id: str, snapshot_id: str) -> str:
+    """the parent a diff snapshot was taken against, or "" for a complete one."""
+    p = snapshot_file(vm_id, snapshot_id, "meta.json", required=False)
+    if not p:
+        return ""
+    try:
+        return str(json.loads(p.read_text()).get("parent") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def start_uffd(meta: dict, manifest: Path, mem: Path | None, lazy: dict | None) -> dict:
     """start fc-uffd for this vm and return the mem_backend that points
     firecracker at it. mem is a local memory image; lazy names the source
@@ -1210,7 +1350,9 @@ def start_uffd(meta: dict, manifest: Path, mem: Path | None, lazy: dict | None) 
             "--manifest", str(manifest), "--status", str(status)]
     env = dict(os.environ)
     if lazy:
-        args += ["--peer", f"{lazy['peer_url'].rstrip('/')}/v1/artifacts/{lazy['digest']}/files/mem"]
+        source = lazy.get("source_snapshot_id") or ""
+        q = f"?snapshot={source}" if source else ""
+        args += ["--peer", f"{lazy['peer_url'].rstrip('/')}/v1/artifacts/{lazy['digest']}/files/mem{q}"]
         # env, not argv, so the grant is not visible in ps.
         env["FC_UFFD_GRANT"] = lazy["grant"]
     else:
@@ -1239,7 +1381,8 @@ def copy_rootfs(src: str, dst: Path) -> None:
         shutil.copyfile(src, dst)
 
 
-def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
+def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = False,
+                    parent: str = "", keep_paused: bool = False) -> dict:
     meta = load_meta(vm_id)
     if not meta:
         raise HTTPError(404, "vm not found")
@@ -1248,11 +1391,28 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
     sock = meta.get("sock") or ""
     if live and not sock:
         raise HTTPError(409, "vm has no firecracker socket; live snapshot needs a running vm")
+    if (diff or keep_paused) and not live:
+        raise HTTPError(400, "diff and keep_paused are live snapshot options")
+    parent_manifest = None
+    if diff:
+        # firecracker's dirty bitmap counts from the last live snapshot this
+        # process took, whatever asked for it. a diff against any other parent
+        # would silently miss pages, so the caller names the parent it believes
+        # it has and anything else means taking a full one.
+        if not parent or meta.get("chain_head") != parent:
+            raise HTTPError(409, f"{parent!r} is not the last live snapshot of vm {vm_id} "
+                                 f"({meta.get('chain_head')!r}); take a full live snapshot")
+        parent_manifest = snapshot_file(vm_id, parent, LIVE_MANIFEST, required=False)
+        if not parent_manifest:
+            raise HTTPError(409, f"parent snapshot {parent} is gone; take a full live snapshot")
+        if not snapshot_fs_reports_holes():
+            raise HTTPError(409, "this host's snapshot store cannot report holes, so it cannot "
+                                 "tell a diff's dirty pages from clean ones; take a full live snapshot")
     snap_id = f"snap-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     snap_dir = SNAPSHOTS_DIR / snap_id
     snap_dir.mkdir(parents=True)
     snap_rootfs = snap_dir / "rootfs.ext4"
-    extra_bytes = 0
+    was_paused = bool(meta.get("paused"))
     if live:
         # Both halves of the snapshot are taken inside ONE pause window. The
         # memory image holds the guest's view of its own disk (page cache,
@@ -1265,12 +1425,13 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
         # flushing it buys nothing, and an ssh round trip is real time added to
         # a window during which the guest is stopped.
         fc_vm_state(sock, "Paused")
+        ok = False
         try:
             copy_rootfs(meta["rootfs"], snap_rootfs)
             code, resp = fc_api(
                 sock, "PUT", "/snapshot/create",
                 {
-                    "snapshot_type": "Full",
+                    "snapshot_type": "Diff" if diff else "Full",
                     "snapshot_path": str(snap_dir / "vmstate"),
                     "mem_file_path": str(snap_dir / "mem"),
                 },
@@ -1278,45 +1439,68 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
             )
             if code >= 300:
                 raise RuntimeError(f"firecracker API /snapshot/create -> {code}: {resp!r}")
+            ok = True
         finally:
-            # Resume unconditionally. The realistic failure here is a full
-            # disk (the mem file is mem_size_mib every single time), and the
-            # cost of not doing this is a guest frozen forever over a snapshot
-            # nobody got: a bad snapshot is recoverable, a stopped VM that no
-            # call path will ever resume is not.
-            fc_vm_state(sock, "Resumed")
-        extra_bytes = (
-            os.path.getsize(snap_dir / "vmstate") + os.path.getsize(snap_dir / "mem")
-        )
+            # Resume unless the guest was already frozen, or the caller asked
+            # to keep it frozen and the snapshot it froze for exists. The
+            # realistic failure here is a full disk, and the cost of not
+            # resuming is a guest frozen forever over a snapshot nobody got: a
+            # bad snapshot is recoverable, a stopped VM that no call path will
+            # ever resume is not.
+            if not was_paused and not (keep_paused and ok):
+                fc_vm_state(sock, "Resumed")
+            if not ok:
+                # a failed create may still have reset the dirty bitmap.
+                meta.pop("chain_head", None)
+                save_meta(meta)
         # written before it is hashed below, so the manifest travels under a
-        # digest like the two files it describes. see the live artifact
-        # section for what each field is for.
+        # digest like the files it describes. see the live artifact section
+        # for what each field is for. snapshot_id makes it unique, so a child
+        # can name its exact parent by the digest of the parent's manifest.
         live_manifest = {
+            "snapshot_id": snap_id,
             "index": meta["index"],
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
         }
-        if meta.get("huge_pages"):
-            # after the resume above, so the guest is not paused while this hashes.
+        # one read of the rootfs for its digest and its block table. after the
+        # resume, so the guest is not kept stopped for it, except under
+        # keep_paused, where this is inside the migrate's pause.
+        digest, blocks = rootfs_digests(snap_rootfs)
+        rootfs_size = os.path.getsize(snap_rootfs)
+        live_manifest.update(rootfs_size=rootfs_size, rootfs_blocks=blocks)
+        if diff:
+            old = json.loads(parent_manifest.read_text()).get("rootfs_blocks") or []
+            live_manifest["parent_manifest"] = file_digest(parent_manifest)
+            changed = [
+                (i * ROOTFS_BLOCK_BYTES, min(ROOTFS_BLOCK_BYTES, rootfs_size - i * ROOTFS_BLOCK_BYTES))
+                for i, h in enumerate(blocks) if i >= len(old) or old[i] != h
+            ]
+            write_delta(snap_rootfs, changed, snap_dir / "rootfs.delta")
+            mem = snap_dir / "mem"
+            write_delta(mem, file_extents(mem), snap_dir / "mem.delta")
+            # the sparse diff image reads as zeros wherever the guest did not
+            # write, so it must never be served or restored as a memory image.
+            mem.unlink()
+        elif meta.get("huge_pages"):
             chunks, zeros = chunk_digests(snap_dir / "mem")
             live_manifest.update(page_size=HUGE_PAGE_BYTES, chunks=chunks, zero_chunks=zeros)
         (snap_dir / LIVE_MANIFEST).write_text(json.dumps(live_manifest))
+        # the rootfs digest is the artifact's identity on the wire; every other
+        # file gets a digest of its own so a peer can verify each one as it
+        # arrives without the identity changing meaning between kinds.
+        names = DELTA_FILES if diff else LIVE_FILES
+        files = {name: file_digest(snap_dir / name) for name in names}
+        extra_bytes = sum(os.path.getsize(snap_dir / name) for name in names)
     else:
         # Quiesce guest FS then copy.
         ssh_exec(meta["guest_ip"], "sync; sync", timeout=10.0)
         copy_rootfs(meta["rootfs"], snap_rootfs)
-    # Hashing is inline and blocking, so the snapshot is not reported ready
-    # until its digest is known. A digest that arrives later is a digest that
-    # some caller has already raced past.
-    #
-    # it covers the rootfs and only the rootfs, on both kinds, because it is
-    # also the artifact's identity on the wire. the memory half of a live
-    # snapshot gets a digest per file instead (`files` below), so a peer can
-    # verify each one as it arrives without the identity changing meaning
-    # between kinds. hashed after the resume: the guest is not kept stopped
-    # for it.
-    digest = file_digest(snap_rootfs)
-    files = {name: file_digest(snap_dir / name) for name in LIVE_FILES} if live else {}
+        # Hashing is inline and blocking, so the snapshot is not reported ready
+        # until its digest is known. A digest that arrives later is a digest
+        # that some caller has already raced past.
+        digest = file_digest(snap_rootfs)
+        files, extra_bytes = {}, 0
     # origin_vm_id records provenance only. It is deliberately NOT a lifetime
     # link: the origin vm may be destroyed while this artifact stays usable.
     record = {
@@ -1338,7 +1522,14 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False) -> dict:
     }
     if files:
         record["files"] = files
+    if diff:
+        record["parent"] = parent
     (snap_dir / "meta.json").write_text(json.dumps(record))
+    if live:
+        # every live snapshot resets the dirty bitmap, so each one is the
+        # parent the next diff has to be taken against.
+        meta["chain_head"] = snap_id
+        meta["paused"] = was_paused or keep_paused
     meta.setdefault("snapshots", []).append(record)
     save_meta(meta)
     return record
@@ -1361,6 +1552,10 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     # be steered at "../../<other-vm>/snapshots/<id>".
     snap_rootfs = snapshot_rootfs(vm_id, snapshot_id)
     kind = snapshot_kind(vm_id, snapshot_id)
+    parent = snapshot_parent(vm_id, snapshot_id)
+    if parent:
+        raise HTTPError(409, f"snapshot {snapshot_id} is a diff against {parent}; "
+                             "it holds only what changed and cannot be restored on its own")
     # Stop firecracker, swap rootfs, recreate the TAP (the dead fc process
     # may still be holding it briefly), restart with same config.
     stop_firecracker(meta)
@@ -1413,11 +1608,15 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
                 "snapshot_path": str(vmstate),
                 "mem_backend": backend,
                 "resume_vm": True,
+                LOAD_TRACK_DIRTY_FIELD: True,
             },
             timeout=SNAPSHOT_API_TIMEOUT,
         )
         if code >= 300:
             raise RuntimeError(f"firecracker API /snapshot/load -> {code}: {resp!r}")
+        # tracking restarts at the load, so the image just loaded is the base
+        # the next diff counts from.
+        meta["chain_head"] = snapshot_id
         save_meta(meta)
         # Seconds, not the cold-boot budget: a resumed guest already has a
         # booted userspace and sshd, so it answers immediately or it is broken,
@@ -1448,6 +1647,8 @@ def resume_plan(snapshot_id: str) -> dict:
         raise HTTPError(400, "resume requires seed_snapshot")
     if snapshot_kind("", snapshot_id) != "live":
         raise HTTPError(409, f"snapshot {snapshot_id} has no memory image to resume from")
+    if snapshot_parent("", snapshot_id):
+        raise HTTPError(409, f"snapshot {snapshot_id} is a diff and cannot be resumed on its own")
     try:
         manifest = json.loads(snapshot_file("", snapshot_id, LIVE_MANIFEST).read_text())
         index = int(manifest["index"])
@@ -1526,6 +1727,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
                 "snapshot_path": str(resume["vmstate"]),
                 "mem_backend": backend,
                 "resume_vm": False,
+                LOAD_TRACK_DIRTY_FIELD: True,
             }),
             ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
         ]:
@@ -1536,6 +1738,11 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         shutil.rmtree(link.parent, ignore_errors=True)
     fc_vm_state(meta["sock"], "Resumed")
     meta["resumed_from"] = str(resume["vmstate"].parent.name)
+    if not resume["lazy"]:
+        # the seed is complete and stays on this host, so it is the base the
+        # next diff of this vm counts from. a lazy seed is deleted just below
+        # and never held the memory, so it cannot be one.
+        meta["chain_head"] = meta["resumed_from"]
     if resume["lazy"]:
         # a lazy seed has no memory image, so nothing may boot from it, and
         # the orchestrator never recorded it. fc-uffd already read the manifest.
@@ -1658,7 +1865,7 @@ def verify_artifact_grant(grant: str, digest: str) -> bool:
     return hmac.compare_digest(artifact_grant_mac(g_digest, expiry, nonce), mac)
 
 
-def artifact_file(digest: str, name: str = "rootfs.ext4") -> tuple[Path, str]:
+def artifact_file(digest: str, name: str = "rootfs.ext4", snapshot_id: str = "") -> tuple[Path, str]:
     """resolve a content digest to one file of a local artifact.
 
     `digest` is always the ROOTFS digest: it is the artifact's identity, and
@@ -1687,6 +1894,11 @@ def artifact_file(digest: str, name: str = "rootfs.ext4") -> tuple[Path, str]:
     except OSError:
         raise HTTPError(404, "artifact not found")
     for entry in entries:
+        # a live snapshot is identified by its rootfs digest, and an idle
+        # guest's checkpoints can share one. naming the entry keeps every file
+        # of a pull coming out of the same snapshot.
+        if snapshot_id and entry != snapshot_id:
+            continue
         try:
             with open(os.path.join(store_root, entry, "meta.json"), "rb") as f:
                 rec = json.loads(f.read(MAX_BODY_BYTES))
@@ -1806,7 +2018,8 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
 
 
 def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
-                  files: dict | None = None, lazy: bool = False) -> dict:
+                  files: dict | None = None, lazy: bool = False,
+                  source_snapshot_id: str = "") -> dict:
     """fetch an artifact from a peer agent and commit it only if it verifies.
 
     every failure mode (peer refusal, short read, wrong bytes, full disk,
@@ -1848,13 +2061,17 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     snapshot_id = snapshot_id or f"art-{digest[:16]}"
     if not _SNAP_ID_RE.fullmatch(snapshot_id):
         raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
+    if source_snapshot_id and not _SNAP_ID_RE.fullmatch(source_snapshot_id):
+        raise HTTPError(400, f"invalid source snapshot id: {source_snapshot_id!r}")
+    # pins every file to one entry of the peer's store; see artifact_file.
+    q = f"?snapshot={source_snapshot_id}" if source_snapshot_id else ""
     dest_dir = _artifact_dest(snapshot_id)
 
     deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
     # iterating LIVE_FILES rather than `files` keeps the names that reach a url
     # or a path our own literals, whatever the request body spelled.
-    wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}", digest)] + [
-        (name, f"/v1/artifacts/{digest}/files/{name}", files[name])
+    wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest)] + [
+        (name, f"/v1/artifacts/{digest}/files/{name}{q}", files[name])
         for name in LIVE_FILES if name in files and not (lazy and name == "mem")
     ]
     staged: list[tuple[str, Path]] = []
@@ -1896,7 +2113,8 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             record["files"] = {name: files[name] for name in LIVE_FILES}
         if lazy:
             # what fc-uffd needs to reach the peer once this seed is resumed.
-            record["lazy"] = {"peer_url": peer_url, "digest": digest, "grant": grant}
+            record["lazy"] = {"peer_url": peer_url, "digest": digest, "grant": grant,
+                              "source_snapshot_id": source_snapshot_id}
         (dest_dir / "meta.json").write_text(json.dumps(record))
         return record
     except HTTPError:
@@ -1910,6 +2128,104 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
         # unconditional: on a failure path these are verified files that will
         # never be committed, and on the success path they are already gone.
         for _, tmp in staged:
+            tmp.unlink(missing_ok=True)
+
+
+def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str,
+                        files: dict, base: str, source_snapshot_id: str) -> dict:
+    """fetch a diff snapshot from a peer and merge it onto base, a complete
+    live snapshot already on this host, committing the result as a complete
+    live snapshot of its own.
+
+    only what changed crosses the wire: the vmstate, the dirty memory pages,
+    the rootfs blocks whose hashes moved, and the manifest. each is verified
+    against the digest the orchestrator recorded, exactly like a full pull, and
+    the child's manifest names its exact parent, so a delta applied to the
+    wrong base is refused rather than merged.
+
+    the merged image is not re-hashed. base verified when it arrived and the
+    delta verified just now, so the result is what the source had, and reading
+    a whole rootfs and memory image back here would sit inside the migrate's
+    pause. the cost: the record carries no mem digest, so it can be the base of
+    the next delta but not the source of a full move to a third host.
+    """
+    if not _DIGEST_RE.fullmatch(digest):
+        raise HTTPError(400, "digest must be a lowercase hex sha256")
+    if not grant:
+        raise HTTPError(400, "grant required")
+    for label, value in (("snapshot id", snapshot_id), ("base", base),
+                         ("source snapshot id", source_snapshot_id)):
+        if not value or not _SNAP_ID_RE.fullmatch(value):
+            raise HTTPError(400, f"invalid {label}: {value!r}")
+    if not isinstance(files, dict) or set(files) != set(DELTA_FILES):
+        raise HTTPError(400, f"files must name exactly {sorted(DELTA_FILES)}")
+    for expected in files.values():
+        if not isinstance(expected, str) or not _DIGEST_RE.fullmatch(expected):
+            raise HTTPError(400, "file digests must be lowercase hex sha256")
+    base_rootfs = snapshot_file("", base, "rootfs.ext4", required=False)
+    base_mem = snapshot_file("", base, "mem", required=False)
+    base_manifest = snapshot_file("", base, LIVE_MANIFEST, required=False)
+    if (snapshot_kind("", base) != "live" or snapshot_parent("", base)
+            or not (base_rootfs and base_mem and base_manifest)):
+        raise HTTPError(409, f"base {base} is not a complete live snapshot on this host")
+    dest_dir = _artifact_dest(snapshot_id)
+
+    deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
+    q = f"?snapshot={source_snapshot_id}"
+    staged: list[tuple[str, Path]] = []
+    merged: list[tuple[str, Path]] = []
+    total = 0
+    try:
+        for name in DELTA_FILES:
+            tmp, size = _fetch_verified(
+                peer_url, f"/v1/artifacts/{digest}/files/{name}{q}", grant, files[name],
+                deadline, MAX_ARTIFACT_BYTES - total,
+            )
+            staged.append((name, tmp))
+            total += size
+        stage = dict(staged)
+        manifest = json.loads(stage[LIVE_MANIFEST].read_text())
+        if manifest.get("parent_manifest") != file_digest(base_manifest):
+            raise HTTPError(409, f"delta was taken against a different parent than {base}")
+
+        rootfs = ARTIFACT_TMP_DIR / f"merge-{uuid.uuid4().hex}.rootfs"
+        mem = ARTIFACT_TMP_DIR / f"merge-{uuid.uuid4().hex}.mem"
+        merged = [("rootfs.ext4", rootfs), ("mem", mem)]
+        # reflink where the filesystem can: the untouched blocks are the point.
+        for src, dst in ((base_rootfs, rootfs), (base_mem, mem)):
+            copy_rootfs(str(src), dst)
+            sudo(["chmod", "666", str(dst)], check=False)
+        rootfs_size = int(manifest["rootfs_size"])
+        os.truncate(rootfs, rootfs_size)
+        apply_delta(stage["rootfs.delta"], rootfs, rootfs_size)
+        apply_delta(stage["mem.delta"], mem, os.path.getsize(mem))
+
+        # same commit as pull_artifact: nothing moves until everything has
+        # verified and merged, and meta.json goes last.
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for name, tmp in [("vmstate", stage["vmstate"]), (LIVE_MANIFEST, stage[LIVE_MANIFEST]), *merged]:
+            sudo(["mv", str(tmp), str(dest_dir / name)])
+            sudo(["chmod", "666", str(dest_dir / name)], check=False)
+        record = {
+            "snapshot_id": snapshot_id,
+            "comment": f"merged from {peer_url} onto {base}",
+            "created_at": now_iso(),
+            "origin_vm_id": "",
+            "digest": digest,
+            "kind": "live",
+            "bytes": total,
+            "source_peer": peer_url,
+            "merged_onto": base,
+            "files": {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]},
+        }
+        (dest_dir / "meta.json").write_text(json.dumps(record))
+        return record
+    except HTTPError:
+        raise
+    except (OSError, http.client.HTTPException, ValueError, KeyError) as e:
+        raise HTTPError(422, f"artifact delta pull failed: {e}")
+    finally:
+        for _, tmp in staged + merged:
             tmp.unlink(missing_ok=True)
 
 
@@ -2607,7 +2923,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             raise HTTPError(400, f"bad JSON: {e}")
 
-    def _serve_artifact(self, digest: str, name: str = "rootfs.ext4") -> None:
+    def _serve_artifact(self, digest: str, name: str = "rootfs.ext4", snapshot_id: str = "") -> None:
         """stream one file of a local artifact to a peer agent, authorized by a
         grant.
 
@@ -2624,9 +2940,11 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_artifact_grant(self.headers.get(ARTIFACT_GRANT_HEADER, ""), digest):
             # One undifferentiated answer for every verification failure.
             return self._text(403, "forbidden")
-        if name != "rootfs.ext4" and name not in LIVE_FILES:
+        if name != "rootfs.ext4" and name not in LIVE_FILES and name not in DELTA_FILES:
             return self._text(404, "artifact not found")
-        path, stored_digest = artifact_file(digest, name)
+        if snapshot_id and not _SNAP_ID_RE.fullmatch(snapshot_id):
+            return self._text(404, "artifact not found")
+        path, stored_digest = artifact_file(digest, name, snapshot_id)
         size = path.stat().st_size
         # a lazy resume on another host asks for mem one aligned 2M chunk at a
         # time. nothing else is ever fetched by range, so nothing else may be.
@@ -2688,12 +3006,13 @@ class Handler(BaseHTTPRequestHandler):
             # peer agent pulling a blob has a capability for one digest, not
             # this host's token. Any grant failure is 403 before the store is
             # touched, so this cannot be used to probe which digests exist.
+            snap = parse_qs(urlparse(self.path).query).get("snapshot", [""])[0]
             m = re.fullmatch(r"/v1/artifacts/([^/]+)", path)
             if m and method == "GET":
-                return self._serve_artifact(m.group(1))
+                return self._serve_artifact(m.group(1), snapshot_id=snap)
             m = re.fullmatch(r"/v1/artifacts/([^/]+)/files/([^/]+)", path)
             if m and method == "GET":
-                return self._serve_artifact(m.group(1), m.group(2))
+                return self._serve_artifact(m.group(1), m.group(2), snap)
 
             if not self._auth():
                 return self._text(401, "unauthorized")
@@ -2822,7 +3141,11 @@ class Handler(BaseHTTPRequestHandler):
                         # a host that cannot do it) keeps getting a disk
                         # snapshot, which is the fallback by design.
                         rec = snapshot_create(
-                            vm_id, body.get("comment", ""), live=bool(body.get("live", False))
+                            vm_id, body.get("comment", ""),
+                            live=bool(body.get("live", False)),
+                            diff=bool(body.get("diff", False)),
+                            parent=body.get("parent", "") or "",
+                            keep_paused=bool(body.get("keep_paused", False)),
                         )
                         # the digest goes back on the response because this is
                         # the only moment it is available to the caller: it is
@@ -2839,8 +3162,20 @@ class Handler(BaseHTTPRequestHandler):
                                 "kind": rec.get("kind", "disk"),
                                 "size_bytes": rec.get("size_bytes", 0),
                                 "files": rec.get("files", {}),
+                                "parent": rec.get("parent", ""),
                             },
                         )
+                    if action in ("pause", "resume") and method == "POST":
+                        # the orchestrator's way to thaw a source it froze for
+                        # a migrate that then failed. under the vm lock like
+                        # snapshot, so the two cannot interleave.
+                        meta = load_meta(vm_id)
+                        if not meta or not meta.get("sock"):
+                            raise HTTPError(409, "vm has no firecracker socket")
+                        fc_vm_state(meta["sock"], "Paused" if action == "pause" else "Resumed")
+                        meta["paused"] = action == "pause"
+                        save_meta(meta)
+                        return self._json(200, {"ok": True, "paused": meta["paused"]})
                     if action == "snapshots" and method == "GET":
                         return self._json(200, {"snapshots": snapshot_list(vm_id)})
                     if action == "restore" and method == "POST":
@@ -2872,6 +3207,16 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/v1/artifacts/([^/]+)/pull", path)
             if m and method == "POST":
                 body = self._read_json()
+                if body.get("base"):
+                    return self._json(200, pull_artifact_delta(
+                        m.group(1),
+                        body["peer_url"],
+                        body["grant"],
+                        body.get("snapshot_id", ""),
+                        body.get("files") or {},
+                        body["base"],
+                        body.get("source_snapshot_id", ""),
+                    ))
                 return self._json(200, pull_artifact(
                     m.group(1),
                     body["peer_url"],
@@ -2879,6 +3224,7 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("snapshot_id", ""),
                     body.get("files") or {},
                     bool(body.get("lazy")),
+                    body.get("source_snapshot_id", ""),
                 ))
             # Capacity
             if path == "/v1/capacity" and method == "GET":
