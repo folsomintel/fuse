@@ -27,16 +27,33 @@ cd host-agent/firecracker
 mkdir -p images && cp rootfs-desktop.ext4 images/desktop.ext4
 ```
 
-The bake installs the desktop stack (Xvfb, mutter, tint2, xdotool, scrot,
+The bake installs the desktop stack (Xvfb, a window manager, tint2, xdotool, scrot,
 xclip, Firefox ESR, pcmanfm) by resolving it in an `ubuntu:22.04` container on
 the host and extracting the result into the image — the guest itself cannot run
 `apt-get`. It finishes by booting the display inside a chroot and capturing a
 screenshot, so a broken bundle fails at bake time rather than at first boot.
 
 What comes up at boot, in order: `fuse-display` (Xvfb on `:1`), `fuse-wm`
-(mutter), `fuse-panel` (tint2), then `fused`. The agent is deliberately ordered
+(the window manager), `fuse-panel` (tint2), then `fused`. The agent is deliberately ordered
 last so nothing can reach the environment before the screen it would be
 driving exists.
+
+## Choosing a window manager
+
+The image runs mutter by default, the same window manager as Anthropic's
+computer-use reference image. `FC_DESKTOP_WMS` picks a different one at bake
+time; the supported values are `mutter`, `xfwm4` (Xfce's window manager) and
+`openbox`. To offer more than one, bake once per window manager and store each
+result under its own image name:
+
+```bash
+FC_DESKTOP_WMS=openbox ./fc-bake-desktop-rootfs.sh
+cp rootfs-desktop.ext4 images/desktop-openbox.ext4
+```
+
+A Fusefile then selects it with `image: desktop-openbox`. `FC_DESKTOP_WMS`
+takes a space-separated list and installs all of them; the first one is the
+one that starts at boot.
 
 ## Using the image
 

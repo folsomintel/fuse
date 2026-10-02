@@ -6,8 +6,9 @@
 # Inputs:
 #   rootfs-fused.ext4      baked image from ./fc-bake-rootfs.sh (working dir)
 #   fuse-display-run       xvfb runner script (ships in host-agent/firecracker/)
+#   fuse-wm-run            window manager runner script (same place)
 #   ops/systemd/fuse-display.service   systemd unit for the display
-#   ops/systemd/fuse-wm.service        systemd unit for the window manager (mutter)
+#   ops/systemd/fuse-wm.service        systemd unit for the window manager
 #   ops/systemd/fuse-panel.service     systemd unit for the panel (tint2)
 #   ops/systemd/fuse-vnc.service       systemd unit for the vnc server (x11vnc)
 #
@@ -16,6 +17,12 @@
 #                          from a Fusefile (mkdir -p images && cp
 #                          rootfs-desktop.ext4 images/desktop.ext4, then
 #                          `image: desktop`)
+#
+# Window managers: FC_DESKTOP_WMS lists the wms to install, any of mutter,
+# xfwm4 and openbox (default: mutter). The first one is the one that starts.
+# To offer a choice of desktops, bake once per wm and copy each result under
+# its own name, e.g. FC_DESKTOP_WMS=openbox, then
+# cp rootfs-desktop.ext4 images/desktop-openbox.ext4 and `image: desktop-openbox`.
 #
 # The guest cannot apt-get (the CI rootfs ships an empty dpkg status), so the
 # desktop stack is installed into an ubuntu:22.04 container on the host - the
@@ -35,6 +42,7 @@ SIZE=${FC_DESKTOP_ROOTFS_SIZE:-8G}
 GEOMETRY=${FC_DESKTOP_GEOMETRY:-1024x768x24}
 MOUNT_POINT=${FC_BAKE_MOUNT:-/tmp/fcbake-desktop}
 WORK=${FC_BAKE_WORK:-/tmp/fcbake-work}
+WMS=${FC_DESKTOP_WMS:-mutter}
 
 # everything the desktop needs, resolved with dependencies by apt inside the
 # bundle container. firefox-esr comes from the mozillateam ppa because the
@@ -42,7 +50,7 @@ WORK=${FC_BAKE_WORK:-/tmp/fcbake-work}
 # the guest.
 DESKTOP_PACKAGES="xvfb x11-utils x11-xserver-utils xauth
   xdotool scrot xclip x11vnc
-  mutter tint2
+  tint2
   pcmanfm xterm
   dbus dbus-x11
   fonts-dejavu-core fonts-liberation
@@ -50,10 +58,28 @@ DESKTOP_PACKAGES="xvfb x11-utils x11-xserver-utils xauth
 
 log() { printf '\033[1;36m[bake] %s\033[0m\n' "$*"; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
-for c in sudo mount umount truncate e2fsck resize2fs tar podman chroot; do need "$c"; done
+for c in sudo mount umount truncate e2fsck resize2fs tar podman chroot sha256sum; do need "$c"; done
+
+# each wm is its own package, named the same as its binary
+DEFAULT_WM=""
+for wm in $WMS; do
+  case "$wm" in
+    mutter|xfwm4|openbox) ;;
+    *) echo "unknown wm in FC_DESKTOP_WMS: $wm (want mutter, xfwm4 or openbox)" >&2; exit 1 ;;
+  esac
+  [ -n "$DEFAULT_WM" ] || DEFAULT_WM=$wm
+  DESKTOP_PACKAGES="$DESKTOP_PACKAGES $wm"
+done
+[ -n "$DEFAULT_WM" ] || { echo "FC_DESKTOP_WMS is empty" >&2; exit 1; }
+
+# the bundle is cached per package list, so changing the list (or the wms)
+# builds a fresh bundle instead of silently reusing a stale one
+BUNDLE="$WORK/desktop-$(echo $DESKTOP_PACKAGES | tr ' ' '\n' | sort | sha256sum | cut -c1-12).tar"
 
 [ -f "$BASE" ] || { echo "$BASE not found — run ./fc-bake-rootfs.sh first" >&2; exit 1; }
-[ -f fuse-display-run ] || { echo "fuse-display-run not found — it ships in host-agent/firecracker/; restore it" >&2; exit 1; }
+for r in fuse-display-run fuse-wm-run; do
+  [ -f "$r" ] || { echo "$r not found — it ships in host-agent/firecracker/; restore it" >&2; exit 1; }
+done
 for u in fuse-display fuse-wm fuse-panel fuse-vnc; do
   [ -f "$OPS_SYSTEMD/$u.service" ] || { echo "$u.service not found — it ships in ops/systemd/; restore it" >&2; exit 1; }
 done
@@ -93,7 +119,7 @@ sudo -n mount -o loop "$OUT" "$MOUNT_POINT"
 
 # --- 1. desktop bundle (built in ubuntu:22.04 via host podman) ---------------
 
-if [ ! -f "$WORK/desktop-full.tar" ]; then
+if [ ! -f "$BUNDLE" ]; then
   log "build desktop bundle from ubuntu:22.04 (this downloads a browser; takes a while)"
   # host network: skips netavark firewall setup, which needs nft/iptables on the host.
   # software-properties-common is installed before the package snapshot so the
@@ -142,11 +168,12 @@ if [ ! -f "$WORK/desktop-full.tar" ]; then
       find /usr/share/mime -type f 2>/dev/null || true
       true
     } | sort -u > /tmp/manifest
-    tar -cf /out/desktop-full.tar --no-recursion -T /tmp/manifest
+    tar -cf /out/bundle.tar --no-recursion -T /tmp/manifest
   '
+  mv "$WORK/bundle.tar" "$BUNDLE"
 fi
 log "inject desktop bundle"
-sudo -n tar -xf "$WORK/desktop-full.tar" -C "$MOUNT_POINT"
+sudo -n tar -xf "$BUNDLE" -C "$MOUNT_POINT"
 
 # the bundle added a few hundred shared libraries; refresh the loader cache so
 # the guest does not depend on the compiled-in fallback search path
@@ -158,18 +185,21 @@ fi
 
 # --- 2. display runner + systemd units ---------------------------------------
 
-log "inject display runner + systemd units"
+log "inject display + wm runners + systemd units"
 sudo -n install -m 0755 fuse-display-run "$MOUNT_POINT/usr/local/bin/fuse-display-run"
+sudo -n install -m 0755 fuse-wm-run "$MOUNT_POINT/usr/local/bin/fuse-wm-run"
 for u in fuse-display fuse-wm fuse-panel fuse-vnc; do
   sudo -n install -m 0644 "$OPS_SYSTEMD/$u.service" "$MOUNT_POINT/etc/systemd/system/$u.service"
   sudo -n ln -sf "/etc/systemd/system/$u.service" \
     "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/$u.service"
 done
 
-log "write /etc/default/fuse-desktop (geometry $GEOMETRY)"
+log "write /etc/default/fuse-desktop (geometry $GEOMETRY, wm $DEFAULT_WM)"
 sudo -n tee "$MOUNT_POINT/etc/default/fuse-desktop" >/dev/null <<CONF
-# baked default; a fusefile desktop block overrides this via /fuse/desktop.json
+# baked default; a fusefile desktop block overrides the geometry via /fuse/desktop.json
 FUSE_DISPLAY_GEOMETRY=$GEOMETRY
+# the wm fuse-wm-run starts; installed wms: $WMS
+FUSE_DESKTOP_WM=$DEFAULT_WM
 CONF
 
 # order the agent after the desktop so its computer surface never races a
@@ -196,19 +226,29 @@ check -x /usr/bin/xdpyinfo
 check -x /usr/bin/xdotool
 check -x /usr/bin/scrot
 check -x /usr/bin/xclip
-check -x /usr/bin/mutter
+for wm in $WMS; do check -x "/usr/bin/$wm"; done
 check -x /usr/bin/tint2
 check -x /usr/bin/x11vnc
 check -x /usr/bin/xsetroot
 check -x /usr/bin/pcmanfm
 check -e /usr/bin/firefox-esr
 check -x /usr/local/bin/fuse-display-run
+check -x /usr/local/bin/fuse-wm-run
 check -f /etc/systemd/system/fuse-display.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-display.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-wm.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-panel.service
 check -L /etc/systemd/system/multi-user.target.wants/fuse-vnc.service
 check -f /etc/systemd/system/fused.service.d/10-desktop.conf
+
+# every installed wm must resolve all its libraries, or fuse-wm dies at boot
+# and the desktop comes up with no window manager
+for wm in $WMS; do
+  if sudo -n chroot "$MOUNT_POINT" ldd "/usr/bin/$wm" | grep -q "not found"; then
+    echo "[bake] sanity check FAILED: /usr/bin/$wm has unresolved libraries" >&2
+    exit 1
+  fi
+done
 
 # boot the display stack in a chroot and capture a real screenshot, so a bundle
 # with a missing library fails here instead of at first VM boot. skippable for
