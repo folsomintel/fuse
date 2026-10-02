@@ -12,6 +12,10 @@ package main
 // geometry with the live display and restarts the display units on a
 // mismatch. The display runner itself prefers /fuse/desktop.json when it
 // exists, so the restarted Xvfb comes up at the declared geometry.
+//
+// The window manager closes the same loop: fuse-wm-run starts the declared
+// wm (falling back to the baked default when the image lacks it) and records
+// the one it started in liveWMPath, which fused compares against.
 
 import (
 	"context"
@@ -20,15 +24,37 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
+
+// liveWMPath is where fuse-wm-run records the window manager it started. It
+// sits in fuse-wm's RuntimeDirectory, so it disappears when the unit stops.
+const liveWMPath = "/run/fuse-desktop/wm"
+
+// liveWM reads the running window manager, empty when none is recorded.
+func liveWM() string {
+	raw, err := os.ReadFile(liveWMPath)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// wmInstalled reports whether the image carries the named window manager.
+// every supported wm installs its binary under the same name.
+func wmInstalled(wm string) bool {
+	_, err := os.Stat("/usr/bin/" + wm)
+	return err == nil
+}
 
 // desktopSpec mirrors orchestrator.DesktopSpec field for field; that struct
 // is marshalled straight into the file, so the two shapes are the same shape
 // by construction.
 type desktopSpec struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	WM     string `json:"wm,omitempty"`
 }
 
 // loadDesktopSpec reads the declared geometry. A missing file is the ordinary
@@ -61,6 +87,12 @@ func needsDisplayRestart(spec *desktopSpec, liveW, liveH int) bool {
 	return spec != nil && (liveW != spec.Width || liveH != spec.Height)
 }
 
+// needsWMRestart reports whether the running window manager disagrees with
+// the declared one. An empty declaration keeps whatever the image started.
+func needsWMRestart(spec *desktopSpec, live string) bool {
+	return spec != nil && spec.WM != "" && spec.WM != live
+}
+
 // applyDesktop reconciles the live display with the declared geometry, best
 // effort. Unlike a broken healthcheck config this is never fatal: killing the
 // agent would take exec and every other route down with it, and the failure
@@ -90,6 +122,7 @@ func applyDesktop(path, display string) {
 		return
 	}
 	if !needsDisplayRestart(spec, w, h) {
+		applyWM(spec)
 		return
 	}
 
@@ -104,5 +137,28 @@ func applyDesktop(path, display string) {
 		"fuse-display.service", "fuse-wm.service", "fuse-panel.service", "fuse-vnc.service")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		log.Printf("WARNING: display restart failed: %v (%s)", err, string(out))
+	}
+}
+
+// applyWM swaps the window manager when the declared one is not the one
+// running. A full display restart already restarts fuse-wm, which reads the
+// declared wm itself, so this only runs when the geometry was right.
+func applyWM(spec *desktopSpec) {
+	live := liveWM()
+	if !needsWMRestart(spec, live) {
+		return
+	}
+	// restarting into a wm the image lacks would only fall back to the
+	// default again, so say so instead
+	if !wmInstalled(spec.WM) {
+		log.Printf("WARNING: desktop declares wm %q but this image does not carry it; keeping %q", spec.WM, live)
+		return
+	}
+	log.Printf("wm is %q, desktop declares %q; restarting fuse-wm", live, spec.WM)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "systemctl", "restart", "fuse-wm.service")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("WARNING: wm restart failed: %v (%s)", err, string(out))
 	}
 }

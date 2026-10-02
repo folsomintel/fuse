@@ -298,6 +298,18 @@ func TestFusedAgentSpecWritesDesktopFile(t *testing.T) {
 	if got.Width != 1280 || got.Height != 800 {
 		t.Errorf("desktop = %+v, want 1280x800", got)
 	}
+	// an undeclared wm stays out of the file, so fuse-wm-run keeps the
+	// image's baked default
+	if strings.Contains(string(raw), `"wm"`) {
+		t.Errorf("desktop file %s carries a wm key with no wm declared", raw)
+	}
+
+	spec = FusedAgentSpec(DefaultFusedManifest, nil, nil, BootOptions{
+		Desktop: &DesktopSpec{Width: 1280, Height: 800, WM: "openbox"},
+	})
+	if raw := string(spec.Files[GuestDesktopPath]); !strings.Contains(raw, `"wm":"openbox"`) {
+		t.Errorf("desktop file %s does not carry the declared wm", raw)
+	}
 }
 
 // No desktop block means no file: its absence is what tells the image to keep

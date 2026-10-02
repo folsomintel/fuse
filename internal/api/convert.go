@@ -111,7 +111,7 @@ func toOrchestratorDesktop(d *DesktopSpec) *orchestrator.DesktopSpec {
 	if d == nil {
 		return nil
 	}
-	return &orchestrator.DesktopSpec{Width: d.Width, Height: d.Height}
+	return &orchestrator.DesktopSpec{Width: d.Width, Height: d.Height, WM: d.WM}
 }
 
 // toAPIResourceSpec converts an orchestrator.Spec into the wire shape.

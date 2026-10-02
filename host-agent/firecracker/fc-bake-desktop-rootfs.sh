@@ -19,10 +19,10 @@
 #                          `image: desktop`)
 #
 # Window managers: FC_DESKTOP_WMS lists the wms to install, any of mutter,
-# xfwm4 and openbox (default: mutter). The first one is the one that starts.
-# To offer a choice of desktops, bake once per wm and copy each result under
-# its own name, e.g. FC_DESKTOP_WMS=openbox, then
-# cp rootfs-desktop.ext4 images/desktop-openbox.ext4 and `image: desktop-openbox`.
+# xfwm4 and openbox (default: all three). The first one starts unless a
+# Fusefile `desktop.wm` picks another the image carries. A leaner image can
+# carry just one, e.g. FC_DESKTOP_WMS=openbox, copied under its own name
+# (images/desktop-openbox.ext4, then `image: desktop-openbox`).
 #
 # The guest cannot apt-get (the CI rootfs ships an empty dpkg status), so the
 # desktop stack is installed into an ubuntu:22.04 container on the host - the
@@ -42,7 +42,7 @@ SIZE=${FC_DESKTOP_ROOTFS_SIZE:-8G}
 GEOMETRY=${FC_DESKTOP_GEOMETRY:-1024x768x24}
 MOUNT_POINT=${FC_BAKE_MOUNT:-/tmp/fcbake-desktop}
 WORK=${FC_BAKE_WORK:-/tmp/fcbake-work}
-WMS=${FC_DESKTOP_WMS:-mutter}
+WMS=${FC_DESKTOP_WMS:-mutter xfwm4 openbox}
 
 # everything the desktop needs, resolved with dependencies by apt inside the
 # bundle container. firefox-esr comes from the mozillateam ppa because the

@@ -467,7 +467,7 @@ func toSDKDesktop(in *fusefile.DesktopSpec) *fuse.DesktopSpec {
 	if in == nil {
 		return nil
 	}
-	return &fuse.DesktopSpec{Width: in.Width, Height: in.Height}
+	return &fuse.DesktopSpec{Width: in.Width, Height: in.Height, WM: in.WM}
 }
 
 // toSDKEgress converts the compiler's egress block into the SDK wire type.

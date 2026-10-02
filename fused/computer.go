@@ -565,6 +565,9 @@ func (c *computer) handleDisplay(w http.ResponseWriter, r *http.Request) {
 	body["up"] = true
 	body["width"] = wpx
 	body["height"] = hpx
+	if wm := liveWM(); wm != "" {
+		body["wm"] = wm
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 

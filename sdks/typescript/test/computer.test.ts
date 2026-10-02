@@ -36,12 +36,21 @@ describe("environments.computer", () => {
       expect(req.method).toBe("GET");
       expect(pathOf(req)).toBe("/v1/environments/vm-1/computer");
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ display: ":1", up: true, width: 1280, height: 800 }));
+      res.end(
+        JSON.stringify({
+          display: ":1",
+          up: true,
+          width: 1280,
+          height: 800,
+          wm: "openbox",
+        }),
+      );
     });
 
     const res = await current.client.environments.computerDisplay("vm-1");
     expect(res.up).toBe(true);
     expect(res.width).toBe(1280);
+    expect(res.wm).toBe("openbox");
   });
 
   it("rejects an empty vm id or action before any request is made", async () => {

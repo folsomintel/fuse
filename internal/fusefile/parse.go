@@ -7,6 +7,7 @@ import (
 	"io"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -503,6 +504,9 @@ func validateDesktop(d *Desktop) []error {
 	}
 	if d.Height < minDesktopDim || d.Height > maxDesktopDim {
 		errs = append(errs, fmt.Errorf("desktop.height: must be between %d and %d, got %d", minDesktopDim, maxDesktopDim, d.Height))
+	}
+	if d.WM != "" && !slices.Contains(DesktopWMs, d.WM) {
+		errs = append(errs, fmt.Errorf("desktop.wm: must be one of %s, got %q", strings.Join(DesktopWMs, ", "), d.WM))
 	}
 	return errs
 }

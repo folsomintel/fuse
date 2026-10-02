@@ -280,7 +280,8 @@ Contents added on top of the base image:
   geometry `1024x768x24`, override at bake time with `FC_DESKTOP_GEOMETRY`
 - mutter (window manager) and tint2 (panel), matching Anthropic's computer-use
   reference image so behaviour is comparable; `FC_DESKTOP_WMS` swaps or adds
-  window managers at bake time (`mutter`, `xfwm4`, `openbox`; the first starts)
+  window managers at bake time (`mutter`, `xfwm4`, `openbox`, all three by
+  default; the first starts unless a Fusefile `desktop.wm` picks another)
 - `xdotool`, `scrot`, `xclip` — the input/capture/clipboard primitives
 - Firefox ESR (from the mozillateam PPA; the archive `firefox` on 22.04 is a
   snap shim and snaps cannot run in the guest), pcmanfm, xterm

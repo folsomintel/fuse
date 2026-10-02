@@ -541,7 +541,8 @@ func validateHealthcheck(hc *HealthcheckSpec) error {
 
 // validateDesktop enforces the desktop geometry's bounds at the API boundary
 // so raw SDK callers are held to the same rules as Fusefile authors. The
-// bounds mirror internal/fusefile's: 320 to 3840 on each axis, both required.
+// bounds mirror internal/fusefile's: 320 to 3840 on each axis, both required,
+// and wm, when set, one of the window managers a desktop image can run.
 //
 // A nil desktop is the common case and always valid: the block is optional
 // and its absence means the environment declares no desktop.
@@ -554,6 +555,11 @@ func validateDesktop(d *DesktopSpec) error {
 	}
 	if d.Height < 320 || d.Height > 3840 {
 		return fmt.Errorf("desktop.height must be between 320 and 3840, got %d", d.Height)
+	}
+	switch d.WM {
+	case "", "mutter", "xfwm4", "openbox":
+	default:
+		return fmt.Errorf("desktop.wm must be one of mutter, xfwm4, openbox, got %q", d.WM)
 	}
 	return nil
 }

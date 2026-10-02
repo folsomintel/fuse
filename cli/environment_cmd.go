@@ -221,8 +221,11 @@ func renderEnvDetail(e *fuse.EnvironmentInfo, display *fuse.ComputerDisplay) {
 	if display != nil {
 		switch {
 		case display.Up:
-			pairs = append(pairs, [2]string{"desktop",
-				fmt.Sprintf("%dx%d  (%s)", display.Width, display.Height, dash(display.Display))})
+			row := fmt.Sprintf("%dx%d  (%s)", display.Width, display.Height, dash(display.Display))
+			if display.WM != "" {
+				row += "  " + display.WM
+			}
+			pairs = append(pairs, [2]string{"desktop", row})
 		case strings.Contains(display.Error, "is not up"):
 			pairs = append(pairs, [2]string{"desktop", styleWarn.Render("down") + "  " + display.Error})
 		}

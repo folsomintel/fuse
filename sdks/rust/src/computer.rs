@@ -187,6 +187,11 @@ pub struct ComputerDisplay {
     pub up: bool,
     pub width: u32,
     pub height: u32,
+    /// The window manager actually running, which can differ from
+    /// [`DesktopSpec::wm`](crate::DesktopSpec) when the image lacks the one
+    /// asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wm: Option<crate::DesktopWm>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

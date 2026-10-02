@@ -175,6 +175,24 @@ func TestEnvGetRendersDesktop(t *testing.T) {
 	}
 }
 
+func TestEnvGetRendersDesktopWM(t *testing.T) {
+	srv, _ := computerServer(t, `{"display":":1","up":true,"width":1280,"height":800,"wm":"openbox"}`)
+	defer srv.Close()
+	cfg := writeConfig(t, srv.URL)
+
+	out, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "environment", "get", "vm1"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "openbox") {
+		t.Errorf("desktop row missing the live wm:\n%s", out)
+	}
+}
+
 func TestEnvGetNoDesktopRowWithoutDesktop(t *testing.T) {
 	srv, _ := computerServer(t, `{"up":false,"error":"xdotool not installed; this is not a desktop image"}`)
 	defer srv.Close()

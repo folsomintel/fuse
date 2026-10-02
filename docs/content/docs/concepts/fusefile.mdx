@@ -545,6 +545,7 @@ image: desktop
 desktop:
   width: 1280
   height: 800
+  wm: openbox # optional: mutter (the default), xfwm4 or openbox
 
 resources:
   memory: 4GB # a browser session does not fit the 1GB default
@@ -563,9 +564,17 @@ than as the config error it is — so there is deliberately no default to fall
 back to. Omitting the whole block is different: that keeps the desktop image's
 baked default (1024x768).
 
-The geometry travels to the guest as `/fuse/desktop.json`, and the guest agent
-restarts the display at the declared size if it came up at a different one.
-The display number is fixed at `:1`.
+`wm` picks the window manager: `mutter`, `xfwm4` (Xfce's) or `openbox`.
+Omitting it keeps the image's baked default, which is mutter on the standard
+desktop bake. The image has to carry the window manager you name. The standard
+bake installs all three, but an image baked with only some of them keeps its
+default and logs a warning. Check `wm` in the display report (shown on
+`fuse environment get`) to see which window manager is actually running.
+
+The geometry and window manager travel to the guest as `/fuse/desktop.json`.
+The guest agent restarts the display if it came up at a different size, or
+just the window manager if a different one is running. The display number is
+fixed at `:1`.
 
 ## Base images are not OCI images
 

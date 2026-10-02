@@ -156,12 +156,22 @@ type EgressStatus struct {
 // stack; on any other image the declaration is inert and the computer surface
 // reports the display as absent.
 //
-// Both fields are required, 320 to 3840 each: a guessed dimension would
-// silently shift every coordinate a computer-use model emits.
+// Width and Height are required, 320 to 3840 each: a guessed dimension would
+// silently shift every coordinate a computer-use model emits. WM is optional
+// and names the window manager (one of the DesktopWM constants); empty keeps
+// the image's baked default.
 type DesktopSpec struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	WM     string `json:"wm,omitempty"`
 }
+
+// Window managers a desktop image can run, for DesktopSpec.WM.
+const (
+	DesktopWMMutter  = "mutter"
+	DesktopWMXfwm4   = "xfwm4"
+	DesktopWMOpenbox = "openbox"
+)
 
 // ComputerActionRequest is one computer-use action, in the same shape
 // Anthropic's computer tool emits as tool_use input, so translating a
@@ -190,11 +200,15 @@ type ComputerActionResponse struct {
 // ComputerDisplay reports the environment's display: whether it is up and at
 // what geometry, so a caller can populate display_width_px /
 // display_height_px in its computer tool definition without hardcoding them.
+//
+// WM is the window manager actually running, which can differ from
+// DesktopSpec.WM when the image does not carry the one asked for.
 type ComputerDisplay struct {
 	Display string `json:"display,omitempty"`
 	Up      bool   `json:"up"`
 	Width   int    `json:"width"`
 	Height  int    `json:"height"`
+	WM      string `json:"wm,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 

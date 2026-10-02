@@ -40,20 +40,29 @@ driving exists.
 
 ## Choosing a window manager
 
-The image runs mutter by default, the same window manager as Anthropic's
-computer-use reference image. `FC_DESKTOP_WMS` picks a different one at bake
-time; the supported values are `mutter`, `xfwm4` (Xfce's window manager) and
-`openbox`. To offer more than one, bake once per window manager and store each
-result under its own image name:
+The image carries three window managers: `mutter` (the default, the same one
+Anthropic's computer-use reference image runs), `xfwm4` (Xfce's) and
+`openbox`. A Fusefile picks one per environment, with no rebake:
+
+```yaml
+image: desktop
+desktop:
+  width: 1280
+  height: 800
+  wm: xfwm4
+```
+
+`FC_DESKTOP_WMS` controls which window managers the bake installs, as a
+space-separated list whose first entry is the default. A leaner image can carry
+just one:
 
 ```bash
 FC_DESKTOP_WMS=openbox ./fc-bake-desktop-rootfs.sh
 cp rootfs-desktop.ext4 images/desktop-openbox.ext4
 ```
 
-A Fusefile then selects it with `image: desktop-openbox`. `FC_DESKTOP_WMS`
-takes a space-separated list and installs all of them; the first one is the
-one that starts at boot.
+A `desktop.wm` the image does not carry falls back to the image's default.
+The display report's `wm` field says which one is running.
 
 ## Using the image
 
