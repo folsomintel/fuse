@@ -1535,6 +1535,35 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
     return record
 
 
+def snapshot_delete(snapshot_id: str, vm_id: str = "") -> None:
+    """remove a snapshot from the store, and from vm_id's list when given.
+
+    safe while a vm seeded from it is running: create_vm copies the rootfs,
+    a file-backed resume copies mem, and fc-uffd holds its own descriptor on
+    the memory image, so nothing running reads through the store path. the
+    orchestrator decides what may be deleted (lineage, seeds in flight); this
+    only reclaims the bytes, which until now nothing on the host ever did.
+    """
+    if not _SNAP_ID_RE.fullmatch(snapshot_id):
+        raise HTTPError(400, f"invalid snapshot id: {snapshot_id!r}")
+    dirs = [_artifact_dest(snapshot_id)]
+    if vm_id:
+        # snapshots taken before the host-global store live under the vm dir.
+        legacy_root = os.path.realpath(os.path.join(str(vm_dir(vm_id)), "snapshots"))
+        legacy = os.path.realpath(os.path.join(legacy_root, snapshot_id))
+        if legacy.startswith(legacy_root + os.sep):
+            dirs.append(Path(legacy))
+    found = [d for d in dirs if d.exists()]
+    if not found:
+        raise HTTPError(404, "snapshot not found")
+    for d in found:
+        sudo(["rm", "-rf", str(d)], check=False)
+    meta = load_meta(vm_id) if vm_id else None
+    if meta:
+        meta["snapshots"] = [r for r in meta.get("snapshots", []) if r.get("snapshot_id") != snapshot_id]
+        save_meta(meta)
+
+
 def snapshot_list(vm_id: str) -> list[dict]:
     meta = load_meta(vm_id)
     if not meta:
@@ -2132,7 +2161,8 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
 
 
 def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str,
-                        files: dict, base: str, source_snapshot_id: str) -> dict:
+                        files: dict, base: str, source_snapshot_id: str,
+                        drop_base: bool = False) -> dict:
     """fetch a diff snapshot from a peer and merge it onto base, a complete
     live snapshot already on this host, committing the result as a complete
     live snapshot of its own.
@@ -2142,6 +2172,10 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
     against the digest the orchestrator recorded, exactly like a full pull, and
     the child's manifest names its exact parent, so a delta applied to the
     wrong base is refused rather than merged.
+
+    drop_base removes base once the merged copy is committed. a standby host
+    advancing a checkpoint chain would otherwise keep one full memory image
+    per interval, and nothing else on the host ever deletes a pulled copy.
 
     the merged image is not re-hashed. base verified when it arrived and the
     delta verified just now, so the result is what the source had, and reading
@@ -2219,6 +2253,10 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             "files": {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]},
         }
         (dest_dir / "meta.json").write_text(json.dumps(record))
+        if drop_base:
+            # after the commit, never before: a merge that failed part way has
+            # to leave the base it was merging onto exactly as it was.
+            sudo(["rm", "-rf", str(_artifact_dest(base))], check=False)
         return record
     except HTTPError:
         raise
@@ -3046,6 +3084,18 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(200, json.loads(Path(meta["uffd_status"]).read_text()))
                 except (OSError, ValueError):
                     return self._json(200, {"done": False})
+            # snapshot deletion: one of a vm's own, or a free-standing copy in
+            # the store (a pulled artifact or a checkpoint base) by id alone.
+            m = re.fullmatch(r"/v1/vm/([^/]+)/snapshots/([^/]+)", path)
+            if m and method == "DELETE":
+                vm_id = sanitize_name(m.group(1))
+                with vm_lock(vm_id):
+                    snapshot_delete(m.group(2), vm_id)
+                return self._text(204, "")
+            m = re.fullmatch(r"/v1/snapshots/([^/]+)", path)
+            if m and method == "DELETE":
+                snapshot_delete(m.group(1))
+                return self._text(204, "")
             # /v1/vm/{id}
             m = re.fullmatch(r"/v1/vm/([^/]+)", path)
             if m:
@@ -3216,6 +3266,7 @@ class Handler(BaseHTTPRequestHandler):
                         body.get("files") or {},
                         body["base"],
                         body.get("source_snapshot_id", ""),
+                        bool(body.get("drop_base")),
                     ))
                 return self._json(200, pull_artifact(
                     m.group(1),
