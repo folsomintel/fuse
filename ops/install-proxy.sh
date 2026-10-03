@@ -247,6 +247,9 @@ If the orchestrator runs on a different machine, point ADMIN_URL at this host
 and move FUSE_PROXY_ADMIN_LISTEN off loopback -- but reach it over a private
 network or a tunnel, never the public internet.
 
+Metrics: Prometheus can scrape http://${ADMIN_LISTEN}/metrics with no token.
+See docs/content/docs/cloud/monitoring.mdx for what each series means.
+
 Firewall, on this host:
   udp ${TUNNEL_LISTEN}       open to every firecracker host (guests dial in)
   tcp ${PORTS}   open to clients (environment urls)

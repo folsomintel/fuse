@@ -23,6 +23,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/folsomintel/fuse/internal/ingress"
 	"github.com/folsomintel/fuse/internal/tunnel"
 )
@@ -84,6 +88,9 @@ func run(logger *slog.Logger, stateDir, publicHost, tunnelAddr, adminAddr, portR
 	if err != nil {
 		return fmt.Errorf("tunnel certificate: %w", err)
 	}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	metrics := ingress.NewMetrics(reg)
 	proxy, err := ingress.New(ingress.Config{
 		StatePath:   filepath.Join(stateDir, "routes.json"),
 		PortMin:     portMin,
@@ -91,6 +98,7 @@ func run(logger *slog.Logger, stateDir, publicHost, tunnelAddr, adminAddr, portR
 		BindHost:    bindHost,
 		HoldTimeout: hold,
 		Logger:      logger,
+		Metrics:     metrics,
 	})
 	if err != nil {
 		return err
@@ -106,6 +114,7 @@ func run(logger *slog.Logger, stateDir, publicHost, tunnelAddr, adminAddr, portR
 	if err != nil {
 		return fmt.Errorf("tunnel listener: %w", err)
 	}
+	server.SetMetrics(metrics)
 	proxy.Start(server)
 
 	certPEM, err := tunnel.CertPEM(cert)
@@ -119,6 +128,7 @@ func run(logger *slog.Logger, stateDir, publicHost, tunnelAddr, adminAddr, portR
 			PublicHost:    publicHost,
 			TunnelPort:    udp.LocalAddr().(*net.UDPAddr).Port,
 			ServerCertPEM: certPEM,
+			Metrics:       promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

@@ -102,6 +102,69 @@ saturation cannot be broken down by route.
 | `orchestrator_reconcile_orphans_dead_lettered_total` increasing | Warning | VMs stuck in an unrecoverable state, needs manual cleanup. |
 | `orchestrator_fleet_egress_endpoints{state="unhealthy"} > 0` for 2+ cycles | Warning | Proxy-mode environments with no outbound access; the backend on that host is down. |
 
+## fuse-proxy
+
+`fuse-proxy` serves its own Prometheus metrics on the admin listener at
+`/metrics` (`127.0.0.1:7080` by default, set by `FUSE_PROXY_ADMIN_LISTEN`).
+Like `/healthz` it needs no admin token, so the scraper never holds the
+credential that moves routes. Every other path on that listener still does, so
+keep it off the public internet and scrape it from the same private network the
+orchestrator uses.
+
+```yaml
+scrape_configs:
+  - job_name: fuse-proxy
+    static_configs:
+      - targets: ["fuse-proxy:7080"]
+```
+
+Series labeled `owner` carry the environment's vm id. They are deleted when the
+orchestrator unpublishes that vm, so the label set tracks the live fleet.
+
+| Metric | Labels | What it says |
+| --- | --- | --- |
+| `fuse_proxy_tunnel_guests_connected` | | Guests holding a tunnel connection right now. |
+| `fuse_proxy_tunnel_handshakes_total` | `result` | Guest hellos: `accepted`, `unauthorized`, `duplicate` (a live guest already holds that identity), `bad_hello`. |
+| `fuse_proxy_tunnel_guest_connections_total` | `owner` | Fresh tunnel connections accepted for an owner. |
+| `fuse_proxy_tunnel_path_migrations_total` | `owner` | Times an owner's connection moved to a new address with no new handshake. |
+| `fuse_proxy_tunnel_probes_total` | `result` | Clone-identity liveness probes of an established guest: `alive`, `dead`. |
+| `fuse_proxy_tunnel_guest_replacements_total` | | Established guests evicted after failing that probe. |
+| `fuse_proxy_owners`, `fuse_proxy_routes` | | Owners with published routes, and public ports published. |
+| `fuse_proxy_route_operations_total` | `op`, `result` | Admin calls: `publish`, `adopt`, `unpublish`, each `ok` or `error`. |
+| `fuse_proxy_port_exhaustion_total` | | Publishes that failed because `FUSE_PROXY_PORTS` had no free port. |
+| `fuse_proxy_connections_total` | `owner`, `result` | Client connections: `ok`, or `failed` when the guest was unreachable for the hold timeout or refused the port. |
+| `fuse_proxy_streams_open` | `owner` | Client connections currently piped to the guest. |
+| `fuse_proxy_bytes_total` | `owner`, `direction` | Bytes carried, `in` (client to guest) and `out` (guest to client). |
+
+**Did a live migrate keep its connections?** A live migrate resumes the guest
+on the destination host with its memory intact, so the tunnel connection it
+already held, under the source vm's id, starts sending from a new address. Look
+at the source vm's id:
+
+- `fuse_proxy_tunnel_path_migrations_total{owner="<source vm>"}` went up and
+  `fuse_proxy_tunnel_guest_connections_total{owner="<source vm>"}` did not: the
+  connection followed the guest, and client connections open across the pause
+  kept running.
+- `guest_connections_total` went up and `path_migrations_total` did not: the
+  guest dialed in again, and every client connection open during the move was
+  cut.
+
+Separately, `guest_connections_total{owner="<destination vm>"}` goes to 1 once
+the destination's sidecar connects under its own identity and adopts the url.
+That sidecar restart currently ends the source identity's connection, along
+with any client connections still on it
+([#287](https://github.com/folsomintel/fuse/issues/287)).
+
+Other things worth watching:
+
+- `fuse_proxy_port_exhaustion_total` going up means creates are failing to get
+  a url. Widen `FUSE_PROXY_PORTS` before it starts.
+- `fuse_proxy_tunnel_handshakes_total{result="duplicate"}` going up steadily
+  means a fork or copy is booting with its source's tunnel identity and
+  retrying against a live guest.
+- `rate(fuse_proxy_connections_total{result="failed"}[5m])` is clients reaching
+  a url whose guest isn't connected.
+
 ## What isn't covered
 
 There is no per-VM metrics API, `orchestrator_fleet_tracked_vms` is a fleet
