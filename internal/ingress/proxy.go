@@ -62,6 +62,8 @@ type Config struct {
 	// reachable before it is closed.
 	HoldTimeout time.Duration
 	Logger      *slog.Logger
+	// Metrics is optional; nil records nothing.
+	Metrics *Metrics
 }
 
 // Proxy owns the routes and their listeners.
@@ -127,6 +129,7 @@ func (p *Proxy) Start(t Opener) {
 			p.target[r.PublicPort] = routeTarget{owner: owner, guestPort: r.GuestPort}
 		}
 	}
+	p.recordRoutesLocked()
 }
 
 // Close stops every listener.
@@ -171,6 +174,16 @@ type PortSpec struct {
 // running to the old guest are left alone: they are streams on the old guest's
 // tunnel and end when it does.
 func (p *Proxy) Publish(owner, token string, ports []PortSpec, adoptFrom string) ([]Route, error) {
+	routes, err := p.publish(owner, token, ports, adoptFrom)
+	op := "publish"
+	if adoptFrom != "" && adoptFrom != owner {
+		op = "adopt"
+	}
+	p.cfg.Metrics.routeOp(op, err)
+	return routes, err
+}
+
+func (p *Proxy) publish(owner, token string, ports []PortSpec, adoptFrom string) ([]Route, error) {
 	if owner == "" || token == "" {
 		return nil, errors.New("owner and token are required")
 	}
@@ -247,6 +260,7 @@ func (p *Proxy) Publish(owner, token string, ports []PortSpec, adoptFrom string)
 	for _, r := range routes {
 		p.target[r.PublicPort] = routeTarget{owner: owner, guestPort: r.GuestPort}
 	}
+	p.recordRoutesLocked()
 	if err := p.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -291,13 +305,25 @@ func (p *Proxy) Remove(owner string) (bool, error) {
 		p.closeLocked(r.PublicPort)
 	}
 	delete(p.owners, owner)
+	p.recordRoutesLocked()
 	err := p.saveLocked()
 	t := p.tunnel
 	p.mu.Unlock()
 	if t != nil {
 		t.Drop(owner)
 	}
+	p.cfg.Metrics.routeOp("unpublish", err)
+	p.cfg.Metrics.forgetOwner(owner)
 	return true, err
+}
+
+// recordRoutesLocked updates the owner and route gauges.
+func (p *Proxy) recordRoutesLocked() {
+	routes := 0
+	for _, st := range p.owners {
+		routes += len(st.Routes)
+	}
+	p.cfg.Metrics.setRoutes(len(p.owners), routes)
 }
 
 // allocateLocked finds a free public port and starts listening on it. binding
@@ -313,6 +339,7 @@ func (p *Proxy) allocateLocked() (int, error) {
 		}
 		return port, nil
 	}
+	p.cfg.Metrics.exhausted()
 	return 0, fmt.Errorf("no free public port in %d-%d", p.cfg.PortMin, p.cfg.PortMax)
 }
 
@@ -364,10 +391,13 @@ func (p *Proxy) serve(client net.Conn, port int) {
 	cancel()
 	if err != nil {
 		p.cfg.Logger.Debug("no guest for connection", "owner", target.owner, "port", port, "err", err)
+		p.cfg.Metrics.connectFailed(target.owner)
 		_ = client.Close()
 		return
 	}
-	tunnel.Pipe(client, guest)
+	counted, done := p.cfg.Metrics.stream(target.owner, client)
+	defer done()
+	tunnel.Pipe(counted, guest)
 }
 
 // saveLocked writes the state file atomically.

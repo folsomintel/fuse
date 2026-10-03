@@ -19,11 +19,45 @@ var ErrNoTunnel = errors.New("tunnel: guest is not connected")
 // Authenticator reports whether token is the current credential for owner.
 type Authenticator func(owner, token string) bool
 
+// Metrics receives what the server observes. it is an interface so this
+// package, which the guest sidecar also links, carries no metrics library.
+type Metrics interface {
+	// Handshake reports how a guest's hello ended: "accepted",
+	// "unauthorized", "duplicate" (a live guest already holds the owner) or
+	// "bad_hello". no owner is passed, because before it is authenticated the
+	// owner is whatever the dialer chose to write.
+	Handshake(result string)
+	// GuestConnected reports an accepted guest. replaced is true when it took
+	// the place of an established guest that failed its liveness probe.
+	GuestConnected(owner string, replaced bool)
+	// GuestsConnected is the number of registered guests after any change.
+	GuestsConnected(n int)
+	// Probe reports a liveness probe of an established guest, run when a
+	// second guest claims its identity (the clone-identity check).
+	Probe(alive bool)
+	// PathMigrated reports that a registered guest's packets now arrive from
+	// a new address on the same connection: the guest moved and every stream
+	// it carried survived, with no new handshake.
+	PathMigrated(owner string)
+}
+
+type nopMetrics struct{}
+
+func (nopMetrics) Handshake(string)            {}
+func (nopMetrics) GuestConnected(string, bool) {}
+func (nopMetrics) GuestsConnected(int)         {}
+func (nopMetrics) Probe(bool)                  {}
+func (nopMetrics) PathMigrated(string)         {}
+
 // Server is the proxy's end: it accepts guests and opens streams toward them.
 type Server struct {
-	ln     *quic.Listener
-	auth   Authenticator
-	logger *slog.Logger
+	ln      *quic.Listener
+	auth    Authenticator
+	logger  *slog.Logger
+	metrics Metrics
+	// pathCheck is how often a registered guest's address is compared with
+	// the last one seen. a field so a test can shorten it.
+	pathCheck time.Duration
 
 	mu      sync.Mutex
 	guests  map[string]*quic.Conn
@@ -42,13 +76,18 @@ func Listen(conn net.PacketConn, cert tls.Certificate, auth Authenticator, logge
 		return nil, err
 	}
 	return &Server{
-		ln:      ln,
-		auth:    auth,
-		logger:  logger,
-		guests:  make(map[string]*quic.Conn),
-		changed: make(chan struct{}),
+		ln:        ln,
+		auth:      auth,
+		logger:    logger,
+		metrics:   nopMetrics{},
+		pathCheck: time.Second,
+		guests:    make(map[string]*quic.Conn),
+		changed:   make(chan struct{}),
 	}, nil
 }
+
+// SetMetrics installs m. call it before Serve.
+func (s *Server) SetMetrics(m Metrics) { s.metrics = m }
 
 // Addr is the udp address guests dial.
 func (s *Server) Addr() net.Addr { return s.ln.Addr() }
@@ -78,12 +117,14 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 	defer cancel()
 	control, err := conn.AcceptStream(hctx)
 	if err != nil {
+		s.metrics.Handshake("bad_hello")
 		_ = conn.CloseWithError(1, "no hello")
 		return
 	}
 	_ = control.SetDeadline(time.Now().Add(helloTimeout))
 	var h hello
 	if err := readJSONLine(bufio.NewReaderSize(control, 4096), &h); err != nil {
+		s.metrics.Handshake("bad_hello")
 		_ = conn.CloseWithError(1, "bad hello")
 		return
 	}
@@ -96,10 +137,13 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 		_ = conn.CloseWithError(1, reason)
 	}
 	if h.Owner == "" || !s.auth(h.Owner, h.Token) {
+		s.metrics.Handshake("unauthorized")
 		reject("unauthorized")
 		return
 	}
-	if !s.register(ctx, h.Owner, conn) {
+	registered, replaced := s.register(ctx, h.Owner, conn)
+	if !registered {
+		s.metrics.Handshake("duplicate")
 		reject("owner already connected")
 		return
 	}
@@ -108,9 +152,11 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 		return
 	}
 	_ = control.SetDeadline(time.Time{})
+	s.metrics.Handshake("accepted")
+	s.metrics.GuestConnected(h.Owner, replaced)
 	s.logger.Info("guest connected", "owner", h.Owner, "from", conn.RemoteAddr().String())
 
-	<-conn.Context().Done()
+	s.watchPath(h.Owner, conn)
 	s.unregister(h.Owner, conn)
 	s.logger.Info("guest disconnected", "owner", h.Owner, "cause", context.Cause(conn.Context()))
 }
@@ -124,27 +170,55 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 // would then take turns evicting each other. the established guest is probed
 // instead, and only one that fails to answer is replaced. that is also what
 // lets a guest that crashed come back without waiting out idleTimeout.
-func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) bool {
+//
+// replaced reports whether an established guest was evicted to make room.
+func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (registered, replaced bool) {
 	s.mu.Lock()
 	existing := s.guests[owner]
 	s.mu.Unlock()
 
-	if existing != nil && s.probe(ctx, existing) {
-		return false
+	if existing != nil {
+		alive := s.probe(ctx, existing)
+		s.metrics.Probe(alive)
+		if alive {
+			return false, false
+		}
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if current := s.guests[owner]; current != nil && current != existing {
 		// somebody else registered while we were probing.
-		return false
+		return false, false
 	}
 	if existing != nil {
 		_ = existing.CloseWithError(2, "replaced")
 	}
 	s.guests[owner] = conn
 	s.broadcastLocked()
-	return true
+	return true, existing != nil
+}
+
+// watchPath blocks until conn ends, reporting each time the guest's packets
+// start arriving from a new address. quic follows the move on its own; this
+// is only so an operator can see that a migrated guest kept its connection
+// rather than reconnecting.
+func (s *Server) watchPath(owner string, conn *quic.Conn) {
+	last := conn.RemoteAddr().String()
+	tick := time.NewTicker(s.pathCheck)
+	defer tick.Stop()
+	for {
+		select {
+		case <-conn.Context().Done():
+			return
+		case <-tick.C:
+			if now := conn.RemoteAddr().String(); now != last {
+				s.metrics.PathMigrated(owner)
+				s.logger.Info("guest moved", "owner", owner, "from", last, "to", now)
+				last = now
+			}
+		}
+	}
 }
 
 func (s *Server) unregister(owner string, conn *quic.Conn) {
@@ -157,6 +231,7 @@ func (s *Server) unregister(owner string, conn *quic.Conn) {
 }
 
 func (s *Server) broadcastLocked() {
+	s.metrics.GuestsConnected(len(s.guests))
 	close(s.changed)
 	s.changed = make(chan struct{})
 }

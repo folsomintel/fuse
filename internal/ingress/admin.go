@@ -14,6 +14,7 @@ import (
 //	GET    /v1/owners/{owner}   look up
 //	DELETE /v1/owners/{owner}   remove
 //	GET    /healthz
+//	GET    /metrics             prometheus, when AdminConfig.Metrics is set
 
 // publishBody is the body of PUT /v1/owners/{owner}.
 type publishBody struct {
@@ -46,6 +47,9 @@ type AdminConfig struct {
 	PublicHost    string
 	TunnelPort    int
 	ServerCertPEM string
+	// Metrics serves GET /metrics. like /healthz it needs no token, matching
+	// the orchestrator's /metrics, so a scraper never holds the admin token.
+	Metrics http.Handler
 }
 
 // AdminHandler serves the admin api.
@@ -74,6 +78,9 @@ func AdminHandler(p *Proxy, cfg AdminConfig) http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
+	if cfg.Metrics != nil {
+		mux.Handle("GET /metrics", cfg.Metrics)
+	}
 	mux.HandleFunc("PUT /v1/owners/{owner}", func(w http.ResponseWriter, r *http.Request) {
 		var body publishBody
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
@@ -108,7 +115,7 @@ func AdminHandler(p *Proxy, cfg AdminConfig) http.Handler {
 	})
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
+		if r.URL.Path != "/healthz" && (cfg.Metrics == nil || r.URL.Path != "/metrics") {
 			got := []byte(r.Header.Get("Authorization"))
 			if subtle.ConstantTimeCompare(got, []byte("Bearer "+cfg.Token)) != 1 {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)

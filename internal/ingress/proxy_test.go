@@ -14,6 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/tunnel"
 )
@@ -32,9 +36,10 @@ func mustCertPEM(t *testing.T, cert tls.Certificate) string {
 // rig is a whole fuse-proxy: routes, tunnel listener and admin api, on
 // loopback, with its state in a directory the test can start a second one from.
 type rig struct {
-	proxy *Proxy
-	admin *Client
-	dir   string
+	proxy   *Proxy
+	admin   *Client
+	dir     string
+	metrics *Metrics
 }
 
 func newRig(t *testing.T, dir string) *rig {
@@ -43,6 +48,8 @@ func newRig(t *testing.T, dir string) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(reg)
 	proxy, err := New(Config{
 		StatePath: filepath.Join(dir, "routes.json"),
 		// a wide range: the test does not own these ports, and allocation
@@ -51,6 +58,7 @@ func newRig(t *testing.T, dir string) *rig {
 		BindHost:    "127.0.0.1",
 		HoldTimeout: 5 * time.Second,
 		Logger:      quiet,
+		Metrics:     metrics,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -63,6 +71,7 @@ func newRig(t *testing.T, dir string) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
+	server.SetMetrics(metrics)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { _ = server.Serve(ctx) }()
 	proxy.Start(server)
@@ -72,9 +81,10 @@ func newRig(t *testing.T, dir string) *rig {
 		PublicHost:    "127.0.0.1",
 		TunnelPort:    udp.LocalAddr().(*net.UDPAddr).Port,
 		ServerCertPEM: mustCertPEM(t, cert),
+		Metrics:       promhttp.HandlerFor(reg, promhttp.HandlerOpts{}),
 	}))
 	t.Cleanup(func() { web.Close(); cancel(); proxy.Close(); _ = udp.Close() })
-	return &rig{proxy: proxy, admin: NewClient(web.URL, "admin-token"), dir: dir}
+	return &rig{proxy: proxy, admin: NewClient(web.URL, "admin-token"), dir: dir, metrics: metrics}
 }
 
 // guest is a service that answers every line with its own name, plus the
@@ -318,7 +328,8 @@ func TestPublishRejectsBadPorts(t *testing.T) {
 
 func TestPortRangeExhaustionTakesNothingFromTheDonor(t *testing.T) {
 	dir := t.TempDir()
-	proxy, err := New(Config{StatePath: filepath.Join(dir, "routes.json"), PortMin: 42990, PortMax: 42990, BindHost: "127.0.0.1", Logger: quiet})
+	metrics := NewMetrics(prometheus.NewRegistry())
+	proxy, err := New(Config{StatePath: filepath.Join(dir, "routes.json"), PortMin: 42990, PortMax: 42990, BindHost: "127.0.0.1", Logger: quiet, Metrics: metrics})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,5 +347,11 @@ func TestPortRangeExhaustionTakesNothingFromTheDonor(t *testing.T) {
 	}
 	if _, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(42990), time.Second); err != nil {
 		t.Fatalf("the donor's port stopped listening: %v", err)
+	}
+	if n := testutil.ToFloat64(metrics.portExhaustion); n != 1 {
+		t.Fatalf("port_exhaustion_total = %v, want 1", n)
+	}
+	if n := testutil.ToFloat64(metrics.routeOps.WithLabelValues("adopt", "error")); n != 1 {
+		t.Fatalf("failed adopts = %v, want 1", n)
 	}
 }

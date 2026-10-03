@@ -51,10 +51,50 @@ func echoServer(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+// recorder is a Metrics that counts what the server reported.
+type recorder struct {
+	mu         sync.Mutex
+	handshakes map[string]int
+	connected  int
+	replaced   int
+	probes     map[bool]int
+	migrations int
+}
+
+func (r *recorder) Handshake(result string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.handshakes[result]++
+}
+
+func (r *recorder) GuestConnected(_ string, replaced bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.connected++
+	if replaced {
+		r.replaced++
+	}
+}
+
+func (r *recorder) GuestsConnected(int) {}
+
+func (r *recorder) Probe(alive bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.probes[alive]++
+}
+
+func (r *recorder) PathMigrated(string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.migrations++
+}
+
 type harness struct {
 	srv    *Server
 	hellos atomic.Int32
 	cfg    Config
+	rec    *recorder
 }
 
 func startServer(t *testing.T) *harness {
@@ -68,7 +108,7 @@ func startServer(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{}
+	h := &harness{rec: &recorder{handshakes: map[string]int{}, probes: map[bool]int{}}}
 	h.srv, err = Listen(udp, cert, func(owner, token string) bool {
 		h.hellos.Add(1)
 		return owner == "vm-1" && token == "secret"
@@ -76,6 +116,8 @@ func startServer(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.srv.SetMetrics(h.rec)
+	h.srv.pathCheck = 20 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() { cancel(); _ = udp.Close() })
 	go func() { _ = h.srv.Serve(ctx) }()
@@ -221,6 +263,14 @@ func TestASecondGuestOnlyReplacesADeadOne(t *testing.T) {
 		if c2, err := open(t, h.srv, h.cfg.Ports[0], time.Second); err == nil {
 			defer c2.Close()
 			roundTrip(t, c2, bufio.NewReader(c2), "the clone took over a dead tunnel")
+			h.rec.mu.Lock()
+			defer h.rec.mu.Unlock()
+			// the clone's first try found the original alive; whether its
+			// retry probed a dead guest or found the slot already empty
+			// depends on how fast the original's close reached the proxy.
+			if h.rec.probes[true] < 1 || h.rec.handshakes["duplicate"] < 1 || h.rec.connected != 2 {
+				t.Fatalf("metrics = %+v, want an alive probe, a duplicate and two connections", h.rec)
+			}
 			return
 		}
 		if time.Now().After(deadline) {
@@ -329,5 +379,13 @@ func TestAnOpenStreamSurvivesTheGuestChangingAddress(t *testing.T) {
 	}
 	if n := h.hellos.Load(); n != 1 {
 		t.Fatalf("%d handshakes, want 1: the guest reconnected instead of migrating", n)
+	}
+	// the roundtrip after each swap proved the proxy took the new path, so
+	// the next check of the address sees every move.
+	time.Sleep(5 * h.srv.pathCheck)
+	h.rec.mu.Lock()
+	defer h.rec.mu.Unlock()
+	if h.rec.migrations < 1 || h.rec.connected != 1 {
+		t.Fatalf("%d path migrations and %d connections, want at least 1 and exactly 1", h.rec.migrations, h.rec.connected)
 	}
 }
