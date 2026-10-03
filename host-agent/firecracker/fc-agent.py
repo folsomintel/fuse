@@ -1640,6 +1640,11 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         digest, blocks = rootfs_digests(snap_rootfs)
         rootfs_size = os.path.getsize(snap_rootfs)
         live_manifest.update(rootfs_size=rootfs_size, rootfs_blocks=blocks)
+        if meta.get("huge_pages"):
+            # on every live manifest of a 2M vm, diffs included: a copy merged
+            # from a diff has no chunk table and is still a 2M image, which
+            # firecracker will only restore through fc-uffd.
+            live_manifest["page_size"] = HUGE_PAGE_BYTES
         if diff:
             old = json.loads(parent_manifest.read_text()).get("rootfs_blocks") or []
             live_manifest["parent_manifest"] = file_digest(parent_manifest)
@@ -1655,7 +1660,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             mem.unlink()
         elif meta.get("huge_pages"):
             chunks, zeros = chunk_digests(snap_dir / "mem")
-            live_manifest.update(page_size=HUGE_PAGE_BYTES, chunks=chunks, zero_chunks=zeros)
+            live_manifest.update(chunks=chunks, zero_chunks=zeros)
         sparse = shrink and not diff and snapshot_fs_reports_holes()
         if sparse:
             mem = snap_dir / "mem"
@@ -1863,10 +1868,10 @@ def resume_plan(snapshot_id: str) -> dict:
         lazy = json.loads(snapshot_file("", snapshot_id, "meta.json").read_text()).get("lazy")
     except (OSError, ValueError, KeyError, TypeError):
         raise HTTPError(409, f"snapshot {snapshot_id} has no usable resume manifest")
-    # a chunk table is only written for a guest booted with 2M pages, and a
-    # lazy seed has no memory image to fall back on without one.
-    huge_pages = bool(manifest.get("chunks"))
-    if lazy and not huge_pages:
+    # page_size is only written for a guest booted with 2M pages. a lazy seed
+    # also needs the chunk table, which a copy merged from a diff lacks.
+    huge_pages = bool(manifest.get("page_size"))
+    if lazy and not manifest.get("chunks"):
         raise HTTPError(409, f"snapshot {snapshot_id} was not taken with 2M pages and cannot resume lazily")
 
     here = host_fingerprint()

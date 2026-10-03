@@ -46,9 +46,26 @@ class FileSource:
     def __init__(self, path: str, size: int):
         self.f = open(path, "rb")
         self.size = size 
+        self.count = -(-os.fstat(self.f.fileno()).st_size // size)
 
     def chunk(self, i: int) -> bytes:
         return os.pread(self.f.fileno(), self.size, i * self.size)
+
+    def holes(self) -> set[int]:
+        """chunks that lie wholly in a hole of the image, for a file with no
+        chunk table to name its zero chunks (a snapshot merged from a delta)."""
+        fd, out, off = self.f.fileno(), set(), 0
+        end = self.count * self.size
+        while off < end:
+            try:
+                data = os.lseek(fd, off, os.SEEK_DATA)
+            except OSError:
+                data = end
+            out.update(range(-(-off // self.size), min(data, end) // self.size))
+            if data >= end:
+                break
+            off = os.lseek(fd, data, os.SEEK_HOLE)
+        return out
 
 class PeerSource:
     """
@@ -110,8 +127,11 @@ class Pager:
         self.uffd = uffd 
         self.regions = regions 
         self.page = int(manifest["page_size"])
-        self.chunks = manifest["chunks"]
-        self.zero = set(manifest.get("zero_chunks") or [])
+        # no chunk table means a local file the agent already verified (a
+        # snapshot merged from a delta): nothing to check its chunks against.
+        self.chunks = manifest.get("chunks")
+        self.total = len(self.chunks) if self.chunks else source.count
+        self.zero = set(manifest.get("zero_chunks") or []) if self.chunks else source.holes()
         self.source = source 
         self.status_path = status_path
         self.lock = threading.Lock()
@@ -135,7 +155,7 @@ class Pager:
         for attempt in range(FETCH_ATTEMPTS):
             try:
                 data = self.source.chunk(i)
-                if hashlib.sha256(data).hexdigest() == self.chunks[i]:
+                if not self.chunks or hashlib.sha256(data).hexdigest() == self.chunks[i]:
                     return data 
                 last = f"chunk {i}: digest mismatch"
 
@@ -145,7 +165,7 @@ class Pager:
         raise RuntimeError(last)
 
     def fill(self, i: int) -> None:
-        if not 0 <= i < len(self.chunks):
+        if not 0 <= i < self.total:
             raise RuntimeError(f"chunk {i} outside the manifest")
         with self.lock:
             if i in self.resident:
@@ -186,7 +206,7 @@ class Pager:
 
     def prefetch(self) -> None:
         try:
-            for i in range(len(self.chunks)):
+            for i in range(self.total):
                 # holes stay unpopulated until the guest touches them.
                 with self.lock:
                     hole = i in self.zero or i in self.removed
@@ -199,7 +219,7 @@ class Pager:
             self.fail(e)
             return 
         self.write_status()
-        log(f"all {len(self.chunks)} chunks settled")
+        log(f"all {self.total} chunks settled")
 
     def serve_faults(self, conn: socket.socket) -> None:
         poller = select.poll()
@@ -237,8 +257,8 @@ class Pager:
         with self.lock:
             st = {
                 "resident_chunks": settled,
-                "total_chunks": len(self.chunks),
-                "done": not self.error and settled == len(self.chunks),
+                "total_chunks": self.total,
+                "done": not self.error and settled == self.total,
             }
             if self.error:
                 st["error"] = self.error
@@ -289,7 +309,8 @@ def main() -> None:
 
     with open(args.manifest) as f:
         manifest = json.load(f)
-    if not manifest.get("page_size") or not manifest.get("chunks"):
+    # a peer's chunks are only trusted against the chunk table.
+    if not manifest.get("page_size") or (args.peer and not manifest.get("chunks")):
         sys.exit(f"manifest {args.manifest} has no chunk table")
     page = int(manifest["page_size"])
 
