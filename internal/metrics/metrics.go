@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
@@ -35,6 +37,10 @@ type PrometheusMetrics struct {
 	egressEndpoints       *prometheus.GaugeVec
 	egressProvisionFailed *prometheus.CounterVec
 	egressTeardownFailed  *prometheus.CounterVec
+
+	// lifecycle operations, through OperationMetrics.
+	operations        *prometheus.CounterVec
+	operationDuration *prometheus.HistogramVec
 
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
@@ -152,6 +158,22 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Help:      "Total proxy egress backends that failed to release on teardown, by provider.",
 		}, []string{"provider"}),
 
+		operations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "operations",
+			Name:      "total",
+			Help:      "Lifecycle operations by op (create, destroy, fork, migrate, migrate_live, snapshot, restore) and result (ok, error).",
+		}, []string{"op", "result"}),
+		operationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "operations",
+			Name:      "duration_seconds",
+			Help:      "Lifecycle operation latency by op, successful or not.",
+			// a snapshot takes seconds and a cold migrate of a large disk
+			// takes minutes, so the buckets reach well past the http ones.
+			Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
+		}, []string{"op"}),
+
 		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
 			Subsystem: "http",
@@ -191,6 +213,8 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.egressEndpoints,
 		m.egressProvisionFailed,
 		m.egressTeardownFailed,
+		m.operations,
+		m.operationDuration,
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPRequestsInFlight,
@@ -235,4 +259,17 @@ func (m *PrometheusMetrics) EgressTeardownFailed(provider string) {
 	m.egressTeardownFailed.WithLabelValues(provider).Inc()
 }
 
-var _ orchestrator.EgressMetrics = (*PrometheusMetrics)(nil)
+// OperationCompleted implements orchestrator.OperationMetrics.
+func (m *PrometheusMetrics) OperationCompleted(op string, d time.Duration, err error) {
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	m.operations.WithLabelValues(op, result).Inc()
+	m.operationDuration.WithLabelValues(op).Observe(d.Seconds())
+}
+
+var (
+	_ orchestrator.EgressMetrics    = (*PrometheusMetrics)(nil)
+	_ orchestrator.OperationMetrics = (*PrometheusMetrics)(nil)
+)

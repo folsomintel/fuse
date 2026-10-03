@@ -137,6 +137,13 @@ type ForkOptions struct {
 // qemu provider deliberately does not (vfio gpu passthrough cannot be
 // checkpointed).
 func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
+	start := time.Now()
+	id, err := fm.forkEnvironment(ctx, srcVMID, opts)
+	fm.observeOperation("fork", start, err)
+	return id, err
+}
+
+func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
 	// validate the source vm exists and is running, and resolve the
 	// provider under the lock (providerForHost requires fm.mu held),
 	// mirroring snapshotEnvironment's resolution.

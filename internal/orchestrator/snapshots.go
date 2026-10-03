@@ -148,6 +148,13 @@ type snapshotCursor struct {
 // persists a first-class SnapshotRecord, and marks it ready once the
 // provider confirms the new checkpoint exists.
 func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
+	start := time.Now()
+	rec, err := fm.createSnapshot(ctx, vmID, opts)
+	fm.observeOperation("snapshot", start, err)
+	return rec, err
+}
+
+func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]
 	if !ok {
@@ -561,6 +568,13 @@ func (fm *FleetManager) deleteSnapshotRecord(ctx context.Context, record Snapsho
 // Environment.Restore after validating the metadata record and provider
 // visibility of the checkpoint.
 func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
+	start := time.Now()
+	err := fm.restoreSnapshot(ctx, vmID, snapshotID)
+	fm.observeOperation("restore", start, err)
+	return err
+}
+
+func (fm *FleetManager) restoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]
 	if !ok {
@@ -800,6 +814,27 @@ func (fm *FleetManager) getSnapshotRecord(ctx context.Context, snapshotID string
 		record.State = SnapshotStateReady
 	}
 	return record, nil
+}
+
+// SnapshotCountKey labels one cell of SnapshotCounts.
+type SnapshotCountKey struct {
+	State SnapshotState
+	Mode  SnapshotMode
+}
+
+// SnapshotCounts returns how many snapshots exist by state and mode. it reads
+// the store once, where walking ListSnapshotsFiltered page by page would read
+// it once per page.
+func (fm *FleetManager) SnapshotCounts(ctx context.Context) (map[SnapshotCountKey]int, error) {
+	all, err := fm.loadSnapshots(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[SnapshotCountKey]int)
+	for _, s := range all {
+		out[SnapshotCountKey{State: s.State, Mode: s.Mode}]++
+	}
+	return out, nil
 }
 
 func (fm *FleetManager) loadSnapshots(ctx context.Context) ([]SnapshotRecord, error) {

@@ -304,6 +304,23 @@ type EgressMetrics interface {
 	EgressTeardownFailed(provider string)
 }
 
+// OperationMetrics is an optional extension of ReconcileMetrics for
+// lifecycle operations: create, destroy, fork, migrate, migrate_live,
+// snapshot and restore. destroy is DestroyVM only: the reconcile loop's own
+// teardowns and the one after CompleteTask go through destroyAndRemove and are
+// not counted. snapshot includes the snapshots fork, migrate and checkpoint
+// chains take internally, since each is a real checkpoint the host had to
+// write. an implementation that omits it loses these and nothing else.
+type OperationMetrics interface {
+	OperationCompleted(op string, d time.Duration, err error)
+}
+
+func (fm *FleetManager) observeOperation(op string, start time.Time, err error) {
+	if om, ok := fm.metrics.(OperationMetrics); ok {
+		om.OperationCompleted(op, time.Since(start), err)
+	}
+}
+
 // FleetConfig configures the fleet manager.
 type FleetConfig struct {
 	Provider          Provider
@@ -719,6 +736,13 @@ func (fm *FleetManager) Stop() {
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
 // Blocks until the VM is ready or an error occurs.
 func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
+	start := time.Now()
+	info, err := fm.provisionAndAssign(ctx, taskID, spec, manifest, secretMap, opts)
+	fm.observeOperation("create", start, err)
+	return info, err
+}
+
+func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
 	// Callers that do not pick their own bound inherit the fleet's, so a
 	// startup script can never hang a create indefinitely. A caller that does
 	// pick one is held to the fleet's ceiling, since the bound is really a
@@ -1208,6 +1232,13 @@ func (fm *FleetManager) CompleteTask(taskID string) error {
 
 // DestroyVM forcefully tears down a VM by ID.
 func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
+	start := time.Now()
+	err := fm.destroyVM(ctx, vmID)
+	fm.observeOperation("destroy", start, err)
+	return err
+}
+
+func (fm *FleetManager) destroyVM(ctx context.Context, vmID string) error {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok {

@@ -61,7 +61,19 @@ type MigrateOptions struct {
 	Lazy bool
 }
 
+// MigrateVM moves vmID to another host and returns the new vm's id.
 func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
+	start := time.Now()
+	id, err := fm.migrateVM(ctx, vmID, opts)
+	op := "migrate"
+	if opts.Live {
+		op = "migrate_live"
+	}
+	fm.observeOperation(op, start, err)
+	return id, err
+}
+
+func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
 	targetHostID := opts.TargetHostID
 	fm.mu.RLock()
 	src, ok := fm.vms[vmID]

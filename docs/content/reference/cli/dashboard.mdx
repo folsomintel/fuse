@@ -1,0 +1,48 @@
+---
+title: fuse dashboard
+sidebar:
+  icon: layout-dashboard
+description: Serve a local page with hosts, environments, snapshots and metrics
+---
+
+```bash
+fuse dashboard
+fuse dashboard --proxy-metrics http://127.0.0.1:7080/metrics
+```
+
+Serves a page on localhost that shows the whole fleet behind the active
+context, refreshed every 5 seconds (2s, 15s or paused from the page):
+
+- **Tiles**: host count, running environments, snapshots and their total size,
+  fleet cpu and ram allocation, reconcile cycles, API 5xx count, and, with
+  `--proxy-metrics`, connected guests, open streams with bytes per second, and
+  path migrations.
+- **Hosts**: state, region, backend and arch, running environments, and
+  allocated against capacity for vms, cpus, ram, storage and gpus.
+- **Environments**: every environment with its state, host, size, health and
+  egress mode, filterable by state or by id, host or task.
+- **Snapshots**: newest first, filterable by mode or by id, vm or name.
+- **Metrics**: every series from the orchestrator's `/metrics`, and from
+  fuse-proxy's when given, with a per-second rate for counters, filterable by
+  name or label.
+
+It's a dev tool. It stores nothing, and it reads only what the context's token
+can already read through the API. When one source fails, for example a token
+that can't list hosts, the page shows the error and renders the rest.
+
+| Flag | Default | Description |
+| --- | --- | --- |
+| `--listen` | `127.0.0.1:0` | Local address to serve on. `:0` picks a free port. |
+| `--proxy-metrics` | | fuse-proxy `/metrics` url to include. |
+| `--no-open` | `false` | Print the url without opening a browser. |
+
+The url carries a per-run token, as `fuse desktop` does, so other local processes can't read the fleet's state from the port.
+The command runs until interrupted.
+
+fuse-proxy's admin listener is loopback on the proxy host by default. To include
+its metrics from a laptop, forward the port first:
+
+```bash
+ssh -L 7080:127.0.0.1:7080 proxy-host
+fuse dashboard --proxy-metrics http://127.0.0.1:7080/metrics
+```

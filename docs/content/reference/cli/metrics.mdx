@@ -14,10 +14,11 @@ prints the raw Prometheus exposition format, unauthenticated on the server
 side, but the CLI still sends the active context's bearer token if one is set
 (the orchestrator ignores it for this endpoint).
 
-This is fleet-wide, aggregate data: reconcile cycles, tracked VM counts, HTTP
-request rates and latencies. There is no per-VM metrics API, and for per-host
-capacity use [`fuse host metrics <id>`](/reference/cli/hosts/metrics)
-instead, this command doesn't accept a host or VM argument.
+This is fleet-level data: reconcile cycles, VMs by state and host, each host's
+capacity and allocation, snapshots, lifecycle operation counts and latencies,
+and HTTP request rates. There is no per-VM metrics API, and this command doesn't
+accept a host or VM argument. For a browsable view of the same data alongside
+hosts, environments and snapshots, use [`fuse dashboard`](/reference/cli/dashboard).
 
 ```bash
 $ fuse metrics

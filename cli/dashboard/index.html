@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fuse Fleet</title>
+    <style>
+      :root {
+        --bg: #f7f7f5;
+        --panel: #ffffff;
+        --ink: #1b1b1a;
+        --muted: #6b6b66;
+        --line: #e4e4df;
+        --accent: #2f6fde;
+        --ok: #1f8a4c;
+        --warn: #b7791f;
+        --bad: #c53030;
+        --bar: #e9e9e4;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #121212;
+          --panel: #1a1a19;
+          --ink: #e8e8e3;
+          --muted: #9a9a93;
+          --line: #2c2c2a;
+          --accent: #6c9cf0;
+          --ok: #4cc584;
+          --warn: #e0a546;
+          --bad: #f07070;
+          --bar: #2a2a28;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: baseline;
+        padding: 14px 20px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        position: sticky;
+        top: 0;
+        z-index: 1;
+      }
+      header h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 650;
+      }
+      header .meta {
+        color: var(--muted);
+        font-size: 12px;
+        font-family: var(--mono);
+      }
+      header .spacer {
+        flex: 1;
+      }
+      button,
+      select,
+      input {
+        font: inherit;
+        color: inherit;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 4px 9px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--muted);
+      }
+      main {
+        padding: 16px 20px 40px;
+        max-width: 1500px;
+        margin: 0 auto;
+      }
+      .errors {
+        margin-bottom: 14px;
+      }
+      .errors div {
+        border: 1px solid var(--bad);
+        color: var(--bad);
+        border-radius: 6px;
+        padding: 6px 10px;
+        margin-bottom: 6px;
+        font-size: 13px;
+      }
+      .tiles {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+      .tile {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .tile .label {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .tile .value {
+        font-size: 22px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .tile .sub {
+        color: var(--muted);
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      section {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        margin-bottom: 18px;
+        overflow: hidden;
+      }
+      section > h2 {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        font-size: 13px;
+        font-weight: 650;
+        margin: 0;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      section > h2 .count {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      section > h2 .tools {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        font-weight: 400;
+      }
+      .scroll {
+        overflow-x: auto;
+        max-height: 520px;
+        overflow-y: auto;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 6px 12px;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+        vertical-align: middle;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 500;
+        font-size: 12px;
+        position: sticky;
+        top: 0;
+        background: var(--panel);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      td.mono,
+      .mono {
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      td.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        font-family: var(--mono);
+        font-size: 12.5px;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 14px 12px;
+      }
+      .state {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .state::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+      .state.ok::before {
+        background: var(--ok);
+      }
+      .state.warn::before {
+        background: var(--warn);
+      }
+      .state.bad::before {
+        background: var(--bad);
+      }
+      .meter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 150px;
+      }
+      .meter .track {
+        flex: 1;
+        height: 6px;
+        background: var(--bar);
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .meter .fill {
+        height: 100%;
+        background: var(--accent);
+      }
+      .meter .fill.hot {
+        background: var(--warn);
+      }
+      .meter .fill.full {
+        background: var(--bad);
+      }
+      .meter span {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        min-width: 72px;
+        text-align: right;
+      }
+      .labels {
+        color: var(--muted);
+      }
+      .family td {
+        background: var(--bg);
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .family b {
+        color: var(--ink);
+        font-family: var(--mono);
+        font-weight: 600;
+      }
+      .tabs button.on {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      label.check {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>fuse fleet</h1>
+      <span class="meta" id="where"></span>
+      <span class="spacer"></span>
+      <span class="meta" id="updated">loading</span>
+      <select id="interval" title="refresh interval">
+        <option value="2000">2s</option>
+        <option value="5000" selected>5s</option>
+        <option value="15000">15s</option>
+        <option value="0">paused</option>
+      </select>
+      <button id="refresh">refresh</button>
+    </header>
+    <main>
+      <div class="errors" id="errors"></div>
+      <div class="tiles" id="tiles"></div>
+
+      <section>
+        <h2>Hosts <span class="count" id="host-count"></span></h2>
+        <div class="scroll"><table id="hosts"></table></div>
+      </section>
+
+      <section>
+        <h2>
+          Environments <span class="count" id="env-count"></span>
+          <span class="tools">
+            <select id="env-state">
+              <option value="">all states</option>
+            </select>
+            <input
+              id="env-filter"
+              placeholder="filter id, host, task"
+              size="22"
+            />
+          </span>
+        </h2>
+        <div class="scroll"><table id="envs"></table></div>
+      </section>
+
+      <section>
+        <h2>
+          Snapshots <span class="count" id="snap-count"></span>
+          <span class="tools">
+            <select id="snap-mode">
+              <option value="">all modes</option>
+            </select>
+            <input
+              id="snap-filter"
+              placeholder="filter id, vm, name"
+              size="22"
+            />
+          </span>
+        </h2>
+        <div class="scroll"><table id="snaps"></table></div>
+      </section>
+
+      <section>
+        <h2>
+          Metrics <span class="count" id="metric-count"></span>
+          <span class="tools">
+            <span class="tabs" id="metric-tabs"></span>
+            <label class="check"
+              ><input type="checkbox" id="hide-runtime" checked /> hide go_ and
+              process_</label
+            >
+            <input
+              id="metric-filter"
+              placeholder="filter name or label"
+              size="24"
+            />
+          </span>
+        </h2>
+        <div class="scroll"><table id="metrics"></table></div>
+      </section>
+    </main>
+    <script>
+      "use strict";
+      const token = new URLSearchParams(location.search).get("token") || "";
+      const $ = (id) => document.getElementById(id);
+      const esc = (s) =>
+        String(s ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            })[c],
+        );
+
+      let state = null;
+      let source = "orchestrator";
+      let timer = null;
+      // previous counter values, for rates: key -> {v, t}
+      let prev = new Map();
+      let rates = new Map();
+
+      function ago(ts) {
+        if (!ts || ts.startsWith("0001")) return "";
+        const s = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+        if (s < 60) return Math.round(s) + "s";
+        if (s < 3600) return Math.round(s / 60) + "m";
+        if (s < 86400) return Math.round(s / 3600) + "h";
+        return Math.round(s / 86400) + "d";
+      }
+
+      function bytes(n) {
+        if (!n) return "";
+        const u = ["B", "KB", "MB", "GB", "TB"];
+        let i = 0;
+        while (n >= 1024 && i < u.length - 1) {
+          n /= 1024;
+          i++;
+        }
+        return n.toFixed(n < 10 && i > 0 ? 1 : 0) + " " + u[i];
+      }
+
+      function num(v) {
+        if (!isFinite(v)) return String(v);
+        if (Number.isInteger(v)) return v.toLocaleString();
+        const a = Math.abs(v);
+        if (a >= 1000) return Math.round(v).toLocaleString();
+        if (a >= 1) return v.toFixed(2);
+        return v.toPrecision(3);
+      }
+
+      function stateClass(s) {
+        if (["running", "active", "ready", "healthy", "passing"].includes(s))
+          return "ok";
+        if (["failed", "error", "unhealthy", "failing"].includes(s))
+          return "bad";
+        if (!s || s === "destroyed") return "";
+        return "warn";
+      }
+      const pill = (s) =>
+        `<span class="state ${stateClass(s)}">${esc(s || "unknown")}</span>`;
+
+      function meter(used, cap, unit) {
+        if (!cap)
+          return `<span class="labels">${used ? esc(used) + " / ?" : ""}</span>`;
+        const pct = Math.min(100, (used / cap) * 100);
+        const cls = pct >= 95 ? "full" : pct >= 80 ? "hot" : "";
+        return `<div class="meter"><div class="track"><div class="fill ${cls}" style="width:${pct.toFixed(1)}%"></div></div><span>${esc(used)}/${esc(cap)}${unit || ""}</span></div>`;
+      }
+
+      function tile(label, value, sub) {
+        return `<div class="tile"><div class="label">${esc(label)}</div><div class="value">${esc(value)}</div><div class="sub">${esc(sub || "")}</div></div>`;
+      }
+
+      function familyMap(src) {
+        const m = new Map();
+        for (const f of (state.metrics && state.metrics[src]) || [])
+          m.set(f.name, f);
+        return m;
+      }
+      function sumOf(fams, name, pred) {
+        const f = fams.get(name);
+        if (!f) return null;
+        return f.samples
+          .filter((s) => s.name === name && (!pred || pred(s.labels || {})))
+          .reduce((a, s) => a + s.value, 0);
+      }
+      function rateOf(src, name) {
+        let total = 0,
+          seen = false;
+        for (const [k, r] of rates) {
+          if (k.startsWith(src + "|" + name + "|")) {
+            total += r;
+            seen = true;
+          }
+        }
+        return seen ? total : null;
+      }
+
+      function renderTiles() {
+        const hosts = state.hosts || [],
+          envs = state.environments || [],
+          snaps = state.snapshots || [];
+        const active = hosts.filter((h) => h.state === "active").length;
+        const running = envs.filter((e) => e.state === "running").length;
+        const ready = snaps.filter(
+          (s) => (s.state || "ready") === "ready",
+        ).length;
+        const cap = { cpus: 0, ram: 0 },
+          alloc = { cpus: 0, ram: 0 };
+        for (const h of hosts) {
+          cap.cpus += h.capacity.cpus;
+          alloc.cpus += h.allocated.cpus;
+          cap.ram += h.capacity.ram_mb;
+          alloc.ram += h.allocated.ram_mb;
+        }
+        const pct = (a, c) => (c ? Math.round((a / c) * 100) + "%" : "n/a");
+        let html =
+          tile("hosts", hosts.length, active + " active") +
+          tile("environments running", running, envs.length + " total") +
+          tile(
+            "snapshots",
+            snaps.length,
+            [
+              ready + " ready",
+              bytes(snaps.reduce((a, s) => a + (s.size_bytes || 0), 0)),
+            ]
+              .filter(Boolean)
+              .join(", "),
+          ) +
+          tile(
+            "cpu allocated",
+            pct(alloc.cpus, cap.cpus),
+            alloc.cpus + " / " + cap.cpus + " vcpus",
+          ) +
+          tile(
+            "ram allocated",
+            pct(alloc.ram, cap.ram),
+            Math.round(alloc.ram / 1024) +
+              " / " +
+              Math.round(cap.ram / 1024) +
+              " GB",
+          );
+
+        const o = familyMap("orchestrator");
+        if (o.size) {
+          const cycles = sumOf(o, "orchestrator_reconcile_cycles_total");
+          const f = o.get("orchestrator_reconcile_duration_seconds");
+          let mean = "";
+          if (f) {
+            const c = f.samples.find((s) => s.name.endsWith("_count")),
+              s = f.samples.find((s) => s.name.endsWith("_sum"));
+            if (c && c.value)
+              mean = "mean " + ((s.value / c.value) * 1000).toFixed(0) + " ms";
+          }
+          html += tile(
+            "reconcile cycles",
+            cycles == null ? "n/a" : num(cycles),
+            mean,
+          );
+          const errs = sumOf(o, "orchestrator_http_requests_total", (l) =>
+            (l.code || "").startsWith("5"),
+          );
+          const r = rateOf("orchestrator", "orchestrator_http_requests_total");
+          html += tile(
+            "api 5xx",
+            errs == null ? "n/a" : num(errs),
+            r == null ? "" : num(r) + " req/s overall",
+          );
+        }
+        const p = familyMap("proxy");
+        if (p.size) {
+          html += tile(
+            "proxy guests",
+            num(sumOf(p, "fuse_proxy_tunnel_guests_connected") ?? 0),
+            num(sumOf(p, "fuse_proxy_routes") ?? 0) + " routes",
+          );
+          const bin = rateOf("proxy", "fuse_proxy_bytes_total");
+          html += tile(
+            "proxy streams open",
+            num(sumOf(p, "fuse_proxy_streams_open") ?? 0),
+            bin == null ? "" : bytes(bin) + "/s",
+          );
+          html += tile(
+            "path migrations",
+            num(sumOf(p, "fuse_proxy_tunnel_path_migrations_total") ?? 0),
+            num(sumOf(p, "fuse_proxy_tunnel_guest_connections_total") ?? 0) +
+              " fresh connections",
+          );
+        }
+        $("tiles").innerHTML = html;
+      }
+
+      function renderHosts() {
+        const hosts = (state.hosts || [])
+          .slice()
+          .sort((a, b) => a.id.localeCompare(b.id));
+        $("host-count").textContent = hosts.length;
+        if (!hosts.length) {
+          $("hosts").innerHTML =
+            `<tr><td class="empty">no hosts${state.errors && state.errors.hosts ? "" : " registered"}</td></tr>`;
+          return;
+        }
+        const envsByHost = new Map();
+        for (const e of state.environments || [])
+          if (e.state === "running")
+            envsByHost.set(e.host_id, (envsByHost.get(e.host_id) || 0) + 1);
+        let html = `<tr><th>host</th><th>state</th><th>region</th><th>backend</th><th>running</th><th>vms</th><th>cpus</th><th>ram</th><th>storage</th><th>gpus</th><th>last seen</th></tr>`;
+        for (const h of hosts) {
+          const c = h.capacity,
+            a = h.allocated;
+          html +=
+            `<tr><td class="mono" title="${esc(h.url)}">${esc(h.id)}</td><td>${pill(h.state)}</td><td>${esc(h.region)}</td>` +
+            `<td>${esc((h.backend || "firecracker") + " " + (c.arch || "amd64"))}</td><td class="num">${envsByHost.get(h.id) || 0}</td>` +
+            `<td>${meter(a.vm_count, c.vm_count)}</td><td>${meter(a.cpus, c.cpus)}</td>` +
+            `<td>${meter(Math.round(a.ram_mb / 1024), Math.round(c.ram_mb / 1024), "G")}</td><td>${meter(a.storage_gb, c.storage_gb, "G")}</td>` +
+            `<td>${c.gpus ? meter(a.gpus || 0, c.gpus) + `<span class="labels">${esc(c.gpu_kind)}</span>` : ""}</td>` +
+            `<td class="num">${ago(h.last_seen)}</td></tr>`;
+        }
+        $("hosts").innerHTML = html;
+      }
+
+      function fillSelect(sel, values) {
+        const cur = sel.value,
+          first = sel.options[0].outerHTML;
+        sel.innerHTML =
+          first +
+          [...values]
+            .sort()
+            .map(
+              (v) =>
+                `<option${v === cur ? " selected" : ""}>${esc(v)}</option>`,
+            )
+            .join("");
+      }
+
+      function renderEnvs() {
+        const all = state.environments || [];
+        const counts = {};
+        for (const e of all) counts[e.state] = (counts[e.state] || 0) + 1;
+        fillSelect($("env-state"), Object.keys(counts));
+        $("env-count").textContent = Object.entries(counts)
+          .map(([s, n]) => n + " " + s)
+          .join(", ");
+        const st = $("env-state").value,
+          q = $("env-filter").value.toLowerCase();
+        const envs = all
+          .filter(
+            (e) =>
+              (!st || e.state === st) &&
+              (!q ||
+                [e.id, e.host_id, e.task_id].some((v) =>
+                  (v || "").toLowerCase().includes(q),
+                )),
+          )
+          .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        if (!envs.length) {
+          $("envs").innerHTML =
+            `<tr><td class="empty">no environments</td></tr>`;
+          return;
+        }
+        let html = `<tr><th>environment</th><th>state</th><th>host</th><th>task</th><th>cpus</th><th>ram</th><th>disk</th><th>health</th><th>egress</th><th>age</th><th>error</th></tr>`;
+        for (const e of envs) {
+          const s = e.spec || {};
+          html +=
+            `<tr><td class="mono">${esc(e.id)}</td><td>${pill(e.state)}</td><td class="mono">${esc(e.host_id)}</td><td class="mono">${esc(e.task_id)}</td>` +
+            `<td class="num">${esc(s.cpus || "")}</td><td class="num">${s.ram_mb ? esc(s.ram_mb) + "M" : ""}</td><td class="num">${s.storage_gb ? esc(s.storage_gb) + "G" : ""}</td>` +
+            `<td>${e.health ? pill(e.health.state) : ""}</td><td>${e.egress ? esc(e.egress.mode || "") : ""}</td>` +
+            `<td class="num" title="${esc(e.created_at)}">${ago(e.created_at)}</td><td class="labels">${esc(e.error)}</td></tr>`;
+        }
+        $("envs").innerHTML = html;
+      }
+
+      function renderSnaps() {
+        const all = state.snapshots || [];
+        const modes = new Set(all.map((s) => s.mode || "manual"));
+        fillSelect($("snap-mode"), modes);
+        const md = $("snap-mode").value,
+          q = $("snap-filter").value.toLowerCase();
+        const snaps = all
+          .filter(
+            (s) =>
+              (!md || (s.mode || "manual") === md) &&
+              (!q ||
+                [s.id, s.vm_id, s.name, s.comment].some((v) =>
+                  (v || "").toLowerCase().includes(q),
+                )),
+          )
+          .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        const shown = snaps.slice(0, 300);
+        $("snap-count").textContent =
+          all.length +
+          (snaps.length > shown.length
+            ? ", showing newest " + shown.length
+            : "");
+        if (!shown.length) {
+          $("snaps").innerHTML = `<tr><td class="empty">no snapshots</td></tr>`;
+          return;
+        }
+        let html = `<tr><th>snapshot</th><th>vm</th><th>mode</th><th>kind</th><th>state</th><th>size</th><th>age</th><th>name / comment</th></tr>`;
+        for (const s of shown) {
+          html +=
+            `<tr><td class="mono">${esc(s.id)}</td><td class="mono">${esc(s.vm_id)}</td><td>${esc(s.mode || "manual")}</td><td>${esc(s.kind)}</td>` +
+            `<td>${pill(s.state || "ready")}</td><td class="num">${bytes(s.size_bytes)}</td><td class="num" title="${esc(s.created_at)}">${ago(s.created_at)}</td>` +
+            `<td class="labels">${esc(s.name || s.comment || s.last_error)}</td></tr>`;
+        }
+        $("snaps").innerHTML = html;
+      }
+
+      function labelText(l) {
+        const keys = Object.keys(l || {}).sort();
+        return keys.length
+          ? "{" + keys.map((k) => `${k}="${l[k]}"`).join(", ") + "}"
+          : "";
+      }
+
+      function updateRates() {
+        const now = Date.parse(state.fetched_at);
+        const next = new Map();
+        rates = new Map();
+        for (const [src, fams] of Object.entries(state.metrics || {})) {
+          for (const f of fams) {
+            if (f.type === "gauge" || f.type === "untyped") continue;
+            for (const s of f.samples) {
+              if (f.type !== "counter" && !s.name.endsWith("_count")) continue;
+              const key = src + "|" + s.name + "|" + labelText(s.labels);
+              next.set(key, { v: s.value, t: now });
+              const p = prev.get(key);
+              if (p && now > p.t && s.value >= p.v)
+                rates.set(key, (s.value - p.v) / ((now - p.t) / 1000));
+            }
+          }
+        }
+        prev = next;
+      }
+
+      function renderMetrics() {
+        const sources = Object.keys(state.metrics || {});
+        if (!sources.includes(source) && sources.length) source = sources[0];
+        $("metric-tabs").innerHTML = sources
+          .map(
+            (s) =>
+              `<button data-src="${esc(s)}" class="${s === source ? "on" : ""}">${esc(s)}</button>`,
+          )
+          .join(" ");
+        const fams = (state.metrics && state.metrics[source]) || [];
+        const hide = $("hide-runtime").checked,
+          q = $("metric-filter").value.toLowerCase();
+        let html = `<tr><th>series</th><th style="text-align:right">value</th><th style="text-align:right">rate /s</th></tr>`;
+        let n = 0;
+        for (const f of fams) {
+          if (hide && /^(go|process|promhttp)_/.test(f.name)) continue;
+          const samples = f.samples.filter(
+            (s) =>
+              !q ||
+              (s.name + labelText(s.labels)).toLowerCase().includes(q) ||
+              f.name.toLowerCase().includes(q),
+          );
+          if (!samples.length) continue;
+          html += `<tr class="family"><td colspan="3"><b>${esc(f.name)}</b> ${esc(f.type)} ${esc(f.help)}</td></tr>`;
+          for (const s of samples) {
+            const r = rates.get(
+              source + "|" + s.name + "|" + labelText(s.labels),
+            );
+            html +=
+              `<tr><td class="mono">${esc(s.name)}<span class="labels">${esc(labelText(s.labels))}</span></td>` +
+              `<td class="num">${num(s.value)}</td><td class="num">${r == null ? "" : num(r)}</td></tr>`;
+            n++;
+          }
+        }
+        $("metric-count").textContent = n + " series";
+        $("metrics").innerHTML = n
+          ? html
+          : `<tr><td class="empty">${sources.length ? "no matching series" : "no metrics"}</td></tr>`;
+      }
+
+      function render() {
+        if (!state) return;
+        $("where").textContent =
+          (state.context ? state.context + "  " : "") + state.base_url;
+        $("updated").textContent =
+          "updated " + new Date(state.fetched_at).toLocaleTimeString();
+        $("errors").innerHTML = Object.entries(state.errors || {})
+          .map(([k, v]) => `<div><b>${esc(k)}</b>: ${esc(v)}</div>`)
+          .join("");
+        renderTiles();
+        renderHosts();
+        renderEnvs();
+        renderSnaps();
+        renderMetrics();
+      }
+
+      async function load() {
+        try {
+          const res = await fetch(
+            "/api/state?token=" + encodeURIComponent(token),
+          );
+          if (!res.ok)
+            throw new Error((await res.text()) || "http " + res.status);
+          state = await res.json();
+          updateRates();
+          render();
+        } catch (err) {
+          $("errors").innerHTML =
+            `<div><b>dashboard</b>: ${esc(err.message)}</div>`;
+        }
+      }
+
+      function schedule() {
+        clearInterval(timer);
+        const ms = Number($("interval").value);
+        if (ms > 0) timer = setInterval(load, ms);
+      }
+
+      $("refresh").onclick = load;
+      $("interval").onchange = schedule;
+      for (const id of [
+        "env-state",
+        "env-filter",
+        "snap-mode",
+        "snap-filter",
+        "hide-runtime",
+        "metric-filter",
+      ]) {
+        $(id).addEventListener("input", render);
+      }
+      $("metric-tabs").addEventListener("click", (e) => {
+        const src = e.target.dataset && e.target.dataset.src;
+        if (src) {
+          source = src;
+          renderMetrics();
+        }
+      });
+      load();
+      schedule();
+    </script>
+  </body>
+</html>
