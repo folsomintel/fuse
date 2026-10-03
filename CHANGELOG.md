@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.35.0](https://github.com/folsomintel/fuse/compare/v0.34.0...v0.35.0) (2026-10-03)
+
+
+### Features
+
+* pin the firecracker version every host installs ([#291](https://github.com/folsomintel/fuse/issues/291)) ([b237a4e](https://github.com/folsomintel/fuse/commit/b237a4ee21173299e7aac13920071734223675a0))
+* shrink guests with virtio-mem hotplug before a live migrate ([#289](https://github.com/folsomintel/fuse/issues/289)) ([75d7690](https://github.com/folsomintel/fuse/commit/75d76902911e40c6b0ffe82899df7cbd1f90f9ff))
+
 ## [0.34.0](https://github.com/folsomintel/fuse/compare/v0.33.0...v0.34.0) (2026-10-02)
 
 
