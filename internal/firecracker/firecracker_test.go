@@ -554,6 +554,36 @@ func TestRemote_checkpointLive(t *testing.T) {
 	}
 }
 
+// TestRemote_checkpointLiveShrunk asserts the shrunk path is the live
+// snapshot plus shrink_memory on the wire, and that plain live snapshots
+// never send the flag.
+func TestRemote_checkpointLiveShrunk(t *testing.T) {
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode snapshot request: %v", err)
+		}
+		got = append(got, body)
+		json.NewEncoder(w).Encode(snapshotResponse{SnapshotID: "snap-1", Kind: "live"})
+	}))
+	defer srv.Close()
+
+	env := &remoteEnv{id: "vm-1", client: New(Config{BaseURL: srv.URL})}
+	if _, err := env.CheckpointLiveShrunk(context.Background(), "c"); err != nil {
+		t.Fatalf("checkpoint live shrunk: %v", err)
+	}
+	if _, err := env.CheckpointLive(context.Background(), "c"); err != nil {
+		t.Fatalf("checkpoint live: %v", err)
+	}
+	if got[0]["live"] != true || got[0]["shrink_memory"] != true {
+		t.Errorf("shrunk request = %v, want live and shrink_memory", got[0])
+	}
+	if _, ok := got[1]["shrink_memory"]; ok {
+		t.Errorf("plain live request = %v, want no shrink_memory", got[1])
+	}
+}
+
 // TestProvider_createResume asserts ResumeSeed reaches the agent, and that an
 // ordinary create still sends the request an older agent has always seen.
 func TestProvider_createResume(t *testing.T) {

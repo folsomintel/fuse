@@ -157,7 +157,9 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 		// target, so the bulk copy happened before this call did.
 		seed, stagedBase = chain.head, chain.base
 	} else {
-		seed, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live})
+		// a live seed is the bulk of what moves, so the guest gives back what
+		// it is not using first.
+		seed, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
 		if err != nil {
 			return "", err
 		}

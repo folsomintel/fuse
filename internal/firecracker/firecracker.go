@@ -530,6 +530,14 @@ func (e *remoteEnv) CheckpointLive(ctx context.Context, comment string) (orchest
 	return e.snapshot(ctx, snapshotRequest{Comment: comment, Live: true})
 }
 
+// CheckpointLiveShrunk implements orchestrator.MemoryShrinkCapable: a live
+// snapshot the agent takes after unplugging the guest's unused hotplug
+// memory, and with a hole-free copy of the image to move. an agent without
+// hotplug, or a vm booted without it, takes a plain live snapshot.
+func (e *remoteEnv) CheckpointLiveShrunk(ctx context.Context, comment string) (orchestrator.Checkpoint, error) {
+	return e.snapshot(ctx, snapshotRequest{Comment: comment, Live: true, ShrinkMemory: true})
+}
+
 // CheckpointDiff takes a diff live snapshot against parent, which the agent
 // refuses with 409 unless parent is the last live snapshot this vm took.
 func (e *remoteEnv) CheckpointDiff(ctx context.Context, comment, parent string, keepPaused bool) (orchestrator.Checkpoint, error) {
@@ -797,6 +805,11 @@ type snapshotRequest struct {
 	Diff       bool   `json:"diff,omitempty"`
 	Parent     string `json:"parent,omitempty"`
 	KeepPaused bool   `json:"keep_paused,omitempty"`
+
+	// ShrinkMemory asks the agent to unplug the guest's unused hotplug
+	// memory before a full live snapshot. an agent that predates it ignores
+	// the field and takes the snapshot unshrunk.
+	ShrinkMemory bool `json:"shrink_memory,omitempty"`
 }
 
 type snapshotResponse struct {

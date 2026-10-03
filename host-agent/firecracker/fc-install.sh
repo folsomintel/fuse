@@ -17,7 +17,16 @@ if ! command -v firecracker >/dev/null 2>&1; then
   rm -rf "$TMP"
 fi
 
-[ -f vmlinux.bin ]  || curl -fsSL -o vmlinux.bin  "$CI_BASE/vmlinux-5.10.223"
+# opt-in: FC_GUEST_KERNEL=6.1 installs the 6.1 ci kernel, which has the
+# virtio-mem driver memory hotplug (FC_MEM_HOTPLUG=1 on the agent) needs; 5.10
+# does not. an existing vmlinux.bin is kept either way, so switching a host
+# means removing it first.
+if [ "${FC_GUEST_KERNEL:-5.10}" = "6.1" ]; then
+  KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/${ARCH}/vmlinux-6.1.155"
+else
+  KERNEL_URL="$CI_BASE/vmlinux-5.10.223"
+fi
+[ -f vmlinux.bin ]  || curl -fsSL -o vmlinux.bin  "$KERNEL_URL"
 [ -f rootfs.ext4 ]  || curl -fsSL -o rootfs.ext4  "$CI_BASE/ubuntu-22.04.ext4"
 [ -f ubuntu.id_rsa ] || { curl -fsSL -o ubuntu.id_rsa "$CI_BASE/ubuntu-22.04.id_rsa"; chmod 600 ubuntu.id_rsa; }
 

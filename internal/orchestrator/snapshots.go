@@ -84,6 +84,12 @@ type SnapshotOptions struct {
 	// does not finish (DeltaSnapshotCapable.Resume).
 	KeepPaused bool
 
+	// ShrinkMemory asks the guest to give back the memory it is not using
+	// before a full live snapshot, so the image is smaller to move. an
+	// optimization only: an environment that cannot do it takes a plain live
+	// snapshot (see MemoryShrinkCapable).
+	ShrinkMemory bool
+
 	// NoLineage leaves ParentSnapshotID empty. checkpoint and migrate
 	// snapshots are removed by the code that took them, and a lineage link to
 	// the previous one would make each undeletable while its successor lives.
@@ -267,7 +273,11 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 		if !ok {
 			return SnapshotRecord{}, fmt.Errorf("%w: provider does not support live snapshots for vm %s: retry without live to take a disk snapshot", ErrSnapshotUnsupported, vmID)
 		}
-		created, err = lc.CheckpointLive(ctx, opts.Comment)
+		if mc, ok := env.(MemoryShrinkCapable); ok && opts.ShrinkMemory {
+			created, err = mc.CheckpointLiveShrunk(ctx, opts.Comment)
+		} else {
+			created, err = lc.CheckpointLive(ctx, opts.Comment)
+		}
 		if err != nil {
 			return SnapshotRecord{}, fmt.Errorf("live checkpoint %s: %w", vmID, err)
 		}
