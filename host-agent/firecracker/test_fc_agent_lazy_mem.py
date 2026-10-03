@@ -270,7 +270,7 @@ class PagerTest(unittest.TestCase):
         self.status = Path(tempfile.mkdtemp()) / "uffd.json"
         self.copies = []
         patcher = mock.patch.object(fc_uffd, "copy_page",
-                                    lambda uffd, dst, data: self.copies.append((dst, bytes(data))))
+                                    lambda uffd, dst, data, removed=None: self.copies.append((dst, bytes(data))))
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -305,13 +305,38 @@ class PagerTest(unittest.TestCase):
         self.assertIn("digest mismatch", str(caught.exception))
         self.assertEqual(self.copies, [])
 
-    def test_prefetch_fills_everything_and_reports_done(self):
+    def test_prefetch_fills_everything_but_holes_and_reports_done(self):
         p = self.pager(FakeSource(self.mem))
         p.prefetch()
+        # chunk 1 is a hole: it needs no source, so it is done without being
+        # populated, and stays empty on the host until the guest touches it.
         self.assertEqual(sorted(dst for dst, _ in self.copies),
-                         [0x10000000, 0x10000000 + PAGE, 0x90000000, 0x90000000 + PAGE])
+                         [0x10000000, 0x90000000, 0x90000000 + PAGE])
         st = json.loads(self.status.read_text())
         self.assertEqual(st, {"resident_chunks": 4, "total_chunks": 4, "done": True})
+
+    def test_a_removed_chunk_is_zero_filled_on_its_next_touch(self):
+        source = FakeSource(self.mem)
+        p = self.pager(source)
+        p.fill(3)
+        p.remove(0x90000000 + PAGE, 0x90000000 + 2 * PAGE)
+        self.assertNotIn(3, p.resident)
+        p.fill(3)
+        self.assertEqual(self.copies[-1], (0x90000000 + PAGE, bytes(PAGE)))
+        self.assertEqual(source.calls, [3], "a removed chunk was fetched again")
+
+    def test_prefetch_skips_a_removed_chunk_and_still_finishes(self):
+        p = self.pager(FakeSource(self.mem))
+        p.remove(0x90000000, 0x90000000 + PAGE)
+        p.prefetch()
+        self.assertNotIn(0x90000000, [dst for dst, _ in self.copies])
+        self.assertTrue(json.loads(self.status.read_text())["done"])
+
+    def test_a_remove_spanning_regions_marks_every_chunk(self):
+        p = self.pager(FakeSource(self.mem))
+        p.remove(0x10000000 + PAGE, 0x10000000 + 2 * PAGE)
+        p.remove(0x90000000 + 5, 0x90000000 + 2 * PAGE)
+        self.assertEqual(p.removed, {1, 2, 3})
 
     def test_prefetch_reports_a_failure_and_stops(self):
         p = self.pager(FakeSource(self.mem, corrupt={2}))

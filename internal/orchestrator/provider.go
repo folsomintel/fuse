@@ -369,6 +369,17 @@ type LiveSnapshotCapable interface {
 	CheckpointLive(ctx context.Context, comment string) (Checkpoint, error)
 }
 
+// MemoryShrinkCapable is implemented by environments whose guest can give
+// memory back before a live snapshot (virtio-mem on firecracker). it is the
+// same live snapshot CheckpointLive takes, only smaller: the guest unplugs
+// what it is not using first, so those blocks never cross the wire, and gets
+// them back when it resumes. a separate interface for the same reason
+// LiveSnapshotCapable is one; a caller that finds it missing takes a plain
+// live snapshot instead.
+type MemoryShrinkCapable interface {
+	CheckpointLiveShrunk(ctx context.Context, comment string) (Checkpoint, error)
+}
+
 // ArtifactDeleter is implemented by providers that can delete a free-standing
 // copy in their host's snapshot store by id: a pulled artifact or a
 // checkpoint base, neither of which has a vm to ask.

@@ -14,7 +14,8 @@ var liveTestFiles = map[string]string{"vmstate": "d-vmstate", "mem": "d-mem", "l
 // what makes them eligible to move between hosts.
 type liveMigrateEnv struct {
 	digestForkEnv
-	files map[string]string
+	files   map[string]string
+	shrinks *int
 }
 
 func (e *liveMigrateEnv) CheckpointLive(ctx context.Context, comment string) (Checkpoint, error) {
@@ -24,6 +25,13 @@ func (e *liveMigrateEnv) CheckpointLive(ctx context.Context, comment string) (Ch
 	return cp, err
 }
 
+func (e *liveMigrateEnv) CheckpointLiveShrunk(ctx context.Context, comment string) (Checkpoint, error) {
+	if e.shrinks != nil {
+		*e.shrinks++
+	}
+	return e.CheckpointLive(ctx, comment)
+}
+
 // liveMigrateProvider records the specs it was asked to create, and can refuse
 // a resume the way a target host agent does.
 type liveMigrateProvider struct {
@@ -31,6 +39,7 @@ type liveMigrateProvider struct {
 	files        map[string]string
 	refuseResume bool
 	created      []Spec
+	shrinks      int
 }
 
 func newLiveMigrateProvider() *liveMigrateProvider {
@@ -47,6 +56,7 @@ func (p *liveMigrateProvider) Create(_ context.Context, spec Spec) (Environment,
 	env := &liveMigrateEnv{
 		digestForkEnv: digestForkEnv{snapshotTestEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}},
 		files:         p.files,
+		shrinks:       &p.shrinks,
 	}
 	p.envs[spec.Name] = &env.digestForkEnv
 	return env, nil
@@ -81,6 +91,10 @@ func TestMigrateVM_liveMovesTheMemoryImageAndResumes(t *testing.T) {
 	moves := mover.calls()
 	if len(moves) != 1 {
 		t.Fatalf("%d artifact copies, want 1", len(moves))
+	}
+	// the seed is the bulk of what moves, so it is taken shrunk.
+	if provider.shrinks != 1 {
+		t.Errorf("%d shrunk snapshots, want the seed taken shrunk", provider.shrinks)
 	}
 	if !reflect.DeepEqual(moves[0].Files, liveTestFiles) {
 		t.Errorf("moved files %v, want the digests the snapshot recorded %v", moves[0].Files, liveTestFiles)
@@ -117,6 +131,9 @@ func TestMigrateVM_coldMigrateIsUnchanged(t *testing.T) {
 	}
 	if info, _ := fm.GetVM(newID); info.Spec.ResumeSeed {
 		t.Error("a cold migrate asked the target to resume")
+	}
+	if provider.shrinks != 0 {
+		t.Error("a cold migrate shrank the guest's memory")
 	}
 }
 

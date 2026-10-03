@@ -98,6 +98,23 @@ FC_BIN = os.environ.get("FC_BIN", "/usr/local/bin/firecracker")
 # process so an agent restart does not take a half-filled guest down with it.
 UFFD_SCRIPT = Path(os.environ.get("FC_UFFD_SCRIPT", str(Path(__file__).with_name("fc-uffd.py"))))
 HUGE_PAGE_BYTES = 2 << 20
+# virtio-mem memory hotplug. opt-in per host: the guest kernel has to be
+# >= 5.16 with CONFIG_VIRTIO_MEM, and the 5.10 ci kernel is not. without the
+# driver the guest never plugs anything and is stuck at its boot memory, so
+# set this only after installing a kernel that has it.
+MEM_HOTPLUG = os.environ.get("FC_MEM_HOTPLUG", "").strip() not in ("", "0")
+MEM_BOOT_MIB = int(os.environ.get("FC_MEM_BOOT_MIB", "512"))
+MEM_SLOT_MIB = 128
+MEM_BLOCK_MIB = 2
+# what the loop keeps plugged beyond the guest's use, and how far over that it
+# has to drift before the loop unplugs, so it does not flap.
+MEM_HEADROOM_MIB = int(os.environ.get("FC_MEM_HEADROOM_MIB", "1024"))
+MEM_SHRINK_SLACK_MIB = int(os.environ.get("FC_MEM_SHRINK_SLACK_MIB", "256"))
+MEM_LOOP_INTERVAL = float(os.environ.get("FC_MEM_LOOP_INTERVAL", "5"))
+# the tighter margin a migration snapshot unplugs down to, and how long it
+# waits for the guest to give the blocks up.
+MEM_SNAPSHOT_HEADROOM_MIB = int(os.environ.get("FC_MEM_SNAPSHOT_HEADROOM_MIB", "128"))
+MEM_UNPLUG_TIMEOUT = float(os.environ.get("FC_MEM_UNPLUG_TIMEOUT", "10"))
 # Guest kernel log verbosity. Every boot message goes out an emulated 115200
 # baud UART, so printing them costs real wall clock on a path we are trying to
 # measure in milliseconds. Quiet is the default; set FC_VERBOSE_BOOT=1 to get
@@ -279,6 +296,114 @@ def fc_vm_state(sock_path: str, state: str) -> None:
     code, resp = fc_api(sock_path, "PATCH", "/vm", {"state": state})
     if code >= 300:
         raise RuntimeError(f"firecracker API /vm {state} -> {code}: {resp!r}")
+
+
+# -- Memory hotplug -----------------------------------------------------------
+
+def mem_split(memory_mb: int) -> tuple[int, int]:
+    """(boot, hotplug) mib for a vm sized memory_mb. hotplug is whole slots
+    and the two always sum to memory_mb, so a fully plugged guest has exactly
+    what it was sized for. the guest keeps the struct pages for the whole
+    region (64 bytes per 4K page) in boot memory, so boot grows with size."""
+    if not MEM_HOTPLUG:
+        return memory_mb, 0
+    boot = max(MEM_BOOT_MIB, memory_mb // 16)
+    hotplug = max(0, (memory_mb - boot) // MEM_SLOT_MIB * MEM_SLOT_MIB)
+    return memory_mb - hotplug, hotplug
+
+
+def hotplug_status(sock: str) -> dict | None:
+    code, resp = fc_api(sock, "GET", "/hotplug/memory")
+    return json.loads(resp) if code == 200 else None
+
+
+def hotplug_request(sock: str, mib: int) -> None:
+    code, resp = fc_api(sock, "PATCH", "/hotplug/memory", {"requested_size_mib": mib})
+    if code >= 300:
+        raise RuntimeError(f"firecracker API /hotplug/memory -> {code}: {resp!r}")
+
+
+def hotplug_target(sock: str, headroom: int) -> tuple[dict, int] | None:
+    """the device status, and how much of the region should be plugged for
+    the guest to have headroom mib available. None when either half is
+    unknown: no hotplug device, or no balloon stats yet."""
+    st = hotplug_status(sock)
+    code, resp = fc_api(sock, "GET", "/balloon/statistics")
+    if not st or code != 200:
+        return None
+    avail = json.loads(resp).get("available_memory")
+    if avail is None:
+        return None
+    want = st["plugged_size_mib"] - (avail >> 20) + headroom
+    want = -(-want // MEM_BLOCK_MIB) * MEM_BLOCK_MIB
+    return st, max(0, min(st["total_size_mib"], want))
+
+
+def hotplug_tick(meta: dict) -> None:
+    """one pass of the loop for one vm: plug as soon as available memory
+    drops under the headroom, unplug only once it is well over it."""
+    sock = meta.get("sock")
+    if not meta.get("hotplug_mib") or not sock or meta.get("paused"):
+        return
+    t = hotplug_target(sock, MEM_HEADROOM_MIB)
+    if not t:
+        return
+    st, target = t
+    cur = st["requested_size_mib"]
+    if target > cur or target < cur - MEM_SHRINK_SLACK_MIB:
+        hotplug_request(sock, target)
+
+
+def hotplug_loop() -> None:
+    while True:
+        time.sleep(MEM_LOOP_INTERVAL)
+        if not VMS_DIR.exists():
+            continue
+        for meta in list_vms():
+            lock = vm_lock(meta["vm_id"])
+            # never wait on a vm lock. whatever holds it (a snapshot, a
+            # restore, a migrate's pause) owns the guest's memory for now,
+            # and the next tick catches up.
+            if not lock.acquire(blocking=False):
+                continue
+            try:
+                hotplug_tick(load_meta(meta["vm_id"]) or {})
+            except Exception as e:
+                print(f"[fc-agent] hotplug {meta['vm_id']}: {e}", flush=True)
+            finally:
+                lock.release()
+
+
+def hotplug_shrink(meta: dict) -> None:
+    """unplug down to what the guest is using, before a pause that copies its
+    memory. unplugged blocks are holes in the snapshot's memory file, so they
+    never cross the wire. best effort: a guest that cannot free whole blocks
+    in time is snapshotted at whatever size it reached."""
+    sock = meta["sock"]
+    t = hotplug_target(sock, MEM_SNAPSHOT_HEADROOM_MIB)
+    if not t:
+        return
+    _, target = t
+    hotplug_request(sock, target)
+    deadline = time.monotonic() + MEM_UNPLUG_TIMEOUT
+    while time.monotonic() < deadline:
+        st = hotplug_status(sock)
+        if not st or st["plugged_size_mib"] <= target:
+            return
+        time.sleep(0.1)
+    print(f"[fc-agent] hotplug {meta['vm_id']}: unplug to {target} MiB timed out", flush=True)
+
+
+def hotplug_regrow(meta: dict) -> None:
+    """plug the whole region back after a resume, and record whether the vm
+    has one at all (a resumed vm's device comes from the snapshot, not from
+    this host's settings). the guest woke with only the snapshot's small
+    headroom and must not wait a loop interval for memory it was sized to
+    have; the loop trims it back down later."""
+    st = hotplug_status(meta["sock"])
+    meta["hotplug_mib"] = st["total_size_mib"] if st else 0
+    if st:
+        hotplug_request(meta["sock"], st["total_size_mib"])
 
 
 # -- Networking ---------------------------------------------------------------
@@ -823,10 +948,13 @@ def spawn_firecracker(meta: dict) -> None:
 def boot_firecracker(meta: dict) -> None:
     """Configure a spawned firecracker process and cold-boot the guest."""
     sock = meta["sock"]
+    boot_mib, hotplug_mib = mem_split(meta["memory_mb"])
     # Configure boot, drive, net, machine-config, start.
     boot_args = (
         "console=ttyS0 reboot=k panic=1 pci=off "
         + ("" if VERBOSE_BOOT else "quiet loglevel=0 ")
+        # movable, so the guest can migrate pages out of a block and unplug it.
+        + ("memhp_default_state=online_movable " if hotplug_mib else "")
         + f"ip={meta['guest_ip']}::{meta['host_ip']}:255.255.255.252::eth0:off"
     )
     # track_dirty_pages is set at boot on every VM, not just ones that will
@@ -835,7 +963,7 @@ def boot_firecracker(meta: dict) -> None:
     # take a diff snapshot for the rest of its life. The cost is one dirty
     # bitmap in the host's KVM slot, which is cheap next to re-booting a
     # guest to gain the capability.
-    machine = {"vcpu_count": meta["cpus"], "mem_size_mib": meta["memory_mb"],
+    machine = {"vcpu_count": meta["cpus"], "mem_size_mib": boot_mib,
                "track_dirty_pages": True}
     if meta.get("huge_pages"):
         machine["huge_pages"] = "2M"
@@ -846,12 +974,25 @@ def boot_firecracker(meta: dict) -> None:
         ("/network-interfaces/eth0", {"iface_id": "eth0", "host_dev_name": meta["tap"],
                                         "guest_mac": meta["mac"]}),
         ("/machine-config", machine),
-        ("/actions", {"action_type": "InstanceStart"}),
     ]
+    if hotplug_mib:
+        steps += [
+            ("/hotplug/memory", {"total_size_mib": hotplug_mib, "block_size_mib": MEM_BLOCK_MIB,
+                                 "slot_size_mib": MEM_SLOT_MIB}),
+            # stats only. amount_mib 0 never inflates; this is how the loop
+            # reads the guest's available memory.
+            ("/balloon", {"amount_mib": 0, "deflate_on_oom": True, "stats_polling_interval_s": 1}),
+        ]
+    steps.append(("/actions", {"action_type": "InstanceStart"}))
     for path, body in steps:
         code, resp = fc_api(str(sock), "PUT", path, body)
         if code >= 300:
             raise RuntimeError(f"firecracker API {path} -> {code}: {resp!r}")
+    meta["hotplug_mib"] = hotplug_mib
+    if hotplug_mib:
+        # the region boots empty. plug all of it so the guest starts with the
+        # memory it was sized for; the loop gives back what it does not use.
+        hotplug_request(str(sock), hotplug_mib)
 
 
 def start_firecracker(meta: dict) -> None:
@@ -1063,6 +1204,11 @@ LIVE_FILES = ("vmstate", "mem", LIVE_MANIFEST)
 # records that apply_delta writes onto a copy of the parent. a closed set like
 # LIVE_FILES, and the only other names a peer may ask for.
 DELTA_FILES = ("vmstate", "mem.delta", "rootfs.delta", LIVE_MANIFEST)
+# a full live snapshot's mem with its holes left out, in the delta format.
+# unplugged hotplug blocks are holes in mem, so a shrunk guest moves as only
+# the memory it was using. written only for a shrink_memory snapshot, served
+# like LIVE_FILES, and rebuilt into mem on the pulling side.
+SPARSE_MEM = "mem.sparse"
 ROOTFS_BLOCK_BYTES = 4 << 20
 DELTA_HEADER = struct.Struct(">QQ")
 # the /snapshot/load field that keeps dirty page tracking on in a restored or
@@ -1382,7 +1528,8 @@ def copy_rootfs(src: str, dst: Path) -> None:
 
 
 def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = False,
-                    parent: str = "", keep_paused: bool = False) -> dict:
+                    parent: str = "", keep_paused: bool = False,
+                    shrink_memory: bool = False) -> dict:
     meta = load_meta(vm_id)
     if not meta:
         raise HTTPError(404, "vm not found")
@@ -1391,8 +1538,8 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
     sock = meta.get("sock") or ""
     if live and not sock:
         raise HTTPError(409, "vm has no firecracker socket; live snapshot needs a running vm")
-    if (diff or keep_paused) and not live:
-        raise HTTPError(400, "diff and keep_paused are live snapshot options")
+    if (diff or keep_paused or shrink_memory) and not live:
+        raise HTTPError(400, "diff, keep_paused and shrink_memory are live snapshot options")
     parent_manifest = None
     if diff:
         # firecracker's dirty bitmap counts from the last live snapshot this
@@ -1424,6 +1571,12 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         # No `sync` on this path: the page cache IS in the memory image, so
         # flushing it buys nothing, and an ssh round trip is real time added to
         # a window during which the guest is stopped.
+        #
+        # the shrink comes before the pause: unplugging needs the guest
+        # running to move pages out of the blocks it gives up.
+        shrink = shrink_memory and bool(meta.get("hotplug_mib")) and not was_paused
+        if shrink:
+            hotplug_shrink(meta)
         fc_vm_state(sock, "Paused")
         ok = False
         try:
@@ -1449,6 +1602,12 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # ever resume is not.
             if not was_paused and not (keep_paused and ok):
                 fc_vm_state(sock, "Resumed")
+                if shrink:
+                    # inside a finally, so it must not mask the snapshot's own error.
+                    try:
+                        hotplug_regrow(meta)
+                    except Exception as e:
+                        print(f"[fc-agent] hotplug {vm_id}: regrow after snapshot: {e}", flush=True)
             if not ok:
                 # a failed create may still have reset the dirty bitmap.
                 meta.pop("chain_head", None)
@@ -1485,11 +1644,16 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         elif meta.get("huge_pages"):
             chunks, zeros = chunk_digests(snap_dir / "mem")
             live_manifest.update(page_size=HUGE_PAGE_BYTES, chunks=chunks, zero_chunks=zeros)
+        sparse = shrink and not diff and snapshot_fs_reports_holes()
+        if sparse:
+            mem = snap_dir / "mem"
+            live_manifest["mem_size"] = os.path.getsize(mem)
+            write_delta(mem, file_extents(mem), snap_dir / SPARSE_MEM)
         (snap_dir / LIVE_MANIFEST).write_text(json.dumps(live_manifest))
         # the rootfs digest is the artifact's identity on the wire; every other
         # file gets a digest of its own so a peer can verify each one as it
         # arrives without the identity changing meaning between kinds.
-        names = DELTA_FILES if diff else LIVE_FILES
+        names = DELTA_FILES if diff else LIVE_FILES + ((SPARSE_MEM,) if sparse else ())
         files = {name: file_digest(snap_dir / name) for name in names}
         extra_bytes = sum(os.path.getsize(snap_dir / name) for name in names)
     else:
@@ -1643,6 +1807,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
         )
         if code >= 300:
             raise RuntimeError(f"firecracker API /snapshot/load -> {code}: {resp!r}")
+        hotplug_regrow(meta)
         # tracking restarts at the load, so the image just loaded is the base
         # the next diff counts from.
         meta["chain_head"] = snapshot_id
@@ -1766,6 +1931,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
     finally:
         shutil.rmtree(link.parent, ignore_errors=True)
     fc_vm_state(meta["sock"], "Resumed")
+    hotplug_regrow(meta)
     meta["resumed_from"] = str(resume["vmstate"].parent.name)
     if not resume["lazy"]:
         # the seed is complete and stays on this host, so it is the base the
@@ -2073,8 +2239,8 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     files = files or {}
     if not isinstance(files, dict):
         raise HTTPError(400, "files must be an object of name -> sha256")
-    if files and set(files) != set(LIVE_FILES):
-        raise HTTPError(400, f"files must name exactly {sorted(LIVE_FILES)}")
+    if files and set(files) not in (set(LIVE_FILES), set(LIVE_FILES) | {SPARSE_MEM}):
+        raise HTTPError(400, f"files must name exactly {sorted(LIVE_FILES)}, optionally with {SPARSE_MEM}")
     for expected in files.values():
         if not isinstance(expected, str) or not _DIGEST_RE.fullmatch(expected):
             raise HTTPError(400, "file digests must be lowercase hex sha256")
@@ -2099,9 +2265,13 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
     # iterating LIVE_FILES rather than `files` keeps the names that reach a url
     # or a path our own literals, whatever the request body spelled.
+    # a sparse copy crosses the wire in mem's place and mem is rebuilt from it.
+    # lazy fetches neither: fc-uffd reads mem off the peer.
+    sparse = SPARSE_MEM in files and not lazy
+    skip = {"mem", SPARSE_MEM} if lazy else {"mem"} if sparse else {SPARSE_MEM}
     wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest)] + [
         (name, f"/v1/artifacts/{digest}/files/{name}{q}", files[name])
-        for name in LIVE_FILES if name in files and not (lazy and name == "mem")
+        for name in LIVE_FILES + (SPARSE_MEM,) if name in files and name not in skip
     ]
     staged: list[tuple[str, Path]] = []
     total = 0
@@ -2116,6 +2286,19 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
         if lazy and not json.loads(dict(staged)[LIVE_MANIFEST].read_text()).get("chunks"):
             raise HTTPError(409, "snapshot has no chunk table; it was not taken with 2M pages")
 
+        if sparse:
+            stage = dict(staged)
+            mem = ARTIFACT_TMP_DIR / f"pull-{uuid.uuid4().hex}.mem"
+            staged.append(("mem", mem))
+            size = int(json.loads(stage[LIVE_MANIFEST].read_text())["mem_size"])
+            with open(mem, "wb") as f:
+                f.truncate(size)
+            apply_delta(stage[SPARSE_MEM], mem, size)
+            # checked against mem's own digest, so the pulled copy is as good
+            # as a full one and can be moved on to a third host.
+            if not hmac.compare_digest(file_digest(mem), files["mem"]):
+                raise HTTPError(422, "rebuilt memory image digest mismatch; nothing committed")
+
         # Same fresh-inode-plus-mv commit as snapshot_restore: the bytes are
         # written to a brand-new inode and renamed into place, never written
         # over a file another process may already have open or cached.
@@ -2125,6 +2308,8 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
         # files nothing resolves as live.
         dest_dir.mkdir(parents=True, exist_ok=True)
         for name, tmp in staged:
+            if name == SPARSE_MEM:
+                continue
             sudo(["mv", str(tmp), str(dest_dir / name)])
             sudo(["chmod", "666", str(dest_dir / name)], check=False)
         record = {
@@ -2148,7 +2333,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
         return record
     except HTTPError:
         raise
-    except (OSError, http.client.HTTPException) as e:
+    except (OSError, http.client.HTTPException, ValueError, KeyError) as e:
         # Transport faults and a full disk are the peer's problem or the
         # host's, never a malformed request, so they read as 422 like a
         # digest mismatch does.
@@ -2978,7 +3163,7 @@ class Handler(BaseHTTPRequestHandler):
         if not verify_artifact_grant(self.headers.get(ARTIFACT_GRANT_HEADER, ""), digest):
             # One undifferentiated answer for every verification failure.
             return self._text(403, "forbidden")
-        if name != "rootfs.ext4" and name not in LIVE_FILES and name not in DELTA_FILES:
+        if name != "rootfs.ext4" and name not in LIVE_FILES and name not in DELTA_FILES and name != SPARSE_MEM:
             return self._text(404, "artifact not found")
         if snapshot_id and not _SNAP_ID_RE.fullmatch(snapshot_id):
             return self._text(404, "artifact not found")
@@ -3196,6 +3381,7 @@ class Handler(BaseHTTPRequestHandler):
                             diff=bool(body.get("diff", False)),
                             parent=body.get("parent", "") or "",
                             keep_paused=bool(body.get("keep_paused", False)),
+                            shrink_memory=bool(body.get("shrink_memory", False)),
                         )
                         # the digest goes back on the response because this is
                         # the only moment it is available to the caller: it is
@@ -3224,6 +3410,8 @@ class Handler(BaseHTTPRequestHandler):
                             raise HTTPError(409, "vm has no firecracker socket")
                         fc_vm_state(meta["sock"], "Paused" if action == "pause" else "Resumed")
                         meta["paused"] = action == "pause"
+                        if action == "resume" and meta.get("hotplug_mib"):
+                            hotplug_regrow(meta)
                         save_meta(meta)
                         return self._json(200, {"ok": True, "paused": meta["paused"]})
                     if action == "snapshots" and method == "GET":
@@ -3337,7 +3525,10 @@ def reattach_vms() -> None:
 
 def main():
     reattach_vms()
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+    # started on every host, not just FC_MEM_HOTPLUG ones: a vm resumed from
+    # another host's snapshot brings its hotplug device with it.
+    threading.Thread(target=hotplug_loop, daemon=True).start()
+    srv =ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"[fc-agent] listening :{PORT}", flush=True)
     srv.serve_forever()
 

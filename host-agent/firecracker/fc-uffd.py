@@ -6,6 +6,12 @@ The new VM on the target resumes with an empty memory. Firecracker hands this
 process a userfaultfd over a unix socket, and every page the guest touches
 is fetched from the source in 2M chunks, checked against live.json, and copied in. A background thread pulls the rest,
 and --status reports done once the source is no longer needed
+
+all-zero chunks (holes in the image, which is what unplugged virtio-mem
+blocks are) are never prefetched, only zero-filled if the guest touches them,
+so a shrunk guest does not come back at full size on the host. a block the
+guest unplugs after the resume arrives as UFFD_EVENT_REMOVE, and its next
+touch is zero-filled rather than refilled with the snapshot's old bytes.
 """
 import argparse
 import ctypes 
@@ -24,6 +30,7 @@ import threading
 from urllib.parse import urlparse
 
 UFFD_EVENT_PAGEFAULT = 0x12 
+UFFD_EVENT_REMOVE = 0x15
 UFFDIO_COPY = 0xC028AA03
 UFFD_MSG_SIZE = 32
 
@@ -77,9 +84,11 @@ class PeerSource:
         finally:
             conn.close()
 
-def copy_page(uffd: int, dst: int, data: bytearray) -> None:
+def copy_page(uffd: int, dst: int, data: bytearray, removed=lambda: False) -> None:
     """UFFDIO_COPY data into the guest at dst. EEXIST means the other thread
-    filled first, which is the same outcome"""
+    filled first, which is the same outcome. EAGAIN means an event such as a
+    remove is waiting to be read; if it removed this chunk, the bytes in hand
+    are stale and zeros go in instead."""
     src = (ctypes.c_char * len(data)).from_buffer(data)
     arg = bytearray(struct.pack("QQQQq", dst, ctypes.addressof(src), len(data), 0, 0))   
     while True:
@@ -90,6 +99,9 @@ def copy_page(uffd: int, dst: int, data: bytearray) -> None:
             if e.errno == errno.EEXIST:
                 return 
             if e.errno == errno.EAGAIN:
+                if removed():
+                    data[:] = bytes(len(data))
+                time.sleep(0.001)
                 continue 
             raise 
 
@@ -104,6 +116,9 @@ class Pager:
         self.status_path = status_path
         self.lock = threading.Lock()
         self.resident: set[int] = set()
+        # chunks the guest gave back since the resume. the host dropped their
+        # pages, so they read as zeros from here on.
+        self.removed: set[int] = set()
         self.error = ""
 
     def chunk_for(self, addr: int) -> int | None:
@@ -135,18 +150,48 @@ class Pager:
         with self.lock:
             if i in self.resident:
                 return
-        data = bytearray(self.page) if i in self.zero else bytearray(self.fetch(i))
+            blank = i in self.zero or i in self.removed
+        data = bytearray(self.page) if blank else bytearray(self.fetch(i))
+        removed = lambda: self.is_removed(i)
+        # a remove can land while the chunk was being fetched.
+        if not blank and removed():
+            data = bytearray(self.page)
         off = i * self.page 
         for r in self.regions:
             if r ["offset"] <= off < r["offset"] + r["size"]:
-                copy_page(self.uffd, r["base_host_virt_addr"] + off - r["offset"], data)
+                copy_page(self.uffd, r["base_host_virt_addr"] + off - r["offset"], data, removed)
         with self.lock:
             self.resident.add(i)
+
+    def is_removed(self, i: int) -> bool:
+        with self.lock:
+            return i in self.removed
+
+    def remove(self, start: int, end: int) -> None:
+        """the guest gave [start, end) back. a later touch of any chunk in it
+        has to read zeros, never the snapshot's old bytes, and a fill already
+        in flight has to see it (copy_page's EAGAIN check)."""
+        addr = start
+        while addr < end:
+            i = self.chunk_for(addr)
+            if i is not None:
+                with self.lock:
+                    self.removed.add(i)
+                    self.resident.discard(i)
+            addr = (addr // self.page + 1) * self.page
+
+    def settled(self) -> int:
+        """chunks that no longer need the source: copied in, or zeros."""
+        return len(self.resident | self.zero | self.removed)
 
     def prefetch(self) -> None:
         try:
             for i in range(len(self.chunks)):
-                self.fill(i)
+                # holes stay unpopulated until the guest touches them.
+                with self.lock:
+                    hole = i in self.zero or i in self.removed
+                if not hole:
+                    self.fill(i)
                 if i % STATUS_EVERY == 0:
                     self.write_status()
 
@@ -154,7 +199,7 @@ class Pager:
             self.fail(e)
             return 
         self.write_status()
-        log(f"all {len(self.chunks)} chunks resident")
+        log(f"all {len(self.chunks)} chunks settled")
 
     def serve_faults(self, conn: socket.socket) -> None:
         poller = select.poll()
@@ -172,7 +217,13 @@ class Pager:
                     msg = os.read(self.uffd, UFFD_MSG_SIZE)
                 except BlockingIOError:
                     continue
-                if len(msg) != UFFD_MSG_SIZE or msg[0] != UFFD_EVENT_PAGEFAULT:
+                if len(msg) != UFFD_MSG_SIZE:
+                    continue
+                if msg[0] == UFFD_EVENT_REMOVE:
+                    start, end = struct.unpack_from("QQ", msg, 8)
+                    self.remove(start, end)
+                    continue
+                if msg[0] != UFFD_EVENT_PAGEFAULT:
                     continue 
                 addr = struct.unpack_from("Q", msg, 16)[0]
                 i = self.chunk_for(addr)
@@ -182,11 +233,12 @@ class Pager:
 
 
     def write_status(self) -> None:
+        settled = self.settled()
         with self.lock:
             st = {
-                "resident_chunks": len(self.resident),
+                "resident_chunks": settled,
                 "total_chunks": len(self.chunks),
-                "done": not self.error and len(self.resident) == len(self.chunks),
+                "done": not self.error and settled == len(self.chunks),
             }
             if self.error:
                 st["error"] = self.error
