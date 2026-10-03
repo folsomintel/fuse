@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.0](https://github.com/folsomintel/fuse/compare/v0.35.2...v0.36.0) (2026-10-03)
+
+
+### Features
+
+* export prometheus metrics from fuse-proxy ([#298](https://github.com/folsomintel/fuse/issues/298)) ([6ca3e69](https://github.com/folsomintel/fuse/commit/6ca3e69e66753c033797cc93315768a16020c83b))
+* per-host, fleet and lifecycle metrics plus a local fuse dashboard ([#299](https://github.com/folsomintel/fuse/issues/299)) ([41d0021](https://github.com/folsomintel/fuse/commit/41d002153061d162cb55250e472c04ef8cb5e1a7))
+
 ## [0.35.2](https://github.com/folsomintel/fuse/compare/v0.35.1...v0.35.2) (2026-10-03)
 
 
