@@ -137,6 +137,65 @@ func TestMigrateVM_coldMigrateIsUnchanged(t *testing.T) {
 	}
 }
 
+// an empty target means the orchestrator picks a host, and never the source:
+// a caller moving a vm off a failing host must not get a same-host migrate.
+func TestMigrateVM_emptyTargetPicksAnotherHost(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		name := "cold"
+		if live {
+			name = "live"
+		}
+		t.Run(name, func(t *testing.T) {
+			fm := newLiveMigrateFleet(t, newLiveMigrateProvider(), &recordingMover{})
+
+			newID, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: live})
+			if err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			info, _ := fm.GetVM(newID)
+			if info.HostID != "h-b" || info.Spec.ResumeSeed != live {
+				t.Errorf("migrated vm = host %q resume %v, want h-b resume %v", info.HostID, info.Spec.ResumeSeed, live)
+			}
+		})
+	}
+}
+
+func TestMigrateVM_emptyTargetPrefersTheCheckpointStandby(t *testing.T) {
+	provider := newLiveMigrateProvider()
+	fm := newLiveMigrateFleet(t, provider, &recordingMover{})
+	if err := fm.RegisterHost(context.Background(), artifactHost("h-c", 8), provider); err != nil {
+		t.Fatal(err)
+	}
+	fm.chainFor("fuse-task-src").standby = "h-c"
+
+	newID, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: true})
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if info, _ := fm.GetVM(newID); info.HostID != "h-c" {
+		t.Errorf("migrated vm on %q, want the standby h-c", info.HostID)
+	}
+}
+
+func TestMigrateVM_emptyTargetWithNoOtherHostLeavesTheSourceRunning(t *testing.T) {
+	for _, live := range []bool{false, true} {
+		fm := newLiveMigrateFleet(t, newLiveMigrateProvider(), &recordingMover{})
+		if err := fm.CordonHost(context.Background(), "h-b"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: live}); err == nil {
+			t.Fatalf("live=%v: migrate with no other schedulable host succeeded", live)
+		}
+		if info, ok := fm.GetVM("fuse-task-src"); !ok || info.State != VMStateRunning || info.HostID != "h-a" {
+			t.Errorf("live=%v: source vm = %+v (tracked %v), want it still running on h-a", live, info.State, ok)
+		}
+		if vms := fm.ListFleet(); len(vms) != 1 {
+			t.Errorf("live=%v: %d vms tracked, want only the source", live, len(vms))
+		}
+	}
+}
+
 // every refusal has to leave the source running: it is the only copy of the
 // guest until the target has actually resumed it.
 func TestMigrateVM_liveRefusalsLeaveTheSourceRunning(t *testing.T) {
@@ -146,7 +205,6 @@ func TestMigrateVM_liveRefusalsLeaveTheSourceRunning(t *testing.T) {
 		arrange func(*liveMigrateProvider, *recordingMover)
 		want    error
 	}{
-		{name: "no target host", opts: MigrateOptions{Live: true}, want: ErrLiveMigrateRefused},
 		{name: "target is the source host", opts: MigrateOptions{TargetHostID: "h-a", Live: true}, want: ErrLiveMigrateRefused},
 		{
 			name:    "target refuses the resume",

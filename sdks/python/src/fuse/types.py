@@ -307,9 +307,12 @@ class ForkOptions(_Model):
 class MigrateOptions(_Model):
     # optional body for environments.migrate.
     #
-    # target_host_id empty means the orchestrator picks. live resumes the guest
-    # from its memory on the target, so processes survive the move, instead of
-    # cold-booting it. it requires target_host_id and never falls back to a
+    # target_host_id empty means the orchestrator picks a host other than the
+    # source, preferring the environment's checkpoint standby; if no other host
+    # can take it the call fails with 503 and the source keeps running.
+    #
+    # live resumes the guest from its memory on the target, so processes
+    # survive the move, instead of cold-booting it. it never falls back to a
     # cold migration: a target that cannot resume the guest answers 409 and the
     # source keeps running.
     #

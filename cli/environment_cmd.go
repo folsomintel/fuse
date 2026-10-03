@@ -488,7 +488,7 @@ func newEnvMigrateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "migrate <id>",
 		Short: "Migrate an environment to another host",
-		Long:  "Migrate an environment to another host (disk-only: ~10-20s downtime). The source VM is drained and destroyed after the migration completes.\n\nWith --live the guest's memory moves too and it resumes on the target with its processes intact. That needs --target-host, the same cpu and firecracker build on both hosts, and the environment's network slot free on the target; if the target cannot resume it the migrate fails and the source keeps running.\n\nWith --lazy as well, the guest resumes before its memory has arrived and pages it in from the source afterwards, so the move does not wait on a full memory copy. It needs an environment created with --huge-pages, and until every page has arrived the guest still depends on the source host.",
+		Long:  "Migrate an environment to another host (disk-only: ~10-20s downtime). The source VM is drained and destroyed after the migration completes.\n\nWith --live the guest's memory moves too and it resumes on the target with its processes intact. That needs the same cpu and firecracker build on both hosts, and the environment's network slot free on the target; if the target cannot resume it the migrate fails and the source keeps running.\n\nWith --lazy as well, the guest resumes before its memory has arrived and pages it in from the source afterwards, so the move does not wait on a full memory copy. It needs an environment created with --huge-pages, and until every page has arrived the guest still depends on the source host.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, _, err := app.client()
@@ -511,8 +511,8 @@ func newEnvMigrateCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&targetHost, "target-host", "", "target host id (empty means the orchestrator picks)")
-	cmd.Flags().BoolVar(&live, "live", false, "carry the guest's memory across and resume it instead of cold-booting (requires --target-host)")
+	cmd.Flags().StringVar(&targetHost, "target-host", "", "target host id (empty means the orchestrator picks a host other than the source)")
+	cmd.Flags().BoolVar(&live, "live", false, "carry the guest's memory across and resume it instead of cold-booting")
 	cmd.Flags().BoolVar(&lazy, "lazy", false, "resume before the memory has arrived and page it in from the source (requires --live and a --huge-pages environment)")
 	return cmd
 }

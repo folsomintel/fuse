@@ -324,12 +324,16 @@ export interface ForkOptions {
 
 /** MigrateOptions is the optional body for environments.migrate. */
 export interface MigrateOptions {
-  /** Host to migrate to. Empty means the orchestrator picks. */
+  /**
+   * Host to migrate to. Empty means the orchestrator picks a host other than
+   * the source, preferring the environment's checkpoint standby; if no other
+   * host can take it the call fails with 503 and the source keeps running.
+   */
   target_host_id?: string;
   /**
    * Resume the guest from its memory on the target, so processes survive the
-   * move, instead of cold-booting it. Requires target_host_id and never falls
-   * back to a cold migration: a target that cannot resume the guest answers
+   * move, instead of cold-booting it. It never falls back to a cold
+   * migration: a target that cannot resume the guest answers
    * 409 and the source keeps running.
    */
   live?: boolean;
