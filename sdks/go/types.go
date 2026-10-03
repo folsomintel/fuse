@@ -402,12 +402,14 @@ type ForkOptions struct {
 
 // MigrateOptions is the optional body for env.Migrate.
 type MigrateOptions struct {
-	// TargetHostID is the host to migrate the VM to. Empty means
-	// the orchestrator picks one via its scheduler.
+	// TargetHostID is the host to migrate the VM to. Empty means the
+	// orchestrator picks a host other than the source, preferring the vm's
+	// checkpoint standby; if no other host can take it the call fails with
+	// 503 and the source keeps running.
 	TargetHostID string `json:"target_host_id,omitempty"`
 	// Live resumes the guest from its memory on the target, so processes
-	// survive the move, instead of cold-booting it. requires TargetHostID and
-	// never falls back to a cold migration: a target that cannot resume the
+	// survive the move, instead of cold-booting it. it never falls back to a
+	// cold migration: a target that cannot resume the
 	// guest answers 409 and the source keeps running.
 	Live bool `json:"live,omitempty"`
 	// Lazy resumes the guest before its memory has arrived and pages it in

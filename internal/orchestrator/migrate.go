@@ -36,7 +36,9 @@ var ErrLiveMigrateRefused = errors.New("live migrate refused")
 
 // MigrateOptions tunes a MigrateVM call. all fields are optional.
 type MigrateOptions struct {
-	// TargetHostID is the host to migrate to. empty means the source's host.
+	// TargetHostID is the host to migrate to. empty means the orchestrator
+	// picks a host other than the source's, preferring the vm's checkpoint
+	// standby. a vm with no host (single-provider mode) stays where it is.
 	TargetHostID string
 
 	// Live carries the guest's memory across and resumes it on the target, so
@@ -59,6 +61,42 @@ type MigrateOptions struct {
 	// depends on the source's seed snapshot, which stays pinned until then;
 	// if the source host is lost first, the guest is lost with it.
 	Lazy bool
+}
+
+// pickMigrateTarget chooses a host other than the source for a migrate that
+// named none. the vm's checkpoint standby comes first when it still qualifies,
+// since it already holds the vm's base and a live migrate there skips the bulk
+// copy. it never falls back to the source: a caller moving a vm off a failing
+// host must not get a same-host migrate instead.
+func (fm *FleetManager) pickMigrateTarget(vmID, srcHostID string, srcBackend HostBackend, srcSpec Spec) (string, error) {
+	fm.mu.RLock()
+	hosts := fm.activeHostsLocked()
+	fm.mu.RUnlock()
+
+	// a rootfs prepared under one backend is not portable to another.
+	eligible := make([]*Host, 0, len(hosts))
+	for _, h := range hosts {
+		if h.ID != srcHostID && h.Backend == srcBackend {
+			eligible = append(eligible, h)
+		}
+	}
+
+	spec := srcSpec
+	spec.HostID = ""
+
+	c := fm.chainFor(vmID)
+	c.mu.Lock()
+	standby := c.standby
+	c.mu.Unlock()
+	if h := hostByID(eligible, standby); h != nil && hostRejection(h, spec) == "" {
+		return standby, nil
+	}
+
+	h, _, err := SchedulePreferring(spec, eligible, fm.placementPolicy, PlacementHints{})
+	if err != nil {
+		return "", fmt.Errorf("no host other than %s can take vm %s: %w", srcHostID, vmID, err)
+	}
+	return h.ID, nil
 }
 
 // MigrateVM moves vmID to another host and returns the new vm's id.
@@ -92,11 +130,11 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		}
 	}
 
+	srcBackend := HostBackend("")
+	if h, ok := fm.hosts[srcHostID]; ok {
+		srcBackend = h.Backend
+	}
 	if targetHostID != "" {
-		srcBackend := HostBackend("")
-		if h, ok := fm.hosts[srcHostID]; ok {
-			srcBackend = h.Backend
-		}
 		targetBackend := HostBackend("")
 		if h, ok := fm.hosts[targetHostID]; ok {
 			targetBackend = h.Backend
@@ -123,6 +161,16 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	forkable, ok := provider.(SnapshotForkable)
 	if !ok {
 		return "", fmt.Errorf("provider does not support migrate for vm %s", vmID)
+	}
+
+	// an empty target means the orchestrator picks one. a vm with no host is
+	// on the single-provider path, where there is nowhere else to go.
+	if targetHostID == "" && srcHostID != "" {
+		picked, err := fm.pickMigrateTarget(vmID, srcHostID, srcBackend, srcSpec)
+		if err != nil {
+			return "", err
+		}
+		targetHostID = picked
 	}
 
 	if opts.Live && (targetHostID == "" || targetHostID == srcHostID) {
@@ -190,12 +238,8 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	spec.HostID = ""
 	spec.Labels = nil
 
-	if targetHostID == "" {
-		targetHostID = srcHostID
-	}
-
 	targetProvider := provider
-	if targetHostID != srcHostID && targetHostID != "" {
+	if targetHostID != srcHostID {
 		fm.mu.RLock()
 		if hostProvider, ok := fm.providerForHost(targetHostID); ok {
 			targetProvider = hostProvider
