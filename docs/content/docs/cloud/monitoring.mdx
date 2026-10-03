@@ -77,6 +77,41 @@ actually reports) should track each other closely. A persistent gap means
 something is out of sync, check `orchestrator_reconcile_vms_missing_provider_total`
 for the specific failure mode.
 
+**Fleet shape** is read live on every scrape, not at the reconcile tick, so it
+is current to the second and a host or state that goes away stops being
+reported rather than freezing at its last value:
+
+- `orchestrator_fleet_vms{state,host}` counts VMs by state and host. A
+  growing `state="provisioning"` or `state="draining"` series is work that isn't
+  finishing. `host` is empty on a single-provider fleet.
+- `orchestrator_host_capacity{host,resource}` and
+  `orchestrator_host_allocated{host,resource}` give each host's capacity and
+  what's allocated from it, for `resource` in `cpus`, `ram_mb`, `storage_gb`,
+  `vms` and `gpus`. `orchestrator_host_allocated / orchestrator_host_capacity`
+  is per-host utilization: alert on it approaching 1 before creates start
+  failing placement.
+- `orchestrator_host_info{host,state,region,backend,arch}` is always 1, one
+  series per host, for joining and for spotting a cordoned or draining host.
+  `orchestrator_host_last_seen_timestamp_seconds{host}` is when its agent last
+  answered. `time() - orchestrator_host_last_seen_timestamp_seconds` climbing
+  means the orchestrator has lost touch with that host.
+- `orchestrator_fleet_snapshots{state,mode}` counts snapshots. A non-zero
+  `state="error"` series is snapshots that failed and are still recorded. This
+  is the one fleet series read from the state store, so a scrape while Postgres
+  is unreachable leaves it out rather than failing.
+
+**Lifecycle operations**: `orchestrator_operations_total{op,result}` and
+`orchestrator_operations_duration_seconds{op}` cover `create`, `destroy`,
+`fork`, `migrate`, `migrate_live`, `snapshot` and `restore`. `destroy` counts
+explicit destroys, from the API or a migrate removing its source. Teardowns the
+reconcile loop does on its own (stuck, idle, orphaned) and the teardown after a
+task completes aren't included; the reconcile counters above cover the first
+group. `snapshot` includes the snapshots fork, migrate and checkpoint chains
+take internally, because each is a real checkpoint the host had
+to write. Watch `rate(orchestrator_operations_total{result="error"}[5m])` by
+`op`, and the p99 of the duration histogram per `op`: a cold migrate taking
+minutes is normal, a fork taking minutes is not.
+
 **HTTP health**: the standard RED metrics apply directly.
 
 - `rate(orchestrator_http_requests_total{code=~"5.."}[5m])` for server error
@@ -101,11 +136,12 @@ saturation cannot be broken down by route.
 | `rate(orchestrator_http_requests_total{code=~"5.."}[5m]) > 0` sustained | Warning | Server errors on the API surface. |
 | `orchestrator_reconcile_orphans_dead_lettered_total` increasing | Warning | VMs stuck in an unrecoverable state, needs manual cleanup. |
 | `orchestrator_fleet_egress_endpoints{state="unhealthy"} > 0` for 2+ cycles | Warning | Proxy-mode environments with no outbound access; the backend on that host is down. |
+| `time() - orchestrator_host_last_seen_timestamp_seconds > 300` | Warning | The orchestrator can't reach that host's agent. |
+| `orchestrator_host_allocated{resource="vms"} / orchestrator_host_capacity{resource="vms"} > 0.9` | Warning | That host is nearly full; creates will start landing elsewhere or failing placement. |
 
 ## What isn't covered
 
-There is no per-VM metrics API, `orchestrator_fleet_tracked_vms` is a fleet
-total, not broken out by task or host. For per-host capacity, poll
-[`GET /v1/hosts/{hostId}`](/reference/api#get) or use
-[`fuse host metrics`](/reference/cli/hosts/metrics) instead, that data
-isn't in the Prometheus registry.
+There is no per-VM metrics API: VMs are counted by state and host, never
+broken out one series per VM. For a browsable view of everything above, plus
+the hosts, environments and snapshots behind it, run
+[`fuse dashboard`](/reference/cli/dashboard).

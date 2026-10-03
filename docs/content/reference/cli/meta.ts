@@ -19,5 +19,6 @@ export default defineMeta({
     "snapshot",
     "apikeys",
     "metrics",
+    "dashboard",
   ],
 });

@@ -512,6 +512,7 @@ func run() error {
 
 		Ingress: ingressProxy,
 	})
+	prometheus.MustRegister(metrics.NewFleetCollector(fm))
 
 	// Reconcile loop starts with the binary.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
