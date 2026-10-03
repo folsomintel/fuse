@@ -179,7 +179,7 @@ class LazyResumePlanTest(unittest.TestCase):
         vms_root = os.path.realpath(str(fc_agent.VMS_DIR))
         self.rootfs_path = os.path.join(vms_root, f"gone-{self.name}", "rootfs.ext4")
 
-    def seed(self, chunks: bool, lazy: bool) -> str:
+    def seed(self, chunks: bool, lazy: bool, page_size: bool = False) -> str:
         d = fc_agent.SNAPSHOTS_DIR / self.name
         d.mkdir(parents=True)
         (d / "rootfs.ext4").write_bytes(b"rootfs")
@@ -187,6 +187,8 @@ class LazyResumePlanTest(unittest.TestCase):
         manifest = {"index": 7, "rootfs_path": self.rootfs_path, "host": fc_agent.host_fingerprint()}
         if chunks:
             manifest.update(page_size=PAGE, chunks=[sha(b"x")], zero_chunks=[])
+        elif page_size:
+            manifest.update(page_size=PAGE)
         (d / "live.json").write_text(json.dumps(manifest))
         meta = {"snapshot_id": self.name, "digest": sha(b"rootfs"), "kind": "live"}
         if lazy:
@@ -207,6 +209,20 @@ class LazyResumePlanTest(unittest.TestCase):
         self.assertTrue(plan["huge_pages"])
         self.assertIsNone(plan["lazy"])
         self.assertEqual(plan["mem"].name, "mem")
+
+    def test_a_2m_seed_merged_from_a_diff_still_resumes_through_uffd(self):
+        # a merged copy carries the diff's manifest: page_size, no chunk table.
+        plan = fc_agent.resume_plan(self.seed(chunks=False, lazy=False, page_size=True))
+        self.assertTrue(plan["huge_pages"])
+        self.assertEqual(plan["mem"].name, "mem")
+
+    def test_a_4k_seed_resumes_from_a_file(self):
+        self.assertFalse(fc_agent.resume_plan(self.seed(chunks=False, lazy=False))["huge_pages"])
+
+    def test_refuses_a_lazy_seed_with_only_a_page_size(self):
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            fc_agent.resume_plan(self.seed(chunks=False, lazy=True, page_size=True))
+        self.assertEqual(caught.exception.code, 409)
 
     def test_refuses_a_lazy_seed_with_no_chunk_table(self):
         with self.assertRaises(fc_agent.HTTPError) as caught:
@@ -345,6 +361,48 @@ class PagerTest(unittest.TestCase):
         st = json.loads(self.status.read_text())
         self.assertFalse(st["done"])
         self.assertIn("chunk 2", st["error"])
+
+
+class FileWithoutChunkTableTest(unittest.TestCase):
+    """a snapshot merged from a delta has no chunk table: fc-uffd serves its
+    local, already verified memory file without one."""
+
+    def setUp(self):
+        self.copies = []
+        patcher = mock.patch.object(fc_uffd, "copy_page",
+                                    lambda uffd, dst, data, removed=None: self.copies.append((dst, bytes(data))))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.path = Path(tempfile.mkdtemp()) / "mem"
+        self.regions = [{"base_host_virt_addr": 0x10000000, "size": 4 * PAGE, "offset": 0}]
+
+    def pager(self) -> "fc_uffd.Pager":
+        source = fc_uffd.FileSource(str(self.path), PAGE)
+        status = self.path.with_name("uffd.json")
+        return fc_uffd.Pager(-1, self.regions, {"page_size": PAGE}, source, str(status))
+
+    def test_serves_every_chunk_of_the_file_unverified(self):
+        self.path.write_bytes(memory_image())
+        p = self.pager()
+        p.prefetch()
+        self.assertEqual(p.total, 4)
+        copied = dict(self.copies)
+        self.assertEqual(copied[0x10000000 + 3 * PAGE], b"d" * PAGE)
+        self.assertTrue(json.loads(self.path.with_name("uffd.json").read_text())["done"])
+
+    def test_holes_in_the_file_are_its_zero_chunks(self):
+        with open(self.path, "wb") as f:
+            f.truncate(4 * PAGE)
+            for i in (0, 2, 3):
+                f.seek(i * PAGE)
+                f.write(b"z" * PAGE)
+        with open(self.path, "rb") as f:
+            if os.lseek(f.fileno(), 0, os.SEEK_HOLE) >= 4 * PAGE:
+                self.skipTest("this filesystem does not report holes")
+        p = self.pager()
+        self.assertEqual(p.zero, {1})
+        p.prefetch()
+        self.assertNotIn(0x10000000 + PAGE, dict(self.copies))
 
 
 class PeerSourceTest(AgentServer, unittest.TestCase):
