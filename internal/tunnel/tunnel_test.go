@@ -300,6 +300,15 @@ func (r *relay) swap(t *testing.T) {
 // the property the whole design rests on: the guest's address changes under an
 // open stream and the stream carries on, on the same connection.
 func TestAnOpenStreamSurvivesTheGuestChangingAddress(t *testing.T) {
+	// after a swap the proxy keeps writing to the old address until the guest
+	// sends from the new one. a real guest does that on its keepalive; at the
+	// production 15s that is longer than roundTrip's deadline, and the test
+	// passed only when a delayed ack happened to cross the swap. a cleanup
+	// registered before runSidecar's, so it runs after the sidecar stopped.
+	old := keepAlive
+	t.Cleanup(func() { keepAlive = old })
+	keepAlive = 200 * time.Millisecond
+
 	h := startServer(t)
 	h.cfg.Ports = []int{echoServer(t)}
 	rl := newRelay(t, h.srv.Addr())
