@@ -94,6 +94,13 @@ ARTIFACT_TMP_DIR = Path(
     os.environ.get("FC_AGENT_ARTIFACT_TMP_DIR", str(SNAPSHOTS_DIR.parent / "artifact-pull-tmp"))
 )
 FC_BIN = os.environ.get("FC_BIN", "/usr/local/bin/firecracker")
+# the one firecracker release every host runs. fc-install.sh, fc-update.sh and
+# fuse-local-setup.sh read it from this line, so bumping firecracker is a
+# one-line change here. live migration needs it identical across hosts:
+# resume_plan refuses a snapshot written by another build, and the
+# /snapshot/load fields and the uffd handshake have changed between releases.
+# memory hotplug needs >= v1.16.2 for the virtio-mem restore fixes (#6174, #6176).
+FIRECRACKER_VERSION = "v1.17.0"
 # the page fault handler for a guest resumed from a 2M memory image. its own
 # process so an agent restart does not take a half-filled guest down with it.
 UFFD_SCRIPT = Path(os.environ.get("FC_UFFD_SCRIPT", str(Path(__file__).with_name("fc-uffd.py"))))
@@ -1236,12 +1243,17 @@ def host_fingerprint() -> dict:
                 break
     except OSError:
         pass
+    return {"arch": goarch(), "cpu": cpu, "firecracker": firecracker_version()}
+
+
+def firecracker_version() -> str:
+    """the first line of `firecracker --version` ("Firecracker v1.17.0"), or
+    "" when the binary cannot be run."""
     try:
         out = run([FC_BIN, "--version"], check=False).stdout.decode().splitlines()
-        firecracker = out[0].strip() if out else ""
+        return out[0].strip() if out else ""
     except OSError:
-        firecracker = ""
-    return {"arch": goarch(), "cpu": cpu, "firecracker": firecracker}
+        return ""
 
 
 def snapshot_file(vm_id: str, snapshot_id: str, name: str, required: bool = True) -> Path | None:
@@ -3072,6 +3084,10 @@ def host_capacity() -> dict:
         "arch": goarch(),
         "gpus": 0,
         "gpu_devices": [],
+        # what this host runs next to what it should run, so skew across the
+        # fleet is visible before a migration between two hosts is refused.
+        "firecracker": firecracker_version().rpartition(" ")[2],
+        "firecracker_pinned": FIRECRACKER_VERSION,
     }
 
 
