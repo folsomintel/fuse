@@ -41,10 +41,6 @@ const (
 	// identity triggers a liveness check rather than waiting this out.
 	idleTimeout = 5 * time.Minute
 
-	// keepAlive comes from the guest only. a paused guest sends nothing, and
-	// that must not look like a failure to the proxy.
-	keepAlive = 15 * time.Second
-
 	// helloTimeout bounds the handshake on the control stream.
 	helloTimeout = 10 * time.Second
 
@@ -58,6 +54,13 @@ const (
 	statusOK      byte = 0
 	statusRefused byte = 1
 )
+
+// keepAlive comes from the guest only. a paused guest sends nothing, and that
+// must not look like a failure to the proxy. it is also what bounds how long
+// the proxy keeps writing to a guest's old address after the guest moves: the
+// proxy only learns the new one from a packet the guest sends. a var so a test
+// can shorten it.
+var keepAlive = 15 * time.Second
 
 // Config is what the sidecar needs to find the proxy and prove who it is. it is
 // written into the guest as /fuse/tunnel.json by the orchestrator.
