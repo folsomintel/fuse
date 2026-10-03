@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.1](https://github.com/folsomintel/fuse/compare/v0.35.0...v0.35.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* deflake the tunnel address-change test that blocked the v0.35.0 release ([#294](https://github.com/folsomintel/fuse/issues/294)) ([d40f0e6](https://github.com/folsomintel/fuse/commit/d40f0e69826ed722cdbfe87e78a7cbbab57a2be4))
+
 ## [0.35.0](https://github.com/folsomintel/fuse/compare/v0.34.0...v0.35.0) (2026-10-03)
 
 
