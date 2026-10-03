@@ -8,12 +8,27 @@ cd "$FC_DIR"
 ARCH=$(uname -m)
 CI_BASE="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/${ARCH}"
 
-if ! command -v firecracker >/dev/null 2>&1; then
-  echo "[install] firecracker binary"
-  TAG=$(curl -fsSL https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest | grep tag_name | cut -d '"' -f4)
+# the pinned release, FIRECRACKER_VERSION in fc-agent.py. installed when
+# missing or when the host runs anything else, so a fresh host and an old one
+# end up on the same build.
+FC_PIN="$(sed -n 's/^FIRECRACKER_VERSION = "\(v[0-9][0-9.]*\)"$/\1/p' fc-agent.py)"
+[ -n "$FC_PIN" ] || { echo "[install] no FIRECRACKER_VERSION in fc-agent.py" >&2; exit 1; }
+FC_HAVE="$(/usr/local/bin/firecracker --version 2>/dev/null | awk 'NR==1{print $2}')"
+if [ "$FC_HAVE" != "$FC_PIN" ]; then
+  echo "[install] firecracker $FC_PIN (have: ${FC_HAVE:-none})"
   TMP=$(mktemp -d)
-  curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${TAG}/firecracker-${TAG}-${ARCH}.tgz" | tar -xz -C "$TMP"
-  sudo install -m0755 "$TMP/release-${TAG}-${ARCH}/firecracker-${TAG}-${ARCH}" /usr/local/bin/firecracker
+  TGZ="firecracker-${FC_PIN}-${ARCH}.tgz"
+  REL="https://github.com/firecracker-microvm/firecracker/releases/download/${FC_PIN}"
+  curl -fsSL -o "$TMP/$TGZ" "$REL/$TGZ"
+  curl -fsSL -o "$TMP/$TGZ.sha256.txt" "$REL/$TGZ.sha256.txt"
+  # refuse a truncated or tampered download before anything is installed.
+  if ! (cd "$TMP" && sha256sum -c --status "$TGZ.sha256.txt"); then
+    echo "[install] checksum mismatch for $TGZ; nothing installed" >&2
+    rm -rf "$TMP"
+    exit 1
+  fi
+  tar -xzf "$TMP/$TGZ" -C "$TMP"
+  sudo install -m0755 "$TMP/release-${FC_PIN}-${ARCH}/firecracker-${FC_PIN}-${ARCH}" /usr/local/bin/firecracker
   rm -rf "$TMP"
 fi
 

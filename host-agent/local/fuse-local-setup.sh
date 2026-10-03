@@ -129,16 +129,23 @@ install_stack() {
 
   mkdir -p "$DIR/bin" "$DIR/fc"
 
-  # firecracker binary, from its upstream release.
-  if [ ! -x "$DIR/bin/firecracker" ]; then
-    local tag tmp
-    tag=$(curl -fsSL https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest | grep '"tag_name"' | cut -d '"' -f4)
-    [ -n "$tag" ] || die "could not resolve latest firecracker release tag"
+  # firecracker binary, the release fc-agent.py pins (FIRECRACKER_VERSION),
+  # checksum-verified. replaced when the appliance runs any other, so a newer
+  # cli brings its firecracker along with its agent.
+  local tag have tmp tgz
+  tag=$(sed -n 's/^FIRECRACKER_VERSION = "\(v[0-9][0-9.]*\)"$/\1/p' "$DIR/fc-agent.py")
+  [ -n "$tag" ] || die "no FIRECRACKER_VERSION in $DIR/fc-agent.py"
+  have=$("$DIR/bin/firecracker" --version 2>/dev/null | awk 'NR==1{print $2}' || true)
+  if [ "$have" != "$tag" ]; then
     tmp=$(mktemp -d)
-    curl -fSL "https://github.com/firecracker-microvm/firecracker/releases/download/${tag}/firecracker-${tag}-${ARCH}.tgz" | tar -xz -C "$tmp"
+    tgz="firecracker-${tag}-${ARCH}.tgz"
+    fetch "https://github.com/firecracker-microvm/firecracker/releases/download/${tag}/${tgz}" "$tmp/$tgz"
+    fetch "https://github.com/firecracker-microvm/firecracker/releases/download/${tag}/${tgz}.sha256.txt" "$tmp/$tgz.sha256.txt"
+    verify_asset "$tmp/$tgz" "$tgz" "$tmp/$tgz.sha256.txt" || { rm -rf "$tmp"; die "firecracker $tag failed verification"; }
+    tar -xzf "$tmp/$tgz" -C "$tmp"
     install -m0755 "$tmp/release-${tag}-${ARCH}/firecracker-${tag}-${ARCH}" "$DIR/bin/firecracker"
     rm -rf "$tmp"
-    log "installed firecracker $tag"
+    log "installed firecracker $tag (was: ${have:-none})"
   fi
 
   # guest kernel + base rootfs + guest ssh key, from the firecracker ci bucket.

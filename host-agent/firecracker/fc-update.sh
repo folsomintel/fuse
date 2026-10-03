@@ -3,7 +3,9 @@
 # Idempotent — a no-op when already current.
 #
 # Flow:
-#   1. git pull the checkout (fc-agent.py, host-agent/ scripts, fused source)
+#   1. git pull the checkout (fc-agent.py, host-agent/ scripts, fused source),
+#      then install the firecracker release fc-agent.py pins if this host
+#      runs any other
 #   2. obtain the `fused` agent binary: download the latest release asset if a
 #      release is published, otherwise BUILD it from the pulled source (needs Go)
 #   3. re-bake the guest rootfs so new microVMs run the new agent
@@ -135,6 +137,32 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   log "git pull"
   git -C "$REPO_ROOT" fetch --tags --quiet || warn "git fetch failed"
   if git -C "$REPO_ROOT" pull --ff-only --quiet; then ok "checkout updated"; else warn "git pull --ff-only failed (local changes?) — continuing with current source"; fi
+fi
+
+# --- 1b. firecracker: move this host to the pinned release ---------------------
+# FIRECRACKER_VERSION in fc-agent.py (just pulled) is the one release every
+# host runs, so the fleet moves together and live migration keeps working
+# between hosts. before the idempotency check below: a firecracker bump must
+# land even when fused is already current. running vms keep the binary they
+# started with.
+FC_PIN="$(sed -n 's/^FIRECRACKER_VERSION = "\(v[0-9][0-9.]*\)"$/\1/p' "$FC_DIR/fc-agent.py")"
+[ -n "$FC_PIN" ] || die "no FIRECRACKER_VERSION in fc-agent.py"
+FC_HAVE="$(/usr/local/bin/firecracker --version 2>/dev/null | awk 'NR==1{print $2}')"
+if [ "$FC_HAVE" = "$FC_PIN" ]; then
+  ok "firecracker $FC_PIN"
+else
+  log "firecracker ${FC_HAVE:-none} -> $FC_PIN"
+  FC_ARCH="$(uname -m)"
+  FC_TGZ="firecracker-${FC_PIN}-${FC_ARCH}.tgz"
+  FC_REL="https://github.com/firecracker-microvm/firecracker/releases/download/$FC_PIN"
+  curl_dl -o "$FC_TMP/$FC_TGZ" "$FC_REL/$FC_TGZ" || die "firecracker $FC_PIN download failed"
+  curl_dl -o "$FC_TMP/$FC_TGZ.sha256.txt" "$FC_REL/$FC_TGZ.sha256.txt" || die "firecracker $FC_PIN publishes no checksum - refusing to install it"
+  # verify before extract/install: on failure the installed binary is untouched.
+  verify_asset "$FC_TMP/$FC_TGZ" "$FC_TGZ" "$FC_TMP/$FC_TGZ.sha256.txt" || die "checksum verification failed for $FC_TGZ"
+  mkdir -p "$FC_TMP/fc-release"
+  tar -xzf "$FC_TMP/$FC_TGZ" -C "$FC_TMP/fc-release"
+  sudo -n install -m0755 "$FC_TMP/fc-release/release-${FC_PIN}-${FC_ARCH}/firecracker-${FC_PIN}-${FC_ARCH}" /usr/local/bin/firecracker
+  ok "firecracker -> $(/usr/local/bin/firecracker --version 2>/dev/null | awk 'NR==1{print $2}')"
 fi
 
 # --- 2. resolve the latest release tag (non-fatal: none yet => source build) --
