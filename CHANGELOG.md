@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.2](https://github.com/folsomintel/fuse/compare/v0.35.1...v0.35.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* resume a --huge-pages vm from a snapshot merged from a delta ([#296](https://github.com/folsomintel/fuse/issues/296)) ([103f706](https://github.com/folsomintel/fuse/commit/103f706f2a88fc674cf3a3746f2742f04287c705))
+
 ## [0.35.1](https://github.com/folsomintel/fuse/compare/v0.35.0...v0.35.1) (2026-10-03)
 
 
