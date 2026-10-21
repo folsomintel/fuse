@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.0](https://github.com/folsomintel/fuse/compare/v0.36.0...v0.37.0) (2026-10-03)
+
+
+### Features
+
+* pick a host other than the source when a migrate names no target ([#301](https://github.com/folsomintel/fuse/issues/301)) ([312a65e](https://github.com/folsomintel/fuse/commit/312a65e92404eebd70cae2373e7d8720b36b645f))
+
 ## [0.36.0](https://github.com/folsomintel/fuse/compare/v0.35.2...v0.36.0) (2026-10-03)
 
 
