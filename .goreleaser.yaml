@@ -174,12 +174,12 @@ homebrew_casks:
     # first-launch check SIGKILLs it. Stripping the xattr is the stopgap until
     # the notarize block above is live; delete this once a notarized tag ships.
     # Must be `-dr`, not `-d`: xattr exits 1 when the attribute is absent and
-    # system_command runs with must_succeed, which would abort the install.
+    # a failing step aborts the install.
     hooks:
       post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fuse"]
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/fuse"]
           end
 
 snapshot:
