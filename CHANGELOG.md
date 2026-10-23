@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.1](https://github.com/folsomintel/fuse/compare/v0.37.0...v0.37.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* migrate homebrew cask post install hook to install_steps for goreleaser 2.19 ([#307](https://github.com/folsomintel/fuse/issues/307)) ([e6a02c9](https://github.com/folsomintel/fuse/commit/e6a02c90361104bdb565698ad8de8aa579f602a3))
+* resolve open dependabot alerts across docs and the sdks ([#304](https://github.com/folsomintel/fuse/issues/304)) ([1cf865a](https://github.com/folsomintel/fuse/commit/1cf865a24dfd4728c2191fac5da38c1cae2e53a6))
+
 ## [0.37.0](https://github.com/folsomintel/fuse/compare/v0.36.0...v0.37.0) (2026-10-03)
 
 
