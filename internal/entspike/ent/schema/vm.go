@@ -77,6 +77,10 @@ func (VM) Fields() []ent.Field {
 		// migrate time, so it outlives an orchestrator restart like the rest
 		// of the spec.
 		field.Bool("huge_pages").Default(false),
+		// hitl policy the vm was created with. null means hitl is off.
+		field.JSON("hitl", json.RawMessage{}).
+			StorageKey("hitl_spec_json").Optional().
+			SchemaType(pgText),
 		field.Time("created_at"),
 		field.Time("updated_at"),
 	}

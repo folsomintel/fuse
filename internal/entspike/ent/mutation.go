@@ -1608,6 +1608,8 @@ type VMMutation struct {
 	egress                   *json.RawMessage
 	appendegress             json.RawMessage
 	huge_pages               *bool
+	hitl                     *json.RawMessage
+	appendhitl               json.RawMessage
 	created_at               *time.Time
 	updated_at               *time.Time
 	clearedFields            map[string]struct{}
@@ -2810,6 +2812,71 @@ func (m *VMMutation) ResetHugePages() {
 	m.huge_pages = nil
 }
 
+// SetHitl sets the "hitl" field.
+func (m *VMMutation) SetHitl(jm json.RawMessage) {
+	m.hitl = &jm
+	m.appendhitl = nil
+}
+
+// Hitl returns the value of the "hitl" field in the mutation.
+func (m *VMMutation) Hitl() (r json.RawMessage, exists bool) {
+	v := m.hitl
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHitl returns the old "hitl" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldHitl(ctx context.Context) (v json.RawMessage, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHitl is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHitl requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHitl: %w", err)
+	}
+	return oldValue.Hitl, nil
+}
+
+// AppendHitl adds jm to the "hitl" field.
+func (m *VMMutation) AppendHitl(jm json.RawMessage) {
+	m.appendhitl = append(m.appendhitl, jm...)
+}
+
+// AppendedHitl returns the list of values that were appended to the "hitl" field in this mutation.
+func (m *VMMutation) AppendedHitl() (json.RawMessage, bool) {
+	if len(m.appendhitl) == 0 {
+		return nil, false
+	}
+	return m.appendhitl, true
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (m *VMMutation) ClearHitl() {
+	m.hitl = nil
+	m.appendhitl = nil
+	m.clearedFields[vm.FieldHitl] = struct{}{}
+}
+
+// HitlCleared returns if the "hitl" field was cleared in this mutation.
+func (m *VMMutation) HitlCleared() bool {
+	_, ok := m.clearedFields[vm.FieldHitl]
+	return ok
+}
+
+// ResetHitl resets all changes to the "hitl" field.
+func (m *VMMutation) ResetHitl() {
+	m.hitl = nil
+	m.appendhitl = nil
+	delete(m.clearedFields, vm.FieldHitl)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *VMMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -2916,7 +2983,7 @@ func (m *VMMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *VMMutation) Fields() []string {
-	fields := make([]string, 0, 25)
+	fields := make([]string, 0, 26)
 	if m.host_id != nil {
 		fields = append(fields, vm.FieldHostID)
 	}
@@ -2986,6 +3053,9 @@ func (m *VMMutation) Fields() []string {
 	if m.huge_pages != nil {
 		fields = append(fields, vm.FieldHugePages)
 	}
+	if m.hitl != nil {
+		fields = append(fields, vm.FieldHitl)
+	}
 	if m.created_at != nil {
 		fields = append(fields, vm.FieldCreatedAt)
 	}
@@ -3046,6 +3116,8 @@ func (m *VMMutation) Field(name string) (ent.Value, bool) {
 		return m.Egress()
 	case vm.FieldHugePages:
 		return m.HugePages()
+	case vm.FieldHitl:
+		return m.Hitl()
 	case vm.FieldCreatedAt:
 		return m.CreatedAt()
 	case vm.FieldUpdatedAt:
@@ -3105,6 +3177,8 @@ func (m *VMMutation) OldField(ctx context.Context, name string) (ent.Value, erro
 		return m.OldEgress(ctx)
 	case vm.FieldHugePages:
 		return m.OldHugePages(ctx)
+	case vm.FieldHitl:
+		return m.OldHitl(ctx)
 	case vm.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case vm.FieldUpdatedAt:
@@ -3279,6 +3353,13 @@ func (m *VMMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetHugePages(v)
 		return nil
+	case vm.FieldHitl:
+		v, ok := value.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHitl(v)
+		return nil
 	case vm.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -3416,6 +3497,9 @@ func (m *VMMutation) ClearedFields() []string {
 	if m.FieldCleared(vm.FieldEgress) {
 		fields = append(fields, vm.FieldEgress)
 	}
+	if m.FieldCleared(vm.FieldHitl) {
+		fields = append(fields, vm.FieldHitl)
+	}
 	return fields
 }
 
@@ -3447,6 +3531,9 @@ func (m *VMMutation) ClearField(name string) error {
 		return nil
 	case vm.FieldEgress:
 		m.ClearEgress()
+		return nil
+	case vm.FieldHitl:
+		m.ClearHitl()
 		return nil
 	}
 	return fmt.Errorf("unknown VM nullable field %s", name)
@@ -3524,6 +3611,9 @@ func (m *VMMutation) ResetField(name string) error {
 		return nil
 	case vm.FieldHugePages:
 		m.ResetHugePages()
+		return nil
+	case vm.FieldHitl:
+		m.ResetHitl()
 		return nil
 	case vm.FieldCreatedAt:
 		m.ResetCreatedAt()

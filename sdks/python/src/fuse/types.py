@@ -22,6 +22,21 @@ HEALTH_PASSING = "passing"
 HEALTH_FAILING = "failing"
 
 
+# hitl request kinds.
+HITL_KIND_ASK = "ask"
+
+# intervention states. pending is the only non-terminal one.
+INTERVENTION_PENDING = "pending"
+INTERVENTION_APPROVED = "approved"
+INTERVENTION_REJECTED = "rejected"
+INTERVENTION_EXPIRED = "expired"
+INTERVENTION_CANCELLED = "cancelled"
+
+# intervention outcomes. every terminal intervention carries one.
+OUTCOME_APPROVE = "approve"
+OUTCOME_REJECT = "reject"
+
+
 def is_terminal_state(state: str) -> bool:
     # reports whether state is a terminal lifecycle state.
     return state in (STATE_DESTROYED, STATE_FAILED)
@@ -249,6 +264,27 @@ class EgressStatus(_Model):
     health: Optional[EgressHealth] = None
 
 
+class HitlAskRequests(_Model):
+    # configures ask requests. present means allowed.
+    pass
+
+
+class HitlRequests(_Model):
+    # declares the request kinds the agent may raise. only ask exists today;
+    # set it to HitlAskRequests() to allow asks.
+    ask: Optional[HitlAskRequests] = None
+
+
+class HitlSpec(_Model):
+    # the human-in-the-loop policy an environment is created with.
+    #
+    # timeout_seconds is the default deadline for every intervention, 10 to
+    # 86400; none means 600. on_timeout is "reject" (the default) or "allow".
+    timeout_seconds: Optional[int] = None
+    on_timeout: Optional[str] = None
+    requests: HitlRequests = Field(default_factory=HitlRequests)
+
+
 class CreateRequest(_Model):
     # body for client.environments.create.
     task_id: str
@@ -274,6 +310,9 @@ class CreateRequest(_Model):
     # graphical session geometry. none for an environment with no desktop, in
     # which case a desktop image keeps its baked default geometry.
     desktop: Optional[DesktopSpec] = None
+    # human-in-the-loop policy. none means hitl is off and the environment
+    # cannot raise interventions.
+    hitl: Optional[HitlSpec] = None
 
 
 class EnvironmentInfo(_Model):
@@ -584,3 +623,70 @@ class APIKey(_Model):
 class CreatedAPIKey(APIKey):
     # returned by api_keys.create. key is unrecoverable afterward.
     key: str = ""
+
+
+class Actor(_Model):
+    # who raised or decided an intervention: "master", "key:<id>", or
+    # "system" for fuse itself (expiry, cancel on destroy).
+    id: str = ""
+    name: str = ""
+    source: str = ""
+    key_id: str = ""
+
+
+class InterventionPayload(_Model):
+    # what the agent asked.
+    question: str = ""
+    choices: list[str] = Field(default_factory=list)
+
+
+class InterventionDecision(_Model):
+    # how an intervention resolved. an expired one carries the on_timeout
+    # outcome and a cancelled one a reject.
+    outcome: str = ""
+    answer: str = ""
+    reason: str = ""
+    decided_by: Actor = Field(default_factory=Actor)
+    decided_at: Optional[datetime] = None
+
+
+class Intervention(_Model):
+    # one request for a human.
+    id: str = ""
+    env_id: str = ""
+    kind: str = ""
+    state: str = ""
+    payload: InterventionPayload = Field(default_factory=InterventionPayload)
+    triggered_by: Actor = Field(default_factory=Actor)
+    deadline: Optional[datetime] = None
+    on_timeout: str = ""
+    decision: Optional[InterventionDecision] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    @property
+    def terminal(self) -> bool:
+        # reports whether the intervention is resolved.
+        return self.state != "" and self.state != INTERVENTION_PENDING
+
+    @property
+    def approved(self) -> bool:
+        # reports whether the intervention resolved as approve, which includes
+        # an expiry under on_timeout: allow.
+        return self.decision is not None and self.decision.outcome == OUTCOME_APPROVE
+
+
+class HumanRequest(_Model):
+    # body for environments.request_human. timeout_seconds shortens the
+    # policy's deadline; it can never extend it.
+    kind: str = HITL_KIND_ASK
+    question: str
+    choices: Optional[list[str]] = None
+    timeout_seconds: Optional[int] = None
+
+
+class InterventionPage(_Model):
+    # one page of interventions.list_page, plus the cursor to fetch the next
+    # one. next_cursor is none once there are no more results.
+    interventions: list[Intervention] = Field(default_factory=list)
+    next_cursor: Optional[str] = None

@@ -80,6 +80,7 @@ var (
 		{Name: "mig_instance_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "egress_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "huge_pages", Type: field.TypeBool, Default: false},
+		{Name: "hitl_spec_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 	}

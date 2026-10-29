@@ -208,6 +208,13 @@ func (h *Handler) register(r chi.Router) {
 	// computerStream in computer.go.
 	r.Get("/v1/environments/{vmId}/computer/stream", h.computerStream)
 
+	// Interventions are their own resource: a human decides them by id, often
+	// from somewhere that never saw the environment. Raising one is an
+	// environment action (?action=request).
+	r.Get("/v1/interventions", h.listInterventions)
+	r.Get("/v1/interventions/{interventionId}", h.getIntervention)
+	r.Post("/v1/interventions/{interventionId}", h.interventionAction)
+
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
 	// A fixed sub-path rather than a filter on the collection above: this
@@ -305,6 +312,12 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
+	if req.Hitl != nil {
+		if err := toHitlSpec(req.Hitl).Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+			return
+		}
+	}
 	// A negative bound would reach the fleet as "unset" and quietly restore
 	// the default, so it is refused here where the sign is still visible.
 	// The upper bound is the fleet's to enforce, since it owns the ceiling.
@@ -375,6 +388,9 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		spec.PinnedHostID = record.HostID
 	}
 	spec.Egress = toOrchestratorEgress(req.Egress)
+	if req.Hitl != nil {
+		spec.Hitl = toHitlSpec(req.Hitl)
+	}
 	info, err := h.Fleet.ProvisionAndAssign(r.Context(), req.TaskID, spec, manifest, req.Secrets, orchestrator.BootOptions{
 		StartupScript:        req.StartupScript,
 		StartupScriptTimeout: time.Duration(req.StartupScriptTimeoutSeconds) * time.Second,
@@ -960,10 +976,10 @@ func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 // environmentAction dispatches an action on an environment via ?action= query param.
 //
 //	@Summary		Environment action
-//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, exec.
+//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, migrate, exec, request.
 //	@Tags			environments
 //	@Param			vmId	path	string	true	"VM identifier"
-//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, migrate, exec)
+//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, migrate, exec, request)
 //	@Success		200		{object}	Environment	"Drain succeeded; updated VM state returned"
 //	@Success		200		{object}	ExecEnvironmentResponse	"Exec ran; a non-zero exit_code is still a 200"
 //	@Success		201		{object}	Environment	"Fork succeeded; new environment returned"
@@ -984,6 +1000,8 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 		h.forkEnvironment(w, r)
 	case "migrate":
 		h.migrateEnvironment(w, r)
+	case "request":
+		h.requestHuman(w, r)
 	case "exec":
 		h.execEnvironment(w, r)
 	default:

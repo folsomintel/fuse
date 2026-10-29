@@ -427,7 +427,8 @@ paths:
       requestBody:
         required: false
         description: |
-          Required for `exec`, which rejects an empty body with 400.
+          Required for `exec`, which rejects an empty body with 400, and
+          for `request` (RequestHumanRequest).
           Optional for `fork` (ForkEnvironmentRequest) and `migrate`
           (MigrateEnvironmentRequest). Ignored by
           `rotate-token` and `drain`.
@@ -438,13 +439,14 @@ paths:
                 - $ref: "#/components/schemas/ExecEnvironmentRequest"
                 - $ref: "#/components/schemas/ForkEnvironmentRequest"
                 - $ref: "#/components/schemas/MigrateEnvironmentRequest"
+                - $ref: "#/components/schemas/RequestHumanRequest"
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [rotate-token, drain, fork, migrate, exec]
+            enum: [rotate-token, drain, fork, migrate, exec, request]
           description: The action to perform.
       responses:
         "200":
@@ -460,11 +462,16 @@ paths:
                   - $ref: "#/components/schemas/Environment"
                   - $ref: "#/components/schemas/ExecEnvironmentResponse"
         "201":
-          description: Fork succeeded; body is the new Environment.
+          description: |
+            Fork succeeded (body is the new Environment), or a `request`
+            was raised (body is the pending Intervention; wait on it with
+            GET /v1/interventions/{interventionId}?wait=).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Environment"
+                oneOf:
+                  - $ref: "#/components/schemas/Environment"
+                  - $ref: "#/components/schemas/Intervention"
         "204":
           description: |
             Action succeeded with no body. Always for rotate-token; for
@@ -1327,6 +1334,121 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/interventions:
+    get:
+      tags: [interventions]
+      operationId: listInterventions
+      summary: List interventions
+      description: |
+        Lists human-in-the-loop interventions, oldest first. Postgres is
+        the source of truth; the `intervention` event on an environment's
+        event stream is only a hint to re-read.
+      parameters:
+        - name: env
+          in: query
+          schema:
+            type: string
+          description: Filter by environment id.
+        - name: state
+          in: query
+          schema:
+            type: string
+            enum: [pending, approved, rejected, expired, cancelled]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+          description: Max results per page (default 50, max 200).
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque cursor from a previous response's next_cursor.
+      responses:
+        "200":
+          description: One page of interventions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InterventionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+
+  /v1/interventions/{interventionId}:
+    parameters:
+      - name: interventionId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [interventions]
+      operationId: getIntervention
+      summary: Get intervention
+      description: |
+        Reads one intervention. With `wait`, long-polls until it reaches a
+        terminal state or the wait passes, and always answers 200 with the
+        state at that moment, so a caller loops until `state` is not
+        `pending`. A pending intervention past its deadline is expired on
+        read, applying its `on_timeout`.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: string
+          description: Seconds, or a duration like `30s`. Capped at 50s.
+      responses:
+        "200":
+          description: The intervention.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [interventions]
+      operationId: decideIntervention
+      summary: Decide intervention
+      description: |
+        Approves or rejects a pending intervention. Approving an ask needs
+        an `answer` (one of `choices` when the ask set them). A reject
+        always carries a reason; one is filled in when omitted. Requires
+        the master token: an API key gets 403 (code `unauthorized`), so an
+        agent holding an ordinary key cannot answer its own request.
+        Deciding a resolved intervention, including one whose deadline
+        passed before the decision arrived, is 409.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [approve, reject]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideInterventionRequest"
+      responses:
+        "200":
+          description: The resolved intervention.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Intervention"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
   /v1/api-keys:
     post:
       tags: [api-keys]
@@ -2120,6 +2242,12 @@ components:
             Graphical session geometry. Omit it for an environment with no
             desktop, in which case a desktop image keeps its baked default
             geometry.
+        hitl:
+          allOf:
+            - $ref: "#/components/schemas/HitlSpec"
+          description: |
+            Human-in-the-loop policy. Omit it and hitl is off: every
+            request is refused with 400. Forks and migrates inherit it.
         egress:
           allOf:
             - $ref: "#/components/schemas/EgressSpec"
@@ -2772,6 +2900,140 @@ components:
             Non-fatal registration notices (e.g. a declared capacity value
             that exceeded what was probed from the host agent). Only ever
             populated on the response to POST /v1/hosts.
+
+    HitlSpec:
+      type: object
+      required: [requests]
+      properties:
+        timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Default deadline for every intervention, 10 to 86400. 0 means 600.
+        on_timeout:
+          type: string
+          enum: [reject, allow]
+          description: How an intervention nobody decided resolves. Default reject.
+        requests:
+          type: object
+          description: Declared request kinds. Only `ask` exists today; present means allowed.
+          properties:
+            ask:
+              type: object
+
+    RequestHumanRequest:
+      type: object
+      required: [question]
+      properties:
+        kind:
+          type: string
+          enum: [ask]
+          description: Request kind. Defaults to ask.
+        question:
+          type: string
+        choices:
+          type: array
+          items:
+            type: string
+          description: When set, the answer must be one of these.
+        timeout_seconds:
+          type: integer
+          format: int64
+          description: Shortens the policy's deadline for this request. Never extends it.
+
+    DecideInterventionRequest:
+      type: object
+      properties:
+        answer:
+          type: string
+          description: Required to approve an ask.
+        reason:
+          type: string
+          description: Text fed back to the agent.
+
+    Actor:
+      type: object
+      required: [id, source]
+      properties:
+        id:
+          type: string
+          description: '"master", "key:<id>", or "system" for fuse itself.'
+        name:
+          type: string
+        source:
+          type: string
+          enum: [key, system]
+        key_id:
+          type: string
+
+    Intervention:
+      type: object
+      required: [id, env_id, kind, state, payload, triggered_by, deadline, on_timeout, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        env_id:
+          type: string
+        kind:
+          type: string
+          enum: [ask]
+        state:
+          type: string
+          enum: [pending, approved, rejected, expired, cancelled]
+        payload:
+          type: object
+          properties:
+            question:
+              type: string
+            choices:
+              type: array
+              items:
+                type: string
+        triggered_by:
+          $ref: "#/components/schemas/Actor"
+        deadline:
+          type: string
+          format: date-time
+        on_timeout:
+          type: string
+          enum: [reject, allow]
+        decision:
+          type: object
+          description: |
+            Present once terminal. An expired intervention carries the
+            on_timeout outcome and a cancelled one a reject, both decided
+            by "system".
+          required: [outcome, decided_by, decided_at]
+          properties:
+            outcome:
+              type: string
+              enum: [approve, reject]
+            answer:
+              type: string
+            reason:
+              type: string
+            decided_by:
+              $ref: "#/components/schemas/Actor"
+            decided_at:
+              type: string
+              format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    InterventionList:
+      type: object
+      required: [interventions]
+      properties:
+        interventions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Intervention"
+        next_cursor:
+          type: string
 
     HostList:
       type: object

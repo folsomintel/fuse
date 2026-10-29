@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from typing import Any
+from collections.abc import Iterator, Sequence
+from typing import Any, Optional
 from urllib.parse import quote
 
 from .._transport import Transport
 from ..errors import ApiError
 from ..types import (
+    HITL_KIND_ASK,
     ComputerAction,
     ComputerDisplay,
     ComputerResult,
@@ -18,9 +19,12 @@ from ..types import (
     ExecRequest,
     ExecResult,
     ForkOptions,
+    HumanRequest,
+    Intervention,
     MigrateOptions,
 )
 from .events import stream_events
+from .interventions import wait_intervention
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -205,6 +209,37 @@ class EnvironmentsService:
         path = f"/v1/environments/{quote(vm_id, safe='')}"
         resp = self._t.request("POST", path, params={"action": "exec"}, body=request)
         return ExecResult.model_validate(resp.json())
+
+    def request_human(
+        self,
+        vm_id: str,
+        question: str,
+        *,
+        kind: str = HITL_KIND_ASK,
+        choices: Optional[Sequence[str]] = None,
+        timeout_seconds: Optional[int] = None,
+        wait: bool = True,
+    ) -> Intervention:
+        # asks a human for something the environment's hitl policy declares.
+        # by default it blocks until the intervention resolves (answered,
+        # rejected, expired or cancelled); read the result off the returned
+        # intervention's decision. wait=False returns the pending handle at
+        # once; wait on it later with client.interventions.wait.
+        # timeout_seconds shortens the policy's deadline, never extends it.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        request = HumanRequest(
+            kind=kind or HITL_KIND_ASK,
+            question=question,
+            choices=list(choices) if choices is not None else None,
+            timeout_seconds=timeout_seconds,
+        )
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request("POST", path, params={"action": "request"}, body=request)
+        intervention = Intervention.model_validate(resp.json())
+        if not wait:
+            return intervention
+        return wait_intervention(self._t, intervention.id)
 
     def rotate_token(self, vm_id: str) -> None:
         if not vm_id:

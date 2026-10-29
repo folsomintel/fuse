@@ -255,6 +255,7 @@ func newUpCmd() *cobra.Command {
 				Healthcheck:                 toSDKHealthcheck(c.Healthcheck),
 				Desktop:                     toSDKDesktop(c.Desktop),
 				Egress:                      toSDKEgress(c.Egress),
+				Hitl:                        toSDKHitl(c.Hitl),
 				SeedSnapshotID:              seedID,
 				// the gateway carries a credential, so it is a flag rather
 				// than a Fusefile field. matching `fuse environment create`
@@ -478,6 +479,19 @@ func toSDKEgress(in *fusefile.EgressSpec) *fuse.EgressSpec {
 		return nil
 	}
 	return &fuse.EgressSpec{Mode: string(in.Mode), Provider: in.Provider, Protocol: string(in.Protocol)}
+}
+
+// toSDKHitl converts the compiler's hitl block into the SDK wire type. Nil
+// in, nil out: no `hitl:` block means hitl is off.
+func toSDKHitl(in *fusefile.HitlSpec) *fuse.HitlSpec {
+	if in == nil {
+		return nil
+	}
+	out := &fuse.HitlSpec{TimeoutSeconds: in.TimeoutSeconds, OnTimeout: in.OnTimeout}
+	if in.Ask {
+		out.Requests.Ask = &fuse.HitlAskRequests{}
+	}
+	return out
 }
 
 // missingSecrets returns the entries of required that have does not supply a

@@ -6,11 +6,18 @@ export { VERSION } from "./version.js";
 
 // Services and their option types.
 export { EnvironmentsService } from "./environments.js";
-export type { ListEnvironmentsOptions } from "./environments.js";
+export type { ListEnvironmentsOptions, HumanRequest } from "./environments.js";
 export { SnapshotsService } from "./snapshots.js";
 export type { ListSnapshotsOptions } from "./snapshots.js";
 export { HostsService } from "./hosts.js";
 export { ApiKeysService } from "./apiKeys.js";
+export { InterventionsService } from "./interventions.js";
+export type {
+  ListInterventionsOptions,
+  InterventionPage,
+  ApproveOptions,
+  RejectOptions,
+} from "./interventions.js";
 
 // Per-call options and the fetch type.
 export type { CallOptions, FetchLike } from "./transport.js";
@@ -50,8 +57,24 @@ export type {
   Host,
   APIKey,
   CreatedAPIKey,
+  HitlSpec,
+  HitlRequests,
+  HitlAskRequests,
+  Actor,
+  InterventionPayload,
+  InterventionDecision,
+  Intervention,
 } from "./types.js";
-export { State, isTerminalState, HealthState } from "./types.js";
+export {
+  State,
+  isTerminalState,
+  HealthState,
+  HitlKind,
+  InterventionState,
+  InterventionOutcome,
+  isInterventionTerminal,
+  isInterventionApproved,
+} from "./types.js";
 
 // Errors and code helpers.
 export {

@@ -1,0 +1,22 @@
+version: 1
+
+# hitl core (#309): an environment that may ask a human. the timeout is the
+# policy default; the expiry case shortens it per request instead, so the
+# other cases have room to be answered by hand-run commands.
+#
+# idle_timeout is the 60s minimum so the idle case can prove a pending ask
+# keeps the environment alive past it.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+  idle_timeout: 1m
+
+run: 'echo ready > /tmp/ready'
+
+hitl:
+  timeout: 5m
+  on_timeout: reject
+  requests:
+    ask: {}
