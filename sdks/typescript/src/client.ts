@@ -5,6 +5,7 @@ import { HostsService } from "./hosts.js";
 import { ApiKeysService } from "./apiKeys.js";
 import { InterventionsService } from "./interventions.js";
 import { VERSION } from "./version.js";
+import type { ActorLabel } from "./types.js";
 
 /** Options for constructing a FuseClient. */
 export interface FuseClientOptions {
@@ -22,6 +23,9 @@ export interface FuseClientOptions {
   timeoutMs?: number;
   /** Extra default headers merged into every request. */
   headers?: Record<string, string>;
+  /** The human this client acts for, sent as the Fuse-Actor and
+   * Fuse-Actor-Name headers on every request. */
+  actor?: ActorLabel;
 }
 
 /**
@@ -38,8 +42,10 @@ export class FuseClient {
   readonly hosts: HostsService;
   readonly apiKeys: ApiKeysService;
   readonly interventions: InterventionsService;
+  private readonly options: FuseClientOptions;
 
   constructor(options: FuseClientOptions) {
+    this.options = options;
     const transport = new Transport({
       baseUrl: options.baseUrl,
       token: options.token,
@@ -48,11 +54,20 @@ export class FuseClient {
       requestId: options.requestId,
       timeoutMs: options.timeoutMs,
       headers: options.headers,
+      actor: options.actor,
     });
     this.environments = new EnvironmentsService(transport);
     this.snapshots = new SnapshotsService(transport);
     this.hosts = new HostsService(transport);
     this.apiKeys = new ApiKeysService(transport);
     this.interventions = new InterventionsService(transport);
+  }
+
+  /**
+   * withActor returns a copy of this client, with the same options otherwise,
+   * that sends `actor` as the Fuse-Actor headers. This client is unchanged.
+   */
+  withActor(actor: ActorLabel): FuseClient {
+    return new FuseClient({ ...this.options, actor });
   }
 }

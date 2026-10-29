@@ -296,6 +296,18 @@ func (_c *VMCreate) SetHitl(v json.RawMessage) *VMCreate {
 	return _c
 }
 
+// SetAncestors sets the "ancestors" field.
+func (_c *VMCreate) SetAncestors(v json.RawMessage) *VMCreate {
+	_c.mutation.SetAncestors(v)
+	return _c
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (_c *VMCreate) SetHitlKeysEncrypted(v []byte) *VMCreate {
+	_c.mutation.SetHitlKeysEncrypted(v)
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *VMCreate) SetCreatedAt(v time.Time) *VMCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -610,6 +622,14 @@ func (_c *VMCreate) createSpec() (*VM, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.Hitl(); ok {
 		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
 		_node.Hitl = value
+	}
+	if value, ok := _c.mutation.Ancestors(); ok {
+		_spec.SetField(vm.FieldAncestors, field.TypeJSON, value)
+		_node.Ancestors = value
+	}
+	if value, ok := _c.mutation.HitlKeysEncrypted(); ok {
+		_spec.SetField(vm.FieldHitlKeysEncrypted, field.TypeBytes, value)
+		_node.HitlKeysEncrypted = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -1034,6 +1054,42 @@ func (u *VMUpsert) UpdateHitl() *VMUpsert {
 // ClearHitl clears the value of the "hitl" field.
 func (u *VMUpsert) ClearHitl() *VMUpsert {
 	u.SetNull(vm.FieldHitl)
+	return u
+}
+
+// SetAncestors sets the "ancestors" field.
+func (u *VMUpsert) SetAncestors(v json.RawMessage) *VMUpsert {
+	u.Set(vm.FieldAncestors, v)
+	return u
+}
+
+// UpdateAncestors sets the "ancestors" field to the value that was provided on create.
+func (u *VMUpsert) UpdateAncestors() *VMUpsert {
+	u.SetExcluded(vm.FieldAncestors)
+	return u
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (u *VMUpsert) ClearAncestors() *VMUpsert {
+	u.SetNull(vm.FieldAncestors)
+	return u
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (u *VMUpsert) SetHitlKeysEncrypted(v []byte) *VMUpsert {
+	u.Set(vm.FieldHitlKeysEncrypted, v)
+	return u
+}
+
+// UpdateHitlKeysEncrypted sets the "hitl_keys_encrypted" field to the value that was provided on create.
+func (u *VMUpsert) UpdateHitlKeysEncrypted() *VMUpsert {
+	u.SetExcluded(vm.FieldHitlKeysEncrypted)
+	return u
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (u *VMUpsert) ClearHitlKeysEncrypted() *VMUpsert {
+	u.SetNull(vm.FieldHitlKeysEncrypted)
 	return u
 }
 
@@ -1533,6 +1589,48 @@ func (u *VMUpsertOne) UpdateHitl() *VMUpsertOne {
 func (u *VMUpsertOne) ClearHitl() *VMUpsertOne {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearHitl()
+	})
+}
+
+// SetAncestors sets the "ancestors" field.
+func (u *VMUpsertOne) SetAncestors(v json.RawMessage) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetAncestors(v)
+	})
+}
+
+// UpdateAncestors sets the "ancestors" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateAncestors() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateAncestors()
+	})
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (u *VMUpsertOne) ClearAncestors() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearAncestors()
+	})
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (u *VMUpsertOne) SetHitlKeysEncrypted(v []byte) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHitlKeysEncrypted(v)
+	})
+}
+
+// UpdateHitlKeysEncrypted sets the "hitl_keys_encrypted" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateHitlKeysEncrypted() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHitlKeysEncrypted()
+	})
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (u *VMUpsertOne) ClearHitlKeysEncrypted() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearHitlKeysEncrypted()
 	})
 }
 
@@ -2203,6 +2301,48 @@ func (u *VMUpsertBulk) UpdateHitl() *VMUpsertBulk {
 func (u *VMUpsertBulk) ClearHitl() *VMUpsertBulk {
 	return u.Update(func(s *VMUpsert) {
 		s.ClearHitl()
+	})
+}
+
+// SetAncestors sets the "ancestors" field.
+func (u *VMUpsertBulk) SetAncestors(v json.RawMessage) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetAncestors(v)
+	})
+}
+
+// UpdateAncestors sets the "ancestors" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateAncestors() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateAncestors()
+	})
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (u *VMUpsertBulk) ClearAncestors() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearAncestors()
+	})
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (u *VMUpsertBulk) SetHitlKeysEncrypted(v []byte) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHitlKeysEncrypted(v)
+	})
+}
+
+// UpdateHitlKeysEncrypted sets the "hitl_keys_encrypted" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateHitlKeysEncrypted() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHitlKeysEncrypted()
+	})
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (u *VMUpsertBulk) ClearHitlKeysEncrypted() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearHitlKeysEncrypted()
 	})
 }
 

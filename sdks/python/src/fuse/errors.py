@@ -14,10 +14,20 @@ __all__ = [
     "CODE_UNAVAILABLE",
     "CODE_INTERNAL",
     "CODE_UNAUTHORIZED",
+    "CODE_FORBIDDEN",
+    "ForbiddenError",
+    "FORBIDDEN_MISSING_SCOPE",
+    "FORBIDDEN_ENV_SCOPE",
+    "FORBIDDEN_SELF_APPROVAL",
+    "FORBIDDEN_ACTOR_REQUIRED",
+    "FORBIDDEN_ACTOR_MISMATCH",
+    "FORBIDDEN_ACTOR_NOT_ALLOWED",
+    "FORBIDDEN_MINT_ESCALATION",
     "as_api_error",
     "is_not_found",
     "is_conflict",
     "is_unauthorized",
+    "is_forbidden",
     "is_invalid_argument",
     "is_unavailable",
     "check_response",
@@ -32,6 +42,16 @@ CODE_INVALID_ARGUMENT = "invalid_argument"
 CODE_UNAVAILABLE = "unavailable"
 CODE_INTERNAL = "internal"
 CODE_UNAUTHORIZED = "unauthorized"
+CODE_FORBIDDEN = "forbidden"
+
+# why a 403 forbidden was refused, carried in ForbiddenError.reason.
+FORBIDDEN_MISSING_SCOPE = "missing_scope"
+FORBIDDEN_ENV_SCOPE = "env_scope"
+FORBIDDEN_SELF_APPROVAL = "self_approval"
+FORBIDDEN_ACTOR_REQUIRED = "actor_required"
+FORBIDDEN_ACTOR_MISMATCH = "actor_mismatch"
+FORBIDDEN_ACTOR_NOT_ALLOWED = "actor_not_allowed"
+FORBIDDEN_MINT_ESCALATION = "mint_escalation"
 
 
 class ApiError(Exception):
@@ -72,6 +92,19 @@ class ApiError(Exception):
         return self._render()
 
 
+class ForbiddenError(ApiError):
+    # a 403 with code "forbidden": the caller is known but may not do this.
+    # reason is one of the FORBIDDEN_* constants; scope names the missing
+    # scope for FORBIDDEN_MISSING_SCOPE and is empty otherwise.
+    @property
+    def reason(self) -> str:
+        return self.details.get("reason", "")
+
+    @property
+    def scope(self) -> str:
+        return self.details.get("scope", "")
+
+
 def _status_text(status: int) -> str:
     try:
         return http.HTTPStatus(status).phrase.lower()
@@ -104,6 +137,9 @@ def is_conflict(err: object) -> bool:
 
 def is_unauthorized(err: object) -> bool:
     return _is_api_error_code(err, CODE_UNAUTHORIZED)
+
+def is_forbidden(err: object) -> bool:
+    return _is_api_error_code(err, CODE_FORBIDDEN)
 
 def is_invalid_argument(err: object) -> bool:
     return _is_api_error_code(err, CODE_INVALID_ARGUMENT)
@@ -147,7 +183,10 @@ def parse_api_error(
                         if isinstance(raw_details, dict)
                         else {}
                     )
-                    return ApiError(
+                    # older servers refused master-only routes with 403
+                    # "unauthorized"; those stay a plain ApiError.
+                    cls = ForbiddenError if code == CODE_FORBIDDEN else ApiError
+                    return cls(
                         status,
                         code=str(code),
                         message=str(message),

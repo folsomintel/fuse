@@ -448,6 +448,8 @@ paths:
             type: string
             enum: [rotate-token, drain, fork, migrate, exec, request]
           description: The action to perform.
+        - $ref: "#/components/parameters/FuseActor"
+        - $ref: "#/components/parameters/FuseActorName"
       responses:
         "200":
           description: |
@@ -1342,8 +1344,13 @@ paths:
       description: |
         Lists human-in-the-loop interventions, oldest first. Postgres is
         the source of truth; the `intervention` event on an environment's
-        event stream is only a hint to re-read.
+        event stream is only a hint to re-read. Requires `hitl:read`,
+        which full-access keys hold (as do `hitl:decide` and
+        `hitl:secret` keys). A key scoped to an environment sees only that
+        environment and its forks; naming any other `env` is 404.
       parameters:
+        - $ref: "#/components/parameters/FuseActor"
+        - $ref: "#/components/parameters/FuseActorName"
         - name: env
           in: query
           schema:
@@ -1354,6 +1361,11 @@ paths:
           schema:
             type: string
             enum: [pending, approved, rejected, expired, cancelled]
+        - name: actor
+          in: query
+          schema:
+            type: string
+          description: Filter by the actor id that raised or decided it.
         - name: limit
           in: query
           schema:
@@ -1373,6 +1385,10 @@ paths:
                 $ref: "#/components/schemas/InterventionList"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /v1/interventions/{interventionId}:
     parameters:
@@ -1381,6 +1397,8 @@ paths:
         required: true
         schema:
           type: string
+      - $ref: "#/components/parameters/FuseActor"
+      - $ref: "#/components/parameters/FuseActorName"
     get:
       tags: [interventions]
       operationId: getIntervention
@@ -1390,7 +1408,9 @@ paths:
         terminal state or the wait passes, and always answers 200 with the
         state at that moment, so a caller loops until `state` is not
         `pending`. A pending intervention past its deadline is expired on
-        read, applying its `on_timeout`.
+        read, applying its `on_timeout`. Requires `hitl:read`. An
+        intervention on an environment the caller's key does not cover is
+        404, the same as one that does not exist.
       parameters:
         - name: wait
           in: query
@@ -1406,6 +1426,8 @@ paths:
                 $ref: "#/components/schemas/Intervention"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
     post:
@@ -1415,11 +1437,26 @@ paths:
       description: |
         Approves or rejects a pending intervention. Approving an ask needs
         an `answer` (one of `choices` when the ask set them). A reject
-        always carries a reason; one is filled in when omitted. Requires
-        the master token: an API key gets 403 (code `unauthorized`), so an
-        agent holding an ordinary key cannot answer its own request.
-        Deciding a resolved intervention, including one whose deadline
-        passed before the decision arrived, is 409.
+        always carries a reason; one is filled in when omitted. Deciding a
+        resolved intervention, including one whose deadline passed before
+        the decision arrived, is 409.
+
+        Requires the `hitl:decide` scope or the master token. Full-access
+        keys never hold `hitl:decide`, so an agent driving Fuse with its
+        own key cannot answer its own request; mint a scoped key for the
+        human instead (`fuse hitl invite`). Every refusal is 403 with code
+        `forbidden` and a `details.reason`:
+
+        - `missing_scope`: the key lacks `hitl:decide` (`details.scope`
+          names it).
+        - `self_approval`: the deciding key, or the deciding actor, is
+          the one that raised the intervention. The master token naming
+          no actor is exempt from the actor half of this check.
+        - `actor_required`: the environment's policy sets
+          `require_actor` and the decision carries neither a pinned nor
+          an asserted actor.
+        - `actor_mismatch` / `actor_not_allowed`: the `Fuse-Actor`
+          header was refused (see the FuseActor parameter).
       parameters:
         - name: action
           in: query
@@ -1449,6 +1486,73 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /v1/hitl/audit:
+    get:
+      tags: [interventions]
+      operationId: listHitlAudit
+      summary: List hitl audit log
+      description: |
+        Reads the append-only hitl audit log, oldest first: one row per
+        `raised`, `decided`, `expired`, `cancelled`, `invite_minted` and
+        `invite_used` event, with the actor, its source, the key id, the
+        remote address and the time. Rows point at an intervention by id
+        and never hold its content; the question, answer and reason stay
+        on the encrypted intervention row.
+
+        Each row carries `prev_hash`, the `hash` of the row before it
+        (32 zero bytes for the first row), so editing, removing or
+        reordering a row breaks the chain from that point. `hash` is
+        SHA-256 over the row's length-prefixed fields and `prev_hash`.
+        `fuse hitl audit --verify` reads every row and recomputes the
+        chain client-side.
+
+        Requires `hitl:read`. A key scoped to an environment sees only
+        that environment's rows and its forks'; naming any other `env` is
+        404.
+      parameters:
+        - $ref: "#/components/parameters/FuseActor"
+        - $ref: "#/components/parameters/FuseActorName"
+        - name: env
+          in: query
+          schema:
+            type: string
+          description: Filter by environment id.
+        - name: actor
+          in: query
+          schema:
+            type: string
+          description: Filter by actor id.
+        - name: since
+          in: query
+          schema:
+            type: string
+          description: |
+            Only rows at or after this time (RFC 3339), or this long ago
+            (a duration like `24h`).
+        - name: limit
+          in: query
+          schema:
+            type: integer
+          description: Max results per page (default 50, max 200).
+        - name: cursor
+          in: query
+          schema:
+            type: string
+          description: Opaque cursor from a previous response's next_cursor.
+      responses:
+        "200":
+          description: One page of audit rows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /v1/api-keys:
     post:
       tags: [api-keys]
@@ -1458,10 +1562,30 @@ paths:
         Mints a new revocable API key. `key` is the raw secret (prefix
         `fuse_sk_`) and appears only in this response; it cannot be
         recovered afterward — only its SHA-256 is stored. An empty body
-        creates an unlabeled key; only a present-but-malformed body is
-        400. Master-token only: a caller authenticated with an API key
-        receives 403, and the 403 body carries code `unauthorized` (not
-        a separate forbidden code). Auth is never disabled on this
+        creates an unlabeled full-access key; only a present-but-malformed
+        body is 400.
+
+        Without `scopes` the key is full-access, as every key was before
+        scopes existed, and only the master token may mint it: a
+        full-access API key gets 403 code `forbidden`, reason
+        `missing_scope`. With `scopes` the key is limited to the hitl
+        routes (`/v1/interventions`, `/v1/hitl/*` and minting here), must
+        set `ttl_seconds` (at most 86400), and may be limited to one
+        environment and its forks (`env_id`) and pinned to an actor
+        (`actor`). Scoped keys are revoked when their environment is
+        destroyed and move with it across a migrate. Minting one records
+        an `invite_minted` audit row.
+
+        A scoped key may mint a narrower copy of itself. Anything wider
+        is 403 code `forbidden`, reason `mint_escalation`: a full-access
+        key, a scope it does not hold, an environment it does not cover,
+        an expiry past its own, or an actor other than its pinned one
+        (pinning an actor from an unpinned key needs `hitl:act-as`). A
+        key minted by a pinned key inherits that actor.
+
+        `env_id` without `scopes`, an empty `scopes` list, an unknown
+        scope or a bad `ttl_seconds` is 400; an `env_id` that names no
+        environment is 404 code `not_found`. Auth is never disabled on this
         route: it exists only when the Postgres key store is configured,
         and that same store makes bearer auth mandatory, so every
         request reaching this handler carries a principal. Requires the
@@ -1471,8 +1595,11 @@ paths:
         Note that `ORCH_AUTH_TOKEN` unset with `DATABASE_URL` set is
         permitted (unless `ORCH_REQUIRE_AUTH=true`), and in that
         configuration there is no master credential at all: every caller
-        authenticates as an API key and therefore receives 403
-        `unauthorized` here. Configure a master token to use this route.
+        authenticates as an API key and therefore cannot mint a
+        full-access key here. Configure a master token to use this route.
+      parameters:
+        - $ref: "#/components/parameters/FuseActor"
+        - $ref: "#/components/parameters/FuseActorName"
       requestBody:
         required: false
         content:
@@ -1496,7 +1623,8 @@ paths:
           description: |
             No Postgres key store is configured, so this route is not
             registered; the fallback handler answers with code
-            `route_not_found`.
+            `route_not_found`. Also returned with code `not_found` when
+            `env_id` names no environment.
           content:
             application/json:
               schema:
@@ -1580,7 +1708,15 @@ components:
         (`ORCH_AUTH_TOKEN`) or a revocable API key issued via
         /v1/api-keys (API keys require Postgres; without a database only
         the master token is accepted). Master-only surfaces (exec,
-        attach, API key management) refuse API keys with 403.
+        attach, API key management) refuse API keys with 403. An expired
+        key is refused with 401 like an unknown one.
+
+        A key minted with `scopes` reaches only the hitl routes
+        (`/v1/interventions`, `/v1/hitl/*`, and POST /v1/api-keys to mint
+        a narrower key). Any other route is 403 code `forbidden`, reason
+        `env_scope`, except an `/v1/environments/{vmId}` route for an
+        environment the key does not cover, which is 404 so the key
+        cannot probe which environments exist.
 
         **Authentication can be disabled entirely.** When neither
         `ORCH_AUTH_TOKEN` nor an API key store (`DATABASE_URL`) is
@@ -1621,6 +1757,45 @@ components:
       schema:
         type: string
       description: Host identifier assigned by the caller.
+    FuseActor:
+      name: Fuse-Actor
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+      description: |
+        The person behind this request, as an opaque id (`user_42`,
+        `alice@corp.com`, `slack:U0123`). Fuse records it on hitl
+        interventions and the audit log and never checks it. Accepted on
+        every authenticated route; it matters wherever an actor is
+        recorded (raising, deciding, minting). At most 128 bytes, no
+        control characters; a malformed value is 400.
+
+        How the recorded actor is resolved:
+
+        - key pinned to an actor: that actor (`source: pinned`). A
+          different `Fuse-Actor` is 403 `forbidden`, reason
+          `actor_mismatch`.
+        - key with `hitl:act-as`: the header value (`source: asserted`,
+          with the asserting key's id), else `key:<key_id>`.
+        - any other key: `key:<key_id>` named after the key's label
+          (`source: key`). Sending the header is 403 `forbidden`, reason
+          `actor_not_allowed`, rather than silently dropped.
+        - master token: the header value (`source: asserted`), else
+          `master` (`source: key`).
+
+        An asserted actor is only as true as the key holder's own auth.
+    FuseActorName:
+      name: Fuse-Actor-Name
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 256
+      description: |
+        Optional display name for `Fuse-Actor`, at most 256 bytes. Sending
+        it without `Fuse-Actor` is 400.
 
   responses:
     BadRequest:
@@ -1637,10 +1812,28 @@ components:
             $ref: "#/components/schemas/Error"
     Forbidden:
       description: |
-        The caller authenticated, but not as the master operator.
-        Master-only surfaces (exec, attach, API key management) refuse
-        API keys; those 403 bodies carry code `unauthorized`. CIDR
-        allowlist rejections also return 403 but with code `forbidden`.
+        The caller authenticated, but may not make this request.
+        Master-only surfaces (exec, attach, listing and revoking API keys)
+        refuse API keys; those 403 bodies carry code `unauthorized`. CIDR
+        allowlist rejections return 403 with code `forbidden` and no
+        reason. Access checks on the hitl routes and scoped keys return
+        403 with code `forbidden` and `details.reason` set to one of:
+
+        - `missing_scope`: the key lacks the scope the route needs
+          (`details.scope` names it). Full-access keys never hold
+          `hitl:decide`, `hitl:secret` or `hitl:act-as`.
+        - `env_scope`: a scoped key called a route outside the hitl
+          routes.
+        - `self_approval`: the key or actor that raised an intervention
+          tried to decide it.
+        - `actor_required`: the environment sets `require_actor` and the
+          decision names no pinned or asserted actor.
+        - `actor_mismatch`: `Fuse-Actor` differs from the key's pinned
+          actor.
+        - `actor_not_allowed`: `Fuse-Actor` sent by a key without
+          `hitl:act-as`.
+        - `mint_escalation`: a scoped key tried to mint a key wider than
+          itself.
       content:
         application/json:
           schema:
@@ -1704,9 +1897,11 @@ components:
                 means the URL matches no route this server exposes —
                 usually a wrong host, port, or path prefix — as opposed
                 to `not_found`, where the route exists but the resource
-                does not. `forbidden` is emitted only by CIDR-allowlist
-                rejections; master-only refusals (exec, attach, API key
-                management) return 403 with code `unauthorized`.
+                does not. `forbidden` is emitted by CIDR-allowlist
+                rejections and by hitl access checks, which set
+                `details.reason` (see the Forbidden response);
+                master-only refusals (exec, attach, listing and revoking
+                API keys) return 403 with code `unauthorized`.
               enum:
                 - not_found
                 - route_not_found
@@ -1726,7 +1921,11 @@ components:
                 type: string
               description: |
                 Optional stable, non-sensitive metadata (e.g. ids,
-                counts). Omitted when empty.
+                counts). Omitted when empty. A 403 `forbidden` from a
+                hitl access check carries `reason` (`missing_scope`,
+                `env_scope`, `self_approval`, `actor_required`,
+                `actor_mismatch`, `actor_not_allowed`,
+                `mint_escalation`), plus `scope` for `missing_scope`.
 
     ResourceSpec:
       type: object
@@ -2684,6 +2883,54 @@ components:
         label:
           type: string
           description: Optional operator memory aid ("ci", "partner-acme").
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [hitl:read, hitl:decide, hitl:secret, hitl:takeover, hitl:act-as]
+          description: |
+            Omit for a full-access key. Present (and non-empty) limits the
+            key to the hitl routes and what these scopes grant:
+            `hitl:read` lists and reads interventions and the audit log;
+            `hitl:decide` approves and rejects; `hitl:secret` answers
+            secret requests; `hitl:takeover` takes over the environment;
+            `hitl:act-as` lets the key name the actor it acts for with
+            `Fuse-Actor`. `hitl:decide` and `hitl:secret` imply
+            `hitl:read`. Duplicates are dropped.
+        env_id:
+          type: string
+          description: |
+            Limits the key to this environment and every environment
+            forked from it. Needs `scopes`.
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 86400
+          description: |
+            Seconds until the key expires. Required with `scopes`, at most
+            86400 (24h). Optional for a full-access key; omit for one that
+            never expires.
+        actor:
+          allOf:
+            - $ref: "#/components/schemas/ActorLabel"
+          description: |
+            Pins the actor every request on the key is recorded as
+            (`source: pinned`). A different `Fuse-Actor` header on the key
+            is then refused.
+
+    ActorLabel:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          description: Opaque actor id, e.g. `user_42` or `alice@corp.com`.
+        name:
+          type: string
+          maxLength: 256
+          description: Optional display name.
 
     APIKey:
       type: object
@@ -2708,7 +2955,35 @@ components:
         revoked_at:
           type: string
           format: date-time
-          description: Omitted (not null) while the key is live.
+          description: |
+            Omitted (not null) while the key is live. Set when revoked by
+            hand, and on a scoped key when its environment is destroyed.
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [hitl:read, hitl:decide, hitl:secret, hitl:takeover, hitl:act-as]
+          description: Omitted for a full-access key.
+        env_id:
+          type: string
+          description: |
+            The environment a scoped key is limited to (it also covers that
+            environment's forks). Omitted when the key is not limited.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            When the key stops authenticating. Omitted for a key that never
+            expires; always set on a scoped key.
+        actor:
+          allOf:
+            - $ref: "#/components/schemas/ActorLabel"
+          description: The actor pinned on the key. Omitted when none.
+        created_by:
+          type: string
+          description: |
+            Who minted the key: `master`, or the id of the scoped key that
+            minted it.
 
     CreateAPIKeyResponse:
       allOf:
@@ -2920,6 +3195,86 @@ components:
           properties:
             ask:
               type: object
+        require_actor:
+          type: boolean
+          description: |
+            Refuses a decision that names no person: it must come from a
+            key pinned to an actor, or carry `Fuse-Actor` from a
+            `hitl:act-as` key or the master token. Otherwise 403
+            `forbidden`, reason `actor_required`.
+        notify:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/HitlWebhook"
+          description: |
+            Webhooks told about every audit event on this environment
+            (raised, decided, expired, cancelled, invite minted and used).
+            Deliveries are content-free and signed. Each `secret` must name
+            an entry of the create request's `secrets`, or the create is
+            400.
+
+    HitlWebhook:
+      type: object
+      required: [url, secret]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            Absolute http or https url with a host and no userinfo
+            credentials. Redirects are not followed; a 3xx counts as a
+            failed delivery.
+        secret:
+          type: string
+          description: |
+            Name of an entry in the create request's `secrets` whose value
+            keys the HMAC-SHA256 signature. The value never appears in the
+            spec. It is sealed with `TOKEN_ENCRYPTION_KEY`; without that key
+            it is held in memory only and deliveries stop after an
+            orchestrator restart.
+      description: |
+        One `hitl.notify` target. Each delivery is a POST with a JSON
+        HitlNotification body and a `Fuse-Signature` header of the form
+        `t=<unix seconds>,v1=<hex>`, where `v1` is the hex HMAC-SHA256,
+        keyed by the secret's value, of `<t>.<raw body>`. A delivery is
+        tried up to 4 times (immediately, then after 1s, 4s and 16s) on a
+        transport error or a non-2xx answer, with a 10s timeout per try.
+        Deliveries are best-effort and not persisted; the audit log is the
+        record.
+
+    HitlNotification:
+      type: object
+      required: [event, env_id, gate, "on"]
+      description: |
+        The whole body of a webhook delivery. It never carries the
+        question, answer or reason; a receiver learns that something needs
+        a look and where, and fetches the content from the API with its
+        own key.
+      properties:
+        event:
+          type: string
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used]
+        intervention_id:
+          type: string
+          description: Omitted for invite events.
+        env_id:
+          type: string
+        gate:
+          type: string
+          description: Gate name. Empty today; reserved for exec and lifecycle gates.
+        "on":
+          type: string
+          description: The intervention's kind (`ask`). Empty for invite events.
+        deadline:
+          type: string
+          format: date-time
+          description: The intervention's deadline. Omitted for invite events.
+        url:
+          type: string
+          description: |
+            `<ORCH_PUBLIC_URL>/v1/interventions/<intervention_id>`. Omitted
+            when `ORCH_PUBLIC_URL` is unset or for invite events.
 
     RequestHumanRequest:
       type: object
@@ -2957,13 +3312,66 @@ components:
       properties:
         id:
           type: string
-          description: '"master", "key:<id>", or "system" for fuse itself.'
+          description: |
+            A pinned or asserted actor id, `key:<key_id>`, `master`, or
+            `system` for fuse itself.
         name:
           type: string
         source:
           type: string
-          enum: [key, system]
+          enum: [pinned, asserted, key, system]
+          description: |
+            `pinned`: fixed on the key at mint time. `asserted`: named in
+            `Fuse-Actor` by a `hitl:act-as` key or the master token, and only
+            as true as that caller's own auth. `key`: derived from the
+            credential. `system`: expiry and cancellation.
         key_id:
+          type: string
+          description: |
+            The key that authenticated the request, including the key that
+            asserted an actor. Omitted for the master token.
+
+    AuditEntry:
+      type: object
+      required: [seq, event, actor, at, prev_hash, hash]
+      description: One row of the hitl audit log. Never holds intervention content.
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: Position in the chain, strictly increasing.
+        event:
+          type: string
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used]
+        intervention_id:
+          type: string
+          description: Omitted for invite events.
+        env_id:
+          type: string
+        actor:
+          $ref: "#/components/schemas/Actor"
+        remote_addr:
+          type: string
+          description: The caller's address as the orchestrator saw it.
+        at:
+          type: string
+          format: date-time
+        prev_hash:
+          type: string
+          description: Hex SHA-256 `hash` of the previous row; 64 zeros for the first row.
+        hash:
+          type: string
+          description: Hex SHA-256 over this row's fields and `prev_hash`.
+
+    AuditList:
+      type: object
+      required: [entries]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEntry"
+        next_cursor:
           type: string
 
     Intervention:

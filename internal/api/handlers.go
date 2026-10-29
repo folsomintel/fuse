@@ -161,6 +161,7 @@ func (h *Handler) Router() (http.Handler, error) {
 			keyAuth = h.APIKeys
 		}
 		priv.Use(BearerAuth(h.AuthToken, keyAuth, h.OnAuthFailure))
+		priv.Use(h.accessGuard)
 		h.register(priv)
 	})
 
@@ -214,6 +215,7 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/interventions", h.listInterventions)
 	r.Get("/v1/interventions/{interventionId}", h.getIntervention)
 	r.Post("/v1/interventions/{interventionId}", h.interventionAction)
+	r.Get("/v1/hitl/audit", h.listHitlAudit)
 
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
@@ -316,6 +318,15 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		if err := toHitlSpec(req.Hitl).Validate(); err != nil {
 			writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 			return
+		}
+		// a webhook signs with a secret the caller supplies at create; the
+		// value never appears in the spec.
+		for i, wh := range req.Hitl.Notify {
+			if req.Secrets[wh.Secret] == "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+					fmt.Sprintf("hitl.notify[%d].secret: %q is not in secrets", i, wh.Secret), nil)
+				return
+			}
 		}
 	}
 	// A negative bound would reach the fleet as "unset" and quietly restore

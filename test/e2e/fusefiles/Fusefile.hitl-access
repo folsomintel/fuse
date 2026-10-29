@@ -1,0 +1,25 @@
+version: 1
+
+# hitl access (#310): an environment that may ask a human, notifies a
+# webhook on every hitl event, and signs deliveries with HITL_HOOK_SECRET.
+# __HOOK_URL__ is replaced by test/e2e/hitl-access.sh with a receiver the
+# orchestrator can reach.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+
+run: 'echo ready > /tmp/ready'
+
+secrets:
+  - HITL_HOOK_SECRET
+
+hitl:
+  timeout: 5m
+  on_timeout: reject
+  notify:
+    - webhook: __HOOK_URL__
+      secret: HITL_HOOK_SECRET
+  requests:
+    ask: {}

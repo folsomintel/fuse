@@ -608,11 +608,11 @@ func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// Hitl is the human-in-the-loop block. Only timeout, on_timeout and
-// requests.ask are supported so far. The other keys the design names
-// (notify, gates, require_actor and the secret, review and takeover
-// requests) are accepted by the decoder only so they can be refused with a
-// "not yet supported" error instead of a generic unknown-field one.
+// Hitl is the human-in-the-loop block. timeout, on_timeout, require_actor,
+// notify and requests.ask are supported so far. The other keys the design
+// names (gates and the secret, review and takeover requests) are accepted by
+// the decoder only so they can be refused with a "not yet supported" error
+// instead of a generic unknown-field one.
 type Hitl struct {
 	// Timeout is the default deadline for every intervention, as a go
 	// duration between 10s and 24h. Empty means 10m.
@@ -624,9 +624,22 @@ type Hitl struct {
 
 	Requests HitlRequests `yaml:"requests,omitempty"`
 
-	Notify       yaml.Node `yaml:"notify,omitempty"`
-	Gates        yaml.Node `yaml:"gates,omitempty"`
-	RequireActor yaml.Node `yaml:"require_actor,omitempty"`
+	// RequireActor refuses decisions that do not name a person: a key
+	// pinned to an actor, or an actor asserted by a hitl:act-as key.
+	RequireActor bool `yaml:"require_actor,omitempty"`
+
+	// Notify are webhooks told about every intervention and invite. Each
+	// delivery is content-free and signed with the named secret.
+	Notify []HitlNotify `yaml:"notify,omitempty"`
+
+	Gates yaml.Node `yaml:"gates,omitempty"`
+}
+
+// HitlNotify is one hitl.notify webhook. Secret names an entry of the
+// top-level secrets list; its value signs each delivery.
+type HitlNotify struct {
+	Webhook string `yaml:"webhook"`
+	Secret  string `yaml:"secret"`
 }
 
 // HitlRequests declares the request kinds the agent may raise. Declaring a

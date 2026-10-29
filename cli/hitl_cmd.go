@@ -16,14 +16,16 @@ func newHitlCmd() *cobra.Command {
 		Short:   "See and answer human-in-the-loop requests",
 		Long: "an agent running against an environment with a `hitl:` block can ask a\n" +
 			"human for something. these commands list those requests and answer them.\n" +
-			"deciding requires the master token.",
+			"deciding needs the master token or a key with hitl:decide (see `fuse hitl\n" +
+			"invite`), and never the key or actor that raised the request.",
 	}
-	cmd.AddCommand(newHitlListCmd(), newHitlShowCmd(), newHitlAnswerCmd(), newHitlRejectCmd())
+	cmd.AddCommand(newHitlListCmd(), newHitlShowCmd(), newHitlAnswerCmd(), newHitlRejectCmd(),
+		newHitlInviteCmd(), newHitlAuditCmd())
 	return cmd
 }
 
 func newHitlListCmd() *cobra.Command {
-	var env, state string
+	var env, state, actor string
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -37,7 +39,7 @@ func newHitlListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			list, err := cl.Interventions.List(cmd.Context(), fuse.ListInterventionsOptions{EnvID: env, State: state})
+			list, err := cl.Interventions.List(cmd.Context(), fuse.ListInterventionsOptions{EnvID: env, State: state, Actor: actor})
 			if err != nil {
 				return friendly(err)
 			}
@@ -58,6 +60,7 @@ func newHitlListCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&env, "env", "", "only interventions for this environment")
 	cmd.Flags().StringVar(&state, "state", fuse.InterventionPending, "pending, approved, rejected, expired, cancelled, or all")
+	cmd.Flags().StringVar(&actor, "actor", "", "only interventions raised or decided by this actor id")
 	return cmd
 }
 
@@ -81,7 +84,7 @@ func newHitlShowCmd() *cobra.Command {
 }
 
 func newHitlAnswerCmd() *cobra.Command {
-	var reason string
+	var reason, actor string
 	cmd := &cobra.Command{
 		Use:     "answer <id> <answer>",
 		Aliases: []string{"approve"},
@@ -91,7 +94,7 @@ func newHitlAnswerCmd() *cobra.Command {
 			"of them. everything after the id is joined into the answer.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, _, err := app.client()
+			cl, err := hitlClient(actor)
 			if err != nil {
 				return err
 			}
@@ -107,11 +110,12 @@ func newHitlAnswerCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "optional note passed back to the agent")
+	addActorFlag(cmd, &actor)
 	return cmd
 }
 
 func newHitlRejectCmd() *cobra.Command {
-	var reason string
+	var reason, actor string
 	cmd := &cobra.Command{
 		Use:   "reject <id>",
 		Short: "Reject an intervention",
@@ -119,7 +123,7 @@ func newHitlRejectCmd() *cobra.Command {
 			"it can replan; give it one.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cl, _, err := app.client()
+			cl, err := hitlClient(actor)
 			if err != nil {
 				return err
 			}
@@ -135,6 +139,7 @@ func newHitlRejectCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "why, fed back to the agent")
+	addActorFlag(cmd, &actor)
 	return cmd
 }
 
@@ -153,7 +158,7 @@ func renderIntervention(in *fuse.Intervention) error {
 		pairs = append(pairs, [2]string{"choices", strings.Join(in.Payload.Choices, ", ")})
 	}
 	pairs = append(pairs,
-		[2]string{"raised by", in.TriggeredBy.ID},
+		[2]string{"raised by", renderActor(in.TriggeredBy)},
 		[2]string{"raised", shortTime(in.CreatedAt)},
 		[2]string{"deadline", shortTime(in.Deadline) + "  (" + untilOrAgo(*in) + ", then " + in.OnTimeout + ")"},
 	)
@@ -166,7 +171,7 @@ func renderIntervention(in *fuse.Intervention) error {
 			pairs = append(pairs, [2]string{"reason", d.Reason})
 		}
 		pairs = append(pairs,
-			[2]string{"decided by", d.DecidedBy.ID},
+			[2]string{"decided by", renderActor(d.DecidedBy)},
 			[2]string{"decided", shortTime(d.DecidedAt)},
 		)
 	}

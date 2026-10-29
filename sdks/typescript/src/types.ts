@@ -609,7 +609,34 @@ export interface APIKey {
   created_at: string;
   last_used_at?: string;
   revoked_at?: string;
+  /** The hitl scopes the key holds. Absent for a full-access key. */
+  scopes?: string[];
+  /** The environment a scoped key is limited to (and its forks). */
+  env_id?: string;
+  /** RFC 3339 timestamp. Scoped keys always expire. */
+  expires_at?: string;
+  /** The actor the key is pinned to, if any. */
+  actor?: ActorLabel;
+  created_by?: string;
 }
+
+/** ActorLabel is an actor as a caller names it: an opaque id (at most 128
+ * bytes) and an optional display name. */
+export interface ActorLabel {
+  id: string;
+  name?: string;
+}
+
+/** Hitl scopes a key can be minted with. */
+export const HitlScope = {
+  Read: "hitl:read",
+  Decide: "hitl:decide",
+  Secret: "hitl:secret",
+  Takeover: "hitl:takeover",
+  ActAs: "hitl:act-as",
+} as const;
+
+export type HitlScope = (typeof HitlScope)[keyof typeof HitlScope];
 
 /**
  * CreatedAPIKey is returned by apiKeys.create. `key` is the raw secret and is
@@ -661,6 +688,18 @@ export interface HitlSpec {
   on_timeout?: string;
   /** The request kinds the agent may raise. */
   requests: HitlRequests;
+  /** Refuse decisions made without a pinned or asserted actor. */
+  require_actor?: boolean;
+  /** Webhooks told about every intervention and audit event. */
+  notify?: HitlWebhook[];
+}
+
+/** HitlWebhook is one hitl.notify target. `secret` names an entry of the
+ * create request's secrets; its value signs each delivery with HMAC-SHA256
+ * in the Fuse-Signature header. */
+export interface HitlWebhook {
+  url: string;
+  secret: string;
 }
 
 /** HitlRequests declares the allowed request kinds. Only ask exists today;
@@ -716,6 +755,34 @@ export interface Intervention {
   created_at: string;
   updated_at: string;
 }
+
+/** AuditEntry is one row of the hash-chained hitl audit log. It holds who
+ * did what and when, never intervention content. Hashes are hex. */
+export interface AuditEntry {
+  seq: number;
+  /** One of AuditEvent. */
+  event: string;
+  intervention_id?: string;
+  env_id?: string;
+  actor: Actor;
+  remote_addr?: string;
+  /** RFC 3339 timestamp. */
+  at: string;
+  prev_hash: string;
+  hash: string;
+}
+
+/** Audit log events. */
+export const AuditEvent = {
+  Raised: "raised",
+  Decided: "decided",
+  Expired: "expired",
+  Cancelled: "cancelled",
+  InviteMinted: "invite_minted",
+  InviteUsed: "invite_used",
+} as const;
+
+export type AuditEvent = (typeof AuditEvent)[keyof typeof AuditEvent];
 
 /** Hitl request kinds. */
 export const HitlKind = {

@@ -72,7 +72,7 @@ func TestRecoveredFleetResumesPending(t *testing.T) {
 	if err != nil || got.State != hitl.StatePending {
 		t.Fatalf("after restart: %+v, %v", got, err)
 	}
-	got, err = restarted.DecideIntervention(context.Background(), in.ID, hitl.OutcomeApprove, "no", "", testActor)
+	got, err = restarted.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeApprove, Answer: "no", Reason: "", By: testActor})
 	if err != nil || got.Decision.Answer != "no" {
 		t.Fatalf("decide after restart: %+v, %v", got, err)
 	}

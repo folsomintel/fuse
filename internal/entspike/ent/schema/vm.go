@@ -81,6 +81,13 @@ func (VM) Fields() []ent.Field {
 		field.JSON("hitl", json.RawMessage{}).
 			StorageKey("hitl_spec_json").Optional().
 			SchemaType(pgText),
+		// fork lineage as a json array of vm ids, oldest first. null reads
+		// as no ancestors.
+		field.JSON("ancestors", json.RawMessage{}).
+			StorageKey("ancestors_json").Optional().
+			SchemaType(pgText),
+		// hitl.notify signing secrets, sealed with TOKEN_ENCRYPTION_KEY.
+		field.Bytes("hitl_keys_encrypted").Optional(),
 		field.Time("created_at"),
 		field.Time("updated_at"),
 	}

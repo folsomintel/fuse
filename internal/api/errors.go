@@ -70,6 +70,7 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrStartupScriptTimeoutTooLarge),
 		errors.Is(err, orchestrator.ErrInvalidCursor),
 		errors.Is(err, orchestrator.ErrHitlNotDeclared),
+		errors.Is(err, orchestrator.ErrHitlSecretMissing),
 		errors.Is(err, orchestrator.ErrInvalidIntervention):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:

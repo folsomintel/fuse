@@ -420,6 +420,10 @@ const (
 	CodeInternal        = "internal"
 	CodeUnauthorized    = "unauthorized"
 	CodeUnimplemented   = "unimplemented"
+	// CodeForbidden is a request the credential is not allowed to make:
+	// a missing hitl scope, a scoped key off its routes, self-approval, an
+	// actor the key may not assert. details.reason says which.
+	CodeForbidden = "forbidden"
 
 	// CodePayloadTooLarge marks a request body that ran past the endpoint's
 	// size limit. Distinct from CodeInvalidArgument because the body may be
@@ -518,8 +522,26 @@ type ComputerDisplay struct {
 
 // CreateAPIKeyRequest is the JSON body accepted by POST /v1/api-keys.
 // label is an optional human memory aid ("ci", "partner-acme").
+//
+// Omitting scopes mints a full-access key, as before. Naming scopes mints a
+// key limited to the hitl routes: it must expire (ttl_seconds, at most
+// 86400), and may be scoped to one environment (env_id, which also covers
+// that environment's forks) and pinned to an actor. The master token can
+// mint anything; a scoped key can mint only within its own scopes,
+// environment, expiry and actor.
 type CreateAPIKeyRequest struct {
-	Label string `json:"label,omitempty"`
+	Label      string      `json:"label,omitempty"`
+	Scopes     []string    `json:"scopes,omitempty"`
+	EnvID      string      `json:"env_id,omitempty"`
+	TTLSeconds int64       `json:"ttl_seconds,omitempty"`
+	Actor      *ActorLabel `json:"actor,omitempty"`
+}
+
+// ActorLabel is an actor as a caller names it: an opaque id (required, at
+// most 128 bytes) and an optional display name.
+type ActorLabel struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 // APIKey is the JSON shape of a key's metadata. The raw secret is never
@@ -530,6 +552,12 @@ type APIKey struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// Scopes is absent for a full-access key.
+	Scopes    []string    `json:"scopes,omitempty"`
+	EnvID     string      `json:"env_id,omitempty"`
+	ExpiresAt *time.Time  `json:"expires_at,omitempty"`
+	Actor     *ActorLabel `json:"actor,omitempty"`
+	CreatedBy string      `json:"created_by,omitempty"`
 }
 
 // CreateAPIKeyResponse is returned by POST /v1/api-keys. Key is the raw
@@ -674,6 +702,11 @@ type HitlSpec struct {
 	OnTimeout string `json:"on_timeout,omitempty"`
 	// Requests declares the request kinds the agent may raise.
 	Requests HitlRequests `json:"requests"`
+	// RequireActor refuses decisions without a pinned or asserted actor.
+	RequireActor bool `json:"require_actor,omitempty"`
+	// Notify are webhooks told about every intervention and audit event.
+	// Deliveries are content-free and signed with the named secret.
+	Notify []HitlWebhook `json:"notify,omitempty"`
 }
 
 // HitlRequests declares the allowed request kinds. Only ask exists today.
@@ -683,6 +716,34 @@ type HitlRequests struct {
 
 // HitlAskRequests configures ask requests. Present means allowed.
 type HitlAskRequests struct{}
+
+// HitlWebhook is one hitl.notify target. Secret names an entry of the
+// create request's secrets; its value signs each delivery with
+// HMAC-SHA256 in the Fuse-Signature header.
+type HitlWebhook struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
+}
+
+// AuditEntry is one row of the hitl audit log. Hashes are hex. Rows hold
+// who did what and when, never intervention content.
+type AuditEntry struct {
+	Seq            int64     `json:"seq"`
+	Event          string    `json:"event"`
+	InterventionID string    `json:"intervention_id,omitempty"`
+	EnvID          string    `json:"env_id,omitempty"`
+	Actor          Actor     `json:"actor"`
+	RemoteAddr     string    `json:"remote_addr,omitempty"`
+	At             time.Time `json:"at"`
+	PrevHash       string    `json:"prev_hash"`
+	Hash           string    `json:"hash"`
+}
+
+// AuditList is the response body for GET /v1/hitl/audit.
+type AuditList struct {
+	Entries    []AuditEntry `json:"entries"`
+	NextCursor *string      `json:"next_cursor,omitempty"`
+}
 
 // RequestHumanRequest is the body of POST /v1/environments/{vmId}?action=request.
 type RequestHumanRequest struct {

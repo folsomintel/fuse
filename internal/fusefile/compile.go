@@ -103,6 +103,14 @@ type HitlSpec struct {
 	TimeoutSeconds int64
 	OnTimeout      string
 	Ask            bool
+	RequireActor   bool
+	Notify         []HitlWebhook
+}
+
+// HitlWebhook is a compiled hitl.notify entry.
+type HitlWebhook struct {
+	URL    string
+	Secret string
 }
 
 // Compiled is the result of compiling a Fusefile: the resource spec, the
@@ -1102,7 +1110,10 @@ func compileHitl(f *Fusefile) *HitlSpec {
 	if f.Hitl == nil {
 		return nil
 	}
-	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil}
+	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil, RequireActor: f.Hitl.RequireActor}
+	for _, n := range f.Hitl.Notify {
+		spec.Notify = append(spec.Notify, HitlWebhook{URL: n.Webhook, Secret: n.Secret})
+	}
 	if spec.OnTimeout == "" {
 		spec.OnTimeout = "reject"
 	}

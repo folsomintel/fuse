@@ -154,6 +154,11 @@ func HugePages(v bool) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldHugePages, v))
 }
 
+// HitlKeysEncrypted applies equality check predicate on the "hitl_keys_encrypted" field. It's identical to HitlKeysEncryptedEQ.
+func HitlKeysEncrypted(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldHitlKeysEncrypted, v))
+}
+
 // CreatedAt applies equality check predicate on the "created_at" field. It's identical to CreatedAtEQ.
 func CreatedAt(v time.Time) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldCreatedAt, v))
@@ -1167,6 +1172,66 @@ func HitlIsNil() predicate.VM {
 // HitlNotNil applies the NotNil predicate on the "hitl" field.
 func HitlNotNil() predicate.VM {
 	return predicate.VM(sql.FieldNotNull(FieldHitl))
+}
+
+// AncestorsIsNil applies the IsNil predicate on the "ancestors" field.
+func AncestorsIsNil() predicate.VM {
+	return predicate.VM(sql.FieldIsNull(FieldAncestors))
+}
+
+// AncestorsNotNil applies the NotNil predicate on the "ancestors" field.
+func AncestorsNotNil() predicate.VM {
+	return predicate.VM(sql.FieldNotNull(FieldAncestors))
+}
+
+// HitlKeysEncryptedEQ applies the EQ predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedEQ(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedNEQ applies the NEQ predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedNEQ(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldNEQ(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedIn applies the In predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedIn(vs ...[]byte) predicate.VM {
+	return predicate.VM(sql.FieldIn(FieldHitlKeysEncrypted, vs...))
+}
+
+// HitlKeysEncryptedNotIn applies the NotIn predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedNotIn(vs ...[]byte) predicate.VM {
+	return predicate.VM(sql.FieldNotIn(FieldHitlKeysEncrypted, vs...))
+}
+
+// HitlKeysEncryptedGT applies the GT predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedGT(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldGT(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedGTE applies the GTE predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedGTE(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldGTE(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedLT applies the LT predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedLT(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldLT(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedLTE applies the LTE predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedLTE(v []byte) predicate.VM {
+	return predicate.VM(sql.FieldLTE(FieldHitlKeysEncrypted, v))
+}
+
+// HitlKeysEncryptedIsNil applies the IsNil predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedIsNil() predicate.VM {
+	return predicate.VM(sql.FieldIsNull(FieldHitlKeysEncrypted))
+}
+
+// HitlKeysEncryptedNotNil applies the NotNil predicate on the "hitl_keys_encrypted" field.
+func HitlKeysEncryptedNotNil() predicate.VM {
+	return predicate.VM(sql.FieldNotNull(FieldHitlKeysEncrypted))
 }
 
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.

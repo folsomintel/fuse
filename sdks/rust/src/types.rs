@@ -635,6 +635,12 @@ pub struct HitlSpec {
     pub on_timeout: Option<HitlOnTimeout>,
     /// The request kinds the agent may raise.
     pub requests: HitlRequests,
+    /// Refuses decisions that carry no pinned or asserted actor.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub require_actor: bool,
+    /// Webhooks told about every intervention and audit event.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notify: Vec<HitlWebhook>,
 }
 
 impl HitlSpec {
@@ -657,6 +663,31 @@ impl HitlSpec {
         self.on_timeout = Some(on_timeout);
         self
     }
+
+    /// Refuses decisions that carry no pinned or asserted actor.
+    pub fn require_actor(mut self) -> Self {
+        self.require_actor = true;
+        self
+    }
+
+    /// Adds a webhook. `secret` names an entry of the create request's
+    /// secrets; its value signs each delivery.
+    pub fn notify(mut self, url: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.notify.push(HitlWebhook {
+            url: url.into(),
+            secret: secret.into(),
+        });
+        self
+    }
+}
+
+/// One [`HitlSpec::notify`] target. Deliveries are content-free and signed
+/// with HMAC-SHA256 in the `Fuse-Signature` header, keyed by the value of
+/// the create request's secret named `secret`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlWebhook {
+    pub url: String,
+    pub secret: String,
 }
 
 /// The allowed request kinds. Only ask exists today.
@@ -713,6 +744,10 @@ string_enum! {
         Key => "key",
         /// Fuse itself: expiry, or cancel on destroy.
         System => "system",
+        /// An actor fixed on the authenticating key at mint time.
+        Pinned => "pinned",
+        /// An actor the caller named in the `Fuse-Actor` header.
+        Asserted => "asserted",
     }
 }
 
@@ -726,6 +761,76 @@ pub struct Actor {
     pub source: ActorSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_id: Option<String>,
+}
+
+/// An actor as a caller names it: an opaque id (required, at most 128
+/// bytes) and an optional display name. Sent as the `Fuse-Actor` headers by
+/// [`Client::with_actor`](crate::Client::with_actor), and pinned on a key by
+/// [`CreateApiKeyOptions::actor`](crate::CreateApiKeyOptions::actor).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActorLabel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl ActorLabel {
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: None,
+        }
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+}
+
+string_enum! {
+    /// What a scoped API key may do on the hitl routes.
+    pub enum HitlScope {
+        /// List and read interventions and the audit log.
+        Read => "hitl:read",
+        /// Approve and reject interventions.
+        Decide => "hitl:decide",
+        Secret => "hitl:secret",
+        Takeover => "hitl:takeover",
+        /// Name an actor with the `Fuse-Actor` header.
+        ActAs => "hitl:act-as",
+    }
+}
+
+string_enum! {
+    /// What an [`AuditEntry`] records.
+    pub enum AuditEvent {
+        Raised => "raised",
+        Decided => "decided",
+        Expired => "expired",
+        Cancelled => "cancelled",
+        InviteMinted => "invite_minted",
+        InviteUsed => "invite_used",
+    }
+}
+
+/// One row of the hash-chained hitl audit log: who did what and when,
+/// never intervention content. Hashes are hex.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub seq: i64,
+    pub event: AuditEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intervention_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_id: Option<String>,
+    pub actor: Actor,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_addr: Option<String>,
+    pub at: DateTime<Utc>,
+    #[serde(default)]
+    pub prev_hash: String,
+    pub hash: String,
 }
 
 /// What the agent asked.
@@ -1525,6 +1630,19 @@ pub struct ApiKey {
     pub last_used_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<DateTime<Utc>>,
+    /// `None` for a full-access key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<Vec<HitlScope>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// The actor the key is pinned to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<ActorLabel>,
+    /// `master`, or the id of the key that minted this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
 }
 
 /// Returned by [`ApiKeys::create`](crate::ApiKeys::create). `key` is

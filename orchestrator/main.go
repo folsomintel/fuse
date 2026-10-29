@@ -517,6 +517,14 @@ func run() error {
 	// Reconcile loop starts with the binary.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
+	if apiKeyStore != nil {
+		// scoped keys are revoked with their environment and follow it
+		// across a migrate.
+		fm.SetEnvKeyStore(apiKeyStore)
+	}
+	// the base url hitl webhook notifications link to, e.g.
+	// https://fuse.example.com. empty leaves the link out.
+	fm.SetPublicURL(strings.TrimRight(env("ORCH_PUBLIC_URL", ""), "/"))
 	fm.Start(rootCtx)
 	defer fm.Stop()
 
