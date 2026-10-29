@@ -93,6 +93,12 @@ type Fusefile struct {
 	// "a block that asked for the default".
 	Egress *Egress `yaml:"egress,omitempty"`
 
+	// Hitl declares what the agent may ask a human for and how long a human
+	// has to answer. Nil means hitl is off and stays nil all the way down,
+	// the same contract Egress has. The orchestrator enforces it; nothing of
+	// it goes into the guest.
+	Hitl *Hitl `yaml:"hitl,omitempty"`
+
 	// StartupTimeout bounds the generated startup script (build + run) as a
 	// go duration, e.g. "45s". Empty means the orchestrator's default. The
 	// orchestrator rejects a value above its configured ceiling rather than
@@ -601,3 +607,37 @@ func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
 	*e = Expose(raw)
 	return nil
 }
+
+// Hitl is the human-in-the-loop block. Only timeout, on_timeout and
+// requests.ask are supported so far. The other keys the design names
+// (notify, gates, require_actor and the secret, review and takeover
+// requests) are accepted by the decoder only so they can be refused with a
+// "not yet supported" error instead of a generic unknown-field one.
+type Hitl struct {
+	// Timeout is the default deadline for every intervention, as a go
+	// duration between 10s and 24h. Empty means 10m.
+	Timeout string `yaml:"timeout,omitempty"`
+
+	// OnTimeout is how an intervention nobody decided resolves: "reject"
+	// (the default) or "allow".
+	OnTimeout string `yaml:"on_timeout,omitempty"`
+
+	Requests HitlRequests `yaml:"requests,omitempty"`
+
+	Notify       yaml.Node `yaml:"notify,omitempty"`
+	Gates        yaml.Node `yaml:"gates,omitempty"`
+	RequireActor yaml.Node `yaml:"require_actor,omitempty"`
+}
+
+// HitlRequests declares the request kinds the agent may raise. Declaring a
+// kind (even as an empty map) allows it.
+type HitlRequests struct {
+	Ask *HitlAsk `yaml:"ask,omitempty"`
+
+	Secret   yaml.Node `yaml:"secret,omitempty"`
+	Review   yaml.Node `yaml:"review,omitempty"`
+	Takeover yaml.Node `yaml:"takeover,omitempty"`
+}
+
+// HitlAsk configures ask requests. It has no fields yet.
+type HitlAsk struct{}

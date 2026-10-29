@@ -605,6 +605,183 @@ pub struct EgressHealth {
     pub checked_at: Option<String>,
 }
 
+string_enum! {
+    /// What happens to an intervention nobody decides before its deadline.
+    pub enum HitlOnTimeout {
+        /// The default: an expired intervention resolves as a reject.
+        Reject => "reject",
+        /// An expired intervention resolves as an approve.
+        Allow => "allow",
+    }
+}
+
+/// The human-in-the-loop policy an environment is created with. Omit it
+/// from [`CreateRequest`] and the environment cannot raise interventions.
+///
+/// ```
+/// use fuse::{CreateRequest, HitlSpec};
+///
+/// let request = CreateRequest::new("task-1").hitl(HitlSpec::new().ask().timeout_seconds(300));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HitlSpec {
+    /// The default deadline for every intervention, 10 to 86400. `None`
+    /// means 600.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    /// `None` means reject.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_timeout: Option<HitlOnTimeout>,
+    /// The request kinds the agent may raise.
+    pub requests: HitlRequests,
+}
+
+impl HitlSpec {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Allows ask requests.
+    pub fn ask(mut self) -> Self {
+        self.requests.ask = Some(HitlAskRequests {});
+        self
+    }
+
+    pub fn timeout_seconds(mut self, seconds: u64) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+
+    pub fn on_timeout(mut self, on_timeout: HitlOnTimeout) -> Self {
+        self.on_timeout = Some(on_timeout);
+        self
+    }
+}
+
+/// The allowed request kinds. Only ask exists today.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HitlRequests {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<HitlAskRequests>,
+}
+
+/// Configures ask requests. Present means allowed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlAskRequests {}
+
+string_enum! {
+    /// Kinds of request an environment can raise.
+    pub enum HitlKind {
+        /// A question for a human, optionally with a fixed set of choices.
+        Ask => "ask",
+    }
+}
+
+string_enum! {
+    /// Lifecycle states for [`Intervention::state`]. Pending is the only
+    /// non-terminal one.
+    pub enum InterventionState {
+        Pending => "pending",
+        Approved => "approved",
+        Rejected => "rejected",
+        Expired => "expired",
+        Cancelled => "cancelled",
+    }
+}
+
+impl InterventionState {
+    /// Reports whether the intervention is resolved.
+    pub fn is_terminal(&self) -> bool {
+        *self != Self::Pending
+    }
+}
+
+string_enum! {
+    /// How a terminal intervention resolved.
+    pub enum InterventionOutcome {
+        Approve => "approve",
+        Reject => "reject",
+    }
+}
+
+string_enum! {
+    /// Where an [`Actor`] came from.
+    pub enum ActorSource {
+        /// The master token or an API key.
+        Key => "key",
+        /// Fuse itself: expiry, or cancel on destroy.
+        System => "system",
+    }
+}
+
+/// Who raised or decided an intervention: `master`, `key:<id>`, or
+/// `system` for fuse itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Actor {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub source: ActorSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+}
+
+/// What the agent asked.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionPayload {
+    #[serde(default)]
+    pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+}
+
+/// How an intervention resolved. An expired one carries the on_timeout
+/// outcome and a cancelled one a reject.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionDecision {
+    pub outcome: InterventionOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub decided_by: Actor,
+    pub decided_at: DateTime<Utc>,
+}
+
+/// One request for a human.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Intervention {
+    pub id: String,
+    pub env_id: String,
+    pub kind: HitlKind,
+    pub state: InterventionState,
+    pub payload: InterventionPayload,
+    pub triggered_by: Actor,
+    pub deadline: DateTime<Utc>,
+    pub on_timeout: HitlOnTimeout,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<InterventionDecision>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Intervention {
+    /// Reports whether the intervention is resolved.
+    pub fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+    }
+
+    /// Reports whether the intervention resolved as approve, which includes
+    /// an expiry under `on_timeout: allow`.
+    pub fn is_approved(&self) -> bool {
+        self.decision
+            .as_ref()
+            .is_some_and(|d| d.outcome == InterventionOutcome::Approve)
+    }
+}
+
 /// The body of [`Environments::create`](crate::Environments::create).
 ///
 /// `task_id` is the only required field; build the rest with the chained
@@ -644,6 +821,10 @@ pub struct CreateRequest {
     /// Routes the environment's outbound traffic. Omit it for direct egress.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub egress: Option<EgressSpec>,
+    /// The human-in-the-loop policy. Omit it and the environment cannot
+    /// raise interventions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hitl: Option<HitlSpec>,
     /// The graphical session's geometry. Omit it for an environment with no
     /// desktop, in which case a desktop image keeps its baked default
     /// geometry.
@@ -722,6 +903,11 @@ impl CreateRequest {
 
     pub fn egress(mut self, egress: EgressSpec) -> Self {
         self.egress = Some(egress);
+        self
+    }
+
+    pub fn hitl(mut self, hitl: HitlSpec) -> Self {
+        self.hitl = Some(hitl);
         self
     }
 

@@ -262,6 +262,11 @@ type CreateRequest struct {
 	// egress.
 	Egress *EgressSpec `json:"egress,omitempty"`
 
+	// Hitl is the human-in-the-loop policy: which requests the agent may
+	// raise and how long a human has to answer. Omit it and hitl is off.
+	// Forks and migrates inherit it.
+	Hitl *HitlSpec `json:"hitl,omitempty"`
+
 	// Desktop is the graphical session's geometry. Omit it for an
 	// environment with no desktop, in which case a desktop image keeps its
 	// baked default geometry.

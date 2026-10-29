@@ -2,11 +2,12 @@
 // envelope handling, pagination walking, and the sse event stream.
 
 use fuse::{
-    Arch, Client, CreateRequest, Error, ExecRequest, ForkOptions, ListEnvironmentsOptions,
-    MigrateOptions, Spec, ToolResultBlock,
+    Arch, Client, CreateRequest, Error, ExecRequest, ForkOptions, HitlOnTimeout, HitlSpec,
+    HumanRequest, InterventionOutcome, InterventionState, ListEnvironmentsOptions,
+    ListInterventionsOptions, MigrateOptions, Spec, ToolResultBlock,
 };
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+use wiremock::matchers::{body_json, body_partial_json, header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn env_body(id: &str, state: &str) -> serde_json::Value {
@@ -478,4 +479,267 @@ async fn version_distinguishes_wrong_service() {
     assert!(!info.is_orchestrator());
     assert_eq!(info.server_header, "fc-agent/0.1");
     assert_eq!(info.status, 404);
+}
+
+fn intervention_body(
+    id: &str,
+    state: &str,
+    decision: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut body = json!({
+        "id": id,
+        "env_id": "vm-1",
+        "kind": "ask",
+        "state": state,
+        "payload": {"question": "deploy?", "choices": ["yes", "no"]},
+        "triggered_by": {"id": "key:k1", "source": "key", "key_id": "k1"},
+        "deadline": "2026-01-02T03:14:05Z",
+        "on_timeout": "reject",
+        "created_at": "2026-01-02T03:04:05Z",
+        "updated_at": "2026-01-02T03:04:06Z",
+    });
+    if let Some(decision) = decision {
+        body["decision"] = decision;
+    }
+    body
+}
+
+fn approve_decision(answer: &str) -> serde_json::Value {
+    json!({
+        "outcome": "approve",
+        "answer": answer,
+        "decided_by": {"id": "master", "source": "key"},
+        "decided_at": "2026-01-02T03:05:00Z",
+    })
+}
+
+#[tokio::test]
+async fn create_carries_hitl() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments"))
+        .and(body_partial_json(json!({
+            "hitl": {
+                "timeout_seconds": 300,
+                "on_timeout": "allow",
+                "requests": {"ask": {}},
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(env_body("vm-1", "provisioning")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server).await;
+    client
+        .environments()
+        .create(
+            CreateRequest::new("t-1").hitl(
+                HitlSpec::new()
+                    .ask()
+                    .timeout_seconds(300)
+                    .on_timeout(HitlOnTimeout::Allow),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // without hitl the field stays off the wire.
+    let plain = serde_json::to_value(CreateRequest::new("t-1")).unwrap();
+    assert!(plain.get("hitl").is_none());
+}
+
+#[tokio::test]
+async fn request_human_raises_then_polls_until_decided() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments/vm-1"))
+        .and(query_param("action", "request"))
+        .and(body_json(json!({
+            "kind": "ask",
+            "question": "deploy?",
+            "choices": ["yes", "no"],
+            "timeout_seconds": 60,
+        })))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(intervention_body("int_1", "pending", None)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    // pending on the first poll, decided on the second.
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions/int_1"))
+        .and(query_param("wait", "30s"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(intervention_body("int_1", "pending", None)),
+        )
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions/int_1"))
+        .and(query_param("wait", "30s"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(intervention_body(
+            "int_1",
+            "approved",
+            Some(approve_decision("yes")),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let intervention = client(&server)
+        .await
+        .environments()
+        .request_human(
+            "vm-1",
+            HumanRequest::ask("deploy?")
+                .choices(["yes", "no"])
+                .timeout_seconds(60),
+        )
+        .await
+        .unwrap();
+    assert!(intervention.is_terminal());
+    assert!(intervention.is_approved());
+    assert_eq!(intervention.state, InterventionState::Approved);
+    let decision = intervention.decision.unwrap();
+    assert_eq!(decision.answer.as_deref(), Some("yes"));
+    assert_eq!(decision.decided_by.id, "master");
+}
+
+#[tokio::test]
+async fn request_human_no_wait_does_not_poll() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments/vm-1"))
+        .and(query_param("action", "request"))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(intervention_body("int_1", "pending", None)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let intervention = client(&server)
+        .await
+        .environments()
+        .request_human("vm-1", HumanRequest::ask("q").no_wait())
+        .await
+        .unwrap();
+    assert_eq!(intervention.state, InterventionState::Pending);
+    assert!(!intervention.is_terminal());
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body, json!({"kind": "ask", "question": "q"}));
+}
+
+#[tokio::test]
+async fn interventions_approve_and_reject_send_action_and_body() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/interventions/int_1"))
+        .and(query_param("action", "approve"))
+        .and(body_json(json!({"answer": "yes"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(intervention_body(
+            "int_1",
+            "approved",
+            Some(approve_decision("yes")),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/interventions/int_2"))
+        .and(query_param("action", "reject"))
+        .and(body_json(json!({"reason": "no"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(intervention_body(
+            "int_2",
+            "rejected",
+            Some(json!({
+                "outcome": "reject",
+                "reason": "no",
+                "decided_by": {"id": "master", "source": "key"},
+                "decided_at": "2026-01-02T03:05:00Z",
+            })),
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = client(&server).await;
+    let approved = client
+        .interventions()
+        .approve("int_1", "yes", "")
+        .await
+        .unwrap();
+    assert!(approved.is_approved());
+    let rejected = client.interventions().reject("int_2", "no").await.unwrap();
+    assert!(!rejected.is_approved());
+    assert_eq!(
+        rejected.decision.unwrap().outcome,
+        InterventionOutcome::Reject
+    );
+    assert!(matches!(
+        client.interventions().approve("", "yes", "").await,
+        Err(Error::InvalidRequest(_))
+    ));
+}
+
+#[tokio::test]
+async fn interventions_list_walks_every_page() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions"))
+        .and(query_param("cursor", "c1"))
+        .and(query_param("limit", "200"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "interventions": [intervention_body("int_2", "pending", None)],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions"))
+        .and(query_param("env", "vm-1"))
+        .and(query_param("state", "pending"))
+        .and(query_param("limit", "200"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "interventions": [intervention_body("int_1", "pending", None)],
+            "next_cursor": "c1",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let all = client(&server)
+        .await
+        .interventions()
+        .list(
+            ListInterventionsOptions::new()
+                .env_id("vm-1")
+                .state(InterventionState::Pending),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        all.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+        ["int_1", "int_2"]
+    );
+}
+
+#[test]
+fn intervention_decodes_unknown_enum_values() {
+    let mut body = intervention_body("int_1", "escalated", None);
+    body["kind"] = json!("approve_tool");
+    body["triggered_by"]["source"] = json!("oidc");
+    let intervention: fuse::Intervention = serde_json::from_value(body).unwrap();
+    assert_eq!(
+        intervention.state,
+        InterventionState::Other("escalated".into())
+    );
+    assert!(intervention.is_terminal());
 }

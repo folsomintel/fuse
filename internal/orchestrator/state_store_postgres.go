@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -17,6 +18,7 @@ import (
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/entspike/ent"
 	entvm "github.com/folsomintel/fuse/internal/entspike/ent/vm"
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 const migrationsTableName = "orchestrator_schema_migrations"
@@ -143,6 +145,13 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal egress for vm %s: %w", vm.ID, err)
 	}
+	var hitlJSON json.RawMessage
+	if vm.Spec.Hitl != nil {
+		hitlJSON, err = json.Marshal(vm.Spec.Hitl)
+		if err != nil {
+			return fmt.Errorf("marshal hitl spec for vm %s: %w", vm.ID, err)
+		}
+	}
 	err = s.entc.VM.Create().
 		SetID(vm.ID).
 		SetHostID(vm.HostID).
@@ -168,6 +177,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		SetMigInstanceUuids(json.RawMessage(migInstanceUUIDsJSON)).
 		SetEgress(json.RawMessage(egressJSON)).
 		SetHugePages(vm.Spec.HugePages).
+		SetHitl(hitlJSON).
 		SetCreatedAt(vm.CreatedAt.UTC()).
 		SetUpdatedAt(vm.UpdatedAt.UTC()).
 		OnConflictColumns(entvm.FieldID).
@@ -251,6 +261,14 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			return nil, fmt.Errorf("unmarshal egress for vm %s: %w", record.ID, err)
 		}
 		record.Spec.Egress = egress.Spec{Mode: record.Egress.Mode, Provider: record.Egress.Provider, Protocol: record.Egress.Protocol}
+		// a null column is hitl off, the reading of every row that predates it.
+		if len(row.Hitl) > 0 && string(row.Hitl) != "null" {
+			var spec hitl.Spec
+			if err := json.Unmarshal(row.Hitl, &spec); err != nil {
+				return nil, fmt.Errorf("unmarshal hitl spec for vm %s: %w", record.ID, err)
+			}
+			record.Spec.Hitl = &spec
+		}
 		out = append(out, record)
 	}
 	return out, nil
@@ -1021,4 +1039,123 @@ func (s *PostgresStateStore) AppendEvent(ctx context.Context, event EventRecord)
 		return fmt.Errorf("append event: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStateStore) UpsertIntervention(ctx context.Context, rec InterventionRecord) error {
+	triggeredBy := rec.TriggeredBy
+	if len(triggeredBy) == 0 {
+		triggeredBy = json.RawMessage(`{}`)
+	}
+	decidedBy := rec.DecidedBy
+	if len(decidedBy) == 0 {
+		decidedBy = json.RawMessage(`{}`)
+	}
+	var decidedAt any
+	if rec.DecidedAt != nil {
+		decidedAt = rec.DecidedAt.UTC()
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO orchestrator_interventions (
+			intervention_id, env_id, kind, gate, state, sealed,
+			payload, edited_payload, result, reason, outcome,
+			triggered_by, decided_by, decided_at, on_timeout, deadline,
+			created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+		ON CONFLICT (intervention_id) DO UPDATE SET
+			env_id=EXCLUDED.env_id,
+			kind=EXCLUDED.kind,
+			gate=EXCLUDED.gate,
+			state=EXCLUDED.state,
+			sealed=EXCLUDED.sealed,
+			payload=EXCLUDED.payload,
+			edited_payload=EXCLUDED.edited_payload,
+			result=EXCLUDED.result,
+			reason=EXCLUDED.reason,
+			outcome=EXCLUDED.outcome,
+			triggered_by=EXCLUDED.triggered_by,
+			decided_by=EXCLUDED.decided_by,
+			decided_at=EXCLUDED.decided_at,
+			on_timeout=EXCLUDED.on_timeout,
+			deadline=EXCLUDED.deadline,
+			created_at=EXCLUDED.created_at,
+			updated_at=EXCLUDED.updated_at
+	`,
+		rec.ID, rec.EnvID, rec.Kind, rec.Gate, rec.State, rec.Sealed,
+		rec.Payload, rec.EditedPayload, rec.Result, rec.Reason, rec.Outcome,
+		string(triggeredBy), string(decidedBy), decidedAt, rec.OnTimeout, rec.Deadline.UTC(),
+		rec.CreatedAt.UTC(), rec.UpdatedAt.UTC(),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert intervention %s: %w", rec.ID, err)
+	}
+	return nil
+}
+
+const interventionColumns = `intervention_id, env_id, kind, gate, state, sealed,
+	payload, edited_payload, result, reason, outcome,
+	triggered_by, decided_by, decided_at, on_timeout, deadline,
+	created_at, updated_at`
+
+func scanIntervention(row interface{ Scan(...any) error }) (InterventionRecord, error) {
+	var (
+		rec         InterventionRecord
+		triggeredBy string
+		decidedBy   string
+		decidedAt   sql.NullTime
+	)
+	if err := row.Scan(
+		&rec.ID, &rec.EnvID, &rec.Kind, &rec.Gate, &rec.State, &rec.Sealed,
+		&rec.Payload, &rec.EditedPayload, &rec.Result, &rec.Reason, &rec.Outcome,
+		&triggeredBy, &decidedBy, &decidedAt, &rec.OnTimeout, &rec.Deadline,
+		&rec.CreatedAt, &rec.UpdatedAt,
+	); err != nil {
+		return InterventionRecord{}, err
+	}
+	rec.TriggeredBy = json.RawMessage(triggeredBy)
+	rec.DecidedBy = json.RawMessage(decidedBy)
+	if decidedAt.Valid {
+		t := decidedAt.Time
+		rec.DecidedAt = &t
+	}
+	return rec, nil
+}
+
+func (s *PostgresStateStore) GetIntervention(ctx context.Context, id string) (InterventionRecord, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+interventionColumns+` FROM orchestrator_interventions WHERE intervention_id = $1`, id)
+	rec, err := scanIntervention(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return InterventionRecord{}, fmt.Errorf("%w: %s", ErrInterventionNotFound, id)
+	}
+	if err != nil {
+		return InterventionRecord{}, fmt.Errorf("get intervention %s: %w", id, err)
+	}
+	return rec, nil
+}
+
+func (s *PostgresStateStore) ListInterventions(ctx context.Context, f InterventionFilter) ([]InterventionRecord, error) {
+	query := `SELECT ` + interventionColumns + ` FROM orchestrator_interventions
+		WHERE ($1 = '' OR env_id = $1)
+		  AND ($2 = '' OR state = $2)
+		  AND ($3 = '' OR intervention_id > $3)
+		ORDER BY intervention_id`
+	args := []any{f.EnvID, f.State, f.After}
+	if f.Limit > 0 {
+		query += ` LIMIT $4`
+		args = append(args, f.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list interventions: %w", err)
+	}
+	defer rows.Close()
+	out := make([]InterventionRecord, 0)
+	for rows.Next() {
+		rec, err := scanIntervention(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan intervention: %w", err)
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }

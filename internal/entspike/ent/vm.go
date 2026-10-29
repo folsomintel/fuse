@@ -64,6 +64,8 @@ type VM struct {
 	Egress json.RawMessage `json:"egress,omitempty"`
 	// HugePages holds the value of the "huge_pages" field.
 	HugePages bool `json:"huge_pages,omitempty"`
+	// Hitl holds the value of the "hitl" field.
+	Hitl json.RawMessage `json:"hitl,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -76,7 +78,7 @@ func (*VM) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress:
+		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress, vm.FieldHitl:
 			values[i] = new([]byte)
 		case vm.FieldHugePages:
 			values[i] = new(sql.NullBool)
@@ -253,6 +255,14 @@ func (_m *VM) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.HugePages = value.Bool
 			}
+		case vm.FieldHitl:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field hitl", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Hitl); err != nil {
+					return fmt.Errorf("unmarshal field hitl: %w", err)
+				}
+			}
 		case vm.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -369,6 +379,9 @@ func (_m *VM) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("huge_pages=")
 	builder.WriteString(fmt.Sprintf("%v", _m.HugePages))
+	builder.WriteString(", ")
+	builder.WriteString("hitl=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Hitl))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

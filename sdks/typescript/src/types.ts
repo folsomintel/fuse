@@ -292,6 +292,9 @@ export interface CreateRequest {
   /** Graphical session geometry. Omit it for an environment with no desktop,
    * in which case a desktop image keeps its baked default geometry. */
   desktop?: DesktopSpec;
+  /** Human-in-the-loop policy. Omit it for an environment that cannot raise
+   * interventions. */
+  hitl?: HitlSpec;
 }
 
 /** EnvironmentInfo is the server's view of a single microVM. */
@@ -649,3 +652,106 @@ export const HealthState = {
 } as const;
 
 export type HealthState = (typeof HealthState)[keyof typeof HealthState];
+
+/** HitlSpec is the human-in-the-loop policy an environment is created with. */
+export interface HitlSpec {
+  /** Default deadline for every intervention, 10 to 86400. Omitted means 600. */
+  timeout_seconds?: number;
+  /** "reject" (the default) or "allow". */
+  on_timeout?: string;
+  /** The request kinds the agent may raise. */
+  requests: HitlRequests;
+}
+
+/** HitlRequests declares the allowed request kinds. Only ask exists today;
+ * set it (to {}) to allow asks. */
+export interface HitlRequests {
+  ask?: HitlAskRequests;
+}
+
+/** HitlAskRequests configures ask requests. Present means allowed. */
+export type HitlAskRequests = Record<string, never>;
+
+/** Actor is who raised or decided an intervention: "master", "key:<id>", or
+ * "system" for fuse itself (expiry, cancel on destroy). */
+export interface Actor {
+  id: string;
+  name?: string;
+  /** "key" or "system". */
+  source: string;
+  key_id?: string;
+}
+
+/** InterventionPayload is what the agent asked. */
+export interface InterventionPayload {
+  question: string;
+  choices?: string[];
+}
+
+/** InterventionDecision is how an intervention resolved. An expired one
+ * carries the on_timeout outcome and a cancelled one a reject. */
+export interface InterventionDecision {
+  /** "approve" or "reject". */
+  outcome: string;
+  answer?: string;
+  reason?: string;
+  decided_by: Actor;
+  decided_at: string;
+}
+
+/** Intervention is one request for a human. */
+export interface Intervention {
+  id: string;
+  env_id: string;
+  kind: string;
+  /** One of InterventionState. */
+  state: string;
+  payload: InterventionPayload;
+  triggered_by: Actor;
+  /** RFC 3339 timestamp. */
+  deadline: string;
+  on_timeout: string;
+  /** Set on every terminal intervention. */
+  decision?: InterventionDecision;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Hitl request kinds. */
+export const HitlKind = {
+  Ask: "ask",
+} as const;
+
+export type HitlKind = (typeof HitlKind)[keyof typeof HitlKind];
+
+/** Intervention states. pending is the only non-terminal one. */
+export const InterventionState = {
+  Pending: "pending",
+  Approved: "approved",
+  Rejected: "rejected",
+  Expired: "expired",
+  Cancelled: "cancelled",
+} as const;
+
+export type InterventionState =
+  (typeof InterventionState)[keyof typeof InterventionState];
+
+/** Intervention outcomes. Every terminal intervention carries one. */
+export const InterventionOutcome = {
+  Approve: "approve",
+  Reject: "reject",
+} as const;
+
+export type InterventionOutcome =
+  (typeof InterventionOutcome)[keyof typeof InterventionOutcome];
+
+/** isInterventionTerminal reports whether the intervention is resolved. */
+export function isInterventionTerminal(i: Intervention | undefined): boolean {
+  return !!i && !!i.state && i.state !== InterventionState.Pending;
+}
+
+/** isInterventionApproved reports whether the intervention resolved as
+ * approve, which includes an expiry under on_timeout: allow. */
+export function isInterventionApproved(i: Intervention | undefined): boolean {
+  return i?.decision?.outcome === InterventionOutcome.Approve;
+}

@@ -7,8 +7,11 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::Error;
 use crate::events::EventStream;
+use crate::interventions::{wait_intervention, HumanRequest};
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
-use crate::types::{CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, MigrateOptions};
+use crate::types::{
+    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, Intervention, MigrateOptions,
+};
 
 // mirrors the orchestrator's own default guest-command bound. it is what the
 // server applies when the timeout is omitted, so the client waits at least
@@ -341,6 +344,29 @@ impl Environments {
             .timeout(guest + EXEC_HTTP_OVERHEAD)
             .json(&request);
         self.t.send_json(http_request).await
+    }
+
+    /// Asks a human for something the environment's hitl policy declares.
+    /// By default it waits until the intervention resolves (answered,
+    /// rejected, expired or cancelled) and returns it; read the outcome off
+    /// [`Intervention::decision`]. With [`HumanRequest::no_wait`] it returns
+    /// the pending intervention at once.
+    pub async fn request_human(
+        &self,
+        vm_id: &str,
+        request: HumanRequest,
+    ) -> Result<Intervention, Error> {
+        require(vm_id, "vm id")?;
+        let http_request = self
+            .t
+            .request(Method::POST, &["v1", "environments", vm_id])
+            .query(&[("action", "request")])
+            .json(&request);
+        let intervention: Intervention = self.t.send_json(http_request).await?;
+        if !request.wait {
+            return Ok(intervention);
+        }
+        wait_intervention(&self.t, &intervention.id).await
     }
 
     /// Opens the SSE event stream for an environment. The stream ends
