@@ -35,14 +35,32 @@ type HumanRequest struct {
 	Ask     hitl.AskPayload
 	Timeout time.Duration // optional; can only shorten the policy's timeout
 	By      hitl.Actor
+	// RemoteAddr is the caller's address, recorded on the audit row.
+	RemoteAddr string
+}
+
+// DecideRequest is a human's decision on an intervention.
+type DecideRequest struct {
+	Outcome hitl.Outcome
+	// Answer is the reply to an ask; required to approve one.
+	Answer string
+	// Reason is fed back to the agent.
+	Reason     string
+	By         hitl.Actor
+	RemoteAddr string
 }
 
 // InterventionListFilter narrows ListInterventions.
 type InterventionListFilter struct {
-	EnvID  string
-	State  hitl.State
-	Limit  int
-	Cursor string
+	EnvID string
+	// EnvIDs limits the list to these environments, on top of EnvID. nil
+	// matches every env; a scoped key passes the envs it covers.
+	EnvIDs []string
+	// ActorID matches interventions raised or decided by this actor.
+	ActorID string
+	State   hitl.State
+	Limit   int
+	Cursor  string
 }
 
 type interventionCursor struct {
@@ -112,6 +130,7 @@ func (fm *FleetManager) RequestHuman(ctx context.Context, envID string, req Huma
 		"env_id": envID, "kind": string(in.Kind), "deadline": in.Deadline,
 	})
 	fm.publishInterventionEvent(in)
+	fm.auditIntervention(ctx, in, auditMeta{remoteAddr: req.RemoteAddr})
 	return in, nil
 }
 
@@ -146,7 +165,7 @@ func (fm *FleetManager) ListInterventions(ctx context.Context, f InterventionLis
 	}
 	// one extra row tells us whether there is a next page.
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{
-		EnvID: f.EnvID, State: string(f.State), After: after, Limit: limit + 1,
+		EnvID: f.EnvID, EnvIDs: f.EnvIDs, ActorID: f.ActorID, State: string(f.State), After: after, Limit: limit + 1,
 	})
 	if err != nil {
 		return nil, "", err
@@ -168,15 +187,22 @@ func (fm *FleetManager) ListInterventions(ctx context.Context, f InterventionLis
 }
 
 // DecideIntervention resolves a pending intervention with a human's
-// decision.
-func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, outcome hitl.Outcome, answer, reason string, by hitl.Actor) (hitl.Intervention, error) {
-	in, err := fm.resolveIntervention(ctx, id, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
+// decision. the decider can never be the key or actor that raised it, and
+// must be a named actor when the environment's policy requires one; both
+// refusals wrap hitl.ErrSelfApproval or hitl.ErrActorRequired.
+func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req DecideRequest) (hitl.Intervention, error) {
+	in, err := fm.resolveIntervention(ctx, id, auditMeta{remoteAddr: req.RemoteAddr}, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
 		// a decision that arrives after the deadline loses to it: the
 		// caller was promised on_timeout at the deadline.
 		if hitl.Expired(now, in.Deadline) {
 			return hitl.Expire(in, now)
 		}
-		out, err := hitl.Decide(in, outcome, answer, reason, by, now)
+		if in.State == hitl.StatePending {
+			if err := hitl.CheckDecider(in.TriggeredBy, req.By, fm.requireActor(in.EnvID)); err != nil {
+				return in, err
+			}
+		}
+		out, err := hitl.Decide(in, req.Outcome, req.Answer, req.Reason, req.By, now)
 		var resolved *hitl.ErrResolved
 		if err != nil && !errors.As(err, &resolved) {
 			return in, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
@@ -226,16 +252,27 @@ func (fm *FleetManager) WaitIntervention(ctx context.Context, id string, maxWait
 	}
 }
 
+// requireActor reports whether an environment's policy sets require_actor.
+// an environment that is gone has no pending interventions left to decide.
+func (fm *FleetManager) requireActor(envID string) bool {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	v, ok := fm.vms[envID]
+	return ok && v.spec.Hitl != nil && v.spec.Hitl.RequireActor
+}
+
 // cancelEnvInterventions cancels every pending intervention of an
-// environment that can no longer answer them.
-func (fm *FleetManager) cancelEnvInterventions(ctx context.Context, envID, reason string) {
+// environment that can no longer answer them. v is the environment, already
+// removed from the fleet, so its webhooks can still be told.
+func (fm *FleetManager) cancelEnvInterventions(ctx context.Context, v *vm, envID, reason string) {
+	meta := auditMeta{targets: fm.webhookTargets(v)}
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{EnvID: envID, State: string(hitl.StatePending)})
 	if err != nil {
 		fm.logger.Warn("list pending interventions for cancel failed", "vm", envID, "err", err)
 		return
 	}
 	for _, rec := range recs {
-		if _, err := fm.resolveIntervention(ctx, rec.ID, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
+		if _, err := fm.resolveIntervention(ctx, rec.ID, meta, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
 			return hitl.Cancel(in, reason, now)
 		}); err != nil && !errors.Is(err, ErrInterventionResolved) {
 			fm.logger.Warn("cancel intervention failed", "intervention", rec.ID, "vm", envID, "err", err)
@@ -265,7 +302,7 @@ func (fm *FleetManager) moveInterventions(ctx context.Context, fromID, toID stri
 }
 
 func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl.Intervention, error) {
-	in, err := fm.resolveIntervention(ctx, id, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
+	in, err := fm.resolveIntervention(ctx, id, auditMeta{}, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
 		return hitl.Expire(in, now)
 	})
 	if errors.Is(err, ErrInterventionResolved) {
@@ -279,7 +316,7 @@ func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl
 // record, transition it, write it back, then wake waiters and publish. it
 // returns the stored intervention and ErrInterventionResolved when it was
 // already terminal.
-func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, apply func(hitl.Intervention, time.Time) (hitl.Intervention, error)) (hitl.Intervention, error) {
+func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta auditMeta, apply func(hitl.Intervention, time.Time) (hitl.Intervention, error)) (hitl.Intervention, error) {
 	fm.hitlMu.Lock()
 	rec, err := fm.store.GetIntervention(ctx, id)
 	if err != nil {
@@ -318,6 +355,7 @@ func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, appl
 		"env_id": next.EnvID, "outcome": string(next.Decision.Outcome), "decided_by": next.Decision.DecidedBy.ID,
 	})
 	fm.publishInterventionEvent(next)
+	fm.auditIntervention(ctx, next, meta)
 	return next, nil
 }
 

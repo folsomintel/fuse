@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -155,6 +156,7 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	}
 	state := src.state
 	srcSpec := src.spec
+	srcHitlKeys, srcHitlKeysEncrypted := src.hitlKeys, src.hitlKeysEncrypted
 	srcEnv := src.env
 	srcHostID := src.hostID
 	provider := fm.provider
@@ -248,6 +250,9 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	// and they could name a different host than the one the fork lands on.
 	spec.HostID = ""
 	spec.Labels = nil
+	// the fork descends from the source, so an invite for the source (or any
+	// of its ancestors) covers it too.
+	spec.Ancestors = append(slices.Clone(srcSpec.Ancestors), srcVMID)
 
 	// a fork is a real vm consuming real resources on whichever host it lands
 	// on, so it must be charged to that host.
@@ -282,14 +287,16 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 
 	now := time.Now()
 	v := &vm{
-		id:             newVMID,
-		state:          VMStateProvisioning,
-		taskID:         forkTaskID,
-		hostID:         targetHostID,
-		spec:           spec,
-		createdAt:      now,
-		updatedAt:      now,
-		lastActivityAt: now,
+		id:                newVMID,
+		state:             VMStateProvisioning,
+		taskID:            forkTaskID,
+		hostID:            targetHostID,
+		spec:              spec,
+		createdAt:         now,
+		updatedAt:         now,
+		lastActivityAt:    now,
+		hitlKeys:          srcHitlKeys,
+		hitlKeysEncrypted: srcHitlKeysEncrypted,
 	}
 	fm.mu.Lock()
 	fm.vms[newVMID] = v

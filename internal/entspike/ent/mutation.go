@@ -1610,6 +1610,9 @@ type VMMutation struct {
 	huge_pages               *bool
 	hitl                     *json.RawMessage
 	appendhitl               json.RawMessage
+	ancestors                *json.RawMessage
+	appendancestors          json.RawMessage
+	hitl_keys_encrypted      *[]byte
 	created_at               *time.Time
 	updated_at               *time.Time
 	clearedFields            map[string]struct{}
@@ -2877,6 +2880,120 @@ func (m *VMMutation) ResetHitl() {
 	delete(m.clearedFields, vm.FieldHitl)
 }
 
+// SetAncestors sets the "ancestors" field.
+func (m *VMMutation) SetAncestors(jm json.RawMessage) {
+	m.ancestors = &jm
+	m.appendancestors = nil
+}
+
+// Ancestors returns the value of the "ancestors" field in the mutation.
+func (m *VMMutation) Ancestors() (r json.RawMessage, exists bool) {
+	v := m.ancestors
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldAncestors returns the old "ancestors" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldAncestors(ctx context.Context) (v json.RawMessage, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldAncestors is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldAncestors requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldAncestors: %w", err)
+	}
+	return oldValue.Ancestors, nil
+}
+
+// AppendAncestors adds jm to the "ancestors" field.
+func (m *VMMutation) AppendAncestors(jm json.RawMessage) {
+	m.appendancestors = append(m.appendancestors, jm...)
+}
+
+// AppendedAncestors returns the list of values that were appended to the "ancestors" field in this mutation.
+func (m *VMMutation) AppendedAncestors() (json.RawMessage, bool) {
+	if len(m.appendancestors) == 0 {
+		return nil, false
+	}
+	return m.appendancestors, true
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (m *VMMutation) ClearAncestors() {
+	m.ancestors = nil
+	m.appendancestors = nil
+	m.clearedFields[vm.FieldAncestors] = struct{}{}
+}
+
+// AncestorsCleared returns if the "ancestors" field was cleared in this mutation.
+func (m *VMMutation) AncestorsCleared() bool {
+	_, ok := m.clearedFields[vm.FieldAncestors]
+	return ok
+}
+
+// ResetAncestors resets all changes to the "ancestors" field.
+func (m *VMMutation) ResetAncestors() {
+	m.ancestors = nil
+	m.appendancestors = nil
+	delete(m.clearedFields, vm.FieldAncestors)
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (m *VMMutation) SetHitlKeysEncrypted(b []byte) {
+	m.hitl_keys_encrypted = &b
+}
+
+// HitlKeysEncrypted returns the value of the "hitl_keys_encrypted" field in the mutation.
+func (m *VMMutation) HitlKeysEncrypted() (r []byte, exists bool) {
+	v := m.hitl_keys_encrypted
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldHitlKeysEncrypted returns the old "hitl_keys_encrypted" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldHitlKeysEncrypted(ctx context.Context) (v []byte, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldHitlKeysEncrypted is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldHitlKeysEncrypted requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldHitlKeysEncrypted: %w", err)
+	}
+	return oldValue.HitlKeysEncrypted, nil
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (m *VMMutation) ClearHitlKeysEncrypted() {
+	m.hitl_keys_encrypted = nil
+	m.clearedFields[vm.FieldHitlKeysEncrypted] = struct{}{}
+}
+
+// HitlKeysEncryptedCleared returns if the "hitl_keys_encrypted" field was cleared in this mutation.
+func (m *VMMutation) HitlKeysEncryptedCleared() bool {
+	_, ok := m.clearedFields[vm.FieldHitlKeysEncrypted]
+	return ok
+}
+
+// ResetHitlKeysEncrypted resets all changes to the "hitl_keys_encrypted" field.
+func (m *VMMutation) ResetHitlKeysEncrypted() {
+	m.hitl_keys_encrypted = nil
+	delete(m.clearedFields, vm.FieldHitlKeysEncrypted)
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (m *VMMutation) SetCreatedAt(t time.Time) {
 	m.created_at = &t
@@ -2983,7 +3100,7 @@ func (m *VMMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *VMMutation) Fields() []string {
-	fields := make([]string, 0, 26)
+	fields := make([]string, 0, 28)
 	if m.host_id != nil {
 		fields = append(fields, vm.FieldHostID)
 	}
@@ -3056,6 +3173,12 @@ func (m *VMMutation) Fields() []string {
 	if m.hitl != nil {
 		fields = append(fields, vm.FieldHitl)
 	}
+	if m.ancestors != nil {
+		fields = append(fields, vm.FieldAncestors)
+	}
+	if m.hitl_keys_encrypted != nil {
+		fields = append(fields, vm.FieldHitlKeysEncrypted)
+	}
 	if m.created_at != nil {
 		fields = append(fields, vm.FieldCreatedAt)
 	}
@@ -3118,6 +3241,10 @@ func (m *VMMutation) Field(name string) (ent.Value, bool) {
 		return m.HugePages()
 	case vm.FieldHitl:
 		return m.Hitl()
+	case vm.FieldAncestors:
+		return m.Ancestors()
+	case vm.FieldHitlKeysEncrypted:
+		return m.HitlKeysEncrypted()
 	case vm.FieldCreatedAt:
 		return m.CreatedAt()
 	case vm.FieldUpdatedAt:
@@ -3179,6 +3306,10 @@ func (m *VMMutation) OldField(ctx context.Context, name string) (ent.Value, erro
 		return m.OldHugePages(ctx)
 	case vm.FieldHitl:
 		return m.OldHitl(ctx)
+	case vm.FieldAncestors:
+		return m.OldAncestors(ctx)
+	case vm.FieldHitlKeysEncrypted:
+		return m.OldHitlKeysEncrypted(ctx)
 	case vm.FieldCreatedAt:
 		return m.OldCreatedAt(ctx)
 	case vm.FieldUpdatedAt:
@@ -3360,6 +3491,20 @@ func (m *VMMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetHitl(v)
 		return nil
+	case vm.FieldAncestors:
+		v, ok := value.(json.RawMessage)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetAncestors(v)
+		return nil
+	case vm.FieldHitlKeysEncrypted:
+		v, ok := value.([]byte)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetHitlKeysEncrypted(v)
+		return nil
 	case vm.FieldCreatedAt:
 		v, ok := value.(time.Time)
 		if !ok {
@@ -3500,6 +3645,12 @@ func (m *VMMutation) ClearedFields() []string {
 	if m.FieldCleared(vm.FieldHitl) {
 		fields = append(fields, vm.FieldHitl)
 	}
+	if m.FieldCleared(vm.FieldAncestors) {
+		fields = append(fields, vm.FieldAncestors)
+	}
+	if m.FieldCleared(vm.FieldHitlKeysEncrypted) {
+		fields = append(fields, vm.FieldHitlKeysEncrypted)
+	}
 	return fields
 }
 
@@ -3534,6 +3685,12 @@ func (m *VMMutation) ClearField(name string) error {
 		return nil
 	case vm.FieldHitl:
 		m.ClearHitl()
+		return nil
+	case vm.FieldAncestors:
+		m.ClearAncestors()
+		return nil
+	case vm.FieldHitlKeysEncrypted:
+		m.ClearHitlKeysEncrypted()
 		return nil
 	}
 	return fmt.Errorf("unknown VM nullable field %s", name)
@@ -3614,6 +3771,12 @@ func (m *VMMutation) ResetField(name string) error {
 		return nil
 	case vm.FieldHitl:
 		m.ResetHitl()
+		return nil
+	case vm.FieldAncestors:
+		m.ResetAncestors()
+		return nil
+	case vm.FieldHitlKeysEncrypted:
+		m.ResetHitlKeysEncrypted()
 		return nil
 	case vm.FieldCreatedAt:
 		m.ResetCreatedAt()

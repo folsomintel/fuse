@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/egress"
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 // TaskRunStatus captures the lifecycle of a task assignment.
@@ -91,6 +93,7 @@ type VMRecord struct {
 	LastError          string
 	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token (nil for legacy VMs)
 	SecretsEncrypted   []byte     // AES-GCM encrypted JSON of the secret map (nil when no secrets supplied)
+	HitlKeysEncrypted  []byte     // AES-GCM encrypted JSON of the hitl.notify signing secrets (nil when none or no key)
 	Endpoints          []Endpoint // published endpoints (e.g. ingress), if any
 	// Egress is the resolved outbound policy. persisted so a restarted
 	// orchestrator knows which backend to release on teardown; the health
@@ -294,9 +297,14 @@ type InterventionRecord struct {
 // After resumes past an id and Limit caps the page (0 means no cap).
 type InterventionFilter struct {
 	EnvID string
-	State string
-	After string
-	Limit int
+	// EnvIDs limits rows to these envs. nil matches every env; an empty
+	// non-nil list matches none.
+	EnvIDs []string
+	// ActorID matches rows raised or decided by this actor id.
+	ActorID string
+	State   string
+	After   string
+	Limit   int
 }
 
 // SnapshotQuotaUsage summarizes a tenant's in-flight/ready snapshot usage
@@ -396,6 +404,13 @@ type StateStore interface {
 	// ListInterventions returns interventions matching the filter, ordered
 	// by id.
 	ListInterventions(ctx context.Context, filter InterventionFilter) ([]InterventionRecord, error)
+
+	// AppendHitlAudit appends one audit row, assigning its seq, prev_hash
+	// and hash so the chain stays linear across concurrent writers.
+	AppendHitlAudit(ctx context.Context, e hitl.AuditEntry) (hitl.AuditEntry, error)
+
+	// ListHitlAudit returns audit rows matching the filter, oldest first.
+	ListHitlAudit(ctx context.Context, filter AuditFilter) ([]hitl.AuditEntry, error)
 }
 
 // MemoryStateStore is a process-local store useful for tests/default behavior.
@@ -408,6 +423,7 @@ type MemoryStateStore struct {
 	deadLetters map[string]DeadLetterRecord // keyed by "kind|entity_id"
 	hosts       map[string]HostRecord
 	hitl        map[string]InterventionRecord
+	audit       []hitl.AuditEntry
 	nextID      int64
 	nextDLQID   int64
 }
@@ -437,6 +453,9 @@ func cloneVMRecord(v VMRecord) VMRecord {
 	}
 	if v.Endpoints != nil {
 		v.Endpoints = append([]Endpoint(nil), v.Endpoints...)
+	}
+	if v.Spec.Ancestors != nil {
+		v.Spec.Ancestors = append([]string(nil), v.Spec.Ancestors...)
 	}
 	return v
 }
@@ -763,6 +782,12 @@ func (s *MemoryStateStore) ListInterventions(_ context.Context, f InterventionFi
 		if f.EnvID != "" && rec.EnvID != f.EnvID {
 			continue
 		}
+		if f.EnvIDs != nil && !slices.Contains(f.EnvIDs, rec.EnvID) {
+			continue
+		}
+		if f.ActorID != "" && !recordHasActor(rec, f.ActorID) {
+			continue
+		}
 		if f.State != "" && rec.State != f.State {
 			continue
 		}
@@ -775,6 +800,50 @@ func (s *MemoryStateStore) ListInterventions(_ context.Context, f InterventionFi
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	if f.Limit > 0 && len(out) > f.Limit {
 		out = out[:f.Limit]
+	}
+	return out, nil
+}
+
+// recordHasActor reports whether an intervention was raised or decided by
+// the actor id.
+func recordHasActor(rec InterventionRecord, actorID string) bool {
+	for _, raw := range []json.RawMessage{rec.TriggeredBy, rec.DecidedBy} {
+		var a hitl.Actor
+		if len(raw) > 0 && json.Unmarshal(raw, &a) == nil && a.ID == actorID {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *MemoryStateStore) AppendHitlAudit(_ context.Context, e hitl.AuditEntry) (hitl.AuditEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e.Seq, e.PrevHash = 1, hitl.GenesisHash
+	if n := len(s.audit); n > 0 {
+		e.Seq, e.PrevHash = s.audit[n-1].Seq+1, s.audit[n-1].Hash
+	}
+	e.At = hitl.AuditTime(e.At)
+	e.Hash = e.ComputeHash()
+	s.audit = append(s.audit, e)
+	return e, nil
+}
+
+func (s *MemoryStateStore) ListHitlAudit(_ context.Context, f AuditFilter) ([]hitl.AuditEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]hitl.AuditEntry, 0)
+	for _, e := range s.audit {
+		if e.Seq <= f.AfterSeq ||
+			(f.EnvIDs != nil && !slices.Contains(f.EnvIDs, e.EnvID)) ||
+			(f.ActorID != "" && e.Actor.ID != f.ActorID) ||
+			(!f.Since.IsZero() && e.At.Before(f.Since)) {
+			continue
+		}
+		out = append(out, e)
+		if f.Limit > 0 && len(out) == f.Limit {
+			break
+		}
 	}
 	return out, nil
 }

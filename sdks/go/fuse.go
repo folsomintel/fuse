@@ -31,6 +31,12 @@ func sdkVersion() string {
 
 const defaultTimeout = 60 * time.Second
 
+// actor headers, see WithActor.
+const (
+	actorHeader     = "Fuse-Actor"
+	actorNameHeader = "Fuse-Actor-Name"
+)
+
 // Client is the entry point for the Fuse API. It groups the resource
 // services that share a single transport.
 type Client struct {
@@ -48,6 +54,7 @@ type clientConfig struct {
 	userAgent  string
 	requestID  func() string
 	baseURL    string
+	actor      ActorLabel
 }
 
 // Option configures a Client in New.
@@ -82,6 +89,17 @@ func WithBaseURL(baseURL string) Option {
 	}
 }
 
+// WithActor names the human behind every request: each one carries the
+// Fuse-Actor header (the id, at most 128 bytes) and, when Name is set,
+// Fuse-Actor-Name. The server records it on hitl decisions and the audit
+// log. Naming an actor needs the master token or a key with hitl:act-as,
+// unless the key is pinned to that same actor.
+func WithActor(a ActorLabel) Option {
+	return func(cfg *clientConfig) {
+		cfg.actor = a
+	}
+}
+
 // New builds a Client. baseURL must be a non-empty, parseable URL.
 // token is sent as a bearer token and may be empty for endpoints that
 // do not require auth.
@@ -113,8 +131,13 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		bearer:     token,
 		userAgent:  cfg.userAgent,
 		requestID:  cfg.requestID,
+		actor:      cfg.actor,
 	}
-	c := &Client{
+	return newClient(t), nil
+}
+
+func newClient(t *transport) *Client {
+	return &Client{
 		t:             t,
 		Environments:  newEnvironmentsService(t),
 		Snapshots:     newSnapshotsService(t),
@@ -122,5 +145,16 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		APIKeys:       newAPIKeysService(t),
 		Interventions: newInterventionsService(t),
 	}
-	return c, nil
+}
+
+// WithActor returns a copy of the client that sends a as the Fuse-Actor
+// headers, sharing the same http clients and config. The original client is
+// unchanged. A zero ActorLabel returns a copy that sends no actor.
+func (c *Client) WithActor(a ActorLabel) *Client {
+	if c == nil || c.t == nil {
+		return c
+	}
+	t := *c.t
+	t.actor = a
+	return newClient(&t)
 }

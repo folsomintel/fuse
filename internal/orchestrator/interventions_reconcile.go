@@ -37,7 +37,7 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 		gone := !ok || v.state == VMStateDestroying
 		fm.mu.RUnlock()
 		if gone {
-			if _, err := fm.resolveIntervention(ctx, rec.ID, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
+			if _, err := fm.resolveIntervention(ctx, rec.ID, auditMeta{}, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {
 				return hitl.Cancel(in, "environment destroyed", now)
 			}); err != nil && !errors.Is(err, ErrInterventionResolved) {
 				fm.logger.Warn("cancel intervention failed", "intervention", rec.ID, "vm", rec.EnvID, "err", err)

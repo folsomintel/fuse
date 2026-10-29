@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::error::{parse_api_error, Error, REQUEST_ID_HEADER};
+use crate::types::ActorLabel;
 
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -15,6 +16,10 @@ pub(crate) const MAX_PAGE_LIMIT: u32 = 200;
 
 pub(crate) type RequestIdFn = dyn Fn() -> String + Send + Sync;
 
+pub(crate) const ACTOR_HEADER: &str = "fuse-actor";
+pub(crate) const ACTOR_NAME_HEADER: &str = "fuse-actor-name";
+
+#[derive(Clone)]
 pub(crate) struct Transport {
     base_url: Url,
     http: reqwest::Client,
@@ -25,6 +30,7 @@ pub(crate) struct Transport {
     bearer: Option<String>,
     user_agent: String,
     request_id: Option<Arc<RequestIdFn>>,
+    actor: Option<ActorLabel>,
 }
 
 impl Transport {
@@ -35,6 +41,7 @@ impl Transport {
         bearer: Option<String>,
         user_agent: String,
         request_id: Option<Arc<RequestIdFn>>,
+        actor: Option<ActorLabel>,
     ) -> Self {
         Self {
             base_url,
@@ -43,6 +50,16 @@ impl Transport {
             bearer,
             user_agent,
             request_id,
+            actor,
+        }
+    }
+
+    // with_actor returns a copy that names `actor` on every request. the
+    // http clients are shared, so the copy reuses the same connections.
+    pub(crate) fn with_actor(&self, actor: ActorLabel) -> Self {
+        Self {
+            actor: Some(actor),
+            ..self.clone()
         }
     }
 
@@ -74,6 +91,12 @@ impl Transport {
             .header(reqwest::header::USER_AGENT, &self.user_agent);
         if let Some(bearer) = &self.bearer {
             builder = builder.bearer_auth(bearer);
+        }
+        if let Some(actor) = &self.actor {
+            builder = builder.header(ACTOR_HEADER, &actor.id);
+            if let Some(name) = actor.name.as_deref().filter(|name| !name.is_empty()) {
+                builder = builder.header(ACTOR_NAME_HEADER, name);
+            }
         }
         if let Some(generate) = &self.request_id {
             let id = generate();

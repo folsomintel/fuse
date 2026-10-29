@@ -17,6 +17,9 @@ string_enum! {
         Unavailable => "unavailable",
         Internal => "internal",
         Unauthorized => "unauthorized",
+        /// The caller is authenticated but may not do this (HTTP 403). The
+        /// reason is in [`Error::forbidden_reason`].
+        Forbidden => "forbidden",
         Unimplemented => "unimplemented",
         /// The request body ran past the server's limit for that endpoint
         /// (HTTP 413). Distinct from [`ErrorCode::InvalidArgument`]: the body
@@ -28,6 +31,28 @@ string_enum! {
         /// as opposed to [`ErrorCode::NotFound`]'s "route exists, resource
         /// doesn't".
         RouteNotFound => "route_not_found",
+    }
+}
+
+string_enum! {
+    /// Why the server refused a request with a `forbidden` error, from the
+    /// envelope's `details.reason`.
+    pub enum ForbiddenReason {
+        /// The key lacks the scope the route needs; see
+        /// [`Error::forbidden_scope`].
+        MissingScope => "missing_scope",
+        /// The key is limited to other routes or environments.
+        EnvScope => "env_scope",
+        /// The decider's key raised the intervention.
+        SelfApproval => "self_approval",
+        /// The environment requires a named actor to decide.
+        ActorRequired => "actor_required",
+        /// `Fuse-Actor` differs from the key's pinned actor.
+        ActorMismatch => "actor_mismatch",
+        /// The key may not name an actor (it needs `hitl:act-as`).
+        ActorNotAllowed => "actor_not_allowed",
+        /// A minted key would exceed the minting key's own access.
+        MintEscalation => "mint_escalation",
     }
 }
 
@@ -131,6 +156,34 @@ impl Error {
     /// Reports whether this is an `unauthorized` api error.
     pub fn is_unauthorized(&self) -> bool {
         self.is_code(ErrorCode::Unauthorized)
+    }
+
+    /// Reports whether this is a `forbidden` api error. Older servers
+    /// refused master-only routes with `unauthorized` and a 403; those stay
+    /// [`Error::is_unauthorized`].
+    pub fn is_forbidden(&self) -> bool {
+        self.is_code(ErrorCode::Forbidden)
+    }
+
+    /// Returns the reason of a `forbidden` api error.
+    pub fn forbidden_reason(&self) -> Option<ForbiddenReason> {
+        if !self.is_forbidden() {
+            return None;
+        }
+        self.api()
+            .and_then(|err| err.details.get("reason"))
+            .map(|reason| ForbiddenReason::from(reason.as_str()))
+    }
+
+    /// Returns the missing scope of a `forbidden` api error, when the server
+    /// named one.
+    pub fn forbidden_scope(&self) -> Option<&str> {
+        if !self.is_forbidden() {
+            return None;
+        }
+        self.api()
+            .and_then(|err| err.details.get("scope"))
+            .map(String::as_str)
     }
 
     /// Reports whether this is an `invalid_argument` api error.

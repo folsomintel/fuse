@@ -36,6 +36,21 @@ INTERVENTION_CANCELLED = "cancelled"
 OUTCOME_APPROVE = "approve"
 OUTCOME_REJECT = "reject"
 
+# hitl scopes an api key can be minted with. a key with none is full access.
+SCOPE_HITL_READ = "hitl:read"
+SCOPE_HITL_DECIDE = "hitl:decide"
+SCOPE_HITL_SECRET = "hitl:secret"
+SCOPE_HITL_TAKEOVER = "hitl:takeover"
+SCOPE_HITL_ACT_AS = "hitl:act-as"
+
+# hitl audit log events, carried in AuditEntry.event.
+AUDIT_RAISED = "raised"
+AUDIT_DECIDED = "decided"
+AUDIT_EXPIRED = "expired"
+AUDIT_CANCELLED = "cancelled"
+AUDIT_INVITE_MINTED = "invite_minted"
+AUDIT_INVITE_USED = "invite_used"
+
 
 def is_terminal_state(state: str) -> bool:
     # reports whether state is a terminal lifecycle state.
@@ -275,14 +290,25 @@ class HitlRequests(_Model):
     ask: Optional[HitlAskRequests] = None
 
 
+class HitlWebhook(_Model):
+    # a url the server posts intervention events to. secret is the name of an
+    # entry in the create request's secrets map, used to sign each delivery.
+    url: str
+    secret: str
+
+
 class HitlSpec(_Model):
     # the human-in-the-loop policy an environment is created with.
     #
     # timeout_seconds is the default deadline for every intervention, 10 to
     # 86400; none means 600. on_timeout is "reject" (the default) or "allow".
+    # require_actor refuses decisions that do not name an actor. notify lists
+    # webhooks to call when an intervention is raised or resolved.
     timeout_seconds: Optional[int] = None
     on_timeout: Optional[str] = None
     requests: HitlRequests = Field(default_factory=HitlRequests)
+    require_actor: Optional[bool] = None
+    notify: Optional[list[HitlWebhook]] = None
 
 
 class CreateRequest(_Model):
@@ -611,13 +637,26 @@ class HostPage(_Model):
     next_cursor: Optional[str] = None
 
 
+class ActorLabel(_Model):
+    # an actor as a caller names it: an opaque id (required, at most 128
+    # bytes) and an optional display name.
+    id: str
+    name: Optional[str] = None
+
+
 class APIKey(_Model):
     # a key's metadata. the raw secret appears only in CreatedAPIKey.key.
+    # scopes is none for a full-access key.
     id: str = ""
     label: str = ""
     created_at: Optional[datetime] = None
     last_used_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
+    scopes: Optional[list[str]] = None
+    env_id: str = ""
+    expires_at: Optional[datetime] = None
+    actor: Optional[ActorLabel] = None
+    created_by: str = ""
 
 
 class CreatedAPIKey(APIKey):
@@ -689,4 +728,25 @@ class InterventionPage(_Model):
     # one page of interventions.list_page, plus the cursor to fetch the next
     # one. next_cursor is none once there are no more results.
     interventions: list[Intervention] = Field(default_factory=list)
+    next_cursor: Optional[str] = None
+
+
+class AuditEntry(_Model):
+    # one row of the hash-chained hitl audit log. it records who did what and
+    # from where, never content.
+    seq: int = 0
+    event: str = ""
+    intervention_id: str = ""
+    env_id: str = ""
+    actor: Actor = Field(default_factory=Actor)
+    remote_addr: str = ""
+    at: Optional[datetime] = None
+    prev_hash: str = ""
+    hash: str = ""
+
+
+class AuditPage(_Model):
+    # one page of client.interventions.audit_page. pass next_cursor back to
+    # fetch the next page; none means this was the last one.
+    entries: list[AuditEntry] = Field(default_factory=list)
     next_cursor: Optional[str] = None

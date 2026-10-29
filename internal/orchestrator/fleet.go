@@ -198,6 +198,10 @@ type vm struct {
 	// stops polling a VM is a smaller problem than one that keeps reporting a
 	// verdict nobody is refreshing.
 	healthcheck *HealthcheckSpec
+	// hitlKeys are the hitl.notify signing secrets by name, and
+	// hitlKeysEncrypted their sealed copy for the vm row. see hitl_access.go.
+	hitlKeys          map[string]string
+	hitlKeysEncrypted []byte
 	// health is the last verdict read back from the guest, or nil before the
 	// first successful read. Live state, never persisted (see health.go).
 	health *HealthStatus
@@ -550,6 +554,14 @@ type FleetManager struct {
 	hitlMu      sync.Mutex
 	hitlWaiters map[string]chan struct{}
 
+	// envKeys revokes and rebinds scoped api keys with their environment;
+	// nil when there is no key store. publicURL is the base url webhook
+	// notifications link to. webhooks delivers them. see hitl_access.go and
+	// hitl_audit.go.
+	envKeys   EnvKeyStore
+	publicURL string
+	webhooks  webhookSender
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -776,15 +788,22 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	spec.Name = vmID
 	now := time.Now()
 
+	hitlKeys, hitlKeysEncrypted, keyErr := fm.hitlKeysFor(spec.Hitl, secretMap)
+	if keyErr != nil {
+		return nil, keyErr
+	}
+
 	v := &vm{
-		id:             vmID,
-		state:          VMStateProvisioning,
-		taskID:         taskID,
-		spec:           spec,
-		createdAt:      now,
-		updatedAt:      now,
-		lastActivityAt: now,
-		healthcheck:    opts.Healthcheck,
+		id:                vmID,
+		state:             VMStateProvisioning,
+		taskID:            taskID,
+		spec:              spec,
+		createdAt:         now,
+		updatedAt:         now,
+		lastActivityAt:    now,
+		healthcheck:       opts.Healthcheck,
+		hitlKeys:          hitlKeys,
+		hitlKeysEncrypted: hitlKeysEncrypted,
 	}
 
 	fm.mu.Lock()
@@ -1326,7 +1345,8 @@ func (fm *FleetManager) destroyVM(ctx context.Context, vmID string) error {
 	fm.deleteVMBackground(vmID)
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "destroyed"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
-	fm.cancelEnvInterventions(ctx, vmID, "environment destroyed")
+	fm.cancelEnvInterventions(ctx, v, vmID, "environment destroyed")
+	fm.revokeEnvKeys(ctx, vmID)
 
 	return nil
 }
@@ -1625,7 +1645,8 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 	fm.deleteVMBackground(vmID)
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "async_destroy"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
-	fm.cancelEnvInterventions(ctx, vmID, "environment destroyed")
+	fm.cancelEnvInterventions(ctx, v, vmID, "environment destroyed")
+	fm.revokeEnvKeys(ctx, vmID)
 }
 
 // reapDestroyedVMs removes tracked VMs that are in the Destroying state
@@ -1755,8 +1776,10 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			updatedAt:    record.UpdatedAt,
 			// activity is not persisted, so recovery restarts the idle
 			// window rather than inheriting a stale one.
-			lastActivityAt: time.Now(),
-			err:            record.LastError,
+			lastActivityAt:    time.Now(),
+			err:               record.LastError,
+			hitlKeys:          fm.openHitlKeys(record.ID, record.HitlKeysEncrypted),
+			hitlKeysEncrypted: record.HitlKeysEncrypted,
 		}
 
 		if recoveredVM.state == VMStateRunning {
@@ -2108,6 +2131,7 @@ func (fm *FleetManager) vmRecordFromVM(v *vm) VMRecord {
 		Spec:               v.spec,
 		AuthTokenEncrypted: v.authTokenEncrypted,
 		SecretsEncrypted:   v.secretsEncrypted,
+		HitlKeysEncrypted:  v.hitlKeysEncrypted,
 		LastError:          v.err,
 		Endpoints:          v.endpoints,
 		Egress:             v.egress,

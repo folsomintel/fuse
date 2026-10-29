@@ -647,6 +647,23 @@ type APIKey struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	// Scopes is nil for a full-access key.
+	Scopes []string `json:"scopes,omitempty"`
+	// EnvID is the environment a scoped key is limited to, along with its
+	// forks. Empty means every environment.
+	EnvID     string     `json:"env_id,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Actor is the actor the key is pinned to, if any.
+	Actor *ActorLabel `json:"actor,omitempty"`
+	// CreatedBy is "master" or the id of the key that minted this one.
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
+// ActorLabel is an actor as a caller names it: an opaque id (required, at
+// most 128 bytes) and an optional display name.
+type ActorLabel struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 }
 
 // CreatedAPIKey is returned by client.CreateAPIKey. Key is unrecoverable

@@ -2,6 +2,7 @@ package fusefile
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -55,20 +56,49 @@ func TestHitlAbsentStaysNil(t *testing.T) {
 
 func TestHitlRejects(t *testing.T) {
 	cases := map[string]string{
-		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                     "hitl.timeout",
-		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                       "between",
-		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                   "between",
-		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                 "hitl.on_timeout",
-		"hitl:\n  timeout: 5m\n":                                                 "declare at least one request kind",
-		"hitl:\n  requests:\n    ask: {}\n    secret: {targets: []}\n":           "hitl.requests.secret: not yet supported",
-		"hitl:\n  gates:\n    - name: x\n  requests:\n    ask: {}\n":             "hitl.gates: not yet supported",
-		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n": "hitl.notify: not yet supported",
-		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                        "poll",
+		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                                              "hitl.timeout",
+		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                "between",
+		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                            "between",
+		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                          "hitl.on_timeout",
+		"hitl:\n  timeout: 5m\n":                                                                          "declare at least one request kind",
+		"hitl:\n  requests:\n    ask: {}\n    secret: {targets: []}\n":                                    "hitl.requests.secret: not yet supported",
+		"hitl:\n  gates:\n    - name: x\n  requests:\n    ask: {}\n":                                      "hitl.gates: not yet supported",
+		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n":                          "hitl.notify[0].secret: name the secret",
+		"hitl:\n  notify:\n    - {webhook: https://x, secret: S}\n  requests:\n    ask: {}\n":             "must also be listed under the top-level secrets",
+		"secrets: [S]\nhitl:\n  notify:\n    - {webhook: ftp://x, secret: S}\n  requests:\n    ask: {}\n": "hitl.notify[0].webhook",
+		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                                                 "poll",
 	}
 	for body, want := range cases {
 		_, err := parseHitl(t, body)
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: err = %v, want it to contain %q", body, err, want)
 		}
+	}
+}
+
+func TestHitlNotifyAndRequireActorCompile(t *testing.T) {
+	f, err := parseHitl(t, `secrets: [HOOK_SECRET]
+hitl:
+  require_actor: true
+  notify:
+    - webhook: https://hooks.example.com/fuse
+      secret: HOOK_SECRET
+  requests:
+    ask: {}
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	want := &HitlSpec{OnTimeout: "reject", Ask: true, RequireActor: true,
+		Notify: []HitlWebhook{{URL: "https://hooks.example.com/fuse", Secret: "HOOK_SECRET"}}}
+	if !reflect.DeepEqual(c.Hitl, want) {
+		t.Fatalf("hitl = %+v, want %+v", c.Hitl, want)
+	}
+	if !slices.Contains(c.RequiredSecrets, "HOOK_SECRET") {
+		t.Fatalf("required secrets %v miss the webhook secret", c.RequiredSecrets)
 	}
 }

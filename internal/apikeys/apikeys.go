@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // apiKeyPrefix is the human-visible prefix on every raw API key. It makes
@@ -33,6 +35,36 @@ type APIKeyRecord struct {
 	CreatedAt  time.Time
 	LastUsedAt *time.Time
 	RevokedAt  *time.Time
+
+	// Scopes nil is a full-access key. A non-nil list (possibly empty)
+	// limits the key to what the scopes grant.
+	Scopes []string
+	// EnvID limits a scoped key to one environment and its forks. Empty
+	// means any environment.
+	EnvID string
+	// ExpiresAt is when the key stops authenticating. Nil means never.
+	ExpiresAt *time.Time
+	// ActorID and ActorName pin the actor every request on the key is
+	// recorded as. Empty ActorID means no pinned actor.
+	ActorID   string
+	ActorName string
+	// CreatedBy is the principal that minted the key: "master" or a key id.
+	CreatedBy string
+
+	// FirstUse is set by Authenticate on the request that used the key for
+	// the first time. It is not stored.
+	FirstUse bool
+}
+
+// NewKey is what Create mints.
+type NewKey struct {
+	Label     string
+	Scopes    []string
+	EnvID     string
+	ExpiresAt *time.Time
+	ActorID   string
+	ActorName string
+	CreatedBy string
 }
 
 // APIKeyStore persists revocable API keys in Postgres. Keys are stored as
@@ -75,64 +107,109 @@ func GenerateAPIKey() (id, rawKey string, err error) {
 // Create generates a new API key, stores its hash + metadata, and returns
 // the record together with the raw key. The raw key is returned exactly
 // once and cannot be recovered afterward.
-func (s *APIKeyStore) Create(ctx context.Context, label string, now time.Time) (APIKeyRecord, string, error) {
+func (s *APIKeyStore) Create(ctx context.Context, k NewKey, now time.Time) (APIKeyRecord, string, error) {
 	id, rawKey, err := GenerateAPIKey()
 	if err != nil {
 		return APIKeyRecord{}, "", err
 	}
 
 	if _, err := s.db.ExecContext(ctx, `
-		INSERT INTO orchestrator_api_keys (id, key_hash, label, created_at)
-		VALUES ($1, $2, $3, $4)
-	`, id, hashAPIKey(rawKey), label, now); err != nil {
+		INSERT INTO orchestrator_api_keys
+			(id, key_hash, label, created_at, scopes, env_id, expires_at, actor_id, actor_name, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+	`, id, hashAPIKey(rawKey), k.Label, now, k.Scopes, nullString(k.EnvID), k.ExpiresAt,
+		nullString(k.ActorID), nullString(k.ActorName), k.CreatedBy); err != nil {
 		return APIKeyRecord{}, "", fmt.Errorf("insert api key: %w", err)
 	}
 
-	return APIKeyRecord{ID: id, Label: label, CreatedAt: now}, rawKey, nil
+	return APIKeyRecord{
+		ID: id, Label: k.Label, CreatedAt: now,
+		Scopes: k.Scopes, EnvID: k.EnvID, ExpiresAt: k.ExpiresAt,
+		ActorID: k.ActorID, ActorName: k.ActorName, CreatedBy: k.CreatedBy,
+	}, rawKey, nil
 }
 
-// Authenticate reports whether rawToken matches a live (non-revoked) key.
-// On success it returns the key id and bumps last_used_at on a best-effort
-// basis — a failed bump never fails authentication. Implements the
-// APIKeyAuthenticator interface consumed by the api package's BearerAuth.
-func (s *APIKeyStore) Authenticate(ctx context.Context, rawToken string) (string, bool) {
+const keyColumns = `id, label, created_at, last_used_at, revoked_at,
+	scopes, env_id, expires_at, actor_id, actor_name, created_by`
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanKey(row rowScanner, extra ...any) (APIKeyRecord, error) {
 	var (
-		id      string
-		keyHash []byte
-		revoked *time.Time
+		rec                     APIKeyRecord
+		scopes                  []string
+		envID, actorID, actorNm sql.NullString
 	)
-	err := s.db.QueryRowContext(ctx, `
-		SELECT id, key_hash, revoked_at
+	m := pgtype.NewMap()
+	dest := append([]any{&rec.ID, &rec.Label, &rec.CreatedAt, &rec.LastUsedAt, &rec.RevokedAt,
+		m.SQLScanner(&scopes), &envID, &rec.ExpiresAt, &actorID, &actorNm, &rec.CreatedBy}, extra...)
+	if err := row.Scan(dest...); err != nil {
+		return rec, err
+	}
+	rec.Scopes = scopes
+	rec.EnvID = envID.String
+	rec.ActorID = actorID.String
+	rec.ActorName = actorNm.String
+	return rec, nil
+}
+
+// Authenticate reports whether rawToken matches a live key: not revoked and
+// not past its expiry. On success it returns the key's record and bumps
+// last_used_at on a best-effort basis; a failed bump never fails
+// authentication. Implements the APIKeyAuthenticator interface consumed by
+// the api package's BearerAuth.
+func (s *APIKeyStore) Authenticate(ctx context.Context, rawToken string) (APIKeyRecord, bool) {
+	var keyHash []byte
+	rec, err := scanKey(s.db.QueryRowContext(ctx, `
+		SELECT `+keyColumns+`, key_hash
 		FROM orchestrator_api_keys
 		WHERE key_hash = $1
-	`, hashAPIKey(rawToken)).Scan(&id, &keyHash, &revoked)
+	`, hashAPIKey(rawToken)), &keyHash)
 	if err != nil {
 		// sql.ErrNoRows (unknown key) and any DB error both deny.
-		return "", false
+		return APIKeyRecord{}, false
 	}
-	if revoked != nil {
-		return "", false
+	now := time.Now().UTC()
+	if rec.RevokedAt != nil {
+		return APIKeyRecord{}, false
+	}
+	if rec.ExpiresAt != nil && !now.Before(*rec.ExpiresAt) {
+		return APIKeyRecord{}, false
 	}
 	// Defense in depth: confirm the stored hash matches in constant time.
 	// The unique index already guarantees at most one row, but this guards
 	// against any future non-unique lookup path.
 	if subtle.ConstantTimeCompare(keyHash, hashAPIKey(rawToken)) != 1 {
-		return "", false
+		return APIKeyRecord{}, false
 	}
 
-	// Best-effort last_used_at bump; ignore errors.
+	// Best-effort last_used_at bump; ignore errors. The first bump is
+	// conditional so exactly one request sees FirstUse.
+	if rec.LastUsedAt == nil {
+		res, err := s.db.ExecContext(ctx, `
+			UPDATE orchestrator_api_keys SET last_used_at = $1 WHERE id = $2 AND last_used_at IS NULL
+		`, now, rec.ID)
+		if err == nil {
+			if n, _ := res.RowsAffected(); n == 1 {
+				rec.FirstUse = true
+				return rec, true
+			}
+		}
+	}
 	_, _ = s.db.ExecContext(ctx, `
 		UPDATE orchestrator_api_keys SET last_used_at = $1 WHERE id = $2
-	`, time.Now().UTC(), id)
+	`, now, rec.ID)
 
-	return id, true
+	return rec, true
 }
 
 // List returns metadata for all keys (live and revoked), newest first. It
 // never returns key hashes or raw keys.
 func (s *APIKeyStore) List(ctx context.Context) ([]APIKeyRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, label, created_at, last_used_at, revoked_at
+		SELECT `+keyColumns+`
 		FROM orchestrator_api_keys
 		ORDER BY created_at DESC
 	`)
@@ -143,13 +220,43 @@ func (s *APIKeyStore) List(ctx context.Context) ([]APIKeyRecord, error) {
 
 	var out []APIKeyRecord
 	for rows.Next() {
-		var rec APIKeyRecord
-		if err := rows.Scan(&rec.ID, &rec.Label, &rec.CreatedAt, &rec.LastUsedAt, &rec.RevokedAt); err != nil {
+		rec, err := scanKey(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan api key: %w", err)
 		}
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+// RevokeEnv revokes every live key scoped to envID. Destroying an
+// environment calls it, so an invite never outlives the sandbox it was for.
+func (s *APIKeyStore) RevokeEnv(ctx context.Context, envID string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE orchestrator_api_keys SET revoked_at = $1
+		WHERE env_id = $2 AND revoked_at IS NULL
+	`, now, envID)
+	if err != nil {
+		return fmt.Errorf("revoke env api keys: %w", err)
+	}
+	return nil
+}
+
+// RebindEnv moves keys scoped to one environment id to another. A live
+// migration gives the same logical environment a new id, and its invites
+// follow it.
+func (s *APIKeyStore) RebindEnv(ctx context.Context, fromID, toID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE orchestrator_api_keys SET env_id = $2 WHERE env_id = $1
+	`, fromID, toID)
+	if err != nil {
+		return fmt.Errorf("rebind env api keys: %w", err)
+	}
+	return nil
+}
+
+func nullString(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
 }
 
 // Revoke marks the key with the given id revoked. Revoking an

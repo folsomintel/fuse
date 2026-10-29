@@ -66,6 +66,10 @@ type VM struct {
 	HugePages bool `json:"huge_pages,omitempty"`
 	// Hitl holds the value of the "hitl" field.
 	Hitl json.RawMessage `json:"hitl,omitempty"`
+	// Ancestors holds the value of the "ancestors" field.
+	Ancestors json.RawMessage `json:"ancestors,omitempty"`
+	// HitlKeysEncrypted holds the value of the "hitl_keys_encrypted" field.
+	HitlKeysEncrypted []byte `json:"hitl_keys_encrypted,omitempty"`
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
@@ -78,7 +82,7 @@ func (*VM) scanValues(columns []string) ([]any, error) {
 	values := make([]any, len(columns))
 	for i := range columns {
 		switch columns[i] {
-		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress, vm.FieldHitl:
+		case vm.FieldAuthTokenEncrypted, vm.FieldSecretsEncrypted, vm.FieldEndpoints, vm.FieldGpuUuids, vm.FieldMigInstanceUuids, vm.FieldEgress, vm.FieldHitl, vm.FieldAncestors, vm.FieldHitlKeysEncrypted:
 			values[i] = new([]byte)
 		case vm.FieldHugePages:
 			values[i] = new(sql.NullBool)
@@ -263,6 +267,20 @@ func (_m *VM) assignValues(columns []string, values []any) error {
 					return fmt.Errorf("unmarshal field hitl: %w", err)
 				}
 			}
+		case vm.FieldAncestors:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field ancestors", values[i])
+			} else if value != nil && len(*value) > 0 {
+				if err := json.Unmarshal(*value, &_m.Ancestors); err != nil {
+					return fmt.Errorf("unmarshal field ancestors: %w", err)
+				}
+			}
+		case vm.FieldHitlKeysEncrypted:
+			if value, ok := values[i].(*[]byte); !ok {
+				return fmt.Errorf("unexpected type %T for field hitl_keys_encrypted", values[i])
+			} else if value != nil {
+				_m.HitlKeysEncrypted = *value
+			}
 		case vm.FieldCreatedAt:
 			if value, ok := values[i].(*sql.NullTime); !ok {
 				return fmt.Errorf("unexpected type %T for field created_at", values[i])
@@ -382,6 +400,12 @@ func (_m *VM) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("hitl=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Hitl))
+	builder.WriteString(", ")
+	builder.WriteString("ancestors=")
+	builder.WriteString(fmt.Sprintf("%v", _m.Ancestors))
+	builder.WriteString(", ")
+	builder.WriteString("hitl_keys_encrypted=")
+	builder.WriteString(fmt.Sprintf("%v", _m.HitlKeysEncrypted))
 	builder.WriteString(", ")
 	builder.WriteString("created_at=")
 	builder.WriteString(_m.CreatedAt.Format(time.ANSIC))

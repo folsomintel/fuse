@@ -1,5 +1,5 @@
 import type { CallOptions, Transport } from "./transport.js";
-import { isInterventionTerminal, type Intervention } from "./types.js";
+import { isInterventionTerminal, type AuditEntry, type Intervention } from "./types.js";
 import { requireArg } from "./validate.js";
 
 /** The server's max page size; list() requests this internally. */
@@ -15,6 +15,8 @@ export interface ListInterventionsOptions {
   envId?: string;
   /** One of InterventionState. */
   state?: string;
+  /** Only interventions raised or decided by this actor id. */
+  actor?: string;
   /** Page size. Only consulted by listPage; list() always walks every page. */
   limit?: number;
   /** Opaque cursor from a previous listPage() call's nextCursor. */
@@ -29,6 +31,32 @@ interface InterventionList {
 /** One page of interventions.listPage, plus the cursor to fetch the next one. */
 export interface InterventionPage {
   interventions: Intervention[];
+  /** Empty/undefined once there are no more results. */
+  nextCursor?: string;
+}
+
+/** Filters (and pagination) for interventions.audit / interventions.auditPage. */
+export interface AuditOptions {
+  /** Only rows for this environment. */
+  envId?: string;
+  /** Only rows for this actor id. */
+  actor?: string;
+  /** An RFC 3339 time, or a duration like "24h" meaning that long ago. */
+  since?: string;
+  /** Page size. Only consulted by auditPage; audit() always walks every page. */
+  limit?: number;
+  /** Opaque cursor from a previous auditPage() call's nextCursor. */
+  cursor?: string;
+}
+
+interface AuditList {
+  entries: AuditEntry[];
+  next_cursor?: string;
+}
+
+/** One page of interventions.auditPage, plus the cursor to fetch the next one. */
+export interface AuditPage {
+  entries: AuditEntry[];
   /** Empty/undefined once there are no more results. */
   nextCursor?: string;
 }
@@ -79,12 +107,48 @@ export class InterventionsService {
       query: {
         env: options.envId,
         state: options.state,
+        actor: options.actor,
         limit: options.limit ? String(options.limit) : undefined,
         cursor: options.cursor,
       },
       signal: opts.signal,
     });
     return { interventions: out.interventions ?? [], nextCursor: out.next_cursor };
+  }
+
+  /** List every hitl audit row matching options, oldest first, walking every
+   * page. */
+  async audit(options: AuditOptions = {}, opts: CallOptions = {}): Promise<AuditEntry[]> {
+    const out: AuditEntry[] = [];
+    let cursor = options.cursor;
+    for (;;) {
+      const page = await this.auditPage(
+        { ...options, limit: MAX_PAGE_LIMIT, cursor },
+        opts,
+      );
+      out.push(...page.entries);
+      if (!page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+    return out;
+  }
+
+  /** List one page of the hitl audit log matching options. */
+  async auditPage(
+    options: AuditOptions = {},
+    opts: CallOptions = {},
+  ): Promise<AuditPage> {
+    const out = await this.t.json<AuditList>("GET", "/v1/hitl/audit", {
+      query: {
+        env: options.envId,
+        actor: options.actor,
+        since: options.since,
+        limit: options.limit ? String(options.limit) : undefined,
+        cursor: options.cursor,
+      },
+      signal: opts.signal,
+    });
+    return { entries: out.entries ?? [], nextCursor: out.next_cursor };
   }
 
   /** Fetch one intervention without waiting. */
