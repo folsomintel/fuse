@@ -204,7 +204,7 @@ func TestListInterventionsPaginates(t *testing.T) {
 	if err != nil || len(rest) != 1 || next != "" {
 		t.Fatalf("second page: %d items, next %q, err %v", len(rest), next, err)
 	}
-	if !(page[1].ID < rest[0].ID) {
+	if page[1].ID >= rest[0].ID {
 		t.Fatal("pages are not in id order")
 	}
 	none, _, _ := fm.ListInterventions(context.Background(), InterventionListFilter{State: hitl.StateApproved})

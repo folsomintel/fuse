@@ -82,7 +82,7 @@ func TestAskPayload(t *testing.T) {
 func TestNewIDSortsByTime(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	a, b := NewID(t0), NewID(t0.Add(time.Nanosecond))
-	if !(a < b) {
+	if a >= b {
 		t.Fatalf("ids do not sort by time: %s >= %s", a, b)
 	}
 	if !strings.HasPrefix(a, "int_") {

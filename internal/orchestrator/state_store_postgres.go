@@ -1148,7 +1148,7 @@ func (s *PostgresStateStore) ListInterventions(ctx context.Context, f Interventi
 	if err != nil {
 		return nil, fmt.Errorf("list interventions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := make([]InterventionRecord, 0)
 	for rows.Next() {
 		rec, err := scanIntervention(rows)
