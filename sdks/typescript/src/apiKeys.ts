@@ -1,6 +1,20 @@
 import type { CallOptions, Transport } from "./transport.js";
-import type { APIKey, CreatedAPIKey } from "./types.js";
+import type { ActorLabel, APIKey, CreatedAPIKey } from "./types.js";
 import { requireArg } from "./validate.js";
+
+/** Options for apiKeys.create. Naming scopes mints a key limited to the hitl
+ * routes; it must expire (ttlSeconds, at most 86400). */
+export interface CreateApiKeyOptions {
+  label?: string;
+  /** One or more of HitlScope. Omit for a full-access key. */
+  scopes?: string[];
+  /** Limit a scoped key to this environment and its forks. */
+  envId?: string;
+  /** Lifetime in seconds. */
+  ttlSeconds?: number;
+  /** Pin the key to this actor. */
+  actor?: ActorLabel;
+}
 
 interface APIKeyList {
   api_keys: APIKey[];
@@ -14,12 +28,25 @@ export class ApiKeysService {
   constructor(private readonly t: Transport) {}
 
   /**
-   * Issue a new API key. The raw secret is returned once in `key` and is
-   * unrecoverable afterward.
+   * Issue a new API key. Pass a label, or options for a scoped key. The raw
+   * secret is returned once in `key` and is unrecoverable afterward.
    */
-  async create(label?: string, opts: CallOptions = {}): Promise<CreatedAPIKey> {
+  async create(
+    labelOrOptions?: string | CreateApiKeyOptions,
+    opts: CallOptions = {},
+  ): Promise<CreatedAPIKey> {
+    const o: CreateApiKeyOptions =
+      typeof labelOrOptions === "string"
+        ? { label: labelOrOptions }
+        : (labelOrOptions ?? {});
     return this.t.json<CreatedAPIKey>("POST", "/v1/api-keys", {
-      body: label ? { label } : {},
+      body: {
+        label: o.label || undefined,
+        scopes: o.scopes,
+        env_id: o.envId || undefined,
+        ttl_seconds: o.ttlSeconds || undefined,
+        actor: o.actor,
+      },
       signal: opts.signal,
     });
   }

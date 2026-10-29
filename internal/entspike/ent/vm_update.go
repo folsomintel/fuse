@@ -424,6 +424,36 @@ func (_u *VMUpdate) ClearHitl() *VMUpdate {
 	return _u
 }
 
+// SetAncestors sets the "ancestors" field.
+func (_u *VMUpdate) SetAncestors(v json.RawMessage) *VMUpdate {
+	_u.mutation.SetAncestors(v)
+	return _u
+}
+
+// AppendAncestors appends value to the "ancestors" field.
+func (_u *VMUpdate) AppendAncestors(v json.RawMessage) *VMUpdate {
+	_u.mutation.AppendAncestors(v)
+	return _u
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (_u *VMUpdate) ClearAncestors() *VMUpdate {
+	_u.mutation.ClearAncestors()
+	return _u
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (_u *VMUpdate) SetHitlKeysEncrypted(v []byte) *VMUpdate {
+	_u.mutation.SetHitlKeysEncrypted(v)
+	return _u
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (_u *VMUpdate) ClearHitlKeysEncrypted() *VMUpdate {
+	_u.mutation.ClearHitlKeysEncrypted()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdate) SetCreatedAt(v time.Time) *VMUpdate {
 	_u.mutation.SetCreatedAt(v)
@@ -641,6 +671,23 @@ func (_u *VMUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if _u.mutation.HitlCleared() {
 		_spec.ClearField(vm.FieldHitl, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Ancestors(); ok {
+		_spec.SetField(vm.FieldAncestors, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedAncestors(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldAncestors, value)
+		})
+	}
+	if _u.mutation.AncestorsCleared() {
+		_spec.ClearField(vm.FieldAncestors, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.HitlKeysEncrypted(); ok {
+		_spec.SetField(vm.FieldHitlKeysEncrypted, field.TypeBytes, value)
+	}
+	if _u.mutation.HitlKeysEncryptedCleared() {
+		_spec.ClearField(vm.FieldHitlKeysEncrypted, field.TypeBytes)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -1062,6 +1109,36 @@ func (_u *VMUpdateOne) ClearHitl() *VMUpdateOne {
 	return _u
 }
 
+// SetAncestors sets the "ancestors" field.
+func (_u *VMUpdateOne) SetAncestors(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.SetAncestors(v)
+	return _u
+}
+
+// AppendAncestors appends value to the "ancestors" field.
+func (_u *VMUpdateOne) AppendAncestors(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.AppendAncestors(v)
+	return _u
+}
+
+// ClearAncestors clears the value of the "ancestors" field.
+func (_u *VMUpdateOne) ClearAncestors() *VMUpdateOne {
+	_u.mutation.ClearAncestors()
+	return _u
+}
+
+// SetHitlKeysEncrypted sets the "hitl_keys_encrypted" field.
+func (_u *VMUpdateOne) SetHitlKeysEncrypted(v []byte) *VMUpdateOne {
+	_u.mutation.SetHitlKeysEncrypted(v)
+	return _u
+}
+
+// ClearHitlKeysEncrypted clears the value of the "hitl_keys_encrypted" field.
+func (_u *VMUpdateOne) ClearHitlKeysEncrypted() *VMUpdateOne {
+	_u.mutation.ClearHitlKeysEncrypted()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdateOne) SetCreatedAt(v time.Time) *VMUpdateOne {
 	_u.mutation.SetCreatedAt(v)
@@ -1309,6 +1386,23 @@ func (_u *VMUpdateOne) sqlSave(ctx context.Context) (_node *VM, err error) {
 	}
 	if _u.mutation.HitlCleared() {
 		_spec.ClearField(vm.FieldHitl, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.Ancestors(); ok {
+		_spec.SetField(vm.FieldAncestors, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedAncestors(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldAncestors, value)
+		})
+	}
+	if _u.mutation.AncestorsCleared() {
+		_spec.ClearField(vm.FieldAncestors, field.TypeJSON)
+	}
+	if value, ok := _u.mutation.HitlKeysEncrypted(); ok {
+		_spec.SetField(vm.FieldHitlKeysEncrypted, field.TypeBytes, value)
+	}
+	if _u.mutation.HitlKeysEncryptedCleared() {
+		_spec.ClearField(vm.FieldHitlKeysEncrypted, field.TypeBytes)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)

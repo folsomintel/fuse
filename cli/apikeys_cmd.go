@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
+	fuse "github.com/folsomintel/fuse/sdks/go"
 	"github.com/spf13/cobra"
 )
 
@@ -10,45 +13,51 @@ func newAPIKeysCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "apikeys",
 		Aliases: []string{"apikey", "keys"},
-		Short:   "Manage orchestrator-global API keys (master token required)",
-		Long: "api keys are orchestrator-global and all-or-nothing. these commands require\n" +
-			"the master token, so the active context must be connected with --master.",
+		Short:   "Manage orchestrator API keys (master token required)",
+		Long: "api keys are full-access unless minted with hitl scopes. these commands\n" +
+			"require the master token, so the active context must be connected with\n" +
+			"--master (a scoped key may only mint a narrower copy of itself).",
 	}
 	cmd.AddCommand(newAPIKeyCreateCmd(), newAPIKeyListCmd(), newAPIKeyRevokeCmd())
 	return cmd
 }
 
 func newAPIKeyCreateCmd() *cobra.Command {
-	var label string
+	var (
+		label, scopes, env, actor, actorName string
+		ttl                                  time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create an API key (the secret is shown once)",
-		Args:  cobra.NoArgs,
+		Long: "without --scopes the key is full-access, like every key before scopes\n" +
+			"existed. with --scopes it can only use the hitl routes and must expire\n" +
+			"(--ttl, at most 24h); --env limits it to one environment and its forks and\n" +
+			"--actor pins who its requests are recorded as. `fuse hitl invite` is the\n" +
+			"short form for one environment.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cl, _, err := app.client()
 			if err != nil {
 				return err
 			}
-			key, err := cl.APIKeys.Create(cmd.Context(), label)
+			opts := fuse.CreateAPIKeyOptions{Label: label, Scopes: parseScopes(scopes), EnvID: env, TTL: ttl}
+			if actor != "" {
+				opts.Actor = &fuse.ActorLabel{ID: actor, Name: actorName}
+			}
+			key, err := cl.APIKeys.CreateWithOptions(cmd.Context(), opts)
 			if err != nil {
 				return friendly(err)
 			}
-			// warn before the output-mode branch so json/scripted callers are
-			// warned too (warnf goes to stderr, leaving json stdout clean).
-			warnf("save this key now: the secret is shown only once and cannot be recovered")
-			if app.isJSON() {
-				return printJSON(key)
-			}
-			renderDetail([][2]string{
-				{"id", key.ID},
-				{"label", dash(key.Label)},
-				{"created", shortTime(key.CreatedAt)},
-				{"key", styleGood.Render(key.Key)},
-			})
-			return nil
+			return renderCreatedKey(key)
 		},
 	}
 	cmd.Flags().StringVar(&label, "label", "", "human-readable label for the key")
+	cmd.Flags().StringVar(&scopes, "scopes", "", "comma-separated hitl scopes: read, decide, secret, takeover, act-as (omit for full access)")
+	cmd.Flags().StringVar(&env, "env", "", "limit a scoped key to this environment and its forks")
+	cmd.Flags().DurationVar(&ttl, "ttl", 0, "expire the key after this long (required with --scopes, at most 24h)")
+	cmd.Flags().StringVar(&actor, "actor", "", "pin the actor every request on the key is recorded as")
+	cmd.Flags().StringVar(&actorName, "actor-name", "", "display name for --actor")
 	return cmd
 }
 
@@ -80,9 +89,21 @@ func newAPIKeyListCmd() *cobra.Command {
 				if k.RevokedAt != nil {
 					revoked = shortTime(*k.RevokedAt)
 				}
-				rows = append(rows, []string{k.ID, dash(k.Label), shortTime(k.CreatedAt), lastUsed, revoked})
+				scopes := "full access"
+				if k.Scopes != nil {
+					scopes = strings.Join(k.Scopes, ",")
+				}
+				expires := "-"
+				if k.ExpiresAt != nil {
+					expires = shortTime(*k.ExpiresAt)
+				}
+				actor := "-"
+				if k.Actor != nil {
+					actor = k.Actor.ID
+				}
+				rows = append(rows, []string{k.ID, dash(k.Label), scopes, dash(k.EnvID), actor, shortTime(k.CreatedAt), lastUsed, expires, revoked})
 			}
-			renderTable([]string{"ID", "LABEL", "CREATED", "LAST USED", "REVOKED"}, rows)
+			renderTable([]string{"ID", "LABEL", "SCOPES", "ENV", "ACTOR", "CREATED", "LAST USED", "EXPIRES", "REVOKED"}, rows)
 			return nil
 		},
 	}

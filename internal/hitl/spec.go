@@ -7,6 +7,7 @@ package hitl
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"time"
 )
 
@@ -47,7 +48,23 @@ type Spec struct {
 	OnTimeout OnTimeout `json:"on_timeout,omitempty"`
 	// Requests are the request kinds the agent may raise.
 	Requests Requests `json:"requests"`
+	// RequireActor refuses decisions that do not carry a pinned or asserted
+	// actor, so every approval is tied to a named person.
+	RequireActor bool `json:"require_actor,omitempty"`
+	// Notify are webhooks told about every intervention and audit event.
+	Notify []Webhook `json:"notify,omitempty"`
 }
+
+// Webhook is one notification target. Secret names an entry of the
+// environment's secrets whose value signs each delivery; the value itself
+// never appears in the spec.
+type Webhook struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
+}
+
+// MaxWebhooks bounds hitl.notify.
+const MaxWebhooks = 5
 
 // Requests declares which request kinds are allowed. a nil entry is not
 // declared and is refused at call time.
@@ -103,6 +120,17 @@ func (s Spec) Validate() error {
 	if s.Requests.Ask == nil {
 		errs = append(errs, errors.New("hitl.requests: declare at least one request kind (only ask is supported)"))
 	}
+	if len(s.Notify) > MaxWebhooks {
+		errs = append(errs, fmt.Errorf("hitl.notify: at most %d webhooks are allowed", MaxWebhooks))
+	}
+	for i, w := range s.Notify {
+		if err := ValidateWebhookURL(w.URL); err != nil {
+			errs = append(errs, fmt.Errorf("hitl.notify[%d].url: %w", i, err))
+		}
+		if w.Secret == "" {
+			errs = append(errs, fmt.Errorf("hitl.notify[%d].secret: name the secret that signs deliveries", i))
+		}
+	}
 	return errors.Join(errs...)
 }
 
@@ -110,6 +138,24 @@ func (s Spec) Validate() error {
 func ValidateTimeout(d time.Duration) error {
 	if d < MinTimeout || d > MaxTimeout {
 		return fmt.Errorf("must be between %s and %s, got %s", MinTimeout, MaxTimeout, d)
+	}
+	return nil
+}
+
+// ValidateWebhookURL checks a notify target is an absolute http(s) url.
+func ValidateWebhookURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a url: %w", err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return fmt.Errorf("must be an http or https url, got %q", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("must include a host, got %q", raw)
+	}
+	if u.User != nil {
+		return errors.New("must not carry credentials; deliveries are signed instead")
 	}
 	return nil
 }

@@ -90,6 +90,14 @@ type compiledHitl struct {
 	TimeoutSeconds int64             `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 	OnTimeout      string            `json:"on_timeout,omitempty" yaml:"on_timeout,omitempty"`
 	Requests       compiledHitlAllow `json:"requests" yaml:"requests"`
+	RequireActor   bool              `json:"require_actor,omitempty" yaml:"require_actor,omitempty"`
+	Notify         []compiledWebhook `json:"notify,omitempty" yaml:"notify,omitempty"`
+}
+
+// compiledWebhook mirrors fuse.HitlWebhook.
+type compiledWebhook struct {
+	URL    string `json:"url" yaml:"url"`
+	Secret string `json:"secret" yaml:"secret"`
 }
 
 // compiledHitlAllow mirrors fuse.HitlRequests.
@@ -296,9 +304,12 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol)}
 	}
 	if h := c.Hitl; h != nil {
-		req.Hitl = &compiledHitl{TimeoutSeconds: h.TimeoutSeconds, OnTimeout: h.OnTimeout}
+		req.Hitl = &compiledHitl{TimeoutSeconds: h.TimeoutSeconds, OnTimeout: h.OnTimeout, RequireActor: h.RequireActor}
 		if h.Ask {
 			req.Hitl.Requests.Ask = &struct{}{}
+		}
+		for _, w := range h.Notify {
+			req.Hitl.Notify = append(req.Hitl.Notify, compiledWebhook{URL: w.URL, Secret: w.Secret})
 		}
 	}
 	return req

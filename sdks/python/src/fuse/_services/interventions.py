@@ -4,7 +4,7 @@ from typing import Optional
 from urllib.parse import quote
 
 from .._transport import Transport
-from ..types import Intervention, InterventionPage
+from ..types import AuditEntry, AuditPage, Intervention, InterventionPage
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -22,8 +22,47 @@ class InterventionsService:
     def __init__(self, transport: Transport) -> None:
         self._t = transport
 
+    def audit(
+        self, *, env_id: str = "", actor: str = "", since: str = "", cursor: str = ""
+    ) -> list[AuditEntry]:
+        # returns every hitl audit log entry matching the filters, oldest
+        # first, walking every result page. for one page, use audit_page.
+        out: list[AuditEntry] = []
+        while True:
+            page = self.audit_page(
+                env_id=env_id,
+                actor=actor,
+                since=since,
+                limit=_MAX_PAGE_LIMIT,
+                cursor=cursor,
+            )
+            out.extend(page.entries)
+            if not page.next_cursor:
+                break
+            cursor = page.next_cursor
+        return out
+
+    def audit_page(
+        self,
+        *,
+        env_id: str = "",
+        actor: str = "",
+        since: str = "",
+        limit: int = 0,
+        cursor: str = "",
+    ) -> AuditPage:
+        # returns one page of the hitl audit log. since is an rfc 3339 time or
+        # a go duration like "24h" meaning that long ago. needs hitl:read.
+        params: dict[str, str] = {"env": env_id, "actor": actor, "since": since}
+        if limit > 0:
+            params["limit"] = str(limit)
+        if cursor:
+            params["cursor"] = cursor
+        resp = self._t.request("GET", "/v1/hitl/audit", params=params)
+        return AuditPage.model_validate(resp.json())
+
     def list(
-        self, *, env_id: str = "", state: str = "", cursor: str = ""
+        self, *, env_id: str = "", state: str = "", actor: str = "", cursor: str = ""
     ) -> list[Intervention]:
         # returns every intervention matching the filters, oldest first,
         # transparently walking every result page. for explicit single-page
@@ -31,7 +70,11 @@ class InterventionsService:
         out: list[Intervention] = []
         while True:
             page = self.list_page(
-                env_id=env_id, state=state, limit=_MAX_PAGE_LIMIT, cursor=cursor
+                env_id=env_id,
+                state=state,
+                actor=actor,
+                limit=_MAX_PAGE_LIMIT,
+                cursor=cursor,
             )
             out.extend(page.interventions)
             if not page.next_cursor:
@@ -40,10 +83,17 @@ class InterventionsService:
         return out
 
     def list_page(
-        self, *, env_id: str = "", state: str = "", limit: int = 0, cursor: str = ""
+        self,
+        *,
+        env_id: str = "",
+        state: str = "",
+        actor: str = "",
+        limit: int = 0,
+        cursor: str = "",
     ) -> InterventionPage:
-        # returns one page of interventions matching the filters.
-        params: dict[str, str] = {"env": env_id, "state": state}
+        # returns one page of interventions matching the filters. actor is an
+        # actor id that raised or decided the intervention.
+        params: dict[str, str] = {"env": env_id, "state": state, "actor": actor}
         if limit > 0:
             params["limit"] = str(limit)
         if cursor:
@@ -65,13 +115,14 @@ class InterventionsService:
         self, intervention_id: str, answer: str, reason: Optional[str] = None
     ) -> Intervention:
         # resolves a pending intervention as approved. an ask needs an answer
-        # (one of its choices, when it has any). requires the master token.
+        # (one of its choices, when it has any). requires hitl:decide or the
+        # master token, and the key or actor that raised it may not decide it.
         return self._decide(intervention_id, "approve", answer, reason)
 
     def reject(self, intervention_id: str, reason: Optional[str] = None) -> Intervention:
         # resolves a pending intervention as rejected. the reason is fed back
-        # to the agent; the server fills one in when empty. requires the
-        # master token.
+        # to the agent; the server fills one in when empty. requires
+        # hitl:decide or the master token.
         return self._decide(intervention_id, "reject", None, reason)
 
     def _decide(

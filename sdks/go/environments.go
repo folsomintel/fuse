@@ -21,6 +21,20 @@ type transport struct {
 	bearer     string
 	userAgent  string
 	requestID  func() string
+	// actor, when its id is set, is sent as the Fuse-Actor headers on
+	// every request.
+	actor ActorLabel
+}
+
+// setActorHeaders adds the Fuse-Actor headers when the transport has an actor.
+func (t *transport) setActorHeaders(h http.Header) {
+	if t.actor.ID == "" {
+		return
+	}
+	h.Set(actorHeader, t.actor.ID)
+	if t.actor.Name != "" {
+		h.Set(actorNameHeader, t.actor.Name)
+	}
 }
 
 func (t *transport) newRequest(ctx context.Context, method, path string, query url.Values, body any) (*http.Request, error) {
@@ -74,6 +88,7 @@ func (t *transport) newRequest(ctx context.Context, method, path string, query u
 	if t.userAgent != "" {
 		req.Header.Set("User-Agent", t.userAgent)
 	}
+	t.setActorHeaders(req.Header)
 	if t.requestID != nil {
 		if id := t.requestID(); id != "" {
 			req.Header.Set(requestIDHeader, id)

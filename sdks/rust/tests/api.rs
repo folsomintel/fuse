@@ -1,9 +1,12 @@
 // api tests against a mock orchestrator: request shape, auth headers, error
 // envelope handling, pagination walking, and the sse event stream.
 
+use std::time::Duration;
+
 use fuse::{
-    Arch, Client, CreateRequest, Error, ExecRequest, ForkOptions, HitlOnTimeout, HitlSpec,
-    HumanRequest, InterventionOutcome, InterventionState, ListEnvironmentsOptions,
+    ActorLabel, ActorSource, Arch, AuditEvent, AuditOptions, Client, CreateApiKeyOptions,
+    CreateRequest, Error, ExecRequest, ForbiddenReason, ForkOptions, HitlOnTimeout, HitlScope,
+    HitlSpec, HumanRequest, InterventionOutcome, InterventionState, ListEnvironmentsOptions,
     ListInterventionsOptions, MigrateOptions, Spec, ToolResultBlock,
 };
 use serde_json::json;
@@ -742,4 +745,331 @@ fn intervention_decodes_unknown_enum_values() {
         InterventionState::Other("escalated".into())
     );
     assert!(intervention.is_terminal());
+}
+
+#[tokio::test]
+async fn with_actor_sends_actor_headers_and_leaves_original_unchanged() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions/int_1"))
+        .and(header("fuse-actor", "alice"))
+        .and(header("fuse-actor-name", "Alice"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(intervention_body("int_1", "pending", None)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions/int_2"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(intervention_body("int_2", "pending", None)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let base = client(&server).await;
+    let alice = base.with_actor(ActorLabel::new("alice").name("Alice"));
+    alice.interventions().get("int_1").await.unwrap();
+    base.interventions().get("int_2").await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let plain = requests
+        .iter()
+        .find(|r| r.url.path() == "/v1/interventions/int_2")
+        .unwrap();
+    assert!(plain.headers.get("fuse-actor").is_none());
+    assert!(plain.headers.get("fuse-actor-name").is_none());
+    assert_eq!(plain.headers.get("authorization").unwrap(), "Bearer secret");
+}
+
+#[tokio::test]
+async fn builder_actor_sends_actor_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions/int_1"))
+        .and(header("fuse-actor", "bob"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(intervention_body("int_1", "pending", None)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = Client::builder(server.uri())
+        .token("secret")
+        .actor(ActorLabel::new("bob"))
+        .build()
+        .unwrap();
+    client.interventions().get("int_1").await.unwrap();
+
+    // no name means no name header.
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].headers.get("fuse-actor-name").is_none());
+}
+
+#[tokio::test]
+async fn scoped_api_key_create_sends_options_and_parses_fields() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/api-keys"))
+        .and(body_json(json!({
+            "label": "reviewer",
+            "scopes": ["hitl:read", "hitl:decide"],
+            "env_id": "vm-1",
+            "ttl_seconds": 3600,
+            "actor": {"id": "alice", "name": "Alice"},
+        })))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "key-2",
+            "label": "reviewer",
+            "created_at": "2026-01-02T03:04:05Z",
+            "scopes": ["hitl:read", "hitl:decide"],
+            "env_id": "vm-1",
+            "expires_at": "2026-01-02T04:04:05Z",
+            "actor": {"id": "alice", "name": "Alice"},
+            "created_by": "master",
+            "key": "fuse_sk_scoped",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let created = client(&server)
+        .await
+        .api_keys()
+        .create_with_options(
+            CreateApiKeyOptions::new()
+                .label("reviewer")
+                .scopes([HitlScope::Read, HitlScope::Decide])
+                .env_id("vm-1")
+                .ttl(Duration::from_secs(3600))
+                .actor(ActorLabel::new("alice").name("Alice")),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.key, "fuse_sk_scoped");
+    let key = created.api_key;
+    assert_eq!(key.scopes, Some(vec![HitlScope::Read, HitlScope::Decide]));
+    assert_eq!(key.env_id.as_deref(), Some("vm-1"));
+    assert_eq!(
+        key.expires_at.unwrap().to_rfc3339(),
+        "2026-01-02T04:04:05+00:00"
+    );
+    assert_eq!(key.actor, Some(ActorLabel::new("alice").name("Alice")));
+    assert_eq!(key.created_by.as_deref(), Some("master"));
+}
+
+#[tokio::test]
+async fn audit_page_sends_filters_and_parses_entries() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/hitl/audit"))
+        .and(query_param("env", "vm-1"))
+        .and(query_param("actor", "alice"))
+        .and(query_param("since", "24h"))
+        .and(query_param("limit", "10"))
+        .and(query_param("cursor", "c0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "entries": [{
+                "seq": 7,
+                "event": "decided",
+                "intervention_id": "int_1",
+                "env_id": "vm-1",
+                "actor": {"id": "alice", "name": "Alice", "source": "pinned", "key_id": "k2"},
+                "remote_addr": "10.0.0.9:5000",
+                "at": "2026-01-02T03:04:05Z",
+                "prev_hash": "aa",
+                "hash": "bb",
+            }],
+            "next_cursor": "c1",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let page = client(&server)
+        .await
+        .interventions()
+        .audit_page(
+            AuditOptions::new()
+                .env_id("vm-1")
+                .actor("alice")
+                .since("24h")
+                .limit(10)
+                .cursor("c0"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.next_cursor.as_deref(), Some("c1"));
+    let entry = &page.entries[0];
+    assert_eq!(entry.seq, 7);
+    assert_eq!(entry.event, AuditEvent::Decided);
+    assert_eq!(entry.intervention_id.as_deref(), Some("int_1"));
+    assert_eq!(entry.actor.source, ActorSource::Pinned);
+    assert_eq!(entry.actor.key_id.as_deref(), Some("k2"));
+    assert_eq!(entry.remote_addr.as_deref(), Some("10.0.0.9:5000"));
+    assert_eq!(entry.prev_hash, "aa");
+    assert_eq!(entry.hash, "bb");
+}
+
+#[tokio::test]
+async fn audit_walks_every_page() {
+    let server = MockServer::start().await;
+    let entry = |seq: i64| {
+        json!({
+            "seq": seq,
+            "event": "raised",
+            "actor": {"id": "master", "source": "key"},
+            "at": "2026-01-02T03:04:05Z",
+            "prev_hash": "",
+            "hash": "cc",
+        })
+    };
+    Mock::given(method("GET"))
+        .and(path("/v1/hitl/audit"))
+        .and(query_param("cursor", "c1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"entries": [entry(2)]})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/hitl/audit"))
+        .and(query_param("limit", "200"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"entries": [entry(1)], "next_cursor": "c1"})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let all = client(&server)
+        .await
+        .interventions()
+        .audit(AuditOptions::new())
+        .await
+        .unwrap();
+    assert_eq!(all.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2]);
+}
+
+#[tokio::test]
+async fn interventions_list_sends_actor_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/interventions"))
+        .and(query_param("actor", "alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"interventions": []})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client(&server)
+        .await
+        .interventions()
+        .list_page(ListInterventionsOptions::new().actor("alice"))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn forbidden_error_surfaces_reason_and_scope() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/interventions/int_1"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {
+                "code": "forbidden",
+                "message": "a key cannot approve its own request",
+                "details": {"reason": "self_approval"},
+            },
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/hitl/audit"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {
+                "code": "forbidden",
+                "message": "this request needs the hitl:read scope",
+                "details": {"reason": "missing_scope", "scope": "hitl:read"},
+            },
+        })))
+        .mount(&server)
+        .await;
+
+    let client = client(&server).await;
+    let err = client
+        .interventions()
+        .approve("int_1", "yes", "")
+        .await
+        .unwrap_err();
+    assert!(err.is_forbidden());
+    assert_eq!(err.status(), Some(403));
+    assert_eq!(err.forbidden_reason(), Some(ForbiddenReason::SelfApproval));
+    assert_eq!(err.forbidden_scope(), None);
+
+    let err = client
+        .interventions()
+        .audit_page(AuditOptions::new())
+        .await
+        .unwrap_err();
+    assert_eq!(err.forbidden_reason(), Some(ForbiddenReason::MissingScope));
+    assert_eq!(err.forbidden_scope(), Some("hitl:read"));
+}
+
+#[tokio::test]
+async fn unauthorized_403_is_not_forbidden() {
+    // older servers refused master-only routes with unauthorized and a 403.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/api-keys"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+            "error": {"code": "unauthorized", "message": "master token required"},
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).await.api_keys().list().await.unwrap_err();
+    assert!(err.is_unauthorized());
+    assert!(!err.is_forbidden());
+    assert_eq!(err.forbidden_reason(), None);
+}
+
+#[tokio::test]
+async fn create_carries_hitl_notify_and_require_actor() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments"))
+        .and(body_partial_json(json!({
+            "hitl": {
+                "requests": {"ask": {}},
+                "require_actor": true,
+                "notify": [{"url": "https://hooks.example.com/fuse", "secret": "HOOK_KEY"}],
+            },
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(env_body("vm-1", "provisioning")))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client(&server)
+        .await
+        .environments()
+        .create(
+            CreateRequest::new("t-1").secret("HOOK_KEY", "s3cret").hitl(
+                HitlSpec::new()
+                    .ask()
+                    .require_actor()
+                    .notify("https://hooks.example.com/fuse", "HOOK_KEY"),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // the defaults stay off the wire.
+    let plain = serde_json::to_value(HitlSpec::new().ask()).unwrap();
+    assert!(plain.get("require_actor").is_none());
+    assert!(plain.get("notify").is_none());
 }

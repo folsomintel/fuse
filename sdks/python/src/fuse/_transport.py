@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Iterator
 from typing import Any, Callable, Optional
 
@@ -13,6 +14,19 @@ from ._core import (
     serialize_body,
 )
 from .errors import REQUEST_ID_HEADER, check_response
+from .types import ActorLabel
+
+ACTOR_HEADER = "Fuse-Actor"
+ACTOR_NAME_HEADER = "Fuse-Actor-Name"
+# the server rejects a longer actor id.
+MAX_ACTOR_ID_BYTES = 128
+
+
+def check_actor(actor: ActorLabel) -> None:
+    if not actor.id:
+        raise ValueError("actor id is required")
+    if len(actor.id.encode()) > MAX_ACTOR_ID_BYTES:
+        raise ValueError(f"actor id is longer than {MAX_ACTOR_ID_BYTES} bytes")
 
 
 class Transport:
@@ -28,7 +42,11 @@ class Transport:
         user_agent: str = DEFAULT_USER_AGENT,
         request_id: Optional[Callable[[], str]] = None,
         timeout: float = DEFAULT_TIMEOUT,
+        actor: Optional[ActorLabel] = None,
     ) -> None:
+        if actor is not None:
+            check_actor(actor)
+        self._actor = actor
         self._bearer = token
         self._user_agent = user_agent
         self._request_id = request_id
@@ -50,7 +68,21 @@ class Transport:
             rid = self._request_id()
             if rid:
                 headers[REQUEST_ID_HEADER] = rid
+        if self._actor is not None:
+            headers[ACTOR_HEADER] = self._actor.id
+            if self._actor.name:
+                headers[ACTOR_NAME_HEADER] = self._actor.name
         return headers
+
+    def with_actor(self, actor: ActorLabel) -> Transport:
+        # a copy that shares the http clients but sends actor's headers. the
+        # copy never closes the shared clients; the original owns them.
+        check_actor(actor)
+        t = copy.copy(self)
+        t._actor = actor
+        t._owns_http = False
+        t._owns_stream = False
+        return t
 
     def request(
         self,

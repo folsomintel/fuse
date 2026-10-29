@@ -6,6 +6,10 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/folsomintel/fuse/internal/apikeys"
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 // APIKeyAuthenticator validates a presented bearer token against the set
@@ -13,9 +17,9 @@ import (
 // store. A nil APIKeyAuthenticator disables key auth (only the master
 // token is accepted).
 type APIKeyAuthenticator interface {
-	// Authenticate returns (keyID, true) for a live, non-revoked key, or
-	// ("", false) if the token matches no key or the key is revoked.
-	Authenticate(ctx context.Context, rawToken string) (string, bool)
+	// Authenticate returns the key's record and true for a live key (not
+	// revoked, not expired), or false if the token matches no live key.
+	Authenticate(ctx context.Context, rawToken string) (apikeys.APIKeyRecord, bool)
 }
 
 // Principal identifies how a request authenticated. It is stored in the
@@ -30,6 +34,43 @@ type Principal struct {
 	// KeyID is the public id of the authenticating API key, empty for a
 	// master-token request.
 	KeyID string
+	// Label is the key's label.
+	Label string
+	// Scopes nil is a full-access key (and the master token). A non-nil
+	// list limits the key to the hitl routes and what the scopes grant.
+	Scopes []hitl.Scope
+	// EnvID limits a scoped key to one environment and its forks.
+	EnvID string
+	// ExpiresAt is when the key stops working, nil for never.
+	ExpiresAt *time.Time
+	// PinnedActor is the actor fixed on the key, nil when none.
+	PinnedActor *hitl.Actor
+	// FirstUse is set on the request that used the key for the first time.
+	FirstUse bool
+	// Actor is who the request is recorded as. It is resolved from the key
+	// and the Fuse-Actor headers by the access guard (auth_scope.go).
+	Actor hitl.Actor
+}
+
+// principalFromKey builds the principal for an authenticated api key.
+func principalFromKey(rec apikeys.APIKeyRecord) Principal {
+	p := Principal{
+		KeyID:     rec.ID,
+		Label:     rec.Label,
+		EnvID:     rec.EnvID,
+		ExpiresAt: rec.ExpiresAt,
+		FirstUse:  rec.FirstUse,
+	}
+	if rec.Scopes != nil {
+		p.Scopes = make([]hitl.Scope, 0, len(rec.Scopes))
+		for _, s := range rec.Scopes {
+			p.Scopes = append(p.Scopes, hitl.Scope(s))
+		}
+	}
+	if rec.ActorID != "" {
+		p.PinnedActor = &hitl.Actor{ID: rec.ActorID, Name: rec.ActorName}
+	}
+	return p
 }
 
 type principalKey struct{}
@@ -130,8 +171,8 @@ func BearerAuth(expectedToken string, keys APIKeyAuthenticator, onFailure AuthFa
 
 			// API key path.
 			if keys != nil {
-				if keyID, ok := keys.Authenticate(r.Context(), token); ok {
-					ctx := withPrincipal(r.Context(), Principal{KeyID: keyID})
+				if rec, ok := keys.Authenticate(r.Context(), token); ok {
+					ctx := withPrincipal(r.Context(), principalFromKey(rec))
 					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}

@@ -22,6 +22,10 @@ const (
 	CodeUnauthorized    = "unauthorized"
 	CodeUnimplemented   = "unimplemented"
 
+	// CodeForbidden means the caller is known but may not do this (HTTP
+	// 403). Details["reason"] says why; see ForbiddenReason.
+	CodeForbidden = "forbidden"
+
 	// CodePayloadTooLarge means the request body ran past the server's limit
 	// for that endpoint (HTTP 413). Distinct from CodeInvalidArgument: the
 	// body may be valid and simply too big, so the fix is to send less rather
@@ -108,6 +112,40 @@ func IsInvalidArgument(err error) bool { return isAPIErrorCode(err, CodeInvalidA
 
 // IsUnavailable reports whether err is an unavailable api error.
 func IsUnavailable(err error) bool { return isAPIErrorCode(err, CodeUnavailable) }
+
+// forbidden reasons, sent as Details["reason"] on a forbidden api error.
+const (
+	ForbiddenMissingScope    = "missing_scope"
+	ForbiddenEnvScope        = "env_scope"
+	ForbiddenSelfApproval    = "self_approval"
+	ForbiddenActorRequired   = "actor_required"
+	ForbiddenActorMismatch   = "actor_mismatch"
+	ForbiddenActorNotAllowed = "actor_not_allowed"
+	ForbiddenMintEscalation  = "mint_escalation"
+)
+
+// IsForbidden reports whether err is a forbidden api error.
+func IsForbidden(err error) bool { return isAPIErrorCode(err, CodeForbidden) }
+
+// ForbiddenReason returns the reason of a forbidden api error (one of the
+// Forbidden constants), or "" when err is not one.
+func ForbiddenReason(err error) string {
+	apiErr, ok := AsAPIError(err)
+	if !ok || apiErr.Code != CodeForbidden {
+		return ""
+	}
+	return apiErr.Details["reason"]
+}
+
+// ForbiddenScope returns the scope a missing_scope forbidden error names,
+// or "" when there is none.
+func ForbiddenScope(err error) string {
+	apiErr, ok := AsAPIError(err)
+	if !ok || apiErr.Code != CodeForbidden {
+		return ""
+	}
+	return apiErr.Details["scope"]
+}
 
 // CheckResponse returns nil for 2xx responses and an *APIError otherwise.
 func CheckResponse(resp *http.Response) error {

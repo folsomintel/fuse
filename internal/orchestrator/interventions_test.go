@@ -78,10 +78,10 @@ func TestAskAnsweredWakesWaiter(t *testing.T) {
 	}()
 	time.Sleep(50 * time.Millisecond)
 
-	if _, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeApprove, "maybe", "", testActor); !errors.Is(err, ErrInvalidIntervention) {
+	if _, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeApprove, Answer: "maybe", Reason: "", By: testActor}); !errors.Is(err, ErrInvalidIntervention) {
 		t.Fatalf("answer outside choices: err = %v", err)
 	}
-	if _, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeApprove, "yes", "", testActor); err != nil {
+	if _, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeApprove, Answer: "yes", Reason: "", By: testActor}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +94,7 @@ func TestAskAnsweredWakesWaiter(t *testing.T) {
 		t.Fatal("waiter was not woken by the decision")
 	}
 
-	if _, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeReject, "", "no", testActor); !errors.Is(err, ErrInterventionResolved) {
+	if _, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeReject, Answer: "", Reason: "no", By: testActor}); !errors.Is(err, ErrInterventionResolved) {
 		t.Fatalf("second decision: err = %v, want ErrInterventionResolved", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestAskAnsweredWakesWaiter(t *testing.T) {
 func TestRejectCarriesReason(t *testing.T) {
 	fm, vmID := hitlFleet(t, FleetConfig{}, askSpec())
 	in, _ := ask(fm, vmID)
-	got, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeReject, "", "", testActor)
+	got, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeReject, Answer: "", Reason: "", By: testActor})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestExpiryAppliesOnTimeout(t *testing.T) {
 	if got.State != hitl.StateExpired || got.Decision.Outcome != hitl.OutcomeApprove {
 		t.Fatalf("expired ask = %+v / %+v", got, got.Decision)
 	}
-	if _, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeApprove, "yes", "", testActor); !errors.Is(err, ErrInterventionResolved) {
+	if _, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeApprove, Answer: "yes", Reason: "", By: testActor}); !errors.Is(err, ErrInterventionResolved) {
 		t.Fatalf("decide after expiry: err = %v", err)
 	}
 }
@@ -166,7 +166,7 @@ func TestPayloadSealedAtRest(t *testing.T) {
 	key := bytes.Repeat([]byte{7}, 32)
 	fm, vmID := hitlFleet(t, FleetConfig{TokenEncryptionKey: key}, askSpec())
 	in, _ := ask(fm, vmID)
-	if _, err := fm.DecideIntervention(context.Background(), in.ID, hitl.OutcomeApprove, "yes", "ship it", testActor); err != nil {
+	if _, err := fm.DecideIntervention(context.Background(), in.ID, DecideRequest{Outcome: hitl.OutcomeApprove, Answer: "yes", Reason: "ship it", By: testActor}); err != nil {
 		t.Fatal(err)
 	}
 
