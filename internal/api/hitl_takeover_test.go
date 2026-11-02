@@ -13,6 +13,9 @@ func TestHitlTakeover_scopedKeyLocksAgentExec(t *testing.T) {
 		Actor: &ActorLabel{ID: "alice", Name: "Alice"},
 	})
 
+	// the agent's own full-access key cannot take over (that would be a
+	// guest shell it never had), nor can a decide-only key.
+	wantForbidden(t, f.do(http.MethodPost, "/v1/environments/"+env+"?action=takeover", f.agent, "", nil), reasonMissingScope)
 	// a decide-only key cannot take over.
 	decider := f.mint("master", CreateAPIKeyRequest{Scopes: []string{"hitl:decide"}, EnvID: env, TTLSeconds: 3600})
 	wantForbidden(t, f.do(http.MethodPost, "/v1/environments/"+env+"?action=takeover", decider, "", nil), reasonMissingScope)

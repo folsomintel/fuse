@@ -384,6 +384,30 @@ paths:
           exit code, stdout, and stderr. Takes an
           ExecEnvironmentRequest body and returns an
           ExecEnvironmentResponse. See the exit-code contract below.
+        - `request`: the agent asks a human for something the
+          environment's `hitl.requests` declares: an `ask`, a `secret` or
+          a `takeover` (RequestHumanRequest). Returns 201 with the pending
+          Intervention.
+        - `takeover`: a human takes control of the environment
+          (TakeoverRequest, body optional). Claims the agent's pending
+          takeover request when there is one, else opens a new takeover on
+          the caller's behalf. Returns 200 with the intervention, still
+          `pending`, with `payload.takeover.holder` and `started_at` set.
+          While it is held the agent's `exec` and computer actions get 423
+          `locked`. Taking over again as the current holder returns the
+          same intervention. Needs `hitl:takeover`; the agent's own key
+          cannot claim the request it raised (403 `self_approval`). 409
+          when someone else already holds it, or the VM is not running.
+          400 when the environment does not declare
+          `hitl.requests.takeover`, or not for this `via`.
+        - `release`: end the held takeover (ReleaseRequest, body
+          optional). The intervention is approved and `note` becomes its
+          `decision.answer`, which is what the waiting agent reads; an
+          empty note becomes `released by <actor>`. Any caller with
+          `hitl:takeover` may release, not only the holder, so a takeover
+          whose holder walked away does not have to wait out its
+          deadline. Returns 200 with the intervention. 409 when nothing is
+          held, or the takeover expired before the release arrived.
 
         **Exec: a non-zero exit code is not an HTTP error.** A guest
         command that exits non-zero comes back as **200** with that
@@ -401,6 +425,14 @@ paths:
           scopes today.
         - 404 `not_found` — unknown VM.
         - 409 `conflict` — the VM is not running (e.g. draining).
+        - 423 `locked`: a human holds the environment (a takeover), or
+          an `ask` stall is waiting for a human to ack it. Nothing ran.
+          `details.intervention_id` names the intervention and
+          `details.kind` is `takeover` or `stall`. Wait on it with
+          GET /v1/interventions/{interventionId}?wait= until it is no
+          longer `pending`, then send the exec again. The lock never
+          outlives the intervention's deadline. The SDKs do this by
+          default.
         - 501 `unimplemented` — the provider has no guest to exec into
           (e.g. the in-memory stub).
 
@@ -439,8 +471,9 @@ paths:
         description: |
           Required for `exec`, which rejects an empty body with 400, and
           for `request` (RequestHumanRequest).
-          Optional for `fork` (ForkEnvironmentRequest) and `migrate`
-          (MigrateEnvironmentRequest). Ignored by
+          Optional for `fork` (ForkEnvironmentRequest), `migrate`
+          (MigrateEnvironmentRequest), `takeover` (TakeoverRequest) and
+          `release` (ReleaseRequest). Ignored by
           `rotate-token` and `drain`.
         content:
           application/json:
@@ -450,13 +483,15 @@ paths:
                 - $ref: "#/components/schemas/ForkEnvironmentRequest"
                 - $ref: "#/components/schemas/MigrateEnvironmentRequest"
                 - $ref: "#/components/schemas/RequestHumanRequest"
+                - $ref: "#/components/schemas/TakeoverRequest"
+                - $ref: "#/components/schemas/ReleaseRequest"
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [rotate-token, drain, fork, migrate, exec, request]
+            enum: [rotate-token, drain, fork, migrate, exec, request, takeover, release]
           description: The action to perform.
         - $ref: "#/components/parameters/FuseActor"
         - $ref: "#/components/parameters/FuseActorName"
@@ -464,15 +499,17 @@ paths:
         "200":
           description: |
             Drain succeeded (body is the updated Environment with
-            `state == "draining"`), or exec completed (body is an
-            ExecEnvironmentResponse). An exec whose guest command exited
-            non-zero lands here, not in an error response.
+            `state == "draining"`), exec completed (body is an
+            ExecEnvironmentResponse), or a takeover was started or
+            released (body is the Intervention). An exec whose guest
+            command exited non-zero lands here, not in an error response.
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: "#/components/schemas/Environment"
                   - $ref: "#/components/schemas/ExecEnvironmentResponse"
+                  - $ref: "#/components/schemas/Intervention"
         "201":
           description: |
             Fork succeeded (body is the new Environment), or a `request`
@@ -524,6 +561,8 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
+        "423":
+          $ref: "#/components/responses/Locked"
         "500":
           $ref: "#/components/responses/InternalError"
         "501":
@@ -821,6 +860,11 @@ paths:
         image the guest answers with 503 and a reason. Unlike exec this
         accepts API keys: an action here is a mouse click on a display the
         image chose to run, not a root shell.
+
+        While a human holds the environment (a takeover), or an `ask`
+        stall is waiting to be acked, an action is refused with 423
+        `locked` before it reaches the guest, exactly as exec is. Wait on
+        `details.intervention_id`, then send the action again.
       requestBody:
         required: true
         content:
@@ -844,6 +888,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
         "501":
           $ref: "#/components/responses/Unimplemented"
         "503":
@@ -1557,19 +1603,51 @@ paths:
           an asserted actor.
         - `actor_mismatch` / `actor_not_allowed`: the `Fuse-Actor`
           header was refused (see the FuseActor parameter).
+
+        **Signals.** A `stall` is acked with a plain approve or reject;
+        either one lifts the lock on the agent. Approving an `expiry`
+        keeps the environment away from the reaper that was due for
+        `extend_seconds` (60 to 86400), or one more full window of that
+        reaper (capped at 24h) when it is omitted; the decision's
+        `answer` reads `extended until <time>` and
+        `payload.signal.extended_until` holds the time. Rejecting an
+        expiry lets the reap go ahead. `extend_seconds` on anything but
+        an expiry approval is 400, and so are `edited_argv` and `grant`
+        on a signal.
+
+        **Secrets.** `?action=secret` answers a `secret` request with an
+        AnswerSecretRequest body instead of deciding it. It needs
+        `hitl:secret` rather than `hitl:decide` (full-access keys hold
+        neither) and is subject to the same `self_approval` and
+        `actor_required` checks. The value is written into the guest at
+        the declared target, then dropped: it is never stored, logged,
+        returned or put on the event stream, and it never appears in an
+        error message. The intervention is approved with
+        `decision.answer` `"done"`, which is all the agent reads. 400
+        when the intervention is not a secret request, the value is
+        empty or over 64 KiB, the target is no longer declared, or the
+        orchestrator has no `TOKEN_ENCRYPTION_KEY`. 409 when it is
+        already resolved, or another answer to it is being written right
+        now. Once the value is in the guest the request counts as
+        answered, even if its deadline passed during the write.
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [approve, reject]
+            enum: [approve, reject, secret]
       requestBody:
         required: false
+        description: |
+          DecideInterventionRequest for `approve` and `reject`;
+          AnswerSecretRequest (required) for `secret`.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/DecideInterventionRequest"
+              oneOf:
+                - $ref: "#/components/schemas/DecideInterventionRequest"
+                - $ref: "#/components/schemas/AnswerSecretRequest"
       responses:
         "200":
           description: The resolved intervention.
@@ -1586,6 +1664,121 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /v1/interventions/{interventionId}/attach:
+    parameters:
+      - name: interventionId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: A held takeover.
+      - $ref: "#/components/parameters/FuseActor"
+      - $ref: "#/components/parameters/FuseActorName"
+    get:
+      tags: [interventions]
+      operationId: takeoverAttach
+      summary: Open a takeover shell
+      description: |
+        Opens the takeover holder's shell in the guest. This is the
+        environment attach stream (see attachEnvironment for the
+        handshake, the query string and the `fuse-attach/1` frames) with
+        a recording on it. Only the Go SDK and the CLI
+        (`fuse hitl takeover`) speak it.
+
+        Unlike plain attach it does not need the master token: it needs
+        `hitl:takeover`, and the caller must be the takeover's holder
+        (the master token skips the holder check). Start the takeover
+        first with POST /v1/environments/{vmId}?action=takeover.
+
+        **Recorded.** The first output frame is a banner saying the
+        session is recorded and that credentials belong in a secret
+        request, never typed into the shell. The guest's output and
+        window resizes are kept as an asciinema v2 cast; what the human
+        types is not. When the stream closes the cast is sealed with
+        `TOKEN_ENCRYPTION_KEY` (stored unencrypted, with a warning, when
+        the orchestrator has none) and linked from a `takeover_session`
+        audit row by `recording_id`. A cast stops growing at 8 MiB and is
+        marked truncated; the shell keeps working.
+      parameters:
+        - name: tty
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: ["1", "true"]
+          description: Must be `1` or `true`; a takeover shell is pty-only.
+        - name: rows
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: Initial pty height. Also the cast's height.
+        - name: cols
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          description: Initial pty width. Also the cast's width.
+        - name: cmd
+          in: query
+          required: false
+          explode: true
+          style: form
+          schema:
+            type: array
+            items:
+              type: string
+          description: |
+            The argv to run, one element per repeated `cmd`. Omit it for
+            the guest's login shell.
+      responses:
+        "101":
+          description: |
+            Upgrade accepted. The connection leaves HTTP and carries
+            fuse-attach/1 frames until either end closes it.
+          headers:
+            Upgrade:
+              schema:
+                type: string
+                enum: [fuse-attach/1]
+            Connection:
+              schema:
+                type: string
+                enum: [Upgrade]
+        "400":
+          description: |
+            No `Upgrade: fuse-attach/1`, no `tty=1`, or the intervention
+            is not a takeover.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            The key lacks `hitl:takeover` (`details.reason`
+            `missing_scope`), or the caller is not the takeover's holder
+            (code `forbidden`, no reason).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The takeover is not held (never started, or already resolved).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
+
   /v1/hitl/audit:
     get:
       tags: [interventions]
@@ -1593,8 +1786,7 @@ paths:
       summary: List hitl audit log
       description: |
         Reads the append-only hitl audit log, oldest first: one row per
-        `raised`, `decided`, `expired`, `cancelled`, `invite_minted` and
-        `invite_used` event, with the actor, its source, the key id, the
+        event (see AuditEntry for the list), with the actor, its source, the key id, the
         remote address and the time. Rows point at an intervention by id
         and never hold its content; the question, answer and reason stay
         on the encrypted intervention row.
@@ -1652,6 +1844,53 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /v1/hitl/recordings/{recordingId}:
+    parameters:
+      - name: recordingId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: The `recording_id` of a `takeover_session` audit row.
+      - $ref: "#/components/parameters/FuseActor"
+      - $ref: "#/components/parameters/FuseActorName"
+    get:
+      tags: [interventions]
+      operationId: getHitlRecording
+      summary: Get a takeover recording
+      description: |
+        Returns one recorded takeover session, decrypted with the
+        orchestrator key, as an asciinema v2 cast: a JSON header line,
+        then one `[seconds, "o" | "r", data]` line per output chunk or
+        resize. It holds what the guest printed, never what the human
+        typed. Play it with `asciinema play`.
+
+        Requires `hitl:read`. A recording of an environment the caller's
+        key does not cover is 404, the same as one that does not exist.
+      responses:
+        "200":
+          description: The cast.
+          headers:
+            Fuse-Intervention-Id:
+              schema:
+                type: string
+              description: The takeover the session belongs to.
+            Fuse-Recording-Truncated:
+              schema:
+                type: string
+                enum: ["true"]
+              description: Present when the session ran past 8 MiB and the cast was cut off.
+          content:
+            application/x-asciicast:
+              schema:
+                type: string
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
 
   /v1/api-keys:
     post:
@@ -1984,6 +2223,30 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+    Locked:
+      description: |
+        A human holds the environment, so the agent's call was refused
+        before it reached the guest (code `locked`). Either a takeover is
+        held (`details.kind` `takeover`), or a stall in `ask` mode is
+        waiting for a human to ack it (`details.kind` `stall`).
+        `details.intervention_id` names the intervention. Long-poll it
+        with GET /v1/interventions/{interventionId}?wait= until it is no
+        longer `pending`, then send the call again; a new 423 means wait
+        again. The lock never outlives the intervention's deadline, so
+        this always ends. The SDKs wait and retry by default, and raise
+        a `LockedError` carrying the intervention id and kind when told
+        not to wait.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              code: locked
+              message: environment fuse-agent is locked by takeover intervention int_0187...; wait for it to resolve
+              details:
+                intervention_id: int_0187...
+                kind: takeover
 
   schemas:
     Error:
@@ -2016,6 +2279,7 @@ components:
                 - unavailable
                 - internal
                 - unimplemented
+                - locked
             message:
               type: string
               description: Human-readable description.
@@ -2031,7 +2295,8 @@ components:
                 `actor_mismatch`, `actor_not_allowed`,
                 `mint_escalation`, `hitl_denied`), plus `scope` for
                 `missing_scope`, and `gate` and `intervention_id` for
-                `hitl_denied`.
+                `hitl_denied`. A 423 `locked` carries `intervention_id`
+                and `kind` (`takeover` or `stall`).
 
     ResourceSpec:
       type: object
@@ -3297,10 +3562,14 @@ components:
           description: How an intervention nobody decided resolves. Default reject.
         requests:
           type: object
-          description: Declared request kinds. Only `ask` exists today; present means allowed.
+          description: Declared request kinds; present means allowed.
           properties:
             ask:
               type: object
+            secret:
+              $ref: "#/components/schemas/HitlSecretRequests"
+            takeover:
+              $ref: "#/components/schemas/HitlTakeoverRequests"
         require_actor:
           type: boolean
           description: |
@@ -3315,7 +3584,7 @@ components:
             $ref: "#/components/schemas/HitlWebhook"
           description: |
             Webhooks told about every audit event on this environment
-            (raised, decided, expired, cancelled, invite minted and used).
+            (see HitlNotification for the list).
             Deliveries are content-free and signed. Each `secret` must name
             an entry of the create request's `secrets`, or the create is
             400.
@@ -3323,9 +3592,93 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HitlGate"
-          description: Gates that hold, record or deny exec and lifecycle actions.
+          description: |
+            Gates that hold, record or deny exec and lifecycle actions, and
+            the `stall` and `expiry` signals.
         exec:
           $ref: "#/components/schemas/HitlExecPolicy"
+
+    HitlSecretRequests:
+      type: object
+      required: [targets]
+      description: |
+        Where a secret a human types may land. The agent names one of
+        these targets by its `env` name or `file` path; it can never pick
+        a destination of its own. Declaring secret requests needs
+        `TOKEN_ENCRYPTION_KEY` on the orchestrator, or the create is 400.
+      properties:
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/HitlSecretTarget"
+
+    HitlSecretTarget:
+      type: object
+      required: [label]
+      description: Exactly one of `env` and `file` is set. Names are unique across targets.
+      properties:
+        env:
+          type: string
+          pattern: "^[A-Za-z_][A-Za-z0-9_]*$"
+          description: A variable the agent's later exec calls see.
+        file:
+          type: string
+          description: |
+            An absolute, clean guest path, written with mode 0600. Paths
+            under `/fuse` are refused; fuse keeps its own credentials
+            there.
+        label:
+          type: string
+          maxLength: 200
+          description: |
+            What the human is shown first, ahead of the agent's own
+            message. It comes from the policy, not the agent.
+
+    HitlTakeoverRequests:
+      type: object
+      properties:
+        via:
+          type: array
+          items:
+            type: string
+            enum: [terminal]
+          description: Allowed ways to take over. Omitted or empty means `terminal`.
+
+    TakeoverRequest:
+      type: object
+      description: Body of `?action=takeover`. Optional.
+      properties:
+        via:
+          type: string
+          enum: [terminal]
+          description: How to take over. Defaults to `terminal`.
+        reason:
+          type: string
+          description: Recorded when no agent request is pending to claim.
+
+    ReleaseRequest:
+      type: object
+      description: Body of `?action=release`. Optional.
+      properties:
+        note:
+          type: string
+          description: |
+            Handed back to the agent as the takeover's `decision.answer`.
+            Empty becomes `released by <actor>`.
+
+    AnswerSecretRequest:
+      type: object
+      required: [value]
+      description: Body of `POST /v1/interventions/{interventionId}?action=secret`.
+      properties:
+        value:
+          type: string
+          maxLength: 65536
+          description: |
+            Written into the guest at the declared target and dropped.
+            Never stored, logged or returned.
 
     HitlGate:
       type: object
@@ -3337,7 +3690,13 @@ components:
           description: Identifies the gate on interventions and grants.
         "on":
           type: string
-          enum: [exec, lifecycle]
+          enum: [exec, lifecycle, stall, expiry]
+          description: |
+            `stall` and `expiry` are signals fuse raises on its own: a
+            stall when the agent looks stuck, an expiry ahead of an
+            `idle_timeout` or `max_runtime` reap. They take only the
+            matching signal fields of `match`, are `ask` or `notify`
+            (never `deny`), and take no `grant`.
         match:
           $ref: "#/components/schemas/HitlGateMatch"
         mode:
@@ -3346,7 +3705,9 @@ components:
           description: |
             `ask` (the default) holds the action for a human; `notify` lets
             it run and records a terminal intervention; `deny` refuses it
-            with 403 `hitl_denied`.
+            with 403 `hitl_denied`. For a `stall`, `ask` locks the agent's
+            exec and computer calls (423) until a human acks it; for an
+            `expiry`, `ask` holds the reaper until a human decides.
         grant:
           type: string
           description: |
@@ -3385,6 +3746,31 @@ components:
             type: string
             enum: [destroy, fork, migrate, drain, snapshot, rotate-token]
           description: Lifecycle actions matched.
+        failures:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: |
+            `stall`: raise after this many consecutive non-zero exec exits.
+            A zero exit resets the run, and so does raising the stall.
+        quiet_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 86400
+          description: |
+            `stall`: raise after this long with no exec or computer call
+            from the agent (counted from creation before the first call).
+            One quiet spell raises one stall. A stall gate needs
+            `failures`, `quiet_seconds` or both.
+        before_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 86400
+          description: |
+            `expiry`: raise this long before the `idle_timeout` or
+            `max_runtime` reaper is due. Required for an expiry gate.
 
     HitlExecPolicy:
       type: object
@@ -3501,7 +3887,7 @@ components:
       properties:
         event:
           type: string
-          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used]
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used, secret_answered, takeover_started, takeover_ended, takeover_session]
         intervention_id:
           type: string
           description: Omitted for invite events.
@@ -3512,7 +3898,7 @@ components:
           description: Gate name. The gate that raised the intervention; empty for a request.
         "on":
           type: string
-          description: The intervention's kind (`ask`, `exec` or `lifecycle`). Empty for invite events.
+          description: The intervention's kind (`ask`, `secret`, `takeover`, `exec`, `lifecycle`, `stall` or `expiry`). Empty for invite events.
         deadline:
           type: string
           format: date-time
@@ -3525,19 +3911,40 @@ components:
 
     RequestHumanRequest:
       type: object
-      required: [question]
+      description: |
+        `ask` takes `question` and `choices`; `secret` takes `target` and
+        `message`; `takeover` takes `via` and `reason`.
       properties:
         kind:
           type: string
-          enum: [ask]
+          enum: [ask, secret, takeover]
           description: Request kind. Defaults to ask.
         question:
           type: string
+          description: What the human is asked. Required for an ask.
         choices:
           type: array
           items:
             type: string
           description: When set, the answer must be one of these.
+        target:
+          type: string
+          description: |
+            A declared secret target, by its `env` name or `file` path.
+            Required for a secret; anything undeclared is 400. The agent
+            gets back `decision.answer` `"done"`, never the value.
+        message:
+          type: string
+          description: The agent's text, shown to the human under the target's label (secret).
+        via:
+          type: string
+          enum: [terminal]
+          description: How the human should take over. Defaults to `terminal` (takeover).
+        reason:
+          type: string
+          description: |
+            Why the agent wants a human to take over (takeover). On
+            release the agent gets the human's note as `decision.answer`.
         timeout_seconds:
           type: integer
           format: int64
@@ -3565,6 +3972,13 @@ components:
             How far an approval of a gated action reaches: `once`, `env` or
             `ttl:<duration>`. Empty takes the gate's default. Cannot be
             combined with `edited_argv`.
+        extend_seconds:
+          type: integer
+          format: int64
+          description: |
+            Approving an `expiry` only: how long to keep the environment
+            away from the reaper, 60 to 86400. Omitted or 0 is one more
+            full window of the reaper that was due, capped at 24h.
 
     Actor:
       type: object
@@ -3602,7 +4016,13 @@ components:
           description: Position in the chain, strictly increasing.
         event:
           type: string
-          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used]
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used, secret_answered, takeover_started, takeover_ended, takeover_session]
+          description: |
+            `secret_answered` is a secret request answered (it records who
+            and when, never the value). `takeover_started` and
+            `takeover_ended` bracket a takeover; `takeover_ended` is its
+            release. `takeover_session` closes one recorded shell session
+            and carries `recording_id`.
         intervention_id:
           type: string
           description: Omitted for invite events.
@@ -3613,6 +4033,12 @@ components:
         remote_addr:
           type: string
           description: The caller's address as the orchestrator saw it.
+        recording_id:
+          type: string
+          description: |
+            Set on `takeover_session` rows: the cast at
+            GET /v1/hitl/recordings/{recordingId}. Included in `hash` only
+            when set, so older rows hash as before.
         at:
           type: string
           format: date-time
@@ -3644,7 +4070,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [ask, exec, lifecycle]
+          enum: [ask, secret, takeover, exec, lifecycle, stall, expiry]
         gate:
           type: string
           description: The gate that raised it. Empty for a request.
@@ -3658,8 +4084,9 @@ components:
         payload:
           type: object
           description: |
-            What was asked or attempted: `question` for an ask, `exec` or
-            `lifecycle` for a gate.
+            What was asked or attempted: `question` for an ask, `secret`
+            or `takeover` for those requests, `exec` or `lifecycle` for a
+            gate, `signal` for a stall or expiry.
           properties:
             question:
               type: string
@@ -3671,6 +4098,12 @@ components:
               $ref: "#/components/schemas/ExecPayload"
             lifecycle:
               $ref: "#/components/schemas/LifecyclePayload"
+            secret:
+              $ref: "#/components/schemas/InterventionSecret"
+            takeover:
+              $ref: "#/components/schemas/InterventionTakeover"
+            signal:
+              $ref: "#/components/schemas/InterventionSignal"
         triggered_by:
           $ref: "#/components/schemas/Actor"
         deadline:
@@ -3715,6 +4148,74 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    InterventionSecret:
+      type: object
+      required: [target, label]
+      description: A secret request. It never holds the value.
+      properties:
+        target:
+          type: string
+          description: The declared target's `env` name or `file` path.
+        label:
+          type: string
+          description: |
+            The target's label from the policy. Show it first: the agent
+            writes `message`, so `message` alone could claim to be
+            anything.
+        message:
+          type: string
+          description: The agent's own text.
+
+    InterventionTakeover:
+      type: object
+      required: [via]
+      description: |
+        A takeover. `holder` and `started_at` are set while a human holds
+        the environment, which is also when the agent's exec and computer
+        calls get 423. The intervention stays `pending` until release.
+      properties:
+        via:
+          type: string
+          enum: [terminal]
+        reason:
+          type: string
+        holder:
+          $ref: "#/components/schemas/Actor"
+        started_at:
+          type: string
+          format: date-time
+
+    InterventionSignal:
+      type: object
+      description: |
+        What fuse saw when it raised a stall or expiry. A stall carries
+        `failures` and `last_exit_code`, or `quiet_seconds`. An expiry
+        carries `reaper` and `reap_at`, and once approved
+        `extended_until`.
+      properties:
+        failures:
+          type: integer
+          description: The run of consecutive non-zero exec exits.
+        last_exit_code:
+          type: integer
+          description: The exit code that completed the run.
+        quiet_seconds:
+          type: integer
+          format: int64
+          description: How long the agent had made no exec or computer call.
+        reaper:
+          type: string
+          enum: [idle_timeout, max_runtime]
+          description: What will tear the environment down.
+        reap_at:
+          type: string
+          format: date-time
+          description: When. The expiry's own deadline is capped at this, with a 10s floor.
+        extended_until:
+          type: string
+          format: date-time
+          description: Set on approval. The reapers leave the environment alone until then.
 
     InterventionList:
       type: object

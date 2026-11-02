@@ -86,10 +86,12 @@ func TestCheckDecider(t *testing.T) {
 }
 
 func TestGrants(t *testing.T) {
-	if !Grants(nil, ScopeRead) || !Grants(nil, ScopeTakeover) {
-		t.Error("full-access key should hold read and takeover")
+	if !Grants(nil, ScopeRead) {
+		t.Error("full-access key should hold read")
 	}
-	for _, s := range []Scope{ScopeDecide, ScopeSecret, ScopeActAs} {
+	// takeover opens a guest shell, which a full-access key could never do
+	// (attach is master-only), so it has to be minted too.
+	for _, s := range []Scope{ScopeDecide, ScopeSecret, ScopeTakeover, ScopeActAs} {
 		if Grants(nil, s) {
 			t.Errorf("full-access key must not hold %s", s)
 		}
