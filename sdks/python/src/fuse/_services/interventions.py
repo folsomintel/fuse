@@ -65,6 +65,15 @@ class InterventionsService:
         resp = self._t.request("GET", "/v1/hitl/audit", params=params)
         return AuditPage.model_validate(resp.json())
 
+    def get_recording(self, recording_id: str) -> str:
+        # returns a recorded takeover session as asciinema v2 cast text. the
+        # id comes from a takeover_session audit entry's recording_id. needs
+        # hitl:read.
+        if not recording_id:
+            raise ValueError("recording id is required")
+        path = f"/v1/hitl/recordings/{quote(recording_id, safe='')}"
+        return self._t.request("GET", path).text
+
     def list(
         self, *, env_id: str = "", state: str = "", actor: str = "", cursor: str = ""
     ) -> list[Intervention]:
@@ -124,16 +133,20 @@ class InterventionsService:
         *,
         edited_argv: Optional[Sequence[str]] = None,
         grant: Optional[str] = None,
+        extend_seconds: Optional[int] = None,
     ) -> Intervention:
         # resolves a pending intervention as approved. an ask needs an answer
-        # (one of its choices, when it has any). requires hitl:decide or the
-        # master token, and the key or actor that raised it may not decide it.
+        # (one of its choices, when it has any); a stall needs none.
+        # requires hitl:decide or the master token, and the key or actor that
+        # raised it may not decide it.
         #
         # for a held exec or lifecycle action, the orchestrator then performs
         # it; wait on the id for its result. edited_argv replaces a held
         # exec's argv (re-checked against the deny gates, and not combinable
         # with grant). grant is "once", "env" or "ttl:<duration>"; none takes
-        # the gate's default.
+        # the gate's default. extend_seconds is how long approving an expiry
+        # keeps the environment alive; none is one more window of the reaper
+        # that was due.
         body: dict[str, Any] = {}
         if answer:
             body["answer"] = answer
@@ -143,7 +156,19 @@ class InterventionsService:
             body["edited_argv"] = list(edited_argv)
         if grant:
             body["grant"] = grant
+        if extend_seconds:
+            body["extend_seconds"] = extend_seconds
         return self._decide(intervention_id, "approve", body)
+
+    def answer_secret(self, intervention_id: str, value: str) -> Intervention:
+        # answers a pending secret request: the value is written to the
+        # declared target in the guest and dropped, never stored or returned.
+        # needs hitl:secret.
+        if not intervention_id:
+            raise ValueError("intervention id is required")
+        path = f"/v1/interventions/{quote(intervention_id, safe='')}"
+        resp = self._t.request("POST", path, params={"action": "secret"}, body={"value": value})
+        return Intervention.model_validate(resp.json())
 
     def reject(self, intervention_id: str, reason: Optional[str] = None) -> Intervention:
         # resolves a pending intervention as rejected. the reason is fed back
