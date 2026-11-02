@@ -2160,7 +2160,7 @@ components:
 
         - `missing_scope`: the key lacks the scope the route needs
           (`details.scope` names it). Full-access keys never hold
-          `hitl:decide`, `hitl:secret` or `hitl:act-as`.
+          `hitl:decide`, `hitl:secret`, `hitl:takeover` or `hitl:act-as`.
         - `env_scope`: a scoped key called a route outside the hitl
           routes.
         - `self_approval`: the key or actor that raised an intervention
