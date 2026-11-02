@@ -9,6 +9,7 @@ use crate::apikeys::ApiKeys;
 use crate::environments::Environments;
 use crate::error::Error;
 use crate::hosts::Hosts;
+use crate::interventions::Interventions;
 use crate::snapshots::Snapshots;
 use crate::transport::{RequestIdFn, Transport, DEFAULT_TIMEOUT};
 use crate::types::VersionInfo;
@@ -76,6 +77,11 @@ impl Client {
     /// The API keys service.
     pub fn api_keys(&self) -> ApiKeys {
         ApiKeys::new(self.transport.clone())
+    }
+
+    /// The human-in-the-loop interventions service.
+    pub fn interventions(&self) -> Interventions {
+        Interventions::new(self.transport.clone())
     }
 
     /// Probes `GET /v1/version` (unauthenticated) and reports what the

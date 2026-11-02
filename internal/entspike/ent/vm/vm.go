@@ -59,6 +59,8 @@ const (
 	FieldEgress = "egress_json"
 	// FieldHugePages holds the string denoting the huge_pages field in the database.
 	FieldHugePages = "huge_pages"
+	// FieldHitl holds the string denoting the hitl field in the database.
+	FieldHitl = "hitl_spec_json"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -93,6 +95,7 @@ var Columns = []string{
 	FieldMigInstanceUuids,
 	FieldEgress,
 	FieldHugePages,
+	FieldHitl,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }

@@ -13,9 +13,9 @@ import (
 // The struct is deliberately a flat, JSON-serialisable shape so the
 // REST handler can encode it directly into an SSE `data:` line. The
 // `Kind` field always serialises as `event` (matching the SSE event
-// dispatch contract on the client) — for v1 the only kind emitted is
-// "state". Future event kinds (e.g. "log", "snapshot") would be added
-// here without breaking existing subscribers.
+// dispatch contract on the client). Kinds are "state" and
+// "intervention" (see InterventionEvent); new kinds are added here
+// without breaking existing subscribers.
 //
 // Wire shape (one line of SSE data:):
 //
@@ -36,6 +36,21 @@ type EnvironmentEvent struct {
 	URL       string    `json:"url,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Intervention is set on "intervention" events: a hitl intervention on
+	// this environment was raised or resolved. it carries ids and states
+	// only, never content, and the stream may drop it, so a subscriber
+	// re-reads the intervention rather than trusting the event. State on
+	// such an event is the environment's current state, unchanged.
+	Intervention *InterventionEvent `json:"intervention,omitempty"`
+}
+
+// InterventionEvent is the content-free hint carried by an "intervention"
+// event.
+type InterventionEvent struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	State string `json:"state"`
 }
 
 // VMStateDestroyed is a synthetic terminal state emitted over the wire

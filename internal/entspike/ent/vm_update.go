@@ -406,6 +406,24 @@ func (_u *VMUpdate) SetNillableHugePages(v *bool) *VMUpdate {
 	return _u
 }
 
+// SetHitl sets the "hitl" field.
+func (_u *VMUpdate) SetHitl(v json.RawMessage) *VMUpdate {
+	_u.mutation.SetHitl(v)
+	return _u
+}
+
+// AppendHitl appends value to the "hitl" field.
+func (_u *VMUpdate) AppendHitl(v json.RawMessage) *VMUpdate {
+	_u.mutation.AppendHitl(v)
+	return _u
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (_u *VMUpdate) ClearHitl() *VMUpdate {
+	_u.mutation.ClearHitl()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdate) SetCreatedAt(v time.Time) *VMUpdate {
 	_u.mutation.SetCreatedAt(v)
@@ -612,6 +630,17 @@ func (_u *VMUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.Hitl(); ok {
+		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedHitl(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldHitl, value)
+		})
+	}
+	if _u.mutation.HitlCleared() {
+		_spec.ClearField(vm.FieldHitl, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -1015,6 +1044,24 @@ func (_u *VMUpdateOne) SetNillableHugePages(v *bool) *VMUpdateOne {
 	return _u
 }
 
+// SetHitl sets the "hitl" field.
+func (_u *VMUpdateOne) SetHitl(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.SetHitl(v)
+	return _u
+}
+
+// AppendHitl appends value to the "hitl" field.
+func (_u *VMUpdateOne) AppendHitl(v json.RawMessage) *VMUpdateOne {
+	_u.mutation.AppendHitl(v)
+	return _u
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (_u *VMUpdateOne) ClearHitl() *VMUpdateOne {
+	_u.mutation.ClearHitl()
+	return _u
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_u *VMUpdateOne) SetCreatedAt(v time.Time) *VMUpdateOne {
 	_u.mutation.SetCreatedAt(v)
@@ -1251,6 +1298,17 @@ func (_u *VMUpdateOne) sqlSave(ctx context.Context) (_node *VM, err error) {
 	}
 	if value, ok := _u.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.Hitl(); ok {
+		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.AppendedHitl(); ok {
+		_spec.AddModifier(func(u *sql.UpdateBuilder) {
+			sqljson.Append(u, vm.FieldHitl, value)
+		})
+	}
+	if _u.mutation.HitlCleared() {
+		_spec.ClearField(vm.FieldHitl, field.TypeJSON)
 	}
 	if value, ok := _u.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)

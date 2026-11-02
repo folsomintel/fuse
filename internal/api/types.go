@@ -211,6 +211,11 @@ type CreateEnvironmentRequest struct {
 	// produce identical behaviour and identical stored state.
 	Egress *EgressSpec `json:"egress,omitempty"`
 
+	// Hitl is the human-in-the-loop policy: which requests the agent may
+	// raise and how long a human has to answer. Omit it and hitl is off,
+	// in which case every request is refused.
+	Hitl *HitlSpec `json:"hitl,omitempty"`
+
 	// Files are caller-supplied guest files written before StartupScript
 	// runs, keyed by absolute guest path with base64-encoded content (the
 	// same encoding as ManifestInline). It is what a Fusefile's `copy` block
@@ -656,4 +661,97 @@ type HostInfo struct {
 type HostList struct {
 	Hosts      []HostInfo `json:"hosts"`
 	NextCursor *string    `json:"next_cursor,omitempty"`
+}
+
+// HitlSpec is the human-in-the-loop policy an environment is created with.
+// It mirrors internal/hitl.Spec. Forks and migrates inherit it.
+type HitlSpec struct {
+	// TimeoutSeconds is the default deadline for every intervention, 10 to
+	// 86400. Zero means 600.
+	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
+	// OnTimeout is how an intervention nobody decided resolves: "reject"
+	// (the default) or "allow".
+	OnTimeout string `json:"on_timeout,omitempty"`
+	// Requests declares the request kinds the agent may raise.
+	Requests HitlRequests `json:"requests"`
+}
+
+// HitlRequests declares the allowed request kinds. Only ask exists today.
+type HitlRequests struct {
+	Ask *HitlAskRequests `json:"ask,omitempty"`
+}
+
+// HitlAskRequests configures ask requests. Present means allowed.
+type HitlAskRequests struct{}
+
+// RequestHumanRequest is the body of POST /v1/environments/{vmId}?action=request.
+type RequestHumanRequest struct {
+	// Kind is the request kind. Only "ask" is supported.
+	Kind string `json:"kind"`
+	// Question is what the human is asked.
+	Question string `json:"question"`
+	// Choices, when set, restricts the answer to one of them.
+	Choices []string `json:"choices,omitempty"`
+	// TimeoutSeconds shortens the policy's deadline for this request. It can
+	// never extend it.
+	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
+}
+
+// DecideInterventionRequest is the body of POST /v1/interventions/{id}.
+type DecideInterventionRequest struct {
+	// Answer is required to approve an ask.
+	Answer string `json:"answer,omitempty"`
+	// Reason is text fed back to the agent. A reject without one gets a
+	// default.
+	Reason string `json:"reason,omitempty"`
+}
+
+// Actor is who raised or decided an intervention. Fuse records it and
+// never checks it.
+type Actor struct {
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Source string `json:"source"`
+	KeyID  string `json:"key_id,omitempty"`
+}
+
+// InterventionPayload is what the agent asked.
+type InterventionPayload struct {
+	Question string   `json:"question"`
+	Choices  []string `json:"choices,omitempty"`
+}
+
+// InterventionDecision is how an intervention resolved. Every terminal
+// intervention has one: expired ones carry the on_timeout outcome and
+// cancelled ones a reject, both decided by "system".
+type InterventionDecision struct {
+	Outcome   string    `json:"outcome"`
+	Answer    string    `json:"answer,omitempty"`
+	Reason    string    `json:"reason,omitempty"`
+	DecidedBy Actor     `json:"decided_by"`
+	DecidedAt time.Time `json:"decided_at"`
+}
+
+// Intervention is one request for a human.
+type Intervention struct {
+	ID          string                `json:"id"`
+	EnvID       string                `json:"env_id"`
+	Kind        string                `json:"kind"`
+	State       string                `json:"state"`
+	Payload     InterventionPayload   `json:"payload"`
+	TriggeredBy Actor                 `json:"triggered_by"`
+	Deadline    time.Time             `json:"deadline"`
+	OnTimeout   string                `json:"on_timeout"`
+	Decision    *InterventionDecision `json:"decision,omitempty"`
+	CreatedAt   time.Time             `json:"created_at"`
+	UpdatedAt   time.Time             `json:"updated_at"`
+}
+
+// InterventionList is the response body for GET /v1/interventions.
+//
+// NextCursor is an opaque token: pass it back as the "cursor" query param
+// to fetch the next page. It is absent once there are no more results.
+type InterventionList struct {
+	Interventions []Intervention `json:"interventions"`
+	NextCursor    *string        `json:"next_cursor,omitempty"`
 }

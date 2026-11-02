@@ -1,0 +1,174 @@
+---
+title: Human in the loop
+sidebar:
+  icon: user-check
+description: Let an agent ask a human, and guarantee it never gets stuck waiting
+---
+
+An agent driving an environment sometimes needs a person: to confirm a
+deploy, to pick between two plans, to say whether a diff looks right. Fuse
+gives that a first-class shape. The agent raises a request, a human answers
+it from the CLI or the API, and the answer goes back to the agent. Every
+request has a deadline, so whatever the human does (or does not do), the
+agent always gets an outcome and carries on.
+
+This page covers the core loop and the one request kind that exists today,
+`ask`. Gates on exec and lifecycle actions, secrets, takeover and scoped
+approver keys build on the same object and come later.
+
+## Concepts
+
+An **intervention** is one request for a human. It has an id, belongs to an
+environment, and moves exactly once from `pending` to a terminal state:
+
+| State | How it got there | `decision.outcome` |
+| --- | --- | --- |
+| `approved` | A human answered it. | `approve` |
+| `rejected` | A human rejected it, with a reason. | `reject` |
+| `expired` | Its deadline passed with no decision. | from `on_timeout` |
+| `cancelled` | Its environment was destroyed while it was pending. | `reject` |
+
+Every terminal intervention carries a `decision`, so the agent only ever
+reads `decision.outcome` (and `decision.answer` for an approved ask, or
+`decision.reason` for anything else). Expiry and cancellation are decided by
+the actor `system`.
+
+## Invariants
+
+These are what keep an agent from getting stuck:
+
+1. **Every intervention has a deadline.** The default is 10 minutes, the
+   range is 10s to 24h. There are no unbounded waits.
+2. **Every pending intervention reaches a terminal state**, and a waiting
+   caller always sees it. A read past the deadline expires the intervention
+   on the spot; a sweep on the reconcile loop catches the rest.
+3. **Destroying an environment cancels its pending interventions.**
+4. **A pending intervention keeps its environment alive.** The idle reaper
+   (`resources.idle_timeout`) skips an environment while a human is deciding.
+5. **State lives in Postgres, not in the connection.** An orchestrator
+   restart or a dropped client loses nothing: the caller polls the same id
+   again and gets the decision.
+6. **A rejection always carries a reason** the agent can read and replan on.
+
+A migrate carries pending interventions to the new environment id. A fork
+inherits the policy but starts with no pending interventions.
+
+## Declaring it
+
+Add a `hitl:` block to the Fusefile. Declaring a request kind, even as `{}`,
+is what allows it; without the block every request is refused.
+
+```yaml
+version: 1
+run: ./agent.sh
+
+hitl:
+  timeout: 10m        # default deadline, 10s to 24h
+  on_timeout: reject  # or allow
+  requests:
+    ask: {}
+```
+
+`on_timeout: allow` resolves an expired ask as `approve` with an empty
+answer. Use it only when "nobody objected" really is a yes.
+
+The block is enforced by the orchestrator; nothing of it goes into the guest.
+`fuse compile` shows it under `hitl` in the create request, and raw API
+callers send the same shape as `hitl` on `POST /v1/environments`:
+
+```json
+{
+  "hitl": {
+    "timeout_seconds": 600,
+    "on_timeout": "reject",
+    "requests": { "ask": {} }
+  }
+}
+```
+
+## Asking
+
+The agent raises an ask with a question and, optionally, a fixed set of
+choices. A per-request timeout can shorten the deadline, never extend it.
+The SDKs wait for the outcome by default.
+
+```go
+in, err := client.Environments.RequestHuman(ctx, envID, fuse.HumanRequest{
+	Question: "Deploy build 812 to prod?",
+	Choices:  []string{"yes", "no"},
+})
+if err != nil {
+	return err
+}
+if in.Approved() && in.Decision.Answer == "yes" {
+	deploy()
+} else {
+	log.Printf("not deploying: %s", in.Decision.Reason)
+}
+```
+
+Set `NoWait: true` to get the pending intervention back at once and wait on
+it later with `client.Interventions.Wait(ctx, in.ID)`. The other SDKs have
+the same call: `requestHuman` in TypeScript, `request_human` in Python and
+Rust.
+
+Under the hood this is two calls:
+
+```bash
+# raise: 201 with the pending intervention
+curl -X POST "$FUSE/v1/environments/$ENV?action=request" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"kind":"ask","question":"Deploy build 812 to prod?","choices":["yes","no"]}'
+
+# wait: long-polls up to 50s, always 200, loop while state is pending
+curl "$FUSE/v1/interventions/$ID?wait=30s" -H "Authorization: Bearer $TOKEN"
+```
+
+An undeclared kind, or an environment created without a `hitl:` block, is a
+400 that says so.
+
+## Answering
+
+From the terminal:
+
+```bash
+fuse hitl list                          # pending, across every environment
+fuse hitl list --env fuse-agent --state all
+fuse hitl show int_0187...
+fuse hitl answer int_0187... yes
+fuse hitl reject int_0187... --reason "build 812 failed QA, wait for 813"
+```
+
+From the API, `POST /v1/interventions/{id}?action=approve` with
+`{"answer": "yes"}`, or `?action=reject` with `{"reason": "..."}`. The SDKs
+expose this as `interventions.approve` and `interventions.reject`.
+
+An answer must be one of the ask's choices when it has any. Deciding an
+intervention that is already resolved, including one whose deadline passed a
+moment before the decision arrived, is a 409.
+
+**Deciding requires the master token.** An API key can raise a request but
+cannot answer one, so an agent holding an ordinary key cannot approve itself.
+Scoped approver keys and named actors replace this rule in a later release.
+
+## Watching
+
+`GET /v1/environments/{id}/events` emits an `intervention` event whenever one
+is raised or resolved:
+
+```json
+{"event":"intervention","vm_id":"fuse-agent","state":"running",
+ "intervention":{"id":"int_0187...","kind":"ask","state":"pending"}}
+```
+
+It carries ids and states only, never the question or the answer, and the
+stream drops events under load. Treat it as a hint to re-read the
+intervention, never as the record.
+
+## Where the content lives
+
+The question, the answer and the reason are encrypted at rest with the
+orchestrator's `TOKEN_ENCRYPTION_KEY` before they reach Postgres. Ids,
+states and timestamps stay plaintext so the deadline sweep and list filters
+work without decrypting. Without the key (dev mode) the content is stored in
+the clear.

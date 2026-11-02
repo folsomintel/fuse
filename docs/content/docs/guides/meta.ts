@@ -9,6 +9,7 @@ export default defineMeta({
     "desktop-environments",
     "computer-use",
     "egress",
+    "human-in-the-loop",
     "ci-runners",
     "gpu-workloads",
     "interactive-debugging",

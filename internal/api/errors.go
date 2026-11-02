@@ -41,7 +41,8 @@ func classifyFleetError(err error) (status int, code string) {
 	case errors.Is(err, orchestrator.ErrVMNotFound),
 		errors.Is(err, orchestrator.ErrTaskNotFound),
 		errors.Is(err, orchestrator.ErrHostNotFound),
-		errors.Is(err, orchestrator.ErrSnapshotNotFound):
+		errors.Is(err, orchestrator.ErrSnapshotNotFound),
+		errors.Is(err, orchestrator.ErrInterventionNotFound):
 		return http.StatusNotFound, CodeNotFound
 	case errors.Is(err, orchestrator.ErrNoCapacity),
 		errors.Is(err, orchestrator.ErrNoHosts),
@@ -56,7 +57,8 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrLiveMigrateRefused),
 		errors.Is(err, orchestrator.ErrVMNotRunning),
 		errors.Is(err, orchestrator.ErrGPUUnsupported),
-		errors.Is(err, orchestrator.ErrHostHasVMs):
+		errors.Is(err, orchestrator.ErrHostHasVMs),
+		errors.Is(err, orchestrator.ErrInterventionResolved):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrExecUnsupported),
 		errors.Is(err, orchestrator.ErrAttachUnsupported),
@@ -66,7 +68,9 @@ func classifyFleetError(err error) (status int, code string) {
 	case errors.Is(err, secrets.ErrSecretsValidation),
 		errors.Is(err, orchestrator.ErrStartupScriptTimeout),
 		errors.Is(err, orchestrator.ErrStartupScriptTimeoutTooLarge),
-		errors.Is(err, orchestrator.ErrInvalidCursor):
+		errors.Is(err, orchestrator.ErrInvalidCursor),
+		errors.Is(err, orchestrator.ErrHitlNotDeclared),
+		errors.Is(err, orchestrator.ErrInvalidIntervention):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:
 		return http.StatusInternalServerError, CodeInternal

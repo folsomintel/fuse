@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/egress"
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/secrets"
 )
 
@@ -133,6 +134,11 @@ type Spec struct {
 	// caller that predates the field deserializes into it without naming
 	// it. see internal/egress.
 	Egress egress.Spec
+
+	// Hitl is the human-in-the-loop policy, or nil when hitl is off. it
+	// lives on the spec so forks and migrates inherit it with the rest.
+	// the orchestrator enforces it; nothing of it goes into the guest.
+	Hitl *hitl.Spec
 }
 
 // Protocol is the transport an exposed port is published on.

@@ -59,7 +59,10 @@ class Transport:
         *,
         params: Optional[dict[str, Any]] = None,
         body: Any = None,
+        timeout: Optional[float] = None,
     ) -> httpx.Response:
+        # timeout overrides the client's default for this one request; a
+        # long-poll uses it so a short client timeout cannot cut the hold.
         json_body = serialize_body(body)
         resp = self._http.request(
             method,
@@ -67,6 +70,7 @@ class Transport:
             params=clean_params(params),
             json=json_body,
             headers=self._headers(has_body=json_body is not None),
+            timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
         )
         check_response(resp)
         return resp

@@ -88,6 +88,7 @@
     "healthcheck": { "$ref": "#/$defs/envHealthcheck" },
     "desktop": { "$ref": "#/$defs/desktop" },
     "egress": { "$ref": "#/$defs/egress" },
+    "hitl": { "$ref": "#/$defs/hitl" },
     "startup_timeout": {
       "allOf": [{ "$ref": "#/$defs/duration" }],
       "description": "Go duration bounding build + run. Omit for the orchestrator default (30s)."
@@ -404,6 +405,42 @@
           "default": "socks5",
           "description": "What the proxy speaks. Only valid with mode proxy. Defaults to socks5."
         }
+      }
+    },
+    "hitl": {
+      "type": "object",
+      "description": "Human-in-the-loop policy: what the agent may ask a human for, and how long a human has to answer. Omit the block and hitl is off. Enforced by the orchestrator; nothing of it goes into the guest.",
+      "additionalProperties": false,
+      "required": ["requests"],
+      "properties": {
+        "timeout": {
+          "$ref": "#/$defs/duration",
+          "description": "Default deadline for every intervention, between 10s and 24h. Defaults to 10m."
+        },
+        "on_timeout": {
+          "type": "string",
+          "enum": ["reject", "allow"],
+          "default": "reject",
+          "description": "How an intervention nobody decided resolves. Defaults to reject."
+        },
+        "requests": {
+          "type": "object",
+          "description": "Request kinds the agent may raise. Declaring a kind, even as {}, allows it; an undeclared kind is refused at call time.",
+          "additionalProperties": false,
+          "properties": {
+            "ask": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Let the agent ask a human a question, optionally with fixed choices."
+            },
+            "secret": { "not": {}, "description": "Not yet supported; refused at validation." },
+            "review": { "not": {}, "description": "Not yet supported; refused at validation." },
+            "takeover": { "not": {}, "description": "Not yet supported; refused at validation." }
+          }
+        },
+        "notify": { "not": {}, "description": "Not yet supported; refused at validation." },
+        "gates": { "not": {}, "description": "Not yet supported; refused at validation." },
+        "require_actor": { "not": {}, "description": "Not yet supported; refused at validation." }
       }
     },
     "envValue": {

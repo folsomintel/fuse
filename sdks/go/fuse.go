@@ -34,11 +34,12 @@ const defaultTimeout = 60 * time.Second
 // Client is the entry point for the Fuse API. It groups the resource
 // services that share a single transport.
 type Client struct {
-	t            *transport
-	Environments *EnvironmentsService
-	Snapshots    *SnapshotsService
-	Hosts        *HostsService
-	APIKeys      *APIKeysService
+	t             *transport
+	Environments  *EnvironmentsService
+	Snapshots     *SnapshotsService
+	Hosts         *HostsService
+	APIKeys       *APIKeysService
+	Interventions *InterventionsService
 }
 
 // clientConfig holds the resolved options for New.
@@ -114,11 +115,12 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		requestID:  cfg.requestID,
 	}
 	c := &Client{
-		t:            t,
-		Environments: newEnvironmentsService(t),
-		Snapshots:    newSnapshotsService(t),
-		Hosts:        newHostsService(t),
-		APIKeys:      newAPIKeysService(t),
+		t:             t,
+		Environments:  newEnvironmentsService(t),
+		Snapshots:     newSnapshotsService(t),
+		Hosts:         newHostsService(t),
+		APIKeys:       newAPIKeysService(t),
+		Interventions: newInterventionsService(t),
 	}
 	return c, nil
 }

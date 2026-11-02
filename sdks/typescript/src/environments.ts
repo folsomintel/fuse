@@ -10,12 +10,14 @@ import type {
   ExecRequest,
   ExecResult,
   ForkOptions,
+  Intervention,
   MigrateOptions,
   ToolResultBlock,
 } from "./types.js";
 import { FuseError, isFuseApiError } from "./errors.js";
 import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
+import { waitIntervention } from "./interventions.js";
 
 /** The server's max page size; list() requests this internally so it walks
  * every page in as few round trips as possible. */
@@ -44,6 +46,19 @@ export interface EnvironmentPage {
   environments: EnvironmentInfo[];
   /** Empty/undefined once there are no more results. */
   nextCursor?: string;
+}
+
+/** What environments.requestHuman sends. */
+export interface HumanRequest {
+  /** The request kind. Defaults to "ask". */
+  kind?: string;
+  question: string;
+  choices?: string[];
+  /** Shortens the policy's deadline. It can never extend it. */
+  timeoutSeconds?: number;
+  /** Wait for a decision (the default). false returns the pending
+   * intervention at once; wait on it later with interventions.wait. */
+  wait?: boolean;
 }
 
 /** EnvironmentsService manages microVM lifecycle. */
@@ -264,6 +279,44 @@ export class EnvironmentsService {
     }
     if (content.length === 0) content.push({ type: "text", text: "done" });
     return { content };
+  }
+
+  /**
+   * Ask a human for something the environment's hitl policy declares. By
+   * default it waits (by long-polling) until the intervention resolves
+   * (answered, rejected, expired or cancelled); read the result off the
+   * returned intervention's decision. Pass `wait: false` to get the pending
+   * handle instead. Pass `opts.signal` to stop waiting early.
+   *
+   * @example
+   * const res = await client.environments.requestHuman(id, {
+   *   question: "deploy to prod?",
+   *   choices: ["yes", "no"],
+   * });
+   * if (isInterventionApproved(res)) console.log(res.decision?.answer);
+   */
+  async requestHuman(
+    vmId: string,
+    req: HumanRequest,
+    opts: CallOptions = {},
+  ): Promise<Intervention> {
+    requireArg(vmId, "vm id");
+    const pending = await this.t.json<Intervention>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      {
+        query: { action: "request" },
+        body: {
+          kind: req.kind || "ask",
+          question: req.question,
+          choices: req.choices,
+          timeout_seconds: req.timeoutSeconds || undefined,
+        },
+        signal: opts.signal,
+      },
+    );
+    if (req.wait === false) return pending;
+    return waitIntervention(this.t, pending.id, opts);
   }
 
   /** Report whether the environment has a live display and at what geometry.

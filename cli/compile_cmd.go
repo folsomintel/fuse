@@ -85,6 +85,18 @@ type compiledEgress struct {
 	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
 }
 
+// compiledHitl mirrors fuse.HitlSpec with yaml tags added.
+type compiledHitl struct {
+	TimeoutSeconds int64             `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
+	OnTimeout      string            `json:"on_timeout,omitempty" yaml:"on_timeout,omitempty"`
+	Requests       compiledHitlAllow `json:"requests" yaml:"requests"`
+}
+
+// compiledHitlAllow mirrors fuse.HitlRequests.
+type compiledHitlAllow struct {
+	Ask *struct{} `json:"ask,omitempty" yaml:"ask,omitempty"`
+}
+
 // compiledDesktop mirrors fuse.DesktopSpec with yaml tags added.
 type compiledDesktop struct {
 	Width  int    `json:"width" yaml:"width"`
@@ -125,8 +137,11 @@ type compiledRequest struct {
 	Desktop *compiledDesktop `json:"desktop,omitempty" yaml:"desktop,omitempty"`
 	// Egress is the outbound traffic policy, absent when the Fusefile
 	// declared none, which the orchestrator reads as direct.
-	Egress         *compiledEgress `json:"egress,omitempty" yaml:"egress,omitempty"`
-	SeedSnapshotID string          `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
+	Egress *compiledEgress `json:"egress,omitempty" yaml:"egress,omitempty"`
+	// Hitl is the human-in-the-loop policy, absent when the Fusefile declared
+	// none, which the orchestrator reads as hitl off.
+	Hitl           *compiledHitl `json:"hitl,omitempty" yaml:"hitl,omitempty"`
+	SeedSnapshotID string        `json:"seed_snapshot_id,omitempty" yaml:"seed_snapshot_id,omitempty"`
 	// StartupScriptTimeoutSeconds bounds setup + run. Zero means the author
 	// asked for no bound and the orchestrator's default applies.
 	StartupScriptTimeoutSeconds int64    `json:"startup_script_timeout_seconds,omitempty" yaml:"startup_script_timeout_seconds,omitempty"`
@@ -279,6 +294,12 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 	}
 	if eg := c.Egress; eg != nil {
 		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol)}
+	}
+	if h := c.Hitl; h != nil {
+		req.Hitl = &compiledHitl{TimeoutSeconds: h.TimeoutSeconds, OnTimeout: h.OnTimeout}
+		if h.Ask {
+			req.Hitl.Requests.Ask = &struct{}{}
+		}
 	}
 	return req
 }

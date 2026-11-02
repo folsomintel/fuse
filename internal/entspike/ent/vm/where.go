@@ -1159,6 +1159,16 @@ func HugePagesNEQ(v bool) predicate.VM {
 	return predicate.VM(sql.FieldNEQ(FieldHugePages, v))
 }
 
+// HitlIsNil applies the IsNil predicate on the "hitl" field.
+func HitlIsNil() predicate.VM {
+	return predicate.VM(sql.FieldIsNull(FieldHitl))
+}
+
+// HitlNotNil applies the NotNil predicate on the "hitl" field.
+func HitlNotNil() predicate.VM {
+	return predicate.VM(sql.FieldNotNull(FieldHitl))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldCreatedAt, v))

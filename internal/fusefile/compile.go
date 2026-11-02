@@ -96,6 +96,15 @@ type EgressSpec struct {
 	Protocol EgressProtocol `json:"protocol,omitempty"`
 }
 
+// HitlSpec is the compiled hitl block. It mirrors internal/api.HitlSpec,
+// with the timeout in seconds (zero means the orchestrator's 10m default)
+// and on_timeout always set.
+type HitlSpec struct {
+	TimeoutSeconds int64
+	OnTimeout      string
+	Ask            bool
+}
+
 // Compiled is the result of compiling a Fusefile: the resource spec, the
 // manifest json to upload to the guest, the startup script to run, the
 // secrets the environment needs at create time, and any ports to expose.
@@ -120,6 +129,10 @@ type Compiled struct {
 	// Egress is the outbound traffic policy, or nil when the author declared
 	// none, which the orchestrator reads as direct.
 	Egress *EgressSpec
+
+	// Hitl is the human-in-the-loop policy, or nil when the author declared
+	// none, which the orchestrator reads as hitl off.
+	Hitl *HitlSpec
 
 	// Copy is the compiled `copy` block: one entry per authored entry, with
 	// its guest path resolved against the workspace. The sources are named,
@@ -534,6 +547,7 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		Healthcheck:           healthcheck,
 		Desktop:               compileDesktop(f),
 		Egress:                compileEgress(f),
+		Hitl:                  compileHitl(f),
 		StartupTimeoutSeconds: startupTimeoutSeconds,
 	}, nil
 }
@@ -1080,4 +1094,22 @@ func parseSize(s string) (int32, error) {
 		return 0, fmt.Errorf("invalid size %q: value too large", s)
 	}
 	return int32(mb), nil
+}
+
+// compileHitl turns the authored hitl block into its wire form. Nil in, nil
+// out. Validate has already checked the duration.
+func compileHitl(f *Fusefile) *HitlSpec {
+	if f.Hitl == nil {
+		return nil
+	}
+	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil}
+	if spec.OnTimeout == "" {
+		spec.OnTimeout = "reject"
+	}
+	if f.Hitl.Timeout != "" {
+		if d, err := time.ParseDuration(f.Hitl.Timeout); err == nil {
+			spec.TimeoutSeconds = int64(d / time.Second)
+		}
+	}
+	return spec
 }

@@ -425,6 +425,10 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 
 	// from here the target is the guest; the source is only torn down.
 	committed = true
+	// a pending decision belongs to the logical environment, which now lives
+	// at the new id. moved before the source is destroyed, which would
+	// otherwise cancel it.
+	fm.moveInterventions(ctx, vmID, newVMID)
 	if frozen {
 		// drain runs a command inside the guest, which a frozen guest cannot
 		// do. nothing needs flushing either: its state is already on the target.

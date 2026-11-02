@@ -543,6 +543,13 @@ type FleetManager struct {
 	// cross-replica fanout, bounded per-subscriber buffer).
 	broadcaster *eventBroadcaster
 
+	// hitlMu serializes intervention transitions so two deciders (or a
+	// decider and the deadline sweep) cannot both resolve one intervention.
+	// hitlWaiters holds a channel per intervention someone is waiting on,
+	// closed when it resolves. see interventions.go.
+	hitlMu      sync.Mutex
+	hitlWaiters map[string]chan struct{}
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -1319,6 +1326,7 @@ func (fm *FleetManager) destroyVM(ctx context.Context, vmID string) error {
 	fm.deleteVMBackground(vmID)
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "destroyed"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
+	fm.cancelEnvInterventions(ctx, vmID, "environment destroyed")
 
 	return nil
 }
@@ -1550,6 +1558,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// in reconcile.go so that fleet.go stays focused on the lifecycle API.
 	fm.reconcileOrphans(ctx, envs, envProviders, tracked, &summary)
 	fm.reconcileStuckTasks(ctx, &summary)
+	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
@@ -1616,6 +1625,7 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 	fm.deleteVMBackground(vmID)
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "async_destroy"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
+	fm.cancelEnvInterventions(ctx, vmID, "environment destroyed")
 }
 
 // reapDestroyedVMs removes tracked VMs that are in the Destroying state

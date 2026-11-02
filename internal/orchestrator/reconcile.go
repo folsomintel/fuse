@@ -204,15 +204,23 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 		needFail bool
 	}
 
+	// a pending intervention means a human is deciding, which is activity.
+	// if the store cannot say which envs those are, reap nothing this cycle
+	// rather than kill an env mid-decision.
+	waiting, ok := fm.pendingInterventionEnvs(ctx)
+	if !ok {
+		return
+	}
+
 	fm.mu.Lock()
 	candidates := make([]idleCandidate, 0)
 	live := make(map[string]bool, len(fm.vms))
 	for id, v := range fm.vms {
 		live[id] = true
 
-		if v.state != VMStateRunning || v.attachSessions > 0 {
-			// Not eligible: either the VM is not running, or somebody is
-			// attached right now. Reset any strike history so it starts from a
+		if v.state != VMStateRunning || v.attachSessions > 0 || waiting[id] {
+			// Not eligible: the VM is not running, somebody is attached
+			// right now, or a human is deciding one of its interventions. Reset any strike history so it starts from a
 			// clean slate once it becomes eligible again.
 			delete(fm.idleStrikes, id)
 			continue

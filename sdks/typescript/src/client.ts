@@ -3,6 +3,7 @@ import { EnvironmentsService } from "./environments.js";
 import { SnapshotsService } from "./snapshots.js";
 import { HostsService } from "./hosts.js";
 import { ApiKeysService } from "./apiKeys.js";
+import { InterventionsService } from "./interventions.js";
 import { VERSION } from "./version.js";
 
 /** Options for constructing a FuseClient. */
@@ -36,6 +37,7 @@ export class FuseClient {
   readonly snapshots: SnapshotsService;
   readonly hosts: HostsService;
   readonly apiKeys: ApiKeysService;
+  readonly interventions: InterventionsService;
 
   constructor(options: FuseClientOptions) {
     const transport = new Transport({
@@ -51,5 +53,6 @@ export class FuseClient {
     this.snapshots = new SnapshotsService(transport);
     this.hosts = new HostsService(transport);
     this.apiKeys = new ApiKeysService(transport);
+    this.interventions = new InterventionsService(transport);
   }
 }

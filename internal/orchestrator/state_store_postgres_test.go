@@ -3,11 +3,14 @@ package orchestrator
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 // openTestPostgres returns a migrated PostgresStateStore backed by
@@ -275,5 +278,71 @@ func TestPostgresStateStore_SnapshotLayerColumnsNeedNoBackfill(t *testing.T) {
 		t.Fatalf("FindSnapshotByLayerKey: %v", err)
 	} else if ok {
 		t.Errorf("a legacy row was served as a layer cache hit")
+	}
+}
+
+// TestPostgresStateStore_InterventionsAndHitlSpec round trips an
+// intervention and a vm's hitl policy through the real schema, including
+// the nullable hitl_spec_json column reading back as hitl off.
+func TestPostgresStateStore_InterventionsAndHitlSpec(t *testing.T) {
+	store := openTestPostgres(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	spec := &hitl.Spec{TimeoutSeconds: 120, Requests: hitl.Requests{Ask: &hitl.AskRequests{}}}
+	withHitl := VMRecord{ID: "pg-hitl-on", State: VMStateRunning, Spec: Spec{Hitl: spec}, CreatedAt: now, UpdatedAt: now}
+	without := VMRecord{ID: "pg-hitl-off", State: VMStateRunning, CreatedAt: now, UpdatedAt: now}
+	for _, vm := range []VMRecord{withHitl, without} {
+		if err := store.UpsertVM(ctx, vm); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.DeleteVM(ctx, vm.ID) })
+	}
+	vms, err := store.ListVMs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, vm := range vms {
+		switch vm.ID {
+		case withHitl.ID:
+			if vm.Spec.Hitl == nil || vm.Spec.Hitl.TimeoutSeconds != 120 || vm.Spec.Hitl.Requests.Ask == nil {
+				t.Fatalf("hitl spec did not round trip: %+v", vm.Spec.Hitl)
+			}
+		case without.ID:
+			if vm.Spec.Hitl != nil {
+				t.Fatalf("vm without hitl read back %+v", vm.Spec.Hitl)
+			}
+		}
+	}
+
+	id := hitl.NewID(now)
+	decidedAt := now.Add(time.Second)
+	rec := InterventionRecord{
+		ID: id, EnvID: withHitl.ID, Kind: "ask", State: "approved", Sealed: true,
+		Payload: []byte{1, 2, 3}, Result: []byte{4}, Reason: []byte{5},
+		Outcome: "approve", TriggeredBy: []byte(`{"id":"master","source":"key"}`),
+		DecidedBy: []byte(`{"id":"master","source":"key"}`), DecidedAt: &decidedAt,
+		OnTimeout: "reject", Deadline: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.UpsertIntervention(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(ctx, `DELETE FROM orchestrator_interventions WHERE intervention_id = $1`, id)
+	})
+	got, err := store.GetIntervention(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != "approved" || !got.Sealed || string(got.Payload) != string(rec.Payload) ||
+		got.DecidedAt == nil || !got.DecidedAt.Equal(decidedAt) || !got.Deadline.Equal(rec.Deadline) {
+		t.Fatalf("intervention did not round trip: %+v", got)
+	}
+	list, err := store.ListInterventions(ctx, InterventionFilter{EnvID: withHitl.ID, State: "approved"})
+	if err != nil || len(list) != 1 || list[0].ID != id {
+		t.Fatalf("list = %+v, %v", list, err)
+	}
+	if _, err := store.GetIntervention(ctx, "int_missing"); !errors.Is(err, ErrInterventionNotFound) {
+		t.Fatalf("missing id: err = %v", err)
 	}
 }

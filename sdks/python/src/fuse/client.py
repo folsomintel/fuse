@@ -8,6 +8,7 @@ from ._core import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
 from ._services.apikeys import APIKeysService
 from ._services.environments import EnvironmentsService
 from ._services.hosts import HostsService
+from ._services.interventions import InterventionsService
 from ._services.snapshots import SnapshotsService
 from ._transport import Transport
 
@@ -44,6 +45,7 @@ class Client:
         self.snapshots = SnapshotsService(self._t)
         self.hosts = HostsService(self._t)
         self.api_keys = APIKeysService(self._t)
+        self.interventions = InterventionsService(self._t)
 
     def close(self) -> None:
         self._t.close()

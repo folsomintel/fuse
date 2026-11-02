@@ -290,6 +290,12 @@ func (_c *VMCreate) SetNillableHugePages(v *bool) *VMCreate {
 	return _c
 }
 
+// SetHitl sets the "hitl" field.
+func (_c *VMCreate) SetHitl(v json.RawMessage) *VMCreate {
+	_c.mutation.SetHitl(v)
+	return _c
+}
+
 // SetCreatedAt sets the "created_at" field.
 func (_c *VMCreate) SetCreatedAt(v time.Time) *VMCreate {
 	_c.mutation.SetCreatedAt(v)
@@ -600,6 +606,10 @@ func (_c *VMCreate) createSpec() (*VM, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
 		_node.HugePages = value
+	}
+	if value, ok := _c.mutation.Hitl(); ok {
+		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
+		_node.Hitl = value
 	}
 	if value, ok := _c.mutation.CreatedAt(); ok {
 		_spec.SetField(vm.FieldCreatedAt, field.TypeTime, value)
@@ -1006,6 +1016,24 @@ func (u *VMUpsert) SetHugePages(v bool) *VMUpsert {
 // UpdateHugePages sets the "huge_pages" field to the value that was provided on create.
 func (u *VMUpsert) UpdateHugePages() *VMUpsert {
 	u.SetExcluded(vm.FieldHugePages)
+	return u
+}
+
+// SetHitl sets the "hitl" field.
+func (u *VMUpsert) SetHitl(v json.RawMessage) *VMUpsert {
+	u.Set(vm.FieldHitl, v)
+	return u
+}
+
+// UpdateHitl sets the "hitl" field to the value that was provided on create.
+func (u *VMUpsert) UpdateHitl() *VMUpsert {
+	u.SetExcluded(vm.FieldHitl)
+	return u
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (u *VMUpsert) ClearHitl() *VMUpsert {
+	u.SetNull(vm.FieldHitl)
 	return u
 }
 
@@ -1484,6 +1512,27 @@ func (u *VMUpsertOne) SetHugePages(v bool) *VMUpsertOne {
 func (u *VMUpsertOne) UpdateHugePages() *VMUpsertOne {
 	return u.Update(func(s *VMUpsert) {
 		s.UpdateHugePages()
+	})
+}
+
+// SetHitl sets the "hitl" field.
+func (u *VMUpsertOne) SetHitl(v json.RawMessage) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHitl(v)
+	})
+}
+
+// UpdateHitl sets the "hitl" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateHitl() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHitl()
+	})
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (u *VMUpsertOne) ClearHitl() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearHitl()
 	})
 }
 
@@ -2133,6 +2182,27 @@ func (u *VMUpsertBulk) SetHugePages(v bool) *VMUpsertBulk {
 func (u *VMUpsertBulk) UpdateHugePages() *VMUpsertBulk {
 	return u.Update(func(s *VMUpsert) {
 		s.UpdateHugePages()
+	})
+}
+
+// SetHitl sets the "hitl" field.
+func (u *VMUpsertBulk) SetHitl(v json.RawMessage) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetHitl(v)
+	})
+}
+
+// UpdateHitl sets the "hitl" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateHitl() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateHitl()
+	})
+}
+
+// ClearHitl clears the value of the "hitl" field.
+func (u *VMUpsertBulk) ClearHitl() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.ClearHitl()
 	})
 }
 

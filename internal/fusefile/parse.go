@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -356,6 +357,7 @@ func validate(f *Fusefile) error {
 	errs = append(errs, validateExposeHealthcheck(f)...)
 	errs = append(errs, validateDesktop(f.Desktop)...)
 	errs = append(errs, validateEgress(f.Egress)...)
+	errs = append(errs, validateHitl(f.Hitl)...)
 
 	// an empty secret name is a requirement no `--secret` flag can satisfy, and
 	// the server's ExtractRequiredSecrets skips empty refs, so the two sides
@@ -559,6 +561,57 @@ func validateEgress(eg *Egress) []error {
 				EgressProtocolSOCKS5, EgressProtocolHTTP, eg.Protocol))
 		}
 	}
+	return errs
+}
+
+// hitl timeout bounds. they mirror internal/hitl, which this package does
+// not import for the same reason it duplicates the egress vocabulary.
+const (
+	minHitlTimeout = 10 * time.Second
+	maxHitlTimeout = 24 * time.Hour
+)
+
+// validateHitl checks the hitl block. It mirrors internal/hitl.Spec.Validate
+// so a Fusefile the CLI accepts is one the orchestrator accepts too, and it
+// refuses the parts of the design that are not built yet by name.
+func validateHitl(h *Hitl) []error {
+	if h == nil {
+		return nil
+	}
+	var errs []error
+	if h.Timeout != "" {
+		d, err := time.ParseDuration(h.Timeout)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("hitl.timeout: %q is not a duration like 10m", h.Timeout))
+		case d < minHitlTimeout || d > maxHitlTimeout:
+			errs = append(errs, fmt.Errorf("hitl.timeout: must be between %s and %s, got %s", minHitlTimeout, maxHitlTimeout, d))
+		case d%time.Second != 0:
+			errs = append(errs, fmt.Errorf("hitl.timeout: must be a whole number of seconds, got %s", d))
+		}
+	}
+	switch h.OnTimeout {
+	case "", "reject", "allow":
+	default:
+		errs = append(errs, fmt.Errorf("hitl.on_timeout: must be \"reject\" or \"allow\", got %q", h.OnTimeout))
+	}
+	for name, node := range map[string]yaml.Node{
+		"hitl.notify":            h.Notify,
+		"hitl.gates":             h.Gates,
+		"hitl.require_actor":     h.RequireActor,
+		"hitl.requests.secret":   h.Requests.Secret,
+		"hitl.requests.review":   h.Requests.Review,
+		"hitl.requests.takeover": h.Requests.Takeover,
+	} {
+		if !node.IsZero() {
+			errs = append(errs, fmt.Errorf("%s: not yet supported", name))
+		}
+	}
+	if h.Requests.Ask == nil {
+		errs = append(errs, errors.New("hitl.requests: declare at least one request kind (only ask is supported)"))
+	}
+	// map iteration order is random; keep the report stable.
+	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return errs
 }
 

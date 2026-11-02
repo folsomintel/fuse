@@ -263,6 +263,42 @@ type HostRecord struct {
 	UpdatedAt      time.Time
 }
 
+// InterventionRecord is the stored shape of a hitl intervention. content
+// (payload, edited payload, result, reason) is held as bytes the fleet
+// manager seals before writing; Sealed says whether it did. everything else
+// is plaintext metadata so the deadline sweep and list filters never have
+// to decrypt.
+type InterventionRecord struct {
+	ID            string
+	EnvID         string
+	Kind          string
+	Gate          string
+	State         string
+	Sealed        bool
+	Payload       []byte
+	EditedPayload []byte
+	Result        []byte
+	Reason        []byte
+	Outcome       string
+	TriggeredBy   json.RawMessage
+	DecidedBy     json.RawMessage
+	DecidedAt     *time.Time
+	OnTimeout     string
+	Deadline      time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+// InterventionFilter narrows ListInterventions. empty fields match
+// everything. results are ordered by id, which sorts by creation time;
+// After resumes past an id and Limit caps the page (0 means no cap).
+type InterventionFilter struct {
+	EnvID string
+	State string
+	After string
+	Limit int
+}
+
 // SnapshotQuotaUsage summarizes a tenant's in-flight/ready snapshot usage
 // (count and aggregate size) for quota enforcement, without requiring the
 // caller to load every snapshot record to compute it.
@@ -349,6 +385,17 @@ type StateStore interface {
 
 	// GetHost returns a single host by ID, or an error if not found.
 	GetHost(ctx context.Context, hostID string) (HostRecord, error)
+
+	// UpsertIntervention inserts or replaces a hitl intervention.
+	UpsertIntervention(ctx context.Context, rec InterventionRecord) error
+
+	// GetIntervention returns one intervention, or an error wrapping
+	// ErrInterventionNotFound.
+	GetIntervention(ctx context.Context, id string) (InterventionRecord, error)
+
+	// ListInterventions returns interventions matching the filter, ordered
+	// by id.
+	ListInterventions(ctx context.Context, filter InterventionFilter) ([]InterventionRecord, error)
 }
 
 // MemoryStateStore is a process-local store useful for tests/default behavior.
@@ -360,6 +407,7 @@ type MemoryStateStore struct {
 	events      []EventRecord
 	deadLetters map[string]DeadLetterRecord // keyed by "kind|entity_id"
 	hosts       map[string]HostRecord
+	hitl        map[string]InterventionRecord
 	nextID      int64
 	nextDLQID   int64
 }
@@ -372,6 +420,7 @@ func NewMemoryStateStore() *MemoryStateStore {
 		snapshots:   make(map[string]SnapshotRecord),
 		deadLetters: make(map[string]DeadLetterRecord),
 		hosts:       make(map[string]HostRecord),
+		hitl:        make(map[string]InterventionRecord),
 	}
 }
 
@@ -688,4 +737,44 @@ func (s *MemoryStateStore) GetHost(_ context.Context, hostID string) (HostRecord
 		return HostRecord{}, fmt.Errorf("host %s not found", hostID)
 	}
 	return cloneHostRecord(h), nil
+}
+
+func (s *MemoryStateStore) UpsertIntervention(_ context.Context, rec InterventionRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hitl[rec.ID] = rec
+	return nil
+}
+
+func (s *MemoryStateStore) GetIntervention(_ context.Context, id string) (InterventionRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.hitl[id]
+	if !ok {
+		return InterventionRecord{}, fmt.Errorf("%w: %s", ErrInterventionNotFound, id)
+	}
+	return rec, nil
+}
+
+func (s *MemoryStateStore) ListInterventions(_ context.Context, f InterventionFilter) ([]InterventionRecord, error) {
+	s.mu.RLock()
+	out := make([]InterventionRecord, 0)
+	for _, rec := range s.hitl {
+		if f.EnvID != "" && rec.EnvID != f.EnvID {
+			continue
+		}
+		if f.State != "" && rec.State != f.State {
+			continue
+		}
+		if f.After != "" && rec.ID <= f.After {
+			continue
+		}
+		out = append(out, rec)
+	}
+	s.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[:f.Limit]
+	}
+	return out, nil
 }

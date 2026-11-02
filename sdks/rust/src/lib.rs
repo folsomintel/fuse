@@ -3,9 +3,9 @@
 //! The crate is published as `folsom-fuse`; the library target is `fuse`,
 //! mirroring the Python SDK's `import fuse`.
 //!
-//! [`Client`] is the entry point. It groups four resource services behind
-//! one shared transport: [`Environments`], [`Snapshots`], [`Hosts`], and
-//! [`ApiKeys`].
+//! [`Client`] is the entry point. It groups five resource services behind
+//! one shared transport: [`Environments`], [`Snapshots`], [`Hosts`],
+//! [`ApiKeys`], and [`Interventions`].
 //!
 //! ```no_run
 //! use fuse::{Client, CreateRequest, ExecRequest, Spec};
@@ -55,6 +55,7 @@ mod environments;
 mod error;
 mod events;
 mod hosts;
+mod interventions;
 mod snapshots;
 mod strenum;
 mod transport;
@@ -72,13 +73,16 @@ pub use environments::{
 pub use error::{ApiError, Error, ErrorCode};
 pub use events::EventStream;
 pub use hosts::{HostPage, Hosts, ListHostsOptions};
+pub use interventions::{HumanRequest, InterventionPage, Interventions, ListInterventionsOptions};
 pub use snapshots::{ListSnapshotsOptions, SnapshotPage, Snapshots};
 pub use types::{
-    ApiKey, Arch, CreateRequest, CreatedApiKey, DesktopSpec, DesktopWm, EgressHealth,
-    EgressHealthState, EgressMode, EgressProtocol, EgressSpec, EgressStatus, Endpoint,
-    EnvironmentInfo, EnvironmentState, Event, EventKind, ExposeSpec, ForkOptions, GpuDevice,
-    Health, HealthState, HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, Host, HostBackend,
-    HostCapacity, HostState, MigInstance, MigrateOptions, MissReason, Protocol,
+    Actor, ActorSource, ApiKey, Arch, CreateRequest, CreatedApiKey, DesktopSpec, DesktopWm,
+    EgressHealth, EgressHealthState, EgressMode, EgressProtocol, EgressSpec, EgressStatus,
+    Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind, ExposeSpec, ForkOptions,
+    GpuDevice, Health, HealthState, HealthcheckHttp, HealthcheckProbe, HealthcheckSpec,
+    HitlAskRequests, HitlKind, HitlOnTimeout, HitlRequests, HitlSpec, Host, HostBackend,
+    HostCapacity, HostState, Intervention, InterventionDecision, InterventionOutcome,
+    InterventionPayload, InterventionState, MigInstance, MigrateOptions, MissReason, Protocol,
     RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest,
     SnapshotState, Spec, VersionInfo,
 };
