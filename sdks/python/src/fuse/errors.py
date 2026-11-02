@@ -6,6 +6,8 @@ from typing import Optional
 
 import httpx
 
+from .types import Intervention
+
 __all__ = [
     "ApiError",
     "CODE_NOT_FOUND",
@@ -23,6 +25,10 @@ __all__ = [
     "FORBIDDEN_ACTOR_MISMATCH",
     "FORBIDDEN_ACTOR_NOT_ALLOWED",
     "FORBIDDEN_MINT_ESCALATION",
+    "FORBIDDEN_HITL_DENIED",
+    "PendingInterventionError",
+    "InterventionRejectedError",
+    "HeldActionError",
     "as_api_error",
     "is_not_found",
     "is_conflict",
@@ -30,6 +36,7 @@ __all__ = [
     "is_forbidden",
     "is_invalid_argument",
     "is_unavailable",
+    "is_hitl_denied",
     "check_response",
     "parse_api_error",
 ]
@@ -52,6 +59,9 @@ FORBIDDEN_ACTOR_REQUIRED = "actor_required"
 FORBIDDEN_ACTOR_MISMATCH = "actor_mismatch"
 FORBIDDEN_ACTOR_NOT_ALLOWED = "actor_not_allowed"
 FORBIDDEN_MINT_ESCALATION = "mint_escalation"
+# an action a deny gate (or the exec allowlist in deny mode) refused. the
+# message is the gate's reason; details["gate"] names the gate.
+FORBIDDEN_HITL_DENIED = "hitl_denied"
 
 
 class ApiError(Exception):
@@ -105,6 +115,36 @@ class ForbiddenError(ApiError):
         return self.details.get("scope", "")
 
 
+class PendingInterventionError(Exception):
+    # raised instead of waiting when a gate held the call and waiting is off
+    # (wait=False on exec, or hitl_wait=False on the client). wait on the
+    # intervention with client.interventions.wait; the outcome is on its
+    # result.
+    def __init__(self, intervention: Intervention) -> None:
+        self.intervention = intervention
+        super().__init__(
+            f"held by hitl gate {intervention.gate}: "
+            f"waiting on intervention {intervention.id}"
+        )
+
+
+class InterventionRejectedError(Exception):
+    # a held call a human rejected, or that expired or was cancelled without
+    # approval. the decision's reason is for the agent to read and replan on.
+    def __init__(self, intervention: Intervention) -> None:
+        self.intervention = intervention
+        reason = intervention.decision.reason if intervention.decision else ""
+        super().__init__(f"intervention {intervention.id} {intervention.state}: {reason}")
+
+
+class HeldActionError(Exception):
+    # an approved held action fuse could not perform.
+    def __init__(self, intervention: Intervention) -> None:
+        self.intervention = intervention
+        error = intervention.result.error if intervention.result else ""
+        super().__init__(f"approved action of intervention {intervention.id} failed: {error}")
+
+
 def _status_text(status: int) -> str:
     try:
         return http.HTTPStatus(status).phrase.lower()
@@ -146,6 +186,11 @@ def is_invalid_argument(err: object) -> bool:
 
 def is_unavailable(err: object) -> bool:
     return _is_api_error_code(err, CODE_UNAVAILABLE)
+
+def is_hitl_denied(err: object) -> bool:
+    # reports whether err is an action a hitl gate denied.
+    api_err = as_api_error(err)
+    return isinstance(api_err, ForbiddenError) and api_err.reason == FORBIDDEN_HITL_DENIED
 
 def check_response(response: httpx.Response) -> None:
     if 200 <= response.status_code < 300:

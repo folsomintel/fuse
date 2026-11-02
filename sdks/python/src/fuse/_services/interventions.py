@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from typing import Optional
+from collections.abc import Sequence
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
+import httpx
+
 from .._transport import Transport
+from ..errors import HeldActionError, InterventionRejectedError, PendingInterventionError
 from ..types import AuditEntry, AuditPage, Intervention, InterventionPage
 
 # the server's max page size; list() requests this internally so it walks
@@ -106,39 +110,50 @@ class InterventionsService:
         return get_intervention(self._t, intervention_id, wait=False)
 
     def wait(self, intervention_id: str) -> Intervention:
-        # blocks until the intervention resolves. every intervention has a
-        # deadline, so this always returns eventually. state lives in the
+        # blocks until the intervention settles: resolved, and for an approved
+        # gated action, performed, with the outcome on its result. every
+        # intervention has a deadline, so this always returns eventually. state lives in the
         # server's database, not the connection, so each poll is independent.
         return wait_intervention(self._t, intervention_id)
 
     def approve(
-        self, intervention_id: str, answer: str, reason: Optional[str] = None
+        self,
+        intervention_id: str,
+        answer: Optional[str] = None,
+        reason: Optional[str] = None,
+        *,
+        edited_argv: Optional[Sequence[str]] = None,
+        grant: Optional[str] = None,
     ) -> Intervention:
         # resolves a pending intervention as approved. an ask needs an answer
         # (one of its choices, when it has any). requires hitl:decide or the
         # master token, and the key or actor that raised it may not decide it.
-        return self._decide(intervention_id, "approve", answer, reason)
+        #
+        # for a held exec or lifecycle action, the orchestrator then performs
+        # it; wait on the id for its result. edited_argv replaces a held
+        # exec's argv (re-checked against the deny gates, and not combinable
+        # with grant). grant is "once", "env" or "ttl:<duration>"; none takes
+        # the gate's default.
+        body: dict[str, Any] = {}
+        if answer:
+            body["answer"] = answer
+        if reason:
+            body["reason"] = reason
+        if edited_argv:
+            body["edited_argv"] = list(edited_argv)
+        if grant:
+            body["grant"] = grant
+        return self._decide(intervention_id, "approve", body)
 
     def reject(self, intervention_id: str, reason: Optional[str] = None) -> Intervention:
         # resolves a pending intervention as rejected. the reason is fed back
         # to the agent; the server fills one in when empty. requires
         # hitl:decide or the master token.
-        return self._decide(intervention_id, "reject", None, reason)
+        return self._decide(intervention_id, "reject", {"reason": reason} if reason else {})
 
-    def _decide(
-        self,
-        intervention_id: str,
-        action: str,
-        answer: Optional[str],
-        reason: Optional[str],
-    ) -> Intervention:
+    def _decide(self, intervention_id: str, action: str, body: dict[str, Any]) -> Intervention:
         if not intervention_id:
             raise ValueError("intervention id is required")
-        body: dict[str, str] = {}
-        if answer:
-            body["answer"] = answer
-        if reason:
-            body["reason"] = reason
         path = f"/v1/interventions/{quote(intervention_id, safe='')}"
         resp = self._t.request("POST", path, params={"action": action}, body=body)
         return Intervention.model_validate(resp.json())
@@ -162,8 +177,40 @@ def get_intervention(t: Transport, intervention_id: str, *, wait: bool) -> Inter
 
 
 def wait_intervention(t: Transport, intervention_id: str) -> Intervention:
-    # long-polls until the intervention is terminal.
+    # long-polls until the intervention is settled, not just terminal: an
+    # approved gated action is only done once its result is recorded.
     while True:
         intervention = get_intervention(t, intervention_id, wait=True)
-        if intervention.terminal:
+        if intervention.settled:
             return intervention
+
+
+def read_held(resp: httpx.Response) -> Optional[Intervention]:
+    # returns the held intervention of a 202 response, or None when the
+    # response is the action's own answer.
+    if resp.status_code != 202:
+        return None
+    return Intervention.model_validate(resp.json()["intervention"])
+
+
+def settle_held(
+    t: Transport,
+    held: Intervention,
+    *,
+    wait: bool = True,
+    on_held: Optional[Callable[[Intervention], None]] = None,
+) -> Intervention:
+    # waits out a held call: it reports the hold, waits until the
+    # intervention settles, and turns anything but a successful run into an
+    # error. the per-call on_held overrides the client's.
+    callback = on_held or t.on_held
+    if callback is not None:
+        callback(held)
+    if not wait or not t.hitl_wait:
+        raise PendingInterventionError(held)
+    intervention = wait_intervention(t, held.id)
+    if not intervention.approved:
+        raise InterventionRejectedError(intervention)
+    if intervention.result is not None and intervention.result.error:
+        raise HeldActionError(intervention)
+    return intervention

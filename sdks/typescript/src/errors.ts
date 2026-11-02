@@ -2,6 +2,8 @@
 // FuseApiError for non-2xx responses plus code-checking helpers, and a
 // FuseError for transport/configuration failures.
 
+import type { Intervention } from "./types.js";
+
 const REQUEST_ID_HEADER = "X-Request-ID";
 
 /** Stable, machine-readable error codes returned by the server. */
@@ -81,6 +83,9 @@ export const ForbiddenReason = {
   ActorMismatch: "actor_mismatch",
   ActorNotAllowed: "actor_not_allowed",
   MintEscalation: "mint_escalation",
+  /** A hitl deny gate (or the exec allowlist in deny mode) refused the
+   * action. The message is the gate's reason; details.gate names the gate. */
+  HitlDenied: "hitl_denied",
 } as const;
 
 export type ForbiddenReason = (typeof ForbiddenReason)[keyof typeof ForbiddenReason];
@@ -112,6 +117,57 @@ export class FuseError extends Error {
   }
 }
 
+/**
+ * PendingInterventionError is thrown instead of waiting when a hitl gate held
+ * the call and waiting is off (exec's `wait: false` or the client's
+ * `hitlNoWait`). Wait on `intervention.id` with interventions.wait; the
+ * outcome is on its result.
+ */
+export class PendingInterventionError extends Error {
+  readonly intervention: Intervention;
+
+  constructor(intervention: Intervention) {
+    super(
+      `held by hitl gate ${intervention.gate ?? ""}: waiting on intervention ${intervention.id}`,
+    );
+    this.name = "PendingInterventionError";
+    this.intervention = intervention;
+    Object.setPrototypeOf(this, PendingInterventionError.prototype);
+  }
+}
+
+/**
+ * InterventionRejectedError is a held call a human rejected, or that expired
+ * or was cancelled without approval. `intervention.decision.reason` is for
+ * the agent to read and replan on.
+ */
+export class InterventionRejectedError extends Error {
+  readonly intervention: Intervention;
+
+  constructor(intervention: Intervention) {
+    super(
+      `intervention ${intervention.id} ${intervention.state}: ${intervention.decision?.reason ?? ""}`,
+    );
+    this.name = "InterventionRejectedError";
+    this.intervention = intervention;
+    Object.setPrototypeOf(this, InterventionRejectedError.prototype);
+  }
+}
+
+/** HeldActionError is an approved held action fuse could not perform. */
+export class HeldActionError extends Error {
+  readonly intervention: Intervention;
+
+  constructor(intervention: Intervention) {
+    super(
+      `approved action of intervention ${intervention.id} failed: ${intervention.result?.error ?? ""}`,
+    );
+    this.name = "HeldActionError";
+    this.intervention = intervention;
+    Object.setPrototypeOf(this, HeldActionError.prototype);
+  }
+}
+
 /** isFuseApiError is a type guard for FuseApiError. */
 export function isFuseApiError(err: unknown): err is FuseApiError {
   return err instanceof FuseApiError;
@@ -139,6 +195,11 @@ export function isUnauthorized(err: unknown): boolean {
 /** isForbidden reports whether err is a forbidden api error. */
 export function isForbidden(err: unknown): err is ForbiddenError {
   return err instanceof ForbiddenError;
+}
+
+/** isHitlDenied reports whether err is an action a hitl gate denied. */
+export function isHitlDenied(err: unknown): err is ForbiddenError {
+  return isForbidden(err) && err.reason === ForbiddenReason.HitlDenied;
 }
 
 /** isInvalidArgument reports whether err is an invalid_argument api error. */

@@ -424,6 +424,16 @@ paths:
         with no fork support — still return 500 `internal` rather than
         409/501. Treat the message, not the status code, as the contract
         until these move to 4xx.
+
+        **Hitl gates.** When the environment's `hitl.gates` or
+        `hitl.exec` match, `exec`, `fork`, `migrate`, `drain` and
+        `rotate-token` are checked before anything runs. A gate in `ask`
+        mode answers 202 with a HeldResponse and performs the action only
+        once a human approves it; `notify` lets it run and records a
+        terminal intervention; `deny` answers 403 `forbidden` with
+        `details.reason` `hitl_denied`. A grant from an earlier approval
+        (`env` or `ttl:<duration>`) lets a matching action through
+        without a prompt.
       requestBody:
         required: false
         description: |
@@ -474,6 +484,23 @@ paths:
                 oneOf:
                   - $ref: "#/components/schemas/Environment"
                   - $ref: "#/components/schemas/Intervention"
+        "202":
+          description: |
+            A hitl gate holds the action (exec, fork, migrate, drain or rotate-token). Nothing ran yet. The body
+            is a HeldResponse naming the pending intervention, and
+            `Location` points at it. Wait on it with
+            GET /v1/interventions/{interventionId}?wait=; once approved the
+            orchestrator performs the action and stores the outcome in the
+            intervention's `result`.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/interventions/{interventionId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldResponse"
         "204":
           description: |
             Action succeeded with no body. Always for rotate-token; for
@@ -483,7 +510,16 @@ paths:
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
-          $ref: "#/components/responses/Forbidden"
+          description: |
+            A hitl gate in `deny` mode refused the action (code
+            `forbidden`, `details.reason` `hitl_denied`, `details.gate` the
+            gate's name, `details.intervention_id` the terminal record; the
+            message is the gate's `reason`), or the caller may not use the
+            route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -502,10 +538,39 @@ paths:
         `not_found` in the standard error envelope, and SDKs raise on it
         like any other 4xx. A caller that retries destroys should treat
         404 as success itself rather than expecting the server to absorb
-        the repeat.
+        the repeat. A `lifecycle` hitl gate matching `destroy` can hold
+        it (202) or deny it (403 `hitl_denied`).
       responses:
+        "202":
+          description: |
+            A hitl gate holds the action. Nothing ran yet. The body
+            is a HeldResponse naming the pending intervention, and
+            `Location` points at it. Wait on it with
+            GET /v1/interventions/{interventionId}?wait=; once approved the
+            orchestrator performs the action and stores the outcome in the
+            intervention's `result`.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/interventions/{interventionId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldResponse"
         "204":
           description: VM destroyed.
+        "403":
+          description: |
+            A hitl gate in `deny` mode refused the action (code
+            `forbidden`, `details.reason` `hitl_denied`, `details.gate` the
+            gate's name, `details.intervention_id` the terminal record; the
+            message is the gate's `reason`), or the caller may not use the
+            route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -949,6 +1014,11 @@ paths:
         Byte quotas were calibrated against rootfs-only snapshots, so a
         workload that switches to `live: true` reaches the 409 quota case
         far sooner than its snapshot count suggests.
+
+        A `lifecycle` hitl gate matching `snapshot` can hold the create
+        (202) or deny it (403 `hitl_denied`). A held create runs on
+        approval and the intervention's `result.snapshot_id` names the
+        snapshot.
       requestBody:
         required: false
         content:
@@ -962,8 +1032,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Snapshot"
+        "202":
+          description: |
+            A hitl gate holds the action. Nothing ran yet. The body
+            is a HeldResponse naming the pending intervention, and
+            `Location` points at it. Wait on it with
+            GET /v1/interventions/{interventionId}?wait=; once approved the
+            orchestrator performs the action and stores the outcome in the
+            intervention's `result`.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/interventions/{interventionId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: |
+            A hitl gate in `deny` mode refused the action (code
+            `forbidden`, `details.reason` `hitl_denied`, `details.gate` the
+            gate's name, `details.intervention_id` the terminal record; the
+            message is the gate's `reason`), or the caller may not use the
+            route.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -1404,10 +1502,12 @@ paths:
       operationId: getIntervention
       summary: Get intervention
       description: |
-        Reads one intervention. With `wait`, long-polls until it reaches a
-        terminal state or the wait passes, and always answers 200 with the
-        state at that moment, so a caller loops until `state` is not
-        `pending`. A pending intervention past its deadline is expired on
+        Reads one intervention. With `wait`, long-polls until it is
+        settled or the wait passes, and always answers 200 with the state
+        at that moment. Settled means terminal and, for an approved gated
+        action, also performed with `result` set; so a caller loops until
+        `state` is not `pending` and, for an approved gate, `result` is
+        present. A pending intervention past its deadline is expired on
         read, applying its `on_timeout`. Requires `hitl:read`. An
         intervention on an environment the caller's key does not cover is
         404, the same as one that does not exist.
@@ -1832,6 +1932,10 @@ components:
           actor.
         - `actor_not_allowed`: `Fuse-Actor` sent by a key without
           `hitl:act-as`.
+        - `hitl_denied`: a hitl gate in `deny` mode refused an exec or
+          lifecycle action. `details.gate` names the gate and
+          `details.intervention_id` the terminal record; the message is
+          the gate's `reason`.
         - `mint_escalation`: a scoped key tried to mint a key wider than
           itself.
       content:
@@ -1925,7 +2029,9 @@ components:
                 hitl access check carries `reason` (`missing_scope`,
                 `env_scope`, `self_approval`, `actor_required`,
                 `actor_mismatch`, `actor_not_allowed`,
-                `mint_escalation`), plus `scope` for `missing_scope`.
+                `mint_escalation`, `hitl_denied`), plus `scope` for
+                `missing_scope`, and `gate` and `intervention_id` for
+                `hitl_denied`.
 
     ResourceSpec:
       type: object
@@ -3213,6 +3319,147 @@ components:
             Deliveries are content-free and signed. Each `secret` must name
             an entry of the create request's `secrets`, or the create is
             400.
+        gates:
+          type: array
+          items:
+            $ref: "#/components/schemas/HitlGate"
+          description: Gates that hold, record or deny exec and lifecycle actions.
+        exec:
+          $ref: "#/components/schemas/HitlExecPolicy"
+
+    HitlGate:
+      type: object
+      required: [name, "on", match]
+      description: One enforced gate.
+      properties:
+        name:
+          type: string
+          description: Identifies the gate on interventions and grants.
+        "on":
+          type: string
+          enum: [exec, lifecycle]
+        match:
+          $ref: "#/components/schemas/HitlGateMatch"
+        mode:
+          type: string
+          enum: [ask, notify, deny]
+          description: |
+            `ask` (the default) holds the action for a human; `notify` lets
+            it run and records a terminal intervention; `deny` refuses it
+            with 403 `hitl_denied`.
+        grant:
+          type: string
+          description: |
+            Default reach of an approval: `once` (the default), `env`, or
+            `ttl:<duration>`.
+        timeout_seconds:
+          type: integer
+          format: int64
+          description: Overrides the policy deadline for this gate.
+        reason:
+          type: string
+          description: Returned on a deny and shown to the human on an ask.
+
+    HitlGateMatch:
+      type: object
+      description: A gate's structured match. Every field set must match.
+      properties:
+        program:
+          type: array
+          items:
+            type: string
+          description: |
+            Matches the basename of argv[0] after env, sudo, nice, timeout,
+            xargs, nohup and stdbuf are stripped.
+        args:
+          type: array
+          items:
+            type: string
+          description: Matches when these appear in argv in this order.
+        shell:
+          type: boolean
+          description: Matches any opaque shell exec (`shell`, or sh/bash -c).
+        action:
+          type: array
+          items:
+            type: string
+            enum: [destroy, fork, migrate, drain, snapshot, rotate-token]
+          description: Lifecycle actions matched.
+
+    HitlExecPolicy:
+      type: object
+      required: [default, allow]
+      description: Allowlist mode for exec. A program not in `allow` is gated.
+      properties:
+        default:
+          type: string
+          enum: [ask, deny]
+        allow:
+          type: array
+          items:
+            type: string
+          description: Program basenames that run without a gate.
+
+    HeldResponse:
+      type: object
+      required: [intervention_id, intervention]
+      description: |
+        The 202 body of an exec or lifecycle action a gate holds. Wait on
+        the intervention with GET /v1/interventions/{interventionId}?wait=;
+        once it is approved the orchestrator performs the action and
+        stores the outcome in `result`.
+      properties:
+        intervention_id:
+          type: string
+        intervention:
+          $ref: "#/components/schemas/Intervention"
+
+    ExecPayload:
+      type: object
+      required: [argv]
+      description: A held exec.
+      properties:
+        argv:
+          type: array
+          items:
+            type: string
+        shell:
+          type: string
+          description: The script when the caller sent `shell`; argv is then the sh -lc that runs it.
+        timeout_ms:
+          type: integer
+          format: int64
+
+    LifecyclePayload:
+      type: object
+      required: [action]
+      description: A held environment action.
+      properties:
+        action:
+          type: string
+          enum: [destroy, fork, migrate, drain, snapshot, rotate-token]
+
+    InterventionResult:
+      type: object
+      required: [finished_at]
+      description: What performing an approved gated action produced.
+      properties:
+        exec:
+          $ref: "#/components/schemas/ExecEnvironmentResponse"
+        env_id:
+          type: string
+          description: The environment a fork or migrate produced.
+        snapshot_id:
+          type: string
+          description: The snapshot a snapshot action produced.
+        error:
+          type: string
+          description: |
+            Set when the approved action could not be performed. A
+            non-zero exec exit code is a result in `exec`, not an error.
+        finished_at:
+          type: string
+          format: date-time
 
     HitlWebhook:
       type: object
@@ -3254,7 +3501,7 @@ components:
       properties:
         event:
           type: string
-          enum: [raised, decided, expired, cancelled, invite_minted, invite_used]
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used]
         intervention_id:
           type: string
           description: Omitted for invite events.
@@ -3262,10 +3509,10 @@ components:
           type: string
         gate:
           type: string
-          description: Gate name. Empty today; reserved for exec and lifecycle gates.
+          description: Gate name. The gate that raised the intervention; empty for a request.
         "on":
           type: string
-          description: The intervention's kind (`ask`). Empty for invite events.
+          description: The intervention's kind (`ask`, `exec` or `lifecycle`). Empty for invite events.
         deadline:
           type: string
           format: date-time
@@ -3305,6 +3552,19 @@ components:
         reason:
           type: string
           description: Text fed back to the agent.
+        edited_argv:
+          type: array
+          items:
+            type: string
+          description: |
+            Replaces a held exec's argv on approval. It is re-checked
+            against the deny gates.
+        grant:
+          type: string
+          description: |
+            How far an approval of a gated action reaches: `once`, `env` or
+            `ttl:<duration>`. Empty takes the gate's default. Cannot be
+            combined with `edited_argv`.
 
     Actor:
       type: object
@@ -3342,7 +3602,7 @@ components:
           description: Position in the chain, strictly increasing.
         event:
           type: string
-          enum: [raised, decided, expired, cancelled, invite_minted, invite_used]
+          enum: [raised, decided, expired, cancelled, invite_minted, invite_used, grant_created, grant_used]
         intervention_id:
           type: string
           description: Omitted for invite events.
@@ -3384,12 +3644,22 @@ components:
           type: string
         kind:
           type: string
-          enum: [ask]
+          enum: [ask, exec, lifecycle]
+        gate:
+          type: string
+          description: The gate that raised it. Empty for a request.
+        mode:
+          type: string
+          enum: [ask, notify, deny]
+          description: The gate's mode. Notify and deny records are born terminal.
         state:
           type: string
           enum: [pending, approved, rejected, expired, cancelled]
         payload:
           type: object
+          description: |
+            What was asked or attempted: `question` for an ask, `exec` or
+            `lifecycle` for a gate.
           properties:
             question:
               type: string
@@ -3397,6 +3667,10 @@ components:
               type: array
               items:
                 type: string
+            exec:
+              $ref: "#/components/schemas/ExecPayload"
+            lifecycle:
+              $ref: "#/components/schemas/LifecyclePayload"
         triggered_by:
           $ref: "#/components/schemas/Actor"
         deadline:
@@ -3425,6 +3699,16 @@ components:
             decided_at:
               type: string
               format: date-time
+            edited_argv:
+              type: array
+              items:
+                type: string
+              description: The argv the approver replaced a held exec's with.
+            grant:
+              type: string
+              description: How far an approval of a gated action reaches.
+        result:
+          $ref: "#/components/schemas/InterventionResult"
         created_at:
           type: string
           format: date-time

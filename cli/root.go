@@ -42,7 +42,7 @@ func (a *appState) client() (*fuse.Client, *config.Context, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	cl, err := fuse.New(cur.BaseURL, cur.Token, fuse.WithUserAgent("fuse-cli/"+version))
+	cl, err := fuse.New(cur.BaseURL, cur.Token, fuse.WithUserAgent("fuse-cli/"+version), fuse.WithOnHeld(printHeld))
 	if err != nil {
 		return nil, nil, err
 	}

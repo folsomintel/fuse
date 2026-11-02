@@ -22,8 +22,27 @@ HEALTH_PASSING = "passing"
 HEALTH_FAILING = "failing"
 
 
-# hitl request kinds.
+# hitl intervention kinds. ask is raised by request_human; exec and
+# lifecycle are raised by a gate holding that surface.
 HITL_KIND_ASK = "ask"
+HITL_KIND_EXEC = "exec"
+HITL_KIND_LIFECYCLE = "lifecycle"
+
+# gate modes, carried in HitlGate.mode and Intervention.mode.
+GATE_MODE_ASK = "ask"
+GATE_MODE_NOTIFY = "notify"
+GATE_MODE_DENY = "deny"
+
+# lifecycle actions a gate can hold, for HitlGateMatch.action.
+LIFECYCLE_DESTROY = "destroy"
+LIFECYCLE_FORK = "fork"
+LIFECYCLE_MIGRATE = "migrate"
+LIFECYCLE_DRAIN = "drain"
+LIFECYCLE_SNAPSHOT = "snapshot"
+LIFECYCLE_ROTATE_TOKEN = "rotate-token"
+
+# the gate name the exec allowlist reports.
+ALLOWLIST_GATE = "exec.allowlist"
 
 # intervention states. pending is the only non-terminal one.
 INTERVENTION_PENDING = "pending"
@@ -50,6 +69,8 @@ AUDIT_EXPIRED = "expired"
 AUDIT_CANCELLED = "cancelled"
 AUDIT_INVITE_MINTED = "invite_minted"
 AUDIT_INVITE_USED = "invite_used"
+AUDIT_GRANT_CREATED = "grant_created"
+AUDIT_GRANT_USED = "grant_used"
 
 
 def is_terminal_state(state: str) -> bool:
@@ -297,6 +318,39 @@ class HitlWebhook(_Model):
     secret: str
 
 
+class HitlGateMatch(_Model):
+    # selects the actions a gate applies to; every field set must match.
+    # program matches the basename of argv[0] after env, sudo, nice, timeout,
+    # xargs, nohup and stdbuf are stripped. args match when they appear in
+    # argv in this order. shell matches any opaque shell exec. action matches
+    # lifecycle actions (the LIFECYCLE_* constants).
+    program: Optional[list[str]] = None
+    args: Optional[list[str]] = None
+    shell: Optional[bool] = None
+    action: Optional[list[str]] = None
+
+
+class HitlGate(_Model):
+    # one enforced gate. on is HITL_KIND_EXEC or HITL_KIND_LIFECYCLE. mode is
+    # GATE_MODE_ASK (the default), GATE_MODE_NOTIFY or GATE_MODE_DENY. grant
+    # is the default reach of an approval: "once", "env" or "ttl:<duration>".
+    # reason is returned on a deny and shown to the human on an ask.
+    name: str
+    on: str
+    match: HitlGateMatch = Field(default_factory=HitlGateMatch)
+    mode: Optional[str] = None
+    grant: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class HitlExecPolicy(_Model):
+    # allowlist mode for exec: a program not in allow is held with default
+    # ("ask" or "deny"), interpreters and shells included.
+    default: str
+    allow: list[str] = Field(default_factory=list)
+
+
 class HitlSpec(_Model):
     # the human-in-the-loop policy an environment is created with.
     #
@@ -309,6 +363,10 @@ class HitlSpec(_Model):
     requests: HitlRequests = Field(default_factory=HitlRequests)
     require_actor: Optional[bool] = None
     notify: Optional[list[HitlWebhook]] = None
+    # gates hold, record or deny exec and lifecycle actions. exec is
+    # allowlist mode for exec.
+    gates: Optional[list[HitlGate]] = None
+    exec: Optional[HitlExecPolicy] = None
 
 
 class CreateRequest(_Model):
@@ -673,10 +731,25 @@ class Actor(_Model):
     key_id: str = ""
 
 
+class ExecPayload(_Model):
+    # a held exec.
+    argv: list[str] = Field(default_factory=list)
+    shell: str = ""
+    timeout_ms: int = 0
+
+
+class LifecyclePayload(_Model):
+    # a held environment action, one of the LIFECYCLE_* constants.
+    action: str = ""
+
+
 class InterventionPayload(_Model):
-    # what the agent asked.
+    # what was asked or attempted: a question for an ask, the held exec or
+    # lifecycle action for a gate.
     question: str = ""
     choices: list[str] = Field(default_factory=list)
+    exec: Optional[ExecPayload] = None
+    lifecycle: Optional[LifecyclePayload] = None
 
 
 class InterventionDecision(_Model):
@@ -687,19 +760,38 @@ class InterventionDecision(_Model):
     reason: str = ""
     decided_by: Actor = Field(default_factory=Actor)
     decided_at: Optional[datetime] = None
+    # the argv the approver replaced a held exec's with.
+    edited_argv: list[str] = Field(default_factory=list)
+    # how far an approval of a gated action reaches.
+    grant: str = ""
+
+
+class InterventionResult(_Model):
+    # what running an approved gated action produced.
+    exec: Optional[ExecResult] = None
+    env_id: str = ""
+    snapshot_id: str = ""
+    error: str = ""
+    finished_at: Optional[datetime] = None
 
 
 class Intervention(_Model):
-    # one request for a human.
+    # one request for a human. gate names the gate that raised it (empty for
+    # a request) and mode is that gate's mode; notify and deny records are
+    # born terminal.
     id: str = ""
     env_id: str = ""
     kind: str = ""
+    gate: str = ""
+    mode: str = ""
     state: str = ""
     payload: InterventionPayload = Field(default_factory=InterventionPayload)
     triggered_by: Actor = Field(default_factory=Actor)
     deadline: Optional[datetime] = None
     on_timeout: str = ""
     decision: Optional[InterventionDecision] = None
+    # set once an approved gated action has been performed.
+    result: Optional[InterventionResult] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -713,6 +805,17 @@ class Intervention(_Model):
         # reports whether the intervention resolved as approve, which includes
         # an expiry under on_timeout: allow.
         return self.decision is not None and self.decision.outcome == OUTCOME_APPROVE
+
+    @property
+    def settled(self) -> bool:
+        # reports whether a caller has its final answer: resolved, and for an
+        # approved gated action that fuse performs, performed.
+        if not self.terminal:
+            return False
+        runs = self.mode == GATE_MODE_ASK and (
+            self.payload.exec is not None or self.payload.lifecycle is not None
+        )
+        return not runs or not self.approved or self.result is not None
 
 
 class HumanRequest(_Model):

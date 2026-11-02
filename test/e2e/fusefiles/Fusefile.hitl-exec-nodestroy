@@ -1,0 +1,20 @@
+version: 1
+
+# hitl lifecycle deny (#311): destroy is refused through the api. the
+# orchestrator's own max_runtime reaper is not gated, so this env cleans
+# itself up after 10m. used by test/e2e/hitl-exec.sh.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 10m
+
+run: 'echo ready > /tmp/ready'
+
+hitl:
+  gates:
+    - name: no-destroy
+      on: lifecycle
+      match: { action: destroy }
+      mode: deny
+      reason: e2e keeps this environment

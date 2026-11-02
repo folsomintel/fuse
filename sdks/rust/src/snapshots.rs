@@ -4,6 +4,7 @@ use reqwest::Method;
 use serde::Deserialize;
 
 use crate::error::Error;
+use crate::gates::{decode, Gated};
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{Arch, Snapshot, SnapshotMode, SnapshotRequest, SnapshotState};
 
@@ -117,14 +118,23 @@ impl Snapshots {
         Self { t }
     }
 
-    /// Takes a snapshot of a running environment.
+    /// Takes a snapshot of a running environment. When a hitl gate holds
+    /// it, the call waits for the decision and returns the snapshot taken.
     pub async fn create(&self, vm_id: &str, request: SnapshotRequest) -> Result<Snapshot, Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id, "snapshots"])
             .json(&request);
-        self.t.send_json(request).await
+        let held = match self.t.send_gated(request).await? {
+            Gated::Done(response) => return decode(response).await,
+            Gated::Held(held) => held,
+        };
+        let settled = self.t.settle_held(held, None, false).await?;
+        match settled.result.as_ref().and_then(|r| r.snapshot_id.clone()) {
+            Some(snapshot_id) if !snapshot_id.is_empty() => self.get(&snapshot_id).await,
+            _ => Err(Error::HeldActionFailed(Box::new(settled))),
+        }
     }
 
     /// Returns every snapshot matching `options`, transparently walking

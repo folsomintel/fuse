@@ -5,6 +5,7 @@ from urllib.parse import quote
 
 from .._transport import Transport
 from ..types import Snapshot, SnapshotPage, SnapshotRequest
+from .interventions import read_held, settle_held
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -32,6 +33,12 @@ class SnapshotsService:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}/snapshots"
         resp = self._t.request("POST", path, body=request or SnapshotRequest())
+        held = read_held(resp)
+        if held is not None:
+            settled = settle_held(self._t, held)
+            if settled.result is None or not settled.result.snapshot_id:
+                raise RuntimeError(f"intervention {settled.id} settled without a snapshot")
+            return self.get(settled.result.snapshot_id)
         return Snapshot.model_validate(resp.json())
 
     def resolve(self, layer_key: str, arch: str) -> Optional[Snapshot]:

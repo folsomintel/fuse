@@ -92,6 +92,33 @@ type compiledHitl struct {
 	Requests       compiledHitlAllow `json:"requests" yaml:"requests"`
 	RequireActor   bool              `json:"require_actor,omitempty" yaml:"require_actor,omitempty"`
 	Notify         []compiledWebhook `json:"notify,omitempty" yaml:"notify,omitempty"`
+	Gates          []compiledGate    `json:"gates,omitempty" yaml:"gates,omitempty"`
+	Exec           *compiledExec     `json:"exec,omitempty" yaml:"exec,omitempty"`
+}
+
+// compiledGate mirrors fuse.HitlGate.
+type compiledGate struct {
+	Name           string            `json:"name" yaml:"name"`
+	On             string            `json:"on" yaml:"on"`
+	Match          compiledGateMatch `json:"match" yaml:"match"`
+	Mode           string            `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Grant          string            `json:"grant,omitempty" yaml:"grant,omitempty"`
+	TimeoutSeconds int64             `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
+	Reason         string            `json:"reason,omitempty" yaml:"reason,omitempty"`
+}
+
+// compiledGateMatch mirrors fuse.HitlGateMatch.
+type compiledGateMatch struct {
+	Program []string `json:"program,omitempty" yaml:"program,omitempty"`
+	Args    []string `json:"args,omitempty" yaml:"args,omitempty"`
+	Shell   bool     `json:"shell,omitempty" yaml:"shell,omitempty"`
+	Action  []string `json:"action,omitempty" yaml:"action,omitempty"`
+}
+
+// compiledExec mirrors fuse.HitlExecPolicy.
+type compiledExec struct {
+	Default string   `json:"default" yaml:"default"`
+	Allow   []string `json:"allow" yaml:"allow"`
 }
 
 // compiledWebhook mirrors fuse.HitlWebhook.
@@ -310,6 +337,15 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		}
 		for _, w := range h.Notify {
 			req.Hitl.Notify = append(req.Hitl.Notify, compiledWebhook{URL: w.URL, Secret: w.Secret})
+		}
+		for _, g := range h.Gates {
+			req.Hitl.Gates = append(req.Hitl.Gates, compiledGate{
+				Name: g.Name, On: g.On, Mode: g.Mode, Grant: g.Grant, TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
+				Match: compiledGateMatch{Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action},
+			})
+		}
+		if e := h.Exec; e != nil {
+			req.Hitl.Exec = &compiledExec{Default: e.Default, Allow: e.Allow}
 		}
 	}
 	return req

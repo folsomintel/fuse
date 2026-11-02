@@ -409,9 +409,8 @@
     },
     "hitl": {
       "type": "object",
-      "description": "Human-in-the-loop policy: what the agent may ask a human for, and how long a human has to answer. Omit the block and hitl is off. Enforced by the orchestrator; nothing of it goes into the guest.",
+      "description": "Human-in-the-loop policy: what the agent may ask a human for, which exec and lifecycle actions are held, recorded or refused, and how long a human has to answer. Declare at least one of requests.ask, gates or exec. Omit the block and hitl is off. Enforced by the orchestrator; nothing of it goes into the guest.",
       "additionalProperties": false,
-      "required": ["requests"],
       "properties": {
         "timeout": {
           "$ref": "#/$defs/duration",
@@ -459,7 +458,45 @@
             }
           }
         },
-        "gates": { "not": {}, "description": "Not yet supported; refused at validation." },
+        "exec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["default", "allow"],
+          "description": "Allowlist mode for exec: an exec whose program (argv[0] basename, wrappers stripped) is not in allow is held (ask) or refused (deny). Shells and interpreters are held unless listed.",
+          "properties": {
+            "default": { "type": "string", "enum": ["ask", "deny"], "description": "What happens to a program not in allow." },
+            "allow": { "type": "array", "items": { "type": "string", "pattern": "^[^/]+$" }, "description": "Program basenames that run without a gate." }
+          }
+        },
+        "gates": {
+          "type": "array",
+          "maxItems": 64,
+          "description": "Enforced gates on the actions fuse relays: sdk/cli exec and environment lifecycle actions. When several match, deny beats ask beats notify.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "on", "match"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$", "description": "Names the gate on interventions and grants." },
+              "on": { "type": "string", "enum": ["exec", "lifecycle"], "description": "The surface the gate watches." },
+              "match": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Every field set must match. exec gates take program, args or shell; lifecycle gates take action.",
+                "properties": {
+                  "program": { "type": ["string", "array"], "items": { "type": "string" }, "description": "argv[0] basename, or a list of them, after env, sudo, nice, timeout, xargs, nohup and stdbuf are stripped." },
+                  "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments that must appear in argv in this order, not necessarily adjacent." },
+                  "shell": { "type": "boolean", "description": "Match any opaque shell exec (shell:, or sh/bash -c). Cannot be combined with program or args." },
+                  "action": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Lifecycle action, or a list: destroy, fork, migrate, drain, snapshot, rotate-token." }
+                }
+              },
+              "mode": { "type": "string", "enum": ["ask", "notify", "deny"], "default": "ask", "description": "ask holds until a human decides; notify lets it through and records it; deny refuses it with reason." },
+              "grant": { "type": "string", "pattern": "^(once|env|ttl:.+)$", "description": "Default reach of an approval: once, env (the environment's lifetime) or ttl:<duration>. Only for ask gates." },
+              "timeout": { "$ref": "#/$defs/duration", "description": "Deadline for this gate's interventions, overriding hitl.timeout." },
+              "reason": { "type": "string", "maxLength": 1024, "description": "Returned to the caller on deny, shown to the human on ask." }
+            }
+          }
+        },
         "require_actor": {
           "type": "boolean",
           "default": false,

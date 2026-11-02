@@ -67,6 +67,7 @@ func (fm *FleetManager) recordAudit(ctx context.Context, e hitl.AuditEntry, targ
 	n := hitl.Notification{Event: e.Event, InterventionID: e.InterventionID, EnvID: e.EnvID}
 	if in != nil {
 		n.On = string(in.Kind)
+		n.Gate = in.Gate
 		d := in.Deadline.UTC()
 		n.Deadline = &d
 	}

@@ -1,0 +1,17 @@
+version: 1
+
+# hitl allowlist mode (#311): only ls and cat run without a human; anything
+# else, interpreters included, is held. used by test/e2e/hitl-exec.sh.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+
+run: 'echo ready > /tmp/ready'
+
+hitl:
+  timeout: 5m
+  exec:
+    default: ask
+    allow: [ls, cat]

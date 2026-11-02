@@ -1,0 +1,32 @@
+version: 1
+
+# hitl exec and lifecycle gates (#311): a force push is held, an opaque shell
+# exec is only recorded, `echo deploy` is held but grantable for the env's
+# lifetime. used by test/e2e/hitl-exec.sh.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+
+run: 'echo ready > /tmp/ready'
+
+hitl:
+  timeout: 5m
+  on_timeout: reject
+  gates:
+    - name: force-push
+      on: exec
+      match: { program: git, args: [push, --force] }
+    - name: watch-shell
+      on: exec
+      match: { shell: true }
+      mode: notify
+    - name: deploys
+      on: exec
+      match: { program: echo, args: [deploy] }
+    - name: no-rm-root
+      on: exec
+      match: { program: rm, args: [-rf, /] }
+      mode: deny
+      reason: e2e refuses rm -rf /
