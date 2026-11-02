@@ -9,6 +9,7 @@ export default defineMeta({
     "firecracker-host-setup",
     "gpu-host-setup",
     "warp-host-setup",
+    "wireguard-host-setup",
     "monitoring",
     "security",
     "troubleshooting",

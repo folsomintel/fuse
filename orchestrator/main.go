@@ -473,6 +473,10 @@ func run() error {
 		egressRegistry.Register(egress.NewWarp(warpCfg))
 		logger.Info("egress: cloudflare-warp backend registered")
 	}
+	// wireguard needs no orchestrator config: each environment brings its
+	// own config as a secret, and a host without wireproxy refuses it with
+	// an error that says so.
+	egressRegistry.Register(egress.NewWireGuard())
 
 	// stable ingress through fuse-proxy is opt-in: with no admin url every
 	// environment keeps the host dnat url it always had. the interface value

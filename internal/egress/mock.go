@@ -84,6 +84,9 @@ func (m *Mock) Active() []string {
 // (invisible to the guest) and never unspecified (exposes the proxy to the
 // host's whole network).
 func (m *Mock) Provision(_ context.Context, ec Context) (Endpoint, error) {
+	if ec.Credential != "" {
+		return Endpoint{}, errors.New("mock takes no egress secret")
+	}
 	if ec.Protocol != ProtocolSOCKS5 {
 		return Endpoint{}, fmt.Errorf("mock speaks %s only, not %s", ProtocolSOCKS5, ec.Protocol)
 	}

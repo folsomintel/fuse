@@ -1,0 +1,174 @@
+---
+title: WireGuard egress host setup
+sidebar:
+  icon: shield
+description: Running the wireguard egress provider on a Firecracker host, with a per-environment WireGuard config
+---
+
+The `wireguard` [egress provider](/docs/guides/egress#providers) routes a
+proxy-mode environment's outbound traffic through a WireGuard tunnel that the
+environment brings itself: a standard wg-quick config (from Mullvad, Proton,
+your own server, a corporate VPN), passed as a [secret](#the-config-secret).
+The orchestrator needs no configuration for it. The host bridges the tunnel
+to a socks5/http proxy on the vm's tap, so the workload sees the same proxy
+contract as every other provider.
+
+:::warning[New, and not yet exercised on a production host]
+The orchestrator half and the host agent's validation and refcounting are
+covered by tests. The host-side bring-up (namespace, unit, handshake wait)
+follows the same pattern as the WARP backend and has not yet been run under
+real traffic. Expect operational details to be refined once it has.
+:::
+
+## Requirements
+
+- A working [Firecracker host](/docs/cloud/firecracker-host-setup): `fc-agent`
+  running, environments booting.
+- Linux `x86_64` or `aarch64`, with `ip netns` and systemd 252 or newer (the
+  bridge unit uses `NetworkNamespacePath=`, `DynamicUser=` and
+  `LoadCredential=`).
+- No kernel module. The tunnel runs in [wireproxy](https://github.com/whyvl/wireproxy),
+  a userspace WireGuard client, so the host's own routing never changes.
+
+## Install
+
+```bash
+FUSE_WITH_WIREGUARD=1 ./host-agent/firecracker/fc-deps.sh
+```
+
+This installs a pinned wireproxy release to `/usr/local/bin/wireproxy` and
+checks it against the sha256 recorded in `fc-deps.sh`. Re-run it on an
+existing host to add it. Nothing else is installed or started: the first
+environment that asks for `wireguard` installs the
+`ops/systemd/fuse-wireguard@.service` template and brings its bridge up.
+
+A host without wireproxy refuses a `wireguard` environment with
+`wireproxy is not installed at /usr/local/bin/wireproxy; run fc-deps.sh with
+FUSE_WITH_WIREGUARD=1`, as a failed create.
+
+## The config secret
+
+The environment names a secret with `egress.secret`, and that secret's value
+is the wg-quick config, base64-encoded so it fits on one `KEY=VALUE` line of a
+secrets file:
+
+```bash
+echo "WG_CONF=$(base64 -w0 wg0.conf)" >> .secrets   # macOS: base64 -i wg0.conf
+```
+
+```yaml
+version: 1
+
+egress:
+  mode: proxy
+  provider: wireguard
+  secret: WG_CONF
+  # protocol: socks5   # the default; or http
+
+run: |
+  curl -s https://am.i.mullvad.net/json
+```
+
+```bash
+fuse up --secrets-file .secrets
+```
+
+The secret is required like any other: `fuse up` refuses to start without
+it, and the API refuses a create whose `egress.secret` is not among the
+request's secrets. Unlike other secrets, its value never reaches the guest.
+The orchestrator leaves it out of `/fuse/secrets.json` and hands it only to
+the host's egress backend, because a workload holding the key could take the
+tunnel with it, out through the very proxy it configures.
+
+### What the config may contain
+
+The host validates the config against an allowlist before anything runs, and
+refuses anything else by name rather than ignoring it:
+
+| Section | Keys |
+| --- | --- |
+| `[Interface]`, exactly one | `PrivateKey`, `Address`, `DNS` (all required), `MTU`, `ListenPort` |
+| `[Peer]`, one or more | `PublicKey`, `Endpoint`, `AllowedIPs` (all required), `PresharedKey`, `PersistentKeepalive` |
+
+- **`PostUp`, `PreDown`, `Table`, `SaveConfig` and the other wg-quick
+  extensions are refused.** Under wg-quick they run shell as root, and they
+  mean nothing to a userspace bridge.
+- **`DNS` is required.** Without it wireproxy falls back to the host's
+  resolver, and every name the guest looks up would leave outside the tunnel.
+- **A value starting with `$` is refused.** wireproxy would otherwise read it
+  from its own environment.
+- An `Endpoint` hostname is resolved once, on the host, when the bridge comes
+  up. The VPN server's name is not guest traffic.
+- A `PersistentKeepalive = 25` is added to any peer without one. It starts the
+  handshake without waiting for traffic and keeps the host's NAT mapping open.
+
+## How it works
+
+One **bridge** per distinct config on each host, named by a fingerprint of
+the validated config (comments, whitespace and key case do not count):
+
+- a network namespace `fuse-wg-<fp>`, reaching the internet through a veth
+  pair (`fwg<slot>h` / `fwg<slot>n`, `10.202.<slot>.0/30`) and the host's NAT;
+- wireproxy under `fuse-wireguard@<fp>.service` inside it, as a throwaway
+  dynamic user with no capabilities, reading its config (which holds the
+  private key) through a systemd credential. The config file lives under
+  `/run/fuse-wireguard/<fp>/`, mode 600, on tmpfs;
+- a socks5 listener on `10.202.<slot>.2:1080` and an http one on `:1081`;
+- per environment, one DNAT from its tap address `:1080` to the listener for
+  the protocol it asked for, an accept for exactly that port, and a drop for
+  every other address in `10.202.0.0/16`, so an environment can reach its
+  own bridge and no other.
+
+A bridge is not reported up until a peer has completed a WireGuard
+handshake. A listening wireproxy with a dead tunnel would pass a port probe
+and carry nothing, so the create fails instead:
+`no wireguard handshake within 30s; check the peer endpoint and keys`
+(raise the wait with `WG_STARTUP_TIMEOUT` in the agent's environment).
+
+### One key, one place
+
+A WireGuard key can be connected from one client at a time. Two clients on
+the same key make the server flap between their endpoints, and both lose
+traffic. Fuse handles this in two places:
+
+- **On one host**, every environment with the same config shares one bridge,
+  refcounted. The first brings it up, the last one out tears it down.
+- **Across hosts**, the orchestrator refuses to provision a config that is
+  already connected from a different host, naming that host and the
+  environments using it. Pin the environment there, or use a different key.
+  This record is held in memory, so it starts empty after an orchestrator
+  restart.
+
+Forking a proxy-mode environment does not re-provision its egress, for any
+provider: the fork boots with the source's tap DROP and no backend, so it
+fails closed with no egress rather than sharing the key.
+
+## Operate
+
+```bash
+# which bridges exist, and which environments hold them
+ls /home/ubuntu/fc/agent-state/wireguard/*/refs
+
+# one bridge's state: unit, peer endpoint, last handshake, bytes
+sudo ./host-agent/firecracker/fc-wireguard.sh status <fp> <slot>
+
+# wireproxy's own log
+journalctl -u fuse-wireguard@<fp>
+```
+
+The fingerprint and slot are the directory name and the `slot` file under
+`agent-state/wireguard/`. After a host reboot the namespaces and units are
+gone but the refcounts are on disk; the next provision for a config brings
+its bridge back.
+
+The health probe the orchestrator runs is the same socks5 greeting as for
+every provider. It proves the bridge answers, not that the tunnel is still
+up after boot; `status` above shows the last handshake.
+
+## Read next
+
+- [Egress](/docs/guides/egress) for what proxy mode enforces and how a
+  workload uses the proxy.
+- [Fusefile: egress](/docs/concepts/fusefile#egress) for the block's fields.
+- [WARP egress host setup](/docs/cloud/warp-host-setup) for the other
+  host-side provider.

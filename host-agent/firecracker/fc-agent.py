@@ -674,6 +674,251 @@ def warp_destroy(meta: dict) -> None:
 
 EGRESS_PROVIDERS[WARP_PROVIDER] = (warp_provision, warp_destroy)
 
+
+# -- wireguard backend --------------------------------------------------------
+# a per-environment wireguard config (a base64 wg-quick file the orchestrator
+# resolves from egress.secret) bridged to socks5/http by wireproxy, a
+# userspace client. one bridge per distinct config on this host, each in its
+# own network namespace, refcounted across the vms that use it: a wireguard
+# key can only be connected from one place at a time, so two vms on the same
+# config share one bridge rather than fighting over the server's endpoint.
+# fc-wireguard.sh owns every host-side mechanism (namespace, veth, nat, the
+# unit); this side validates the config, allocates the bridge's slot and
+# keeps the refcount.
+
+WG_PROVIDER = "wireguard"
+WG_SCRIPT = FC_DIR / "fc-wireguard.sh"
+WG_DIR = STATE_DIR / "wireguard"
+WG_GUEST_PORT = int(os.environ.get("FUSE_WG_GUEST_PORT", "1080"))
+# the bridge speaks both protocols at once, so vms asking for either can share
+# it; these are the listener ports inside the bridge's namespace.
+WG_BRIDGE_PORTS = {"socks5": 1080, "http": 1081}
+# each slot is one bridge's /30 (10.202.<slot>.0/30), so at most this many
+# distinct configs per host.
+WG_SLOTS = 256
+WG_CONFIG_KEYS = {"WG_CONF"}
+WG_KEEPALIVE = "25"
+WG_LOCK = threading.Lock()
+
+# the wg-quick keys the backend accepts, by section. everything else is
+# refused by name rather than dropped: PostUp/PreDown and friends run shell
+# as root under wg-quick, Table/FwMark/SaveConfig mean nothing to a userspace
+# bridge, and a key silently ignored is a config that does not do what its
+# author thinks.
+WG_ALLOWED_KEYS = {
+    "interface": {"privatekey": "PrivateKey", "address": "Address", "dns": "DNS",
+                  "mtu": "MTU", "listenport": "ListenPort"},
+    "peer": {"publickey": "PublicKey", "presharedkey": "PresharedKey", "endpoint": "Endpoint",
+             "allowedips": "AllowedIPs", "persistentkeepalive": "PersistentKeepalive"},
+}
+WG_REQUIRED_KEYS = {
+    "interface": ("PrivateKey", "Address", "DNS"),
+    "peer": ("PublicKey", "Endpoint", "AllowedIPs"),
+}
+
+
+def wg_parse_conf(text: str) -> list[tuple[str, list[tuple[str, str]]]]:
+    """parses and validates a wg-quick config into [(section, [(key, value)])],
+    keys in their canonical spelling. raises HTTPError(400) naming the first
+    problem; the message never carries a value, since values include keys."""
+    sections: list[tuple[str, list[tuple[str, str]]]] = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith(";"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            name = line[1:-1].strip().lower()
+            if name not in WG_ALLOWED_KEYS:
+                raise HTTPError(400, f"wireguard: line {n}: unsupported section [{line[1:-1].strip()}] (want [Interface] or [Peer])")
+            sections.append((name, []))
+            continue
+        if "=" not in line:
+            raise HTTPError(400, f"wireguard: line {n}: not a key = value line")
+        if not sections:
+            raise HTTPError(400, f"wireguard: line {n}: a key before any section")
+        key, value = (part.strip() for part in line.split("=", 1))
+        canonical = WG_ALLOWED_KEYS[sections[-1][0]].get(key.lower())
+        if canonical is None:
+            raise HTTPError(400, f"wireguard: line {n}: unsupported key {key!r} in [{sections[-1][0].title()}]")
+        # wireproxy reads a value starting with $ from its own environment.
+        if not value or value.startswith("$") or any(ord(c) < 32 for c in value):
+            raise HTTPError(400, f"wireguard: line {n}: {canonical} has an empty or invalid value")
+        if any(k == canonical for k, _ in sections[-1][1]):
+            raise HTTPError(400, f"wireguard: line {n}: {canonical} appears twice in one section")
+        sections[-1][1].append((canonical, value))
+
+    interfaces = [s for s in sections if s[0] == "interface"]
+    peers = [s for s in sections if s[0] == "peer"]
+    if len(interfaces) != 1 or not peers:
+        raise HTTPError(400, "wireguard: the config needs exactly one [Interface] and at least one [Peer]")
+    for name, pairs in sections:
+        have = {k for k, _ in pairs}
+        for want in WG_REQUIRED_KEYS[name]:
+            if want not in have:
+                # DNS is required because without it wireproxy falls back to
+                # the host's resolver, and every name the guest looks up would
+                # leave outside the tunnel.
+                raise HTTPError(400, f"wireguard: [{name.title()}] is missing {want}")
+    return sections
+
+
+def wg_resolve_endpoint(value: str) -> str:
+    """resolves a peer endpoint's host to an address, here in the host's
+    namespace. the bridge's namespace has no resolver of its own, and the vpn
+    server's name is not guest traffic."""
+    host, sep, port = value.rpartition(":")
+    if not sep or not port.isdigit():
+        raise HTTPError(400, "wireguard: a peer Endpoint must be host:port")
+    host = host.strip("[]")
+    try:
+        ipaddress.ip_address(host)
+        return value
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)
+    except OSError as e:
+        raise HTTPError(400, f"wireguard: cannot resolve peer endpoint {host!r}: {e}")
+    addrs = sorted({i[4][0] for i in infos}, key=lambda a: ":" in a)
+    if not addrs:
+        raise HTTPError(400, f"wireguard: peer endpoint {host!r} has no address")
+    addr = addrs[0]
+    return f"[{addr}]:{port}" if ":" in addr else f"{addr}:{port}"
+
+
+def wg_render(sections: list, slot: int) -> str:
+    """renders the bridge's wireproxy config: the validated wireguard
+    sections with endpoints resolved and a keepalive on every peer (it starts
+    the handshake without waiting for traffic and keeps the host's nat
+    mapping alive), then the two listeners on the namespace end of the veth."""
+    out = []
+    for name, pairs in sections:
+        out.append(f"[{name.title()}]")
+        keys = {k for k, _ in pairs}
+        for key, value in pairs:
+            if key == "Endpoint":
+                value = wg_resolve_endpoint(value)
+            out.append(f"{key} = {value}")
+        if name == "peer" and "PersistentKeepalive" not in keys:
+            out.append(f"PersistentKeepalive = {WG_KEEPALIVE}")
+        out.append("")
+    ns_ip = f"10.202.{slot}.2"
+    out += ["[Socks5]", f"BindAddress = {ns_ip}:{WG_BRIDGE_PORTS['socks5']}", "",
+            "[http]", f"BindAddress = {ns_ip}:{WG_BRIDGE_PORTS['http']}", ""]
+    return "\n".join(out)
+
+
+def wg_fingerprint(sections: list) -> str:
+    """names a bridge by its config: the canonical sections, so whitespace,
+    comments and key case do not split one key into two bridges."""
+    canon = "\n".join(f"[{name}]" + "".join(f"\n{k}={v}" for k, v in pairs) for name, pairs in sections)
+    return hashlib.sha256(canon.encode()).hexdigest()[:12]
+
+
+def wg_redact(msg: str, sections: list, blob: str) -> str:
+    secrets_ = [blob] + [v for _, pairs in sections for k, v in pairs if k in ("PrivateKey", "PresharedKey")]
+    for s in secrets_:
+        if len(s) >= 8:
+            msg = msg.replace(s, "[REDACTED]")
+    return msg
+
+
+def wg_slot(fp: str) -> int:
+    """the slot a bridge holds, allocating the lowest free one the first time.
+    called under WG_LOCK."""
+    path = WG_DIR / fp / "slot"
+    if path.exists():
+        return int(path.read_text().strip())
+    used = set()
+    if WG_DIR.exists():
+        for p in WG_DIR.glob("*/slot"):
+            try:
+                used.add(int(p.read_text().strip()))
+            except ValueError:
+                pass
+    for slot in range(WG_SLOTS):
+        if slot not in used:
+            (WG_DIR / fp / "refs").mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{slot}\n")
+            return slot
+    raise HTTPError(503, f"wireguard: this host already runs {WG_SLOTS} distinct wireguard configs")
+
+
+def wg_refs(fp: str) -> set[str]:
+    refs = WG_DIR / fp / "refs"
+    return {p.name for p in refs.iterdir()} if refs.exists() else set()
+
+
+def wg_bridge_of(vm_id: str) -> str | None:
+    if not WG_DIR.exists():
+        return None
+    for ref in WG_DIR.glob(f"*/refs/{vm_id}"):
+        return ref.parent.parent.name
+    return None
+
+
+def wg_provision(meta: dict, body: dict) -> dict:
+    protocol = body.get("protocol") or "socks5"
+    if protocol not in WG_BRIDGE_PORTS:
+        raise HTTPError(400, f"wireguard: unsupported protocol {protocol!r} (want socks5 or http)")
+    config = body.get("config") or {}
+    unknown = sorted(set(config) - WG_CONFIG_KEYS)
+    if unknown:
+        raise HTTPError(400, f"wireguard: unknown config keys {unknown}")
+    blob = "".join((config.get("WG_CONF") or "").split())
+    if not blob:
+        raise HTTPError(400, "wireguard: the request carries no config")
+    try:
+        text = base64.b64decode(blob, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPError(400, "wireguard: the config is not base64 of a utf-8 wg-quick file")
+    sections = wg_parse_conf(text)
+    fp = wg_fingerprint(sections)
+
+    with WG_LOCK:
+        fresh = not (WG_DIR / fp).exists()
+        slot = wg_slot(fp)
+        try:
+            rendered = wg_render(sections, slot)
+            # up runs on every provision, not only the first: it is idempotent,
+            # and it is what brings a bridge back after a host reboot left its
+            # refs on disk and its namespace gone.
+            cp = run(["sudo", "-n", "bash", str(WG_SCRIPT), "up", fp, str(slot)], check=False,
+                     input_bytes=rendered.encode())
+            if cp.returncode != 0:
+                reason = (cp.stderr or b"").decode(errors="replace").strip() or f"rc={cp.returncode}"
+                raise HTTPError(502, wg_redact(f"wireguard: {reason}", sections, blob))
+            sudo(["bash", str(WG_SCRIPT), "attach", fp, str(slot), meta["tap"], meta["host_ip"],
+                  str(WG_GUEST_PORT), str(WG_BRIDGE_PORTS[protocol])])
+        except Exception:
+            if fresh or not wg_refs(fp):
+                sudo(["bash", str(WG_SCRIPT), "down", fp, str(slot)], check=False)
+                shutil.rmtree(WG_DIR / fp, ignore_errors=True)
+            raise
+        # the ref records the protocol too, so destroy removes the dnat it added.
+        (WG_DIR / fp / "refs" / meta["vm_id"]).write_text(f"{protocol}\n")
+    scheme = "socks5h" if protocol == "socks5" else "http"
+    return {"url": f"{scheme}://{meta['host_ip']}:{WG_GUEST_PORT}", "protocol": protocol}
+
+
+def wg_destroy(meta: dict) -> None:
+    with WG_LOCK:
+        fp = wg_bridge_of(meta["vm_id"])
+        if fp is None:
+            return
+        slot = wg_slot(fp)
+        ref = WG_DIR / fp / "refs" / meta["vm_id"]
+        protocol = (ref.read_text().strip() if ref.exists() else "") or "socks5"
+        sudo(["bash", str(WG_SCRIPT), "detach", fp, str(slot), meta["tap"], meta["host_ip"],
+              str(WG_GUEST_PORT), str(WG_BRIDGE_PORTS.get(protocol, WG_BRIDGE_PORTS["socks5"]))], check=False)
+        ref.unlink(missing_ok=True)
+        if not wg_refs(fp):
+            sudo(["bash", str(WG_SCRIPT), "down", fp, str(slot)], check=False)
+            shutil.rmtree(WG_DIR / fp, ignore_errors=True)
+
+
+EGRESS_PROVIDERS[WG_PROVIDER] = (wg_provision, wg_destroy)
+
 def _free_host_port(protocol: str = "tcp") -> int:
     """Picks a free host port by binding to port 0 and reading it back, then
     closing the socket. There is an inherent (small) race between this and

@@ -539,13 +539,19 @@ string_enum! {
 pub struct EgressSpec {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mode: Option<EgressMode>,
-    /// The proxy backend, required when `mode` is proxy (today `mock`; later
-    /// `cloudflare-warp`).
+    /// The proxy backend, required when `mode` is proxy (`cloudflare-warp`,
+    /// `wireguard`, or `mock` for local development).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// Absent means socks5 for a proxy.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<EgressProtocol>,
+    /// Name of an entry in the request's secrets holding the provider's
+    /// credential, for a provider that takes one: `wireguard` reads a base64
+    /// wg-quick config. The value goes to the host's egress backend only and
+    /// is left out of the secrets the guest receives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
 }
 
 impl EgressSpec {
@@ -555,12 +561,19 @@ impl EgressSpec {
             mode: Some(EgressMode::Proxy),
             provider: Some(provider.into()),
             protocol: None,
+            secret: None,
         }
     }
 
     /// Speaks `protocol` to the proxy instead of the socks5 default.
     pub fn protocol(mut self, protocol: EgressProtocol) -> Self {
         self.protocol = Some(protocol);
+        self
+    }
+
+    /// Names the secret holding the provider's credential.
+    pub fn secret(mut self, name: impl Into<String>) -> Self {
+        self.secret = Some(name.into());
         self
     }
 }

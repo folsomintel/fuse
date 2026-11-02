@@ -519,10 +519,19 @@ type Egress struct {
 	// compileEgress so the wire always carries an explicit value.
 	Mode EgressMode `yaml:"mode,omitempty"`
 
-	// Provider names the proxy backend on the host ("mock" today). It is
-	// required when Mode is proxy and rejected otherwise. The vocabulary is
-	// open: which providers exist is the host's business, not the parser's.
+	// Provider names the proxy backend on the host (mock, cloudflare-warp,
+	// wireguard). It is required when Mode is proxy and rejected otherwise.
+	// The vocabulary is open: which providers exist is the host's business,
+	// not the parser's.
 	Provider string `yaml:"provider,omitempty"`
+
+	// Secret names the secret that carries the provider's credential, for a
+	// provider that takes one: wireguard reads a base64 wg-quick config from
+	// it. Like any other secret reference it is a name, and its value is
+	// supplied at `fuse up` (--secret or --secrets-file). Unlike the others
+	// the value goes to the host's egress backend only, never into the
+	// guest. Rejected unless Mode is proxy.
+	Secret string `yaml:"secret,omitempty"`
 
 	// Protocol is what the proxy speaks: "socks5" (the default for proxy)
 	// or "http". Empty means socks5, applied in compileEgress for the same

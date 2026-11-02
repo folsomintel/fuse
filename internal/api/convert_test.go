@@ -230,6 +230,10 @@ func TestToOrchestratorEgress(t *testing.T) {
 	if got != want {
 		t.Errorf("proxy = %+v, want %+v", got, want)
 	}
+	withSecret := toOrchestratorEgress(&EgressSpec{Mode: "proxy", Provider: "wireguard", Secret: "WG_CONF"})
+	if withSecret.Secret != "WG_CONF" {
+		t.Errorf("secret = %q, want WG_CONF carried through", withSecret.Secret)
+	}
 }
 
 // TestToAPIEgress checks the resolved status reaches the wire and that a vm

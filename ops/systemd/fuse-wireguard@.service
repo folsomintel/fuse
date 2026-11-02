@@ -1,0 +1,33 @@
+# One wireguard egress bridge, named by its config fingerprint (%i).
+# fc-wireguard.sh installs this template, creates the network namespace and
+# writes the config before starting an instance; nothing else starts it.
+#
+# wireproxy is a userspace wireguard client, so it needs no capability at all:
+# it runs as a throwaway dynamic user, inside the bridge's own namespace, and
+# reads its config (which holds the private key) through a systemd credential
+# rather than a file that user could otherwise see.
+[Unit]
+Description=Fuse wireguard egress bridge %i (wireproxy)
+After=network-online.target
+
+[Service]
+NetworkNamespacePath=/run/netns/fuse-wg-%i
+DynamicUser=yes
+LoadCredential=wireproxy.conf:/run/fuse-wireguard/%i/wireproxy.conf
+ExecStart=/usr/local/bin/wireproxy -i 127.0.0.1:9080 -c ${CREDENTIALS_DIRECTORY}/wireproxy.conf
+Restart=on-failure
+RestartSec=2
+
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

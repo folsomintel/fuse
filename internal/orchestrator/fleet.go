@@ -1069,8 +1069,10 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	// is already running and serving traffic; we degrade to the legacy
 	// "no recovery for secrets" behavior and log loudly.
 	var secretsEncrypted []byte
-	if len(secretMap) > 0 && len(fm.tokenEncryptionKey) == 32 {
-		secretsJSON, mErr := json.Marshal(secretMap)
+	// the blob is what reuploadSecrets writes back to the guest, so it is the
+	// guest's view: without the egress credential.
+	if guestSecrets := GuestSecrets(secretMap, spec.Egress); len(guestSecrets) > 0 && len(fm.tokenEncryptionKey) == 32 {
+		secretsJSON, mErr := json.Marshal(guestSecrets)
 		if mErr != nil {
 			fm.logger.Warn("marshal secrets for persistence failed", "vm", vmID, "err", mErr)
 		} else {
