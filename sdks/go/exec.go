@@ -73,7 +73,15 @@ type ExecResult struct {
 // orchestrator runs the approved (possibly edited) argv and Exec returns its
 // result. A rejection is an *InterventionRejectedError, a deny gate an error
 // IsHitlDenied matches.
+//
+// While a human holds the environment (a takeover, or a stall waiting for
+// an ack) the server answers 423; Exec waits for that intervention to end
+// and runs the command then. With NoWait it returns a *LockedError instead.
 func (s *EnvironmentsService) Exec(ctx context.Context, vmID string, in ExecRequest) (*ExecResult, error) {
+	return retryLocked(ctx, s.t, in.NoWait, func() (*ExecResult, error) { return s.execOnce(ctx, vmID, in) })
+}
+
+func (s *EnvironmentsService) execOnce(ctx context.Context, vmID string, in ExecRequest) (*ExecResult, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}

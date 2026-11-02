@@ -19,6 +19,12 @@ import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
 import { waitIntervention } from "./interventions.js";
 import { settleHeld } from "./gates.js";
+import {
+  retryLocked,
+  type LockedCallOptions,
+  type ReleaseOptions,
+  type TakeoverOptions,
+} from "./takeover.js";
 
 /** The server's max page size; list() requests this internally so it walks
  * every page in as few round trips as possible. */
@@ -51,10 +57,20 @@ export interface EnvironmentPage {
 
 /** What environments.requestHuman sends. */
 export interface HumanRequest {
-  /** The request kind. Defaults to "ask". */
+  /** The request kind: "ask" (the default), "secret" or "takeover". */
   kind?: string;
-  question: string;
+  /** What the human is asked (ask). */
+  question?: string;
+  /** Restricts the answer to one of these (ask). */
   choices?: string[];
+  /** A declared secret target: its env name or file path (secret). */
+  target?: string;
+  /** The agent's text shown under the target's label (secret). */
+  message?: string;
+  /** How the human takes over; "terminal" (takeover). */
+  via?: string;
+  /** Why the agent wants a human to take over (takeover). */
+  reason?: string;
   /** Shortens the policy's deadline. It can never extend it. */
   timeoutSeconds?: number;
   /** Wait for a decision (the default). false returns the pending
@@ -188,6 +204,10 @@ export class EnvironmentsService {
    * InterventionRejectedError, a deny gate an error isHitlDenied matches.
    * `wait: false` throws a PendingInterventionError at once instead.
    *
+   * While a human holds a takeover (or an ask-mode stall is pending) the
+   * server answers 423; exec waits for that intervention to settle and runs
+   * the command then. `wait: false` throws a LockedError at once instead.
+   *
    * @example
    * const out = await client.environments.exec(id, { cmd: ["ls", "-l"] });
    * if (out.exit_code !== 0) console.error(out.stderr);
@@ -207,10 +227,18 @@ export class EnvironmentsService {
       throw new FuseError("cmd and shell are mutually exclusive");
     }
     const { wait, onHeld, ...wire } = body;
-    const out = await this.t.gated<ExecResult>(
-      "POST",
-      `/v1/environments/${encodeURIComponent(vmId)}`,
-      { query: { action: "exec" }, body: wire, signal: opts.signal },
+    // a 423 (a human holds the environment) waits and retries; a 202 (a gate
+    // holds this exec) waits for the decision and its run.
+    const out = await retryLocked(
+      this.t,
+      () =>
+        this.t.gated<ExecResult>("POST", `/v1/environments/${encodeURIComponent(vmId)}`, {
+          query: { action: "exec" },
+          body: wire,
+          signal: opts.signal,
+        }),
+      wait,
+      opts,
     );
     if (!out.held) return out.value;
     const i = await settleHeld(this.t, out.held, { wait, onHeld }, opts);
@@ -226,6 +254,9 @@ export class EnvironmentsService {
    * booted from a desktop image; on any other image the server answers 503
    * with a reason.
    *
+   * Like exec, it waits out a takeover or a pending stall (a 423) and then
+   * acts; `opts.wait: false` throws a LockedError at once instead.
+   *
    * @example
    * const res = await client.environments.computer(id, {
    *   action: "left_click",
@@ -235,15 +266,11 @@ export class EnvironmentsService {
   async computer(
     vmId: string,
     action: ComputerAction,
-    opts: CallOptions = {},
+    opts: LockedCallOptions = {},
   ): Promise<ComputerResult> {
     requireArg(vmId, "vm id");
     requireArg(action?.action, "action");
-    return this.t.json<ComputerResult>(
-      "POST",
-      `/v1/environments/${encodeURIComponent(vmId)}/computer`,
-      { body: action, signal: opts.signal },
-    );
+    return this.postComputer(vmId, action, opts);
   }
 
   /**
@@ -269,7 +296,7 @@ export class EnvironmentsService {
   async computerToolResult(
     vmId: string,
     input: unknown,
-    opts: CallOptions = {},
+    opts: LockedCallOptions = {},
   ): Promise<ComputerToolResult> {
     requireArg(vmId, "vm id");
     const action = (input as { action?: string } | null)?.action ?? "";
@@ -281,11 +308,7 @@ export class EnvironmentsService {
     }
     let res: ComputerResult;
     try {
-      res = await this.t.json<ComputerResult>(
-        "POST",
-        `/v1/environments/${encodeURIComponent(vmId)}/computer`,
-        { body: input, signal: opts.signal },
-      );
+      res = await this.postComputer(vmId, input, opts);
     } catch (err) {
       if (
         isFuseApiError(err) &&
@@ -312,6 +335,24 @@ export class EnvironmentsService {
     }
     if (content.length === 0) content.push({ type: "text", text: "done" });
     return { content };
+  }
+
+  private postComputer(
+    vmId: string,
+    body: unknown,
+    opts: LockedCallOptions,
+  ): Promise<ComputerResult> {
+    return retryLocked(
+      this.t,
+      () =>
+        this.t.json<ComputerResult>(
+          "POST",
+          `/v1/environments/${encodeURIComponent(vmId)}/computer`,
+          { body, signal: opts.signal },
+        ),
+      opts.wait,
+      opts,
+    );
   }
 
   /**
@@ -341,8 +382,12 @@ export class EnvironmentsService {
         query: { action: "request" },
         body: {
           kind: req.kind || "ask",
-          question: req.question,
+          question: req.question || undefined,
           choices: req.choices,
+          target: req.target || undefined,
+          message: req.message || undefined,
+          via: req.via || undefined,
+          reason: req.reason || undefined,
           timeout_seconds: req.timeoutSeconds || undefined,
         },
         signal: opts.signal,
@@ -350,6 +395,51 @@ export class EnvironmentsService {
     );
     if (req.wait === false) return pending;
     return waitIntervention(this.t, pending.id, opts);
+  }
+
+  /**
+   * Take over the environment as a human: claims the agent's pending
+   * takeover request if there is one, else opens a new one. While held, the
+   * agent's exec and computer calls wait. Returns the held intervention.
+   * Needs the hitl:takeover scope; a conflict when someone else holds it.
+   */
+  async takeover(
+    vmId: string,
+    body: TakeoverOptions = {},
+    opts: CallOptions = {},
+  ): Promise<Intervention> {
+    requireArg(vmId, "vm id");
+    return this.t.json<Intervention>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      {
+        query: { action: "takeover" },
+        body: { via: body.via || undefined, reason: body.reason || undefined },
+        signal: opts.signal,
+      },
+    );
+  }
+
+  /**
+   * End a takeover and hand the environment back to the agent. The note is
+   * the takeover's answer. Returns the approved intervention; a conflict when
+   * nothing is held.
+   */
+  async release(
+    vmId: string,
+    body: ReleaseOptions = {},
+    opts: CallOptions = {},
+  ): Promise<Intervention> {
+    requireArg(vmId, "vm id");
+    return this.t.json<Intervention>(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      {
+        query: { action: "release" },
+        body: { note: body.note || undefined },
+        signal: opts.signal,
+      },
+    );
   }
 
   /** Report whether the environment has a live display and at what geometry.

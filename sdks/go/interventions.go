@@ -60,7 +60,9 @@ type HitlWebhook struct {
 // HitlRequests declares the allowed request kinds. Only Ask exists today;
 // set it to a non-nil value to allow asks.
 type HitlRequests struct {
-	Ask *HitlAskRequests `json:"ask,omitempty"`
+	Ask      *HitlAskRequests      `json:"ask,omitempty"`
+	Secret   *HitlSecretRequests   `json:"secret,omitempty"`
+	Takeover *HitlTakeoverRequests `json:"takeover,omitempty"`
 }
 
 // HitlAskRequests configures ask requests. Present means allowed.
@@ -82,6 +84,10 @@ type InterventionPayload struct {
 	Choices   []string          `json:"choices,omitempty"`
 	Exec      *ExecPayload      `json:"exec,omitempty"`
 	Lifecycle *LifecyclePayload `json:"lifecycle,omitempty"`
+	// Secret, Takeover and Signal are set for those kinds only.
+	Secret   *SecretPayload   `json:"secret,omitempty"`
+	Takeover *TakeoverPayload `json:"takeover,omitempty"`
+	Signal   *SignalPayload   `json:"signal,omitempty"`
 }
 
 // InterventionDecision is how an intervention resolved. An expired one
@@ -134,8 +140,16 @@ func (in *Intervention) Approved() bool {
 type HumanRequest struct {
 	// Kind is the request kind. Empty means HitlKindAsk.
 	Kind     string   `json:"kind,omitempty"`
-	Question string   `json:"question"`
+	Question string   `json:"question,omitempty"`
 	Choices  []string `json:"choices,omitempty"`
+	// Target names a declared secret target, its env name or file path
+	// (HitlKindSecret). Message is the agent's text, shown under the
+	// target's label.
+	Target  string `json:"target,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Via ("terminal") and Reason describe a takeover (HitlKindTakeover).
+	Via    string `json:"via,omitempty"`
+	Reason string `json:"reason,omitempty"`
 	// TimeoutSeconds shortens the policy's deadline. It can never extend it.
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// NoWait returns the pending intervention at once instead of waiting
@@ -325,13 +339,16 @@ type AuditOptions struct {
 // AuditEntry is one row of the hash-chained hitl audit log. It records who
 // did what and from where, never content.
 type AuditEntry struct {
-	Seq            int64     `json:"seq"`
-	Event          string    `json:"event"`
-	InterventionID string    `json:"intervention_id,omitempty"`
-	EnvID          string    `json:"env_id,omitempty"`
-	Actor          Actor     `json:"actor"`
-	RemoteAddr     string    `json:"remote_addr,omitempty"`
-	At             time.Time `json:"at"`
+	Seq            int64  `json:"seq"`
+	Event          string `json:"event"`
+	InterventionID string `json:"intervention_id,omitempty"`
+	EnvID          string `json:"env_id,omitempty"`
+	Actor          Actor  `json:"actor"`
+	RemoteAddr     string `json:"remote_addr,omitempty"`
+	// RecordingID links a takeover_session row to its cast; read it with
+	// Interventions.Recording.
+	RecordingID string    `json:"recording_id,omitempty"`
+	At          time.Time `json:"at"`
 	// PrevHash and Hash are hex; each row's PrevHash is the Hash before it.
 	PrevHash string `json:"prev_hash"`
 	Hash     string `json:"hash"`
