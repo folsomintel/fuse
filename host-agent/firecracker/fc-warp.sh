@@ -48,13 +48,19 @@ die() { printf '[warp] %s\n' "$*" >&2; exit 1; }
 
 host_iface() { ip -o route get 8.8.8.8 | awk '{print $5}'; }
 
-# rule <add|del> <table-args...>: idempotent iptables add/remove on the host.
+# rule <add|del> [-t <table>] <chain> <rule...>: idempotent iptables add/remove
+# on the host. the table goes ahead of -C/-I/-D: `iptables -I -t nat CHAIN`
+# reads "nat" as the rule number and fails, though -C accepts that order.
 rule() {
   local mode="$1"; shift
-  if iptables -C "$@" 2>/dev/null; then
-    [ "$mode" = del ] && iptables -D "$@"
+  local table=()
+  if [ "${1:-}" = "-t" ]; then
+    table=(-t "$2"); shift 2
+  fi
+  if iptables "${table[@]}" -C "$@" 2>/dev/null; then
+    [ "$mode" = del ] && iptables "${table[@]}" -D "$@"
   else
-    [ "$mode" = add ] && iptables -I "$@"
+    [ "$mode" = add ] && iptables "${table[@]}" -I "$@"
   fi
   return 0
 }
