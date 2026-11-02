@@ -27,7 +27,9 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_NETLINK because go's net package enumerates interfaces over netlink, and
+# wireguard-go's bind fails with "address family not supported" without it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
