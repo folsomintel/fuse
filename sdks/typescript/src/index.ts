@@ -11,12 +11,15 @@ export { SnapshotsService } from "./snapshots.js";
 export type { ListSnapshotsOptions } from "./snapshots.js";
 export { HostsService } from "./hosts.js";
 export { ApiKeysService } from "./apiKeys.js";
+export type { CreateApiKeyOptions } from "./apiKeys.js";
 export { InterventionsService } from "./interventions.js";
 export type {
   ListInterventionsOptions,
   InterventionPage,
   ApproveOptions,
   RejectOptions,
+  AuditOptions,
+  AuditPage,
 } from "./interventions.js";
 
 // Per-call options and the fetch type.
@@ -57,7 +60,10 @@ export type {
   Host,
   APIKey,
   CreatedAPIKey,
+  ActorLabel,
   HitlSpec,
+  HitlWebhook,
+  AuditEntry,
   HitlRequests,
   HitlAskRequests,
   Actor,
@@ -70,6 +76,8 @@ export {
   isTerminalState,
   HealthState,
   HitlKind,
+  HitlScope,
+  AuditEvent,
   InterventionState,
   InterventionOutcome,
   isInterventionTerminal,
@@ -80,11 +88,14 @@ export {
 export {
   FuseApiError,
   FuseError,
+  ForbiddenError,
+  ForbiddenReason,
   ErrorCode,
   isFuseApiError,
   isNotFound,
   isConflict,
   isUnauthorized,
+  isForbidden,
   isInvalidArgument,
   isUnavailable,
 } from "./errors.js";

@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,22 +19,58 @@ type stubKeyStore struct {
 	liveKey string
 	keyID   string
 
+	// records are further live keys by raw token, including every key
+	// Create mints, so a test can call the api with a minted key.
+	records map[string]apikeys.APIKeyRecord
+
 	created   []string // labels passed to Create
+	minted    []apikeys.NewKey
 	listOut   []apikeys.APIKeyRecord
 	revokeErr error
 	revoked   []string // ids passed to Revoke
 }
 
-func (s *stubKeyStore) Authenticate(_ context.Context, rawToken string) (string, bool) {
+func (s *stubKeyStore) Authenticate(_ context.Context, rawToken string) (apikeys.APIKeyRecord, bool) {
 	if s.liveKey != "" && rawToken == s.liveKey {
-		return s.keyID, true
+		return apikeys.APIKeyRecord{ID: s.keyID}, true
 	}
-	return "", false
+	if rec, ok := s.records[rawToken]; ok {
+		if rec.ExpiresAt != nil && !time.Now().Before(*rec.ExpiresAt) {
+			return apikeys.APIKeyRecord{}, false
+		}
+		return rec, true
+	}
+	return apikeys.APIKeyRecord{}, false
 }
 
-func (s *stubKeyStore) Create(_ context.Context, label string, now time.Time) (apikeys.APIKeyRecord, string, error) {
-	s.created = append(s.created, label)
-	return apikeys.APIKeyRecord{ID: "ak_test", Label: label, CreatedAt: now}, "fuse_sk_rawsecret", nil
+// addKey registers a live key and returns its raw token.
+func (s *stubKeyStore) addKey(rec apikeys.APIKeyRecord) string {
+	if s.records == nil {
+		s.records = make(map[string]apikeys.APIKeyRecord)
+	}
+	raw := "fuse_sk_" + rec.ID
+	s.records[raw] = rec
+	return raw
+}
+
+func (s *stubKeyStore) Create(_ context.Context, k apikeys.NewKey, now time.Time) (apikeys.APIKeyRecord, string, error) {
+	s.created = append(s.created, k.Label)
+	s.minted = append(s.minted, k)
+	rec := apikeys.APIKeyRecord{
+		ID: fmt.Sprintf("ak_test%d", len(s.minted)), Label: k.Label, CreatedAt: now,
+		Scopes: k.Scopes, EnvID: k.EnvID, ExpiresAt: k.ExpiresAt,
+		ActorID: k.ActorID, ActorName: k.ActorName, CreatedBy: k.CreatedBy,
+	}
+	if len(s.minted) == 1 {
+		// the first mint keeps the id and secret older tests assert on.
+		rec.ID = "ak_test"
+		if s.records == nil {
+			s.records = make(map[string]apikeys.APIKeyRecord)
+		}
+		s.records["fuse_sk_rawsecret"] = rec
+		return rec, "fuse_sk_rawsecret", nil
+	}
+	return rec, s.addKey(rec), nil
 }
 
 func (s *stubKeyStore) List(_ context.Context) ([]apikeys.APIKeyRecord, error) {

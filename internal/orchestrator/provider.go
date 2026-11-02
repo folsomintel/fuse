@@ -139,6 +139,11 @@ type Spec struct {
 	// lives on the spec so forks and migrates inherit it with the rest.
 	// the orchestrator enforces it; nothing of it goes into the guest.
 	Hitl *hitl.Spec
+
+	// Ancestors is the fork lineage, oldest first: a fork appends its
+	// source's id, a migrate keeps it unchanged (same logical environment).
+	// it is what lets an invite scoped to an environment cover its forks.
+	Ancestors []string
 }
 
 // Protocol is the transport an exposed port is published on.

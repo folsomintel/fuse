@@ -12,9 +12,10 @@ it from the CLI or the API, and the answer goes back to the agent. Every
 request has a deadline, so whatever the human does (or does not do), the
 agent always gets an outcome and carries on.
 
-This page covers the core loop and the one request kind that exists today,
-`ask`. Gates on exec and lifecycle actions, secrets, takeover and scoped
-approver keys build on the same object and come later.
+This page covers the core loop, the one request kind that exists today
+(`ask`), and the access model around it: who may answer, how a person is
+named, the audit log and webhooks. Gates on exec and lifecycle actions,
+secrets and takeover build on the same object and come later.
 
 ## Concepts
 
@@ -147,9 +148,297 @@ An answer must be one of the ask's choices when it has any. Deciding an
 intervention that is already resolved, including one whose deadline passed a
 moment before the decision arrived, is a 409.
 
-**Deciding requires the master token.** An API key can raise a request but
-cannot answer one, so an agent holding an ordinary key cannot approve itself.
-Scoped approver keys and named actors replace this rule in a later release.
+**Deciding requires the `hitl:decide` scope or the master token.** A
+full-access API key can raise a request but cannot answer one, so an agent
+driving Fuse with its own key cannot approve itself. Give the human a scoped
+key instead, as below.
+
+## Access
+
+Fuse has no users or roles. What a human needs to handle one environment's
+requests is a short-lived, narrow credential, so that is what Fuse mints: an
+API key with **scopes**.
+
+| Scope | Allows |
+| --- | --- |
+| `hitl:read` | List and read interventions and the audit log. |
+| `hitl:decide` | Approve and reject interventions. Implies `hitl:read`. |
+| `hitl:secret` | Answer secret requests (reserved for a later release). Implies `hitl:read`. |
+| `hitl:takeover` | Take over the environment (reserved for a later release). This is shell access to the VM, so it is its own scope. |
+| `hitl:act-as` | Name the actor the key acts for with the `Fuse-Actor` header. |
+
+A key minted without scopes is a **full-access key**, exactly as every key
+was before scopes existed. It holds `hitl:read` and `hitl:takeover`, but
+never `hitl:decide`, `hitl:secret` or `hitl:act-as`: those are only ever
+minted on purpose. That is what keeps an agent's own key from approving its
+own requests.
+
+A key minted with scopes:
+
+- reaches only the hitl routes (`/v1/interventions`, `/v1/hitl/*`, and
+  minting a narrower key). Anything else is a 403 with reason `env_scope`.
+- may be limited to one environment. It then covers that environment and
+  every environment forked from it, never a parent or a sibling, and gets a
+  404 on any other environment, as if it did not exist. A migrate moves the
+  key to the new environment id.
+- must expire, at most 24 hours after it is minted. An expired key is a
+  401.
+- is revoked when its environment is destroyed.
+- may be pinned to an actor (see [Actors](#actors)).
+
+The quickest way to mint one is `fuse hitl invite`. It defaults to
+`--scopes decide` and `--ttl 1h`, and prints the secret once:
+
+```bash
+fuse hitl invite fuse-agent --scopes decide --ttl 2h --actor alice
+```
+
+Hand the key to Alice; with it she can list, read and decide the requests of
+`fuse-agent` and its forks, and nothing else. `fuse apikeys create` mints the
+same thing with every option spelled out:
+
+```bash
+fuse apikeys create --scopes read,decide --env fuse-agent --ttl 2h \
+  --actor alice --actor-name "Alice Ng" --label alice-oncall
+```
+
+From the API, `POST /v1/api-keys` with
+`{"scopes": ["hitl:decide"], "env_id": "fuse-agent", "ttl_seconds": 7200, "actor": {"id": "alice"}}`.
+
+**Minting cannot escalate.** The master token can mint anything. A scoped key
+can mint a narrower copy of itself: only scopes it holds, only its own
+environment or one of its forks, expiring no later than it does, and for its
+own pinned actor (pinning an actor from an unpinned key needs
+`hitl:act-as`). Anything wider is a 403 with reason `mint_escalation`. A
+full-access key cannot mint at all. Every mint of a scoped key, and its first
+use, is an [audit](#audit-log) row.
+
+## Actors
+
+A key answers "is this call allowed". An **actor** answers "which person is
+this": an opaque id (at most 128 bytes, like `user_42`, `alice@corp.com` or
+`slack:U0123`) and an optional display name. Fuse records it on every
+intervention and audit row and never checks it. Whoever builds on Fuse maps
+their own auth onto it.
+
+It travels as two headers on any request:
+
+```
+Fuse-Actor: alice@corp.com
+Fuse-Actor-Name: Alice Ng
+```
+
+The server resolves who a request is recorded as from the key and the
+headers:
+
+| Credential | Recorded actor | `source` |
+| --- | --- | --- |
+| Key pinned to an actor (`--actor alice`) | The pinned actor. A different `Fuse-Actor` is a 403 (`actor_mismatch`). | `pinned` |
+| Key with `hitl:act-as` | Whatever `Fuse-Actor` says, with the key id that asserted it. Without the header, the key itself. | `asserted` |
+| Any other key | `key:<key_id>`, named after the key's label. Sending `Fuse-Actor` is a 403 (`actor_not_allowed`) rather than silently dropped. | `key` |
+| Master token | `Fuse-Actor` if present, else `master`. | `asserted` / `key` |
+
+There are two common setups. A small team uses `fuse hitl invite --actor`,
+so every request on Alice's key records as `alice` with no integration at
+all. A product built on Fuse holds one `hitl:act-as` key in its backend and,
+after its own session check, names the logged-in user on each call.
+
+**An asserted actor is only as true as the key holder's own auth.** Fuse
+cannot know whether the backend checked the session; it records the claim
+and who made it (`alice, asserted by ak_123`), and nothing more.
+
+Every SDK has a `withActor` call that returns a copy of the client sending
+the headers. The original client is unchanged.
+
+```ts
+const fuse = client.withActor({ id: session.user.id, name: session.user.email });
+await fuse.interventions.approve(id, { answer: "yes" });
+```
+
+```go
+cl := client.WithActor(fuse.ActorLabel{ID: user.ID, Name: user.Email})
+in, err := cl.Interventions.Approve(ctx, id, "yes", "")
+```
+
+```python
+from fuse import ActorLabel
+
+c = client.with_actor(ActorLabel(id=user.id, name=user.email))
+c.interventions.approve(intervention_id, "yes")
+```
+
+```rust
+let c = client.with_actor(ActorLabel::new(&user.id).name(&user.email));
+c.interventions().approve(&id, "yes", "").await?;
+```
+
+Each SDK also takes an `actor` client option, so the agent's side can tag
+which run raised each request. From the CLI, `fuse hitl answer` and
+`fuse hitl reject` take `--actor`.
+
+`GET /v1/interventions?actor=alice` (and the audit log's `actor` filter)
+finds everything an actor raised or decided.
+
+### Requiring an actor
+
+By default any key with `hitl:decide` can decide. Set `require_actor` to
+insist that every decision names a person: it must come from a key pinned to
+an actor, or carry `Fuse-Actor` from a `hitl:act-as` key or the master token.
+Anything else is a 403 with reason `actor_required`.
+
+```yaml
+hitl:
+  require_actor: true
+  requests:
+    ask: {}
+```
+
+### No self-approval
+
+An intervention can never be decided by the key that raised it, or by the
+actor that raised it, whatever scopes the decider holds. Both are checked, so
+a person cannot raise a request under one key and approve it with another.
+Either case is a 403 with reason `self_approval`. The one exemption is the
+master token with no `Fuse-Actor` header: it is the operator's root
+credential, not a party to the request, so it may decide a request it raised
+the same way.
+
+## Audit log
+
+Every hitl action appends a row to an append-only audit log in Postgres:
+
+| Event | When |
+| --- | --- |
+| `raised` | An intervention was raised. |
+| `decided` | It was approved or rejected. |
+| `expired` | Its deadline passed. |
+| `cancelled` | Its environment was destroyed while it was pending. |
+| `invite_minted` | A scoped key was minted. |
+| `invite_used` | A scoped key authenticated for the first time. |
+
+A row records the actor, its source, the key id, the remote address, the
+time and the intervention id. It never holds the question, the answer or the
+reason; those stay on the encrypted intervention row, so the audit log is
+safe to export.
+
+```bash
+fuse hitl audit                              # every row, oldest first
+fuse hitl audit --env fuse-agent --since 24h
+fuse hitl audit --actor alice
+fuse hitl audit --verify
+```
+
+From the API, `GET /v1/hitl/audit?env=&actor=&since=` with `hitl:read`. A key
+limited to an environment sees only that environment's rows.
+
+Each row carries `prev_hash`, the hash of the row before it, so the rows form
+a chain. Editing, deleting or reordering a row breaks the chain at that
+point. `--verify` reads the whole log, recomputes every hash on your machine
+rather than trusting the server's view, and reports the first row that no
+longer matches:
+
+```
+audit chain broken at seq 42: row content does not match its hash (the row was edited)
+```
+
+Because it reads every row, `--verify` takes no filters and needs a key that
+is not limited to one environment.
+
+## Webhooks
+
+`hitl.notify` tells a webhook about every audit event on the environment, so
+a Slack bot or a pager can ping someone the moment a request is raised. Each
+entry names a URL and a secret from the Fusefile's `secrets:` list, whose
+value signs the deliveries. Up to five webhooks are allowed.
+
+```yaml
+version: 1
+run: ./agent.sh
+
+secrets:
+  - hitl_webhook_secret
+
+hitl:
+  requests:
+    ask: {}
+  notify:
+    - webhook: https://hooks.example.com/fuse
+      secret: hitl_webhook_secret
+```
+
+```bash
+fuse up --secret hitl_webhook_secret="$(openssl rand -hex 32)"
+```
+
+A delivery is a `POST` whose JSON body is the whole notification:
+
+```json
+{
+  "event": "raised",
+  "intervention_id": "int_0187...",
+  "env_id": "fuse-agent",
+  "gate": "",
+  "on": "ask",
+  "deadline": "2026-10-29T15:04:05Z",
+  "url": "https://fuse.example.com/v1/interventions/int_0187..."
+}
+```
+
+It is content-free by design: the receiver learns that something needs a
+look and where, never what was asked. The human fetches the content from the
+API with their own key. `url` is built from the orchestrator's
+`ORCH_PUBLIC_URL` and is left out when that is unset. Invite events carry no
+intervention id, kind or deadline. `gate` is empty until gates exist.
+
+Each delivery has a `Fuse-Signature` header:
+
+```
+Fuse-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<body>">
+```
+
+The HMAC is keyed by the secret's value and computed over the timestamp, a
+dot, and the raw request body. Verify against the raw bytes, not re-encoded
+JSON, compare in constant time, and reject old timestamps so a captured
+delivery cannot be replayed:
+
+```js
+import crypto from "node:crypto";
+
+// rawBody is the request body as a Buffer, before any json parsing.
+export function verifyFuse(secret, header, rawBody, toleranceSec = 300) {
+  const parts = Object.fromEntries(header.split(",").map((p) => p.trim().split("=")));
+  const { t, v1 } = parts;
+  if (!t || !v1) return false;
+  if (Math.abs(Date.now() / 1000 - Number(t)) > toleranceSec) return false;
+  const want = crypto.createHmac("sha256", secret).update(`${t}.`).update(rawBody).digest("hex");
+  return want.length === v1.length && crypto.timingSafeEqual(Buffer.from(want), Buffer.from(v1));
+}
+```
+
+```python
+import hashlib
+import hmac
+import time
+
+
+def verify_fuse(secret: bytes, header: str, raw_body: bytes, tolerance: int = 300) -> bool:
+    # raw_body is the request body as received, before any json parsing.
+    parts = dict(p.strip().split("=", 1) for p in header.split(",") if "=" in p)
+    t, v1 = parts.get("t"), parts.get("v1")
+    if not t or not t.isdigit() or not v1 or abs(time.time() - int(t)) > tolerance:
+        return False
+    want = hmac.new(secret, t.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, v1)
+```
+
+A delivery is tried up to 4 times: at once, then after 1s, 4s and 16s, on
+any transport error or non-2xx answer, with a 10s timeout per try. Redirects
+are not followed. Deliveries are best-effort and not stored; the audit log is
+the record, the webhook is a nudge.
+
+The signing secrets are sealed with `TOKEN_ENCRYPTION_KEY`. Without it they
+are kept in memory only, so deliveries stop after an orchestrator restart
+rather than the secret being stored in the clear.
 
 ## Watching
 

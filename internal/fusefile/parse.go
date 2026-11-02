@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path"
 	"path/filepath"
 	"slices"
@@ -357,7 +358,7 @@ func validate(f *Fusefile) error {
 	errs = append(errs, validateExposeHealthcheck(f)...)
 	errs = append(errs, validateDesktop(f.Desktop)...)
 	errs = append(errs, validateEgress(f.Egress)...)
-	errs = append(errs, validateHitl(f.Hitl)...)
+	errs = append(errs, validateHitl(f.Hitl, f.Secrets)...)
 
 	// an empty secret name is a requirement no `--secret` flag can satisfy, and
 	// the server's ExtractRequiredSecrets skips empty refs, so the two sides
@@ -567,14 +568,15 @@ func validateEgress(eg *Egress) []error {
 // hitl timeout bounds. they mirror internal/hitl, which this package does
 // not import for the same reason it duplicates the egress vocabulary.
 const (
-	minHitlTimeout = 10 * time.Second
-	maxHitlTimeout = 24 * time.Hour
+	minHitlTimeout  = 10 * time.Second
+	maxHitlTimeout  = 24 * time.Hour
+	maxHitlWebhooks = 5
 )
 
 // validateHitl checks the hitl block. It mirrors internal/hitl.Spec.Validate
 // so a Fusefile the CLI accepts is one the orchestrator accepts too, and it
 // refuses the parts of the design that are not built yet by name.
-func validateHitl(h *Hitl) []error {
+func validateHitl(h *Hitl, secrets []string) []error {
 	if h == nil {
 		return nil
 	}
@@ -595,10 +597,22 @@ func validateHitl(h *Hitl) []error {
 	default:
 		errs = append(errs, fmt.Errorf("hitl.on_timeout: must be \"reject\" or \"allow\", got %q", h.OnTimeout))
 	}
+	if len(h.Notify) > maxHitlWebhooks {
+		errs = append(errs, fmt.Errorf("hitl.notify: at most %d webhooks are allowed", maxHitlWebhooks))
+	}
+	for i, n := range h.Notify {
+		if u, err := url.Parse(n.Webhook); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+			errs = append(errs, fmt.Errorf("hitl.notify[%d].webhook: must be an http or https url with a host and no credentials, got %q", i, n.Webhook))
+		}
+		switch {
+		case n.Secret == "":
+			errs = append(errs, fmt.Errorf("hitl.notify[%d].secret: name the secret that signs deliveries", i))
+		case !slices.Contains(secrets, n.Secret):
+			errs = append(errs, fmt.Errorf("hitl.notify[%d].secret: %q must also be listed under the top-level secrets", i, n.Secret))
+		}
+	}
 	for name, node := range map[string]yaml.Node{
-		"hitl.notify":            h.Notify,
 		"hitl.gates":             h.Gates,
-		"hitl.require_actor":     h.RequireActor,
 		"hitl.requests.secret":   h.Requests.Secret,
 		"hitl.requests.review":   h.Requests.Review,
 		"hitl.requests.takeover": h.Requests.Takeover,

@@ -438,9 +438,33 @@
             "takeover": { "not": {}, "description": "Not yet supported; refused at validation." }
           }
         },
-        "notify": { "not": {}, "description": "Not yet supported; refused at validation." },
+        "notify": {
+          "type": "array",
+          "maxItems": 5,
+          "description": "Webhooks told about every intervention and invite. Deliveries carry only ids, the kind, the deadline and a link, never content, and are signed with HMAC-SHA256 in the Fuse-Signature header.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["webhook", "secret"],
+            "properties": {
+              "webhook": {
+                "type": "string",
+                "format": "uri",
+                "description": "An http or https url that receives a POST per event."
+              },
+              "secret": {
+                "type": "string",
+                "description": "Name of the secret, also listed under secrets:, whose value signs each delivery."
+              }
+            }
+          }
+        },
         "gates": { "not": {}, "description": "Not yet supported; refused at validation." },
-        "require_actor": { "not": {}, "description": "Not yet supported; refused at validation." }
+        "require_actor": {
+          "type": "boolean",
+          "default": false,
+          "description": "Refuse decisions that do not name a person: a key pinned to an actor, or an actor asserted by a hitl:act-as key."
+        }
       }
     },
     "envValue": {

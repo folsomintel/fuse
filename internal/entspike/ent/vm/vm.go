@@ -61,6 +61,10 @@ const (
 	FieldHugePages = "huge_pages"
 	// FieldHitl holds the string denoting the hitl field in the database.
 	FieldHitl = "hitl_spec_json"
+	// FieldAncestors holds the string denoting the ancestors field in the database.
+	FieldAncestors = "ancestors_json"
+	// FieldHitlKeysEncrypted holds the string denoting the hitl_keys_encrypted field in the database.
+	FieldHitlKeysEncrypted = "hitl_keys_encrypted"
 	// FieldCreatedAt holds the string denoting the created_at field in the database.
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
@@ -96,6 +100,8 @@ var Columns = []string{
 	FieldEgress,
 	FieldHugePages,
 	FieldHitl,
+	FieldAncestors,
+	FieldHitlKeysEncrypted,
 	FieldCreatedAt,
 	FieldUpdatedAt,
 }

@@ -5,8 +5,11 @@
 // no timeout (the Go SDK uses a separate Timeout:0 client for events).
 
 import { FuseError, errorFromResponse } from "./errors.js";
+import type { ActorLabel } from "./types.js";
 
 const REQUEST_ID_HEADER = "X-Request-ID";
+const ACTOR_HEADER = "Fuse-Actor";
+const ACTOR_NAME_HEADER = "Fuse-Actor-Name";
 
 /** A minimal fetch signature, satisfied by the global fetch and most polyfills. */
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -25,6 +28,7 @@ export interface TransportConfig {
   requestId?: () => string;
   timeoutMs?: number;
   headers?: Record<string, string>;
+  actor?: ActorLabel;
 }
 
 type Query = Record<string, string | undefined>;
@@ -72,6 +76,7 @@ export class Transport {
   private readonly requestId?: () => string;
   private readonly timeoutMs?: number;
   private readonly defaultHeaders?: Record<string, string>;
+  private readonly actor?: ActorLabel;
 
   constructor(cfg: TransportConfig) {
     if (!cfg.baseUrl) {
@@ -89,6 +94,7 @@ export class Transport {
     this.requestId = cfg.requestId;
     this.timeoutMs = cfg.timeoutMs;
     this.defaultHeaders = cfg.headers;
+    this.actor = cfg.actor;
 
     const provided = cfg.fetch;
     if (provided) {
@@ -193,6 +199,10 @@ export class Transport {
       if (id) headers[REQUEST_ID_HEADER] = id;
     }
     if (accept) headers["Accept"] = accept;
+    if (this.actor?.id) {
+      headers[ACTOR_HEADER] = this.actor.id;
+      if (this.actor.name) headers[ACTOR_NAME_HEADER] = this.actor.name;
+    }
     return headers;
   }
 

@@ -269,6 +269,7 @@ func (t *transport) dialUpgrade(ctx context.Context, path string, query url.Valu
 	if t.userAgent != "" {
 		req.Header.Set("User-Agent", t.userAgent)
 	}
+	t.setActorHeaders(req.Header)
 	if err := req.Write(conn); err != nil {
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("%s: write upgrade request: %w", label, err)

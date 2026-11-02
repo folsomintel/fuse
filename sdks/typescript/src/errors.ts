@@ -12,6 +12,7 @@ export const ErrorCode = {
   Unavailable: "unavailable",
   Internal: "internal",
   Unauthorized: "unauthorized",
+  Forbidden: "forbidden",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -71,6 +72,37 @@ export class FuseApiError extends Error {
   }
 }
 
+/** Reasons a forbidden error carries in details.reason. */
+export const ForbiddenReason = {
+  MissingScope: "missing_scope",
+  EnvScope: "env_scope",
+  SelfApproval: "self_approval",
+  ActorRequired: "actor_required",
+  ActorMismatch: "actor_mismatch",
+  ActorNotAllowed: "actor_not_allowed",
+  MintEscalation: "mint_escalation",
+} as const;
+
+export type ForbiddenReason = (typeof ForbiddenReason)[keyof typeof ForbiddenReason];
+
+/**
+ * ForbiddenError is a 403 forbidden response: the caller is authenticated
+ * but not allowed. `reason` is one of ForbiddenReason (empty when the server
+ * sent none) and `scope` names the missing scope for missing_scope.
+ */
+export class ForbiddenError extends FuseApiError {
+  readonly reason: string;
+  readonly scope?: string;
+
+  constructor(init: FuseApiErrorInit) {
+    super(init);
+    this.name = "ForbiddenError";
+    this.reason = init.details?.reason ?? "";
+    this.scope = init.details?.scope;
+    Object.setPrototypeOf(this, ForbiddenError.prototype);
+  }
+}
+
 /** FuseError is a transport, configuration, or decoding failure (not an API error). */
 export class FuseError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -104,6 +136,11 @@ export function isUnauthorized(err: unknown): boolean {
   return hasCode(err, ErrorCode.Unauthorized);
 }
 
+/** isForbidden reports whether err is a forbidden api error. */
+export function isForbidden(err: unknown): err is ForbiddenError {
+  return err instanceof ForbiddenError;
+}
+
 /** isInvalidArgument reports whether err is an invalid_argument api error. */
 export function isInvalidArgument(err: unknown): boolean {
   return hasCode(err, ErrorCode.InvalidArgument);
@@ -132,14 +169,16 @@ function parseApiError(
       const env = JSON.parse(body) as ErrorEnvelope;
       const e = env?.error;
       if (e && (e.code || e.message)) {
-        return new FuseApiError({
+        const init = {
           status,
           code: e.code,
           message: e.message,
           details: e.details,
           requestId,
           body,
-        });
+        };
+        if (e.code === ErrorCode.Forbidden) return new ForbiddenError(init);
+        return new FuseApiError(init);
       }
     } catch {
       // fall through to the status-text error below

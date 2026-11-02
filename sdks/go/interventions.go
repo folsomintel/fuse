@@ -39,6 +39,18 @@ type HitlSpec struct {
 	OnTimeout string `json:"on_timeout,omitempty"`
 	// Requests declares the request kinds the agent may raise.
 	Requests HitlRequests `json:"requests"`
+	// RequireActor refuses decisions that do not carry a pinned or
+	// asserted actor.
+	RequireActor bool `json:"require_actor,omitempty"`
+	// Notify are webhooks told about every intervention and audit event.
+	Notify []HitlWebhook `json:"notify,omitempty"`
+}
+
+// HitlWebhook is one hitl.notify target. Secret names an entry in the
+// create request's secrets map, used to sign deliveries.
+type HitlWebhook struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
 }
 
 // HitlRequests declares the allowed request kinds. Only Ask exists today;
@@ -151,8 +163,10 @@ func newInterventionsService(t *transport) *InterventionsService {
 
 // ListInterventionsOptions filters a list. Empty fields match everything.
 type ListInterventionsOptions struct {
-	EnvID  string
-	State  string
+	EnvID string
+	State string
+	// Actor matches interventions raised or decided by this actor id.
+	Actor  string
 	Limit  int
 	Cursor string
 }
@@ -194,6 +208,9 @@ func (s *InterventionsService) ListPage(ctx context.Context, opt ListInterventio
 	if opt.State != "" {
 		values.Set("state", opt.State)
 	}
+	if opt.Actor != "" {
+		values.Set("actor", opt.Actor)
+	}
 	setPaginationParams(values, opt.Limit, opt.Cursor)
 	var out struct {
 		Interventions []Intervention `json:"interventions"`
@@ -229,14 +246,15 @@ func (s *InterventionsService) Wait(ctx context.Context, id string) (*Interventi
 }
 
 // Approve resolves a pending intervention as approved. An ask needs an
-// answer (one of its choices, when it has any). Requires the master token.
+// answer (one of its choices, when it has any). Needs the master token or
+// a key with hitl:decide, and not the key or actor that raised it.
 func (s *InterventionsService) Approve(ctx context.Context, id, answer, reason string) (*Intervention, error) {
 	return s.decide(ctx, id, "approve", answer, reason)
 }
 
 // Reject resolves a pending intervention as rejected. The reason is fed
-// back to the agent; one is filled in when empty. Requires the master
-// token.
+// back to the agent; one is filled in when empty. Needs the master token
+// or a key with hitl:decide, and not the key or actor that raised it.
 func (s *InterventionsService) Reject(ctx context.Context, id, reason string) (*Intervention, error) {
 	return s.decide(ctx, id, "reject", "", reason)
 }
@@ -259,6 +277,97 @@ func (s *InterventionsService) decide(ctx context.Context, id, action, answer, r
 		return nil, err
 	}
 	return &in, nil
+}
+
+// hitl audit events.
+const (
+	AuditRaised       = "raised"
+	AuditDecided      = "decided"
+	AuditExpired      = "expired"
+	AuditCancelled    = "cancelled"
+	AuditInviteMinted = "invite_minted"
+	AuditInviteUsed   = "invite_used"
+)
+
+// AuditOptions filters an audit read. Empty fields match everything.
+type AuditOptions struct {
+	EnvID string
+	Actor string
+	// Since is an RFC 3339 time or a duration back from now, like "24h".
+	Since  string
+	Limit  int
+	Cursor string
+}
+
+// AuditEntry is one row of the hash-chained hitl audit log. It records who
+// did what and from where, never content.
+type AuditEntry struct {
+	Seq            int64     `json:"seq"`
+	Event          string    `json:"event"`
+	InterventionID string    `json:"intervention_id,omitempty"`
+	EnvID          string    `json:"env_id,omitempty"`
+	Actor          Actor     `json:"actor"`
+	RemoteAddr     string    `json:"remote_addr,omitempty"`
+	At             time.Time `json:"at"`
+	// PrevHash and Hash are hex; each row's PrevHash is the Hash before it.
+	PrevHash string `json:"prev_hash"`
+	Hash     string `json:"hash"`
+}
+
+// AuditPage is one page of an Audit call.
+type AuditPage struct {
+	Entries []AuditEntry `json:"entries"`
+	// NextCursor is empty once there are no more results.
+	NextCursor string `json:"next_cursor,omitempty"`
+}
+
+// Audit returns one page of the hitl audit log, oldest first. A key scoped
+// to an environment sees only that environment's rows. Needs hitl:read.
+func (s *InterventionsService) Audit(ctx context.Context, opt AuditOptions) (*AuditPage, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("interventions service is not configured")
+	}
+	values := url.Values{}
+	if opt.EnvID != "" {
+		values.Set("env", opt.EnvID)
+	}
+	if opt.Actor != "" {
+		values.Set("actor", opt.Actor)
+	}
+	if opt.Since != "" {
+		values.Set("since", opt.Since)
+	}
+	setPaginationParams(values, opt.Limit, opt.Cursor)
+	var out struct {
+		Entries    []AuditEntry `json:"entries"`
+		NextCursor *string      `json:"next_cursor,omitempty"`
+	}
+	if err := doJSON(ctx, s.t, http.MethodGet, "/v1/hitl/audit", values, nil, &out); err != nil {
+		return nil, err
+	}
+	page := &AuditPage{Entries: out.Entries}
+	if out.NextCursor != nil {
+		page.NextCursor = *out.NextCursor
+	}
+	return page, nil
+}
+
+// AuditAll returns every audit entry matching opt, oldest first, walking
+// every page.
+func (s *InterventionsService) AuditAll(ctx context.Context, opt AuditOptions) ([]AuditEntry, error) {
+	var out []AuditEntry
+	opt.Limit = maxPageLimit
+	for {
+		page, err := s.Audit(ctx, opt)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page.Entries...)
+		if page.NextCursor == "" {
+			return out, nil
+		}
+		opt.Cursor = page.NextCursor
+	}
 }
 
 // waitPoll is how long one long-poll asks the server to hold. it stays well

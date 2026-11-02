@@ -81,6 +81,8 @@ var (
 		{Name: "egress_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "huge_pages", Type: field.TypeBool, Default: false},
 		{Name: "hitl_spec_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "ancestors_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
+		{Name: "hitl_keys_encrypted", Type: field.TypeBytes, Nullable: true},
 		{Name: "created_at", Type: field.TypeTime},
 		{Name: "updated_at", Type: field.TypeTime},
 	}

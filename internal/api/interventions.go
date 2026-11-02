@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"time"
@@ -33,10 +34,11 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in, err := h.Fleet.RequestHuman(r.Context(), vmID, orchestrator.HumanRequest{
-		Kind:    kind,
-		Ask:     hitl.AskPayload{Question: req.Question, Choices: req.Choices},
-		Timeout: time.Duration(req.TimeoutSeconds) * time.Second,
-		By:      actorFromRequest(r),
+		Kind:       kind,
+		Ask:        hitl.AskPayload{Question: req.Question, Choices: req.Choices},
+		Timeout:    time.Duration(req.TimeoutSeconds) * time.Second,
+		By:         principal(r).Actor,
+		RemoteAddr: r.RemoteAddr,
 	})
 	if err != nil {
 		writeFleetError(w, err)
@@ -52,6 +54,7 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 //	@Produce	json
 //	@Param		env		query		string	false	"Filter by environment id"
 //	@Param		state	query		string	false	"Filter by state"	Enums(pending, approved, rejected, expired, cancelled)
+//	@Param		actor	query		string	false	"Filter by the actor id that raised or decided it"
 //	@Param		limit	query		int		false	"Max results per page (default 50, max 200)"
 //	@Param		cursor	query		string	false	"Opaque pagination cursor from a previous response's next_cursor"
 //	@Success	200		{object}	InterventionList
@@ -59,6 +62,15 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 //	@Security	BearerAuth
 //	@Router		/v1/interventions [get]
 func (h *Handler) listInterventions(w http.ResponseWriter, r *http.Request) {
+	if !h.requireScope(w, r, hitl.ScopeRead) {
+		return
+	}
+	p := principal(r)
+	env := r.URL.Query().Get("env")
+	if env != "" && !h.covers(p, env) {
+		writeError(w, http.StatusNotFound, CodeNotFound, "environment not found", nil)
+		return
+	}
 	limit, cursor := parsePagination(r)
 	state := hitl.State(r.URL.Query().Get("state"))
 	if state != "" && !state.Valid() {
@@ -66,10 +78,12 @@ func (h *Handler) listInterventions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	list, next, err := h.Fleet.ListInterventions(r.Context(), orchestrator.InterventionListFilter{
-		EnvID:  r.URL.Query().Get("env"),
-		State:  state,
-		Limit:  limit,
-		Cursor: cursor,
+		EnvID:   env,
+		EnvIDs:  h.coveredEnvs(p),
+		ActorID: r.URL.Query().Get("actor"),
+		State:   state,
+		Limit:   limit,
+		Cursor:  cursor,
 	})
 	if err != nil {
 		writeFleetError(w, err)
@@ -100,10 +114,16 @@ func (h *Handler) listInterventions(w http.ResponseWriter, r *http.Request) {
 //	@Security	BearerAuth
 //	@Router		/v1/interventions/{interventionId} [get]
 func (h *Handler) getIntervention(w http.ResponseWriter, r *http.Request) {
+	if !h.requireScope(w, r, hitl.ScopeRead) {
+		return
+	}
 	id := chi.URLParam(r, "interventionId")
 	wait, ok := parseWait(r.URL.Query().Get("wait"))
 	if !ok {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "wait must be seconds or a duration like 30s", nil)
+		return
+	}
+	if !h.interventionVisible(w, r, id) {
 		return
 	}
 	if wait > 0 {
@@ -118,12 +138,33 @@ func (h *Handler) getIntervention(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAPIIntervention(in))
 }
 
+// interventionVisible writes a 404 and returns false when the intervention
+// does not exist or belongs to an environment the caller's key does not
+// cover, so a scoped key cannot tell the two apart.
+func (h *Handler) interventionVisible(w http.ResponseWriter, r *http.Request, id string) bool {
+	p := principal(r)
+	if p.EnvID == "" {
+		return true
+	}
+	in, err := h.Fleet.GetIntervention(r.Context(), id)
+	if err != nil {
+		writeFleetError(w, err)
+		return false
+	}
+	if !h.covers(p, in.EnvID) {
+		writeError(w, http.StatusNotFound, CodeNotFound, "intervention not found", nil)
+		return false
+	}
+	return true
+}
+
 // interventionAction decides an intervention: ?action=approve or reject.
-// deciding is master-token only until scoped keys land, so an agent holding
-// an ordinary api key cannot answer its own request.
+// deciding needs the hitl:decide scope (or the master token), which
+// full-access keys do not hold, and is never allowed to the key or actor
+// that raised the intervention.
 //
 //	@Summary		Decide intervention
-//	@Description	Approve (with an answer, for an ask) or reject (with a reason) a pending intervention. Requires the master token.
+//	@Description	Approve (with an answer, for an ask) or reject (with a reason) a pending intervention. Requires hitl:decide or the master token; the key and actor that raised it can never decide it.
 //	@Tags			interventions
 //	@Accept			json
 //	@Produce		json
@@ -149,7 +190,11 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 			"missing or unknown action query parameter", nil)
 		return
 	}
-	if !h.requireMasterToken(w, r, "deciding an intervention requires the master token") {
+	if !h.requireScope(w, r, hitl.ScopeDecide) {
+		return
+	}
+	id := chi.URLParam(r, "interventionId")
+	if !h.interventionVisible(w, r, id) {
 		return
 	}
 	var req DecideInterventionRequest
@@ -158,10 +203,15 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	in, err := h.Fleet.DecideIntervention(r.Context(), chi.URLParam(r, "interventionId"),
-		outcome, req.Answer, req.Reason, actorFromRequest(r))
+	in, err := h.Fleet.DecideIntervention(r.Context(), id, orchestrator.DecideRequest{
+		Outcome:    outcome,
+		Answer:     req.Answer,
+		Reason:     req.Reason,
+		By:         principal(r).Actor,
+		RemoteAddr: r.RemoteAddr,
+	})
 	if err != nil {
-		writeFleetError(w, err)
+		writeHitlError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toAPIIntervention(in))
@@ -187,23 +237,86 @@ func parseWait(raw string) (time.Duration, bool) {
 	return min(d, maxInterventionWait), true
 }
 
-// actorFromRequest labels the caller from how it authenticated. the master
-// token (and insecure mode) is "master"; an api key is "key:<id>".
-func actorFromRequest(r *http.Request) hitl.Actor {
-	p, ok := PrincipalFromContext(r.Context())
-	if !ok || p.Master {
-		return hitl.Actor{ID: "master", Source: hitl.ActorKey}
+// listHitlAudit reads the hitl audit log, oldest first.
+//
+//	@Summary		List hitl audit log
+//	@Description	Reads the hash-chained hitl audit log: every raise, decision, expiry, cancel and invite, with actor, key and remote address, never content. A key scoped to an environment sees only that environment's rows.
+//	@Tags			interventions
+//	@Produce		json
+//	@Param			env		query		string	false	"Filter by environment id"
+//	@Param			actor	query		string	false	"Filter by actor id"
+//	@Param			since	query		string	false	"Only rows at or after this time (RFC 3339) or this long ago (a go duration like 24h)"
+//	@Param			limit	query		int		false	"Max results per page (default 50, max 200)"
+//	@Param			cursor	query		string	false	"Opaque pagination cursor from a previous response's next_cursor"
+//	@Success		200		{object}	AuditList
+//	@Failure		400		{object}	Error
+//	@Failure		403		{object}	Error
+//	@Failure		404		{object}	Error
+//	@Security		BearerAuth
+//	@Router			/v1/hitl/audit [get]
+func (h *Handler) listHitlAudit(w http.ResponseWriter, r *http.Request) {
+	if !h.requireScope(w, r, hitl.ScopeRead) {
+		return
 	}
-	return hitl.Actor{ID: "key:" + p.KeyID, Source: hitl.ActorKey, KeyID: p.KeyID}
+	p := principal(r)
+	q := r.URL.Query()
+	envIDs := h.coveredEnvs(p)
+	if env := q.Get("env"); env != "" {
+		if !h.covers(p, env) {
+			writeError(w, http.StatusNotFound, CodeNotFound, "environment not found", nil)
+			return
+		}
+		envIDs = []string{env}
+	}
+	var since time.Time
+	if raw := q.Get("since"); raw != "" {
+		if t, err := time.Parse(time.RFC3339, raw); err == nil {
+			since = t
+		} else if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
+			since = time.Now().Add(-d)
+		} else {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument, "since must be an RFC 3339 time or a duration like 24h", nil)
+			return
+		}
+	}
+	limit, cursor := parsePagination(r)
+	rows, next, err := h.Fleet.ListHitlAudit(r.Context(), orchestrator.HitlAuditListFilter{
+		EnvIDs: envIDs, ActorID: q.Get("actor"), Since: since, Limit: limit, Cursor: cursor,
+	})
+	if err != nil {
+		writeFleetError(w, err)
+		return
+	}
+	out := AuditList{Entries: make([]AuditEntry, 0, len(rows))}
+	for _, e := range rows {
+		out.Entries = append(out.Entries, AuditEntry{
+			Seq:            e.Seq,
+			Event:          string(e.Event),
+			InterventionID: e.InterventionID,
+			EnvID:          e.EnvID,
+			Actor:          toAPIActor(e.Actor),
+			RemoteAddr:     e.RemoteAddr,
+			At:             e.At,
+			PrevHash:       hex.EncodeToString(e.PrevHash),
+			Hash:           hex.EncodeToString(e.Hash),
+		})
+	}
+	if next != "" {
+		out.NextCursor = &next
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func toHitlSpec(s *HitlSpec) *hitl.Spec {
 	if s == nil {
 		return nil
 	}
-	out := &hitl.Spec{TimeoutSeconds: s.TimeoutSeconds, OnTimeout: hitl.OnTimeout(s.OnTimeout)}
+	out := &hitl.Spec{TimeoutSeconds: s.TimeoutSeconds, OnTimeout: hitl.OnTimeout(s.OnTimeout), RequireActor: s.RequireActor}
 	if s.Requests.Ask != nil {
 		out.Requests.Ask = &hitl.AskRequests{}
+	}
+	for _, w := range s.Notify {
+		out.Notify = append(out.Notify, hitl.Webhook{URL: w.URL, Secret: w.Secret})
 	}
 	return out
 }

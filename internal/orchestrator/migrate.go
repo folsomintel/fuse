@@ -121,6 +121,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	}
 	state := src.state
 	srcSpec := src.spec
+	srcHitlKeys, srcHitlKeysEncrypted := src.hitlKeys, src.hitlKeysEncrypted
 	srcHostID := src.hostID
 	srcEnv := src.env
 	provider := fm.provider
@@ -249,14 +250,16 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 
 	now := time.Now()
 	v := &vm{
-		id:             newVMID,
-		state:          VMStateProvisioning,
-		taskID:         migrateTaskID,
-		hostID:         targetHostID,
-		spec:           spec,
-		createdAt:      now,
-		updatedAt:      now,
-		lastActivityAt: now,
+		id:                newVMID,
+		state:             VMStateProvisioning,
+		taskID:            migrateTaskID,
+		hostID:            targetHostID,
+		spec:              spec,
+		createdAt:         now,
+		updatedAt:         now,
+		lastActivityAt:    now,
+		hitlKeys:          srcHitlKeys,
+		hitlKeysEncrypted: srcHitlKeysEncrypted,
 	}
 
 	fm.mu.Lock()
@@ -429,6 +432,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	// at the new id. moved before the source is destroyed, which would
 	// otherwise cancel it.
 	fm.moveInterventions(ctx, vmID, newVMID)
+	fm.rebindEnvKeys(ctx, vmID, newVMID)
 	if frozen {
 		// drain runs a command inside the guest, which a frozen guest cannot
 		// do. nothing needs flushing either: its state is already on the target.

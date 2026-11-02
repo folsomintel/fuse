@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
-use crate::types::{HitlKind, Intervention, InterventionState};
+use crate::types::{AuditEntry, HitlKind, Intervention, InterventionState};
 
 // how long one long-poll asks the server to hold. the server caps it at 50s.
 const WAIT_POLL: Duration = Duration::from_secs(30);
@@ -82,6 +82,8 @@ impl HumanRequest {
 pub struct ListInterventionsOptions {
     pub env_id: Option<String>,
     pub state: Option<InterventionState>,
+    /// Filters by the actor id that raised or decided the intervention.
+    pub actor: Option<String>,
     /// Caps the page size. Only consulted by [`Interventions::list_page`];
     /// [`Interventions::list`] always requests the server's max page size.
     pub limit: Option<u32>,
@@ -104,6 +106,11 @@ impl ListInterventionsOptions {
         self
     }
 
+    pub fn actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
+    }
+
     pub fn limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
         self
@@ -121,6 +128,66 @@ impl ListInterventionsOptions {
 pub struct InterventionPage {
     #[serde(default)]
     pub interventions: Vec<Intervention>,
+    /// `None` once there are no more results.
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// Filters and pagination for [`Interventions::audit`] and
+/// [`Interventions::audit_page`].
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct AuditOptions {
+    pub env_id: Option<String>,
+    /// Filters by actor id.
+    pub actor: Option<String>,
+    /// Only rows at or after this time: RFC 3339, or a duration ago like
+    /// `24h`.
+    pub since: Option<String>,
+    /// Caps the page size. Only consulted by [`Interventions::audit_page`];
+    /// [`Interventions::audit`] always requests the server's max page size.
+    pub limit: Option<u32>,
+    /// Resumes after a previous page's [`AuditPage::next_cursor`].
+    pub cursor: Option<String>,
+}
+
+impl AuditOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn env_id(mut self, env_id: impl Into<String>) -> Self {
+        self.env_id = Some(env_id.into());
+        self
+    }
+
+    pub fn actor(mut self, actor: impl Into<String>) -> Self {
+        self.actor = Some(actor.into());
+        self
+    }
+
+    pub fn since(mut self, since: impl Into<String>) -> Self {
+        self.since = Some(since.into());
+        self
+    }
+
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    pub fn cursor(mut self, cursor: impl Into<String>) -> Self {
+        self.cursor = Some(cursor.into());
+        self
+    }
+}
+
+/// One page of the hitl audit log, oldest first, plus the cursor to fetch
+/// the next one.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct AuditPage {
+    #[serde(default)]
+    pub entries: Vec<AuditEntry>,
     /// `None` once there are no more results.
     #[serde(default)]
     pub next_cursor: Option<String>,
@@ -170,10 +237,49 @@ impl Interventions {
         if let Some(state) = &options.state {
             query.push(("state", state.to_string()));
         }
+        if let Some(actor) = &options.actor {
+            query.push(("actor", actor.clone()));
+        }
         pagination(&mut query, options.limit, &options.cursor);
         let request = self
             .t
             .request(Method::GET, &["v1", "interventions"])
+            .query(&query);
+        self.t.send_json(request).await
+    }
+
+    /// Returns every hitl audit row matching `options`, oldest first,
+    /// walking every result page.
+    pub async fn audit(&self, options: AuditOptions) -> Result<Vec<AuditEntry>, Error> {
+        let mut out = Vec::new();
+        let mut page_options = options;
+        page_options.limit = Some(MAX_PAGE_LIMIT);
+        loop {
+            let page = self.audit_page(page_options.clone()).await?;
+            out.extend(page.entries);
+            match page.next_cursor {
+                Some(cursor) if !cursor.is_empty() => page_options.cursor = Some(cursor),
+                _ => return Ok(out),
+            }
+        }
+    }
+
+    /// Returns one page of the hitl audit log matching `options`.
+    pub async fn audit_page(&self, options: AuditOptions) -> Result<AuditPage, Error> {
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(env_id) = &options.env_id {
+            query.push(("env", env_id.clone()));
+        }
+        if let Some(actor) = &options.actor {
+            query.push(("actor", actor.clone()));
+        }
+        if let Some(since) = &options.since {
+            query.push(("since", since.clone()));
+        }
+        pagination(&mut query, options.limit, &options.cursor);
+        let request = self
+            .t
+            .request(Method::GET, &["v1", "hitl", "audit"])
             .query(&query);
         self.t.send_json(request).await
     }
@@ -195,7 +301,7 @@ impl Interventions {
 
     /// Resolves a pending intervention as approved. An ask needs an
     /// `answer` (one of its choices, when it has any); an empty `reason` is
-    /// omitted. Requires the master token.
+    /// omitted. Requires the master token or a key with `hitl:decide`.
     pub async fn approve(
         &self,
         id: &str,
@@ -207,7 +313,7 @@ impl Interventions {
 
     /// Resolves a pending intervention as rejected. The reason is fed back
     /// to the agent; the server fills one in when it is empty. Requires the
-    /// master token.
+    /// master token or a key with `hitl:decide`.
     pub async fn reject(&self, id: &str, reason: &str) -> Result<Intervention, Error> {
         self.decide(id, "reject", "", reason).await
     }

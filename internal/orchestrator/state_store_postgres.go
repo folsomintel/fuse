@@ -152,6 +152,13 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 			return fmt.Errorf("marshal hitl spec for vm %s: %w", vm.ID, err)
 		}
 	}
+	var ancestorsJSON json.RawMessage
+	if len(vm.Spec.Ancestors) > 0 {
+		ancestorsJSON, err = json.Marshal(vm.Spec.Ancestors)
+		if err != nil {
+			return fmt.Errorf("marshal ancestors for vm %s: %w", vm.ID, err)
+		}
+	}
 	err = s.entc.VM.Create().
 		SetID(vm.ID).
 		SetHostID(vm.HostID).
@@ -178,6 +185,8 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 		SetEgress(json.RawMessage(egressJSON)).
 		SetHugePages(vm.Spec.HugePages).
 		SetHitl(hitlJSON).
+		SetAncestors(ancestorsJSON).
+		SetHitlKeysEncrypted(vm.HitlKeysEncrypted).
 		SetCreatedAt(vm.CreatedAt.UTC()).
 		SetUpdatedAt(vm.UpdatedAt.UTC()).
 		OnConflictColumns(entvm.FieldID).
@@ -216,6 +225,7 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 			TenantID:           row.TenantID,
 			AuthTokenEncrypted: row.AuthTokenEncrypted,
 			SecretsEncrypted:   row.SecretsEncrypted,
+			HitlKeysEncrypted:  row.HitlKeysEncrypted,
 			LastError:          row.LastError,
 			CreatedAt:          row.CreatedAt,
 			UpdatedAt:          row.UpdatedAt,
@@ -268,6 +278,11 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 				return nil, fmt.Errorf("unmarshal hitl spec for vm %s: %w", record.ID, err)
 			}
 			record.Spec.Hitl = &spec
+		}
+		if len(row.Ancestors) > 0 && string(row.Ancestors) != "null" {
+			if err := json.Unmarshal(row.Ancestors, &record.Spec.Ancestors); err != nil {
+				return nil, fmt.Errorf("unmarshal ancestors for vm %s: %w", record.ID, err)
+			}
 		}
 		out = append(out, record)
 	}
@@ -1138,10 +1153,12 @@ func (s *PostgresStateStore) ListInterventions(ctx context.Context, f Interventi
 		WHERE ($1 = '' OR env_id = $1)
 		  AND ($2 = '' OR state = $2)
 		  AND ($3 = '' OR intervention_id > $3)
+		  AND ($4::text[] IS NULL OR env_id = ANY($4::text[]))
+		  AND ($5 = '' OR triggered_by::jsonb->>'id' = $5 OR decided_by::jsonb->>'id' = $5)
 		ORDER BY intervention_id`
-	args := []any{f.EnvID, f.State, f.After}
+	args := []any{f.EnvID, f.State, f.After, f.EnvIDs, f.ActorID}
 	if f.Limit > 0 {
-		query += ` LIMIT $4`
+		query += ` LIMIT $6`
 		args = append(args, f.Limit)
 	}
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1156,6 +1173,89 @@ func (s *PostgresStateStore) ListInterventions(ctx context.Context, f Interventi
 			return nil, fmt.Errorf("scan intervention: %w", err)
 		}
 		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+// auditLockKey is the advisory lock that serializes audit appends, so two
+// writers (or two orchestrators on one database) never chain off the same
+// row.
+const auditLockKey = 0x6869746c61756474 // "hitlaudt"
+
+func (s *PostgresStateStore) AppendHitlAudit(ctx context.Context, e hitl.AuditEntry) (hitl.AuditEntry, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return e, fmt.Errorf("append hitl audit: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, int64(auditLockKey)); err != nil {
+		return e, fmt.Errorf("lock hitl audit: %w", err)
+	}
+	var (
+		lastSeq  int64
+		lastHash []byte
+	)
+	err = tx.QueryRowContext(ctx, `SELECT seq, hash FROM orchestrator_hitl_audit ORDER BY seq DESC LIMIT 1`).Scan(&lastSeq, &lastHash)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		lastSeq, lastHash = 0, hitl.GenesisHash
+	case err != nil:
+		return e, fmt.Errorf("read hitl audit head: %w", err)
+	}
+	e.Seq, e.PrevHash = lastSeq+1, lastHash
+	e.At = hitl.AuditTime(e.At)
+	e.Hash = e.ComputeHash()
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO orchestrator_hitl_audit
+			(seq, event, intervention_id, env_id, actor_id, actor_name, actor_source, key_id, remote_addr, at, prev_hash, hash)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		e.Seq, string(e.Event), e.InterventionID, e.EnvID, e.Actor.ID, e.Actor.Name, string(e.Actor.Source),
+		e.Actor.KeyID, e.RemoteAddr, e.At, e.PrevHash, e.Hash); err != nil {
+		return e, fmt.Errorf("insert hitl audit: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return e, fmt.Errorf("commit hitl audit: %w", err)
+	}
+	return e, nil
+}
+
+func (s *PostgresStateStore) ListHitlAudit(ctx context.Context, f AuditFilter) ([]hitl.AuditEntry, error) {
+	var since *time.Time
+	if !f.Since.IsZero() {
+		t := f.Since.UTC()
+		since = &t
+	}
+	query := `SELECT seq, event, intervention_id, env_id, actor_id, actor_name, actor_source, key_id,
+			remote_addr, at, prev_hash, hash
+		FROM orchestrator_hitl_audit
+		WHERE seq > $1
+		  AND ($2::text[] IS NULL OR env_id = ANY($2::text[]))
+		  AND ($3 = '' OR actor_id = $3)
+		  AND ($4::timestamptz IS NULL OR at >= $4)
+		ORDER BY seq`
+	args := []any{f.AfterSeq, f.EnvIDs, f.ActorID, since}
+	if f.Limit > 0 {
+		query += ` LIMIT $5`
+		args = append(args, f.Limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list hitl audit: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]hitl.AuditEntry, 0)
+	for rows.Next() {
+		var (
+			e             hitl.AuditEntry
+			event, source string
+		)
+		if err := rows.Scan(&e.Seq, &event, &e.InterventionID, &e.EnvID, &e.Actor.ID, &e.Actor.Name, &source,
+			&e.Actor.KeyID, &e.RemoteAddr, &e.At, &e.PrevHash, &e.Hash); err != nil {
+			return nil, fmt.Errorf("scan hitl audit: %w", err)
+		}
+		e.Event, e.Actor.Source = hitl.AuditEvent(event), hitl.ActorSource(source)
+		e.At = e.At.UTC()
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

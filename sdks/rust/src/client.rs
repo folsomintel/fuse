@@ -12,7 +12,7 @@ use crate::hosts::Hosts;
 use crate::interventions::Interventions;
 use crate::snapshots::Snapshots;
 use crate::transport::{RequestIdFn, Transport, DEFAULT_TIMEOUT};
-use crate::types::VersionInfo;
+use crate::types::{ActorLabel, VersionInfo};
 
 /// The entry point for the Fuse API. It groups the resource services that
 /// share a single transport, and is cheap to clone.
@@ -57,6 +57,17 @@ impl Client {
     /// Returns a builder for a client with non-default options.
     pub fn builder(base_url: impl Into<String>) -> ClientBuilder {
         ClientBuilder::new(base_url)
+    }
+
+    /// Returns a copy of this client that names `actor` on every request
+    /// with the `Fuse-Actor` and `Fuse-Actor-Name` headers. It shares this
+    /// client's connections and options; this client is unchanged. The
+    /// server rejects an id over 128 bytes, and a key may name an actor
+    /// only with the `hitl:act-as` scope or when pinned to that actor.
+    pub fn with_actor(&self, actor: ActorLabel) -> Self {
+        Self {
+            transport: Arc::new(self.transport.with_actor(actor)),
+        }
     }
 
     /// The environments service.
@@ -133,6 +144,7 @@ pub struct ClientBuilder {
     timeout: Duration,
     request_id: Option<Arc<RequestIdFn>>,
     http: Option<reqwest::Client>,
+    actor: Option<ActorLabel>,
 }
 
 impl ClientBuilder {
@@ -144,6 +156,7 @@ impl ClientBuilder {
             timeout: DEFAULT_TIMEOUT,
             request_id: None,
             http: None,
+            actor: None,
         }
     }
 
@@ -183,6 +196,12 @@ impl ClientBuilder {
         self
     }
 
+    /// Names `actor` on every request; see [`Client::with_actor`].
+    pub fn actor(mut self, actor: ActorLabel) -> Self {
+        self.actor = Some(actor);
+        self
+    }
+
     /// Builds the client. Fails if the base URL is empty or not a valid
     /// absolute HTTP URL.
     pub fn build(self) -> Result<Client, Error> {
@@ -213,6 +232,7 @@ impl ClientBuilder {
                 self.token,
                 self.user_agent,
                 self.request_id,
+                self.actor,
             )),
         })
     }
