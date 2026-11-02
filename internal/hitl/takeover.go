@@ -134,7 +134,17 @@ func ValidateSecretMessage(msg string) error {
 }
 
 // Locks reports whether a pending intervention keeps the agent out of exec
-// and computer calls: a held takeover does.
+// and computer calls: a held takeover does, and so does a stall in ask
+// mode until a human acks it.
 func (in Intervention) Locks() bool {
-	return in.State == StatePending && in.Kind == KindTakeover && in.Takeover.Held()
+	if in.State != StatePending {
+		return false
+	}
+	switch in.Kind {
+	case KindTakeover:
+		return in.Takeover.Held()
+	case KindStall:
+		return in.Mode == ModeAsk
+	}
+	return false
 }

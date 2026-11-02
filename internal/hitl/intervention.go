@@ -61,8 +61,10 @@ type Intervention struct {
 	// Lifecycle is the held environment action, for KindLifecycle.
 	Lifecycle *LifecyclePayload
 	// Secret and Takeover are the payloads of those kinds; nil otherwise.
-	Secret      *SecretPayload
-	Takeover    *TakeoverPayload
+	Secret   *SecretPayload
+	Takeover *TakeoverPayload
+	// Signal is what fuse saw, for KindStall and KindExpiry.
+	Signal      *SignalPayload
 	TriggeredBy Actor
 	Deadline    time.Time
 	OnTimeout   OnTimeout

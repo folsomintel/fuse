@@ -217,6 +217,7 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 		Reason:     req.Reason,
 		EditedArgv: req.EditedArgv,
 		Grant:      req.Grant,
+		Extend:     time.Duration(req.ExtendSeconds) * time.Second,
 		By:         principal(r).Actor,
 		RemoteAddr: r.RemoteAddr,
 	})
@@ -345,7 +346,10 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 		gate := hitl.Gate{
 			Name: g.Name, On: hitl.Kind(g.On), Mode: hitl.Mode(g.Mode), Grant: g.Grant,
 			TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
-			Match: hitl.GateMatch{Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell},
+			Match: hitl.GateMatch{
+				Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell,
+				Failures: g.Match.Failures, QuietSeconds: g.Match.QuietSeconds, BeforeSeconds: g.Match.BeforeSeconds,
+			},
 		}
 		for _, a := range g.Match.Action {
 			gate.Match.Action = append(gate.Match.Action, hitl.LifecycleAction(a))
@@ -379,6 +383,12 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 	}
 	if p := in.Secret; p != nil {
 		out.Payload.Secret = &InterventionSecret{Target: p.Target, Label: p.Label, Message: p.Message}
+	}
+	if p := in.Signal; p != nil {
+		out.Payload.Signal = &InterventionSignal{
+			Failures: p.Failures, LastExitCode: p.LastExitCode, QuietSeconds: p.QuietSeconds,
+			Reaper: string(p.Reaper), ReapAt: p.ReapAt, ExtendedUntil: p.ExtendedUntil,
+		}
 	}
 	if p := in.Takeover; p != nil {
 		t := &InterventionTakeover{Via: string(p.Via), Reason: p.Reason, StartedAt: p.StartedAt}

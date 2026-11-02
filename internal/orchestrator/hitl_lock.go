@@ -80,7 +80,7 @@ func (fm *FleetManager) syncLocks(ctx context.Context) {
 	}
 	locks := make(map[string]agentLock)
 	for _, rec := range recs {
-		if rec.Kind != string(hitl.KindTakeover) {
+		if rec.Kind != string(hitl.KindTakeover) && rec.Kind != string(hitl.KindStall) {
 			continue
 		}
 		in, err := fm.interventionFromRecord(rec)

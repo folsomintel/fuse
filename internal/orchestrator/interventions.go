@@ -54,7 +54,10 @@ type DecideRequest struct {
 	// deny gates before the approval is accepted.
 	EditedArgv []string
 	// Grant is once, env or ttl:<duration>; empty takes the gate's default.
-	Grant      string
+	Grant string
+	// Extend is how long an approved expiry keeps the env alive; zero is
+	// one more full window of the reaper that was due.
+	Extend     time.Duration
 	By         hitl.Actor
 	RemoteAddr string
 }
@@ -247,12 +250,31 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 				return in, err
 			}
 		}
-		out, err := hitl.Decide(in, req.Outcome, req.Answer, req.Reason, req.By, now)
+		signal := in.Kind == hitl.KindStall || in.Kind == hitl.KindExpiry
+		if signal && (req.EditedArgv != nil || req.Grant != "") {
+			return in, fmt.Errorf("%w: edited_argv and grant do not apply to a %s signal", ErrInvalidIntervention, in.Kind)
+		}
+		if req.Extend != 0 && (in.Kind != hitl.KindExpiry || req.Outcome != hitl.OutcomeApprove) {
+			return in, fmt.Errorf("%w: extend only applies to approving an expiry", ErrInvalidIntervention)
+		}
+		var (
+			out hitl.Intervention
+			err error
+		)
+		if in.Kind == hitl.KindExpiry && req.Outcome == hitl.OutcomeApprove {
+			extend := req.Extend
+			if extend == 0 {
+				extend = fm.defaultExtend(in)
+			}
+			out, err = hitl.Extend(in, extend, req.By, req.Reason, now)
+		} else {
+			out, err = hitl.Decide(in, req.Outcome, req.Answer, req.Reason, req.By, now)
+		}
 		var resolved *hitl.ErrResolved
 		if err != nil && !errors.As(err, &resolved) {
 			return in, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
 		}
-		if err != nil {
+		if err != nil || signal {
 			return out, err
 		}
 		if out.Decision.Outcome == hitl.OutcomeApprove {
@@ -271,6 +293,7 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 		return in, fmt.Errorf("%w: intervention %s expired before the decision arrived", ErrInterventionResolved, id)
 	}
 	fm.storeGrant(ctx, in, req.RemoteAddr)
+	fm.applyExtension(in)
 	fm.touchActivity(in.EnvID)
 	return in, nil
 }
@@ -493,6 +516,7 @@ type interventionPayload struct {
 	Lifecycle *hitl.LifecyclePayload `json:"lifecycle,omitempty"`
 	Secret    *hitl.SecretPayload    `json:"secret,omitempty"`
 	Takeover  *hitl.TakeoverPayload  `json:"takeover,omitempty"`
+	Signal    *hitl.SignalPayload    `json:"signal,omitempty"`
 }
 
 // interventionEdit is the sealed edited_payload column: what the decider
@@ -532,7 +556,7 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 		CreatedAt: in.CreatedAt,
 		UpdatedAt: in.UpdatedAt,
 	}
-	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle, Secret: in.Secret, Takeover: in.Takeover})
+	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle, Secret: in.Secret, Takeover: in.Takeover, Signal: in.Signal})
 	if err != nil {
 		return rec, err
 	}
@@ -614,7 +638,7 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 			return in, fmt.Errorf("intervention %s: payload: %w", rec.ID, err)
 		}
 		in.Payload, in.Mode, in.Exec, in.Lifecycle = p.AskPayload, p.Mode, p.Exec, p.Lifecycle
-		in.Secret, in.Takeover = p.Secret, p.Takeover
+		in.Secret, in.Takeover, in.Signal = p.Secret, p.Takeover, p.Signal
 	}
 	result, err := fm.unseal(rec.Result, rec.Sealed)
 	if err != nil {

@@ -750,6 +750,15 @@ type HitlGateMatch struct {
 	// Action matches lifecycle actions: destroy, fork, migrate, drain,
 	// snapshot, rotate-token.
 	Action []string `json:"action,omitempty"`
+	// Failures raises a stall after this many consecutive non-zero exec
+	// exits (on: stall).
+	Failures int `json:"failures,omitempty"`
+	// QuietSeconds raises a stall after this long with no exec or computer
+	// call (on: stall).
+	QuietSeconds int64 `json:"quiet_seconds,omitempty"`
+	// BeforeSeconds raises an expiry this long before the idle_timeout or
+	// max_runtime reap (on: expiry).
+	BeforeSeconds int64 `json:"before_seconds,omitempty"`
 }
 
 // HitlExecPolicy is allowlist mode for exec.
@@ -858,6 +867,9 @@ type DecideInterventionRequest struct {
 	// "env" or "ttl:<duration>". Empty takes the gate's default. It cannot
 	// be combined with an edit.
 	Grant string `json:"grant,omitempty"`
+	// ExtendSeconds is how long approving an expiry keeps the environment
+	// alive. Zero is one more full window of the reaper that was due.
+	ExtendSeconds int64 `json:"extend_seconds,omitempty"`
 }
 
 // Actor is who raised or decided an intervention. Fuse records it and
@@ -919,6 +931,20 @@ type InterventionPayload struct {
 	// Secret and Takeover are set for those request kinds only.
 	Secret   *InterventionSecret   `json:"secret,omitempty"`
 	Takeover *InterventionTakeover `json:"takeover,omitempty"`
+	// Signal is what fuse saw, for a stall or expiry.
+	Signal *InterventionSignal `json:"signal,omitempty"`
+}
+
+// InterventionSignal is what fuse noticed on its own. A stall carries the
+// failure run or the quiet time; an expiry carries the reaper due and when,
+// and once approved the time the environment is kept until.
+type InterventionSignal struct {
+	Failures      int        `json:"failures,omitempty"`
+	LastExitCode  int        `json:"last_exit_code,omitempty"`
+	QuietSeconds  int64      `json:"quiet_seconds,omitempty"`
+	Reaper        string     `json:"reaper,omitempty"`
+	ReapAt        *time.Time `json:"reap_at,omitempty"`
+	ExtendedUntil *time.Time `json:"extended_until,omitempty"`
 }
 
 // ExecPayload is a held exec.

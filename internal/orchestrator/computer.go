@@ -79,6 +79,7 @@ func (fm *FleetManager) ComputerAction(ctx context.Context, vmID string, action 
 	if err := fm.checkAgentLock(vmID); err != nil {
 		return GuestHTTPResponse{}, err
 	}
+	fm.noteAgentCall(vmID)
 	return fm.guestComputer(ctx, vmID, http.MethodPost, "/v1/computer/action", action)
 }
 

@@ -74,6 +74,15 @@ type GateMatch struct {
 	Shell bool `json:"shell,omitempty"`
 	// Action matches lifecycle actions.
 	Action []LifecycleAction `json:"action,omitempty"`
+	// Failures fires a stall after this many consecutive non-zero exec
+	// exits.
+	Failures int `json:"failures,omitempty"`
+	// QuietSeconds fires a stall after this long with no exec or computer
+	// call.
+	QuietSeconds int64 `json:"quiet_seconds,omitempty"`
+	// BeforeSeconds fires an expiry this long ahead of the idle_timeout or
+	// max_runtime reap.
+	BeforeSeconds int64 `json:"before_seconds,omitempty"`
 }
 
 // ExecPolicy is allowlist mode: an exec whose program is not in Allow is
@@ -160,6 +169,10 @@ func validateGates(gates []Gate, exec *ExecPolicy) []error {
 		}
 		seen[g.Name] = true
 		errs = append(errs, validateMatch(at, g.On, g.Match)...)
+		if g.On == KindStall || g.On == KindExpiry {
+			errs = append(errs, validateSignal(at, g)...)
+			continue
+		}
 		switch g.Mode {
 		case "", ModeAsk, ModeNotify, ModeDeny:
 		default:
@@ -226,10 +239,12 @@ func validateMatch(at string, on Kind, m GateMatch) []error {
 				errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, joinActions(), a))
 			}
 		}
-	case "attach", "computer", "egress", "stall", "expiry":
+	case KindStall, KindExpiry:
+		// validated with the rest of the gate in validateSignal.
+	case "attach", "computer", "egress":
 		errs = append(errs, fmt.Errorf("%s.on: %q is not yet supported", at, on))
 	default:
-		errs = append(errs, fmt.Errorf("%s.on: must be exec or lifecycle, got %q", at, on))
+		errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, stall or expiry, got %q", at, on))
 	}
 	return errs
 }
