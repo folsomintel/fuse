@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/folsomintel/fuse/internal/fusefile"
 )
 
 func TestHitlApproveWithEditAfterDash(t *testing.T) {
@@ -79,5 +81,24 @@ func TestHitlApproveArgvNeedsEdit(t *testing.T) {
 func TestRenderArgvQuotes(t *testing.T) {
 	if got := renderArgv([]string{"sh", "-lc", "git push --force"}); got != `sh -lc "git push --force"` {
 		t.Fatalf("renderArgv = %q", got)
+	}
+}
+
+func TestToSDKHitlCarriesGatesAndExec(t *testing.T) {
+	in := &fusefile.HitlSpec{
+		OnTimeout: "reject",
+		Gates: []fusefile.HitlGateSpec{
+			{Name: "force-push", On: "exec", Program: []string{"git"}, Args: []string{"push", "--force"}, Grant: "env", TimeoutSeconds: 120},
+			{Name: "no-destroy", On: "lifecycle", Action: []string{"destroy"}, Mode: "deny", Reason: "keep"},
+		},
+		Exec: &fusefile.HitlExecPolicy{Default: "ask", Allow: []string{"ls"}},
+	}
+	out := toSDKHitl(in)
+	if len(out.Gates) != 2 || out.Gates[0].Match.Args[1] != "--force" || out.Gates[0].Grant != "env" ||
+		out.Gates[0].TimeoutSeconds != 120 || out.Gates[1].Match.Action[0] != "destroy" || out.Gates[1].Reason != "keep" {
+		t.Fatalf("gates = %+v", out.Gates)
+	}
+	if out.Exec == nil || out.Exec.Default != "ask" || out.Exec.Allow[0] != "ls" {
+		t.Fatalf("exec = %+v", out.Exec)
 	}
 }
