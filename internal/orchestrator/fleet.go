@@ -553,6 +553,11 @@ type FleetManager struct {
 	// closed when it resolves. see interventions.go.
 	hitlMu      sync.Mutex
 	hitlWaiters map[string]chan struct{}
+	// hitlRuns are approved gated actions this process is performing, so
+	// each runs once and the orphan pass skips them.
+	hitlRuns map[string]bool
+	// hitlOrphans runs the orphaned-run pass once per process.
+	hitlOrphans sync.Once
 
 	// envKeys revokes and rebinds scoped api keys with their environment;
 	// nil when there is no key store. publicURL is the base url webhook
@@ -1346,6 +1351,7 @@ func (fm *FleetManager) destroyVM(ctx context.Context, vmID string) error {
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "destroyed"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
 	fm.cancelEnvInterventions(ctx, v, vmID, "environment destroyed")
+	fm.dropEnvGrants(ctx, vmID)
 	fm.revokeEnvKeys(ctx, vmID)
 
 	return nil
@@ -1646,6 +1652,7 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 	fm.appendEventBackground("vm", vmID, "vm.removed", map[string]any{"reason": "async_destroy"})
 	fm.publishTerminalEvent(vmID, VMStateDestroyed, "")
 	fm.cancelEnvInterventions(ctx, v, vmID, "environment destroyed")
+	fm.dropEnvGrants(ctx, vmID)
 	fm.revokeEnvKeys(ctx, vmID)
 }
 

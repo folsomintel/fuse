@@ -18,6 +18,10 @@ const (
 	AuditCancelled    AuditEvent = "cancelled"
 	AuditInviteMinted AuditEvent = "invite_minted"
 	AuditInviteUsed   AuditEvent = "invite_used"
+	// AuditGrantCreated is an approval that stored an env or ttl grant.
+	AuditGrantCreated AuditEvent = "grant_created"
+	// AuditGrantUsed is an action a grant let through without a prompt.
+	AuditGrantUsed AuditEvent = "grant_used"
 )
 
 // AuditEntry is one row of the hitl audit log. it holds who did what and

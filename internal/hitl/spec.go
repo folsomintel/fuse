@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// Kind is what raised an intervention. issue #309 only has the ask request;
-// gates, the other requests and signals add kinds later.
+// Kind is what raised an intervention: the ask request, or a gate surface
+// (see gate.go).
 type Kind string
 
 const (
@@ -53,6 +53,10 @@ type Spec struct {
 	RequireActor bool `json:"require_actor,omitempty"`
 	// Notify are webhooks told about every intervention and audit event.
 	Notify []Webhook `json:"notify,omitempty"`
+	// Gates are the enforced exec and lifecycle gates.
+	Gates []Gate `json:"gates,omitempty"`
+	// Exec is allowlist mode for exec, nil when off.
+	Exec *ExecPolicy `json:"exec,omitempty"`
 }
 
 // Webhook is one notification target. Secret names an entry of the
@@ -117,9 +121,10 @@ func (s Spec) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("hitl.on_timeout: must be %q or %q, got %q", OnTimeoutReject, OnTimeoutAllow, s.OnTimeout))
 	}
-	if s.Requests.Ask == nil {
-		errs = append(errs, errors.New("hitl.requests: declare at least one request kind (only ask is supported)"))
+	if s.Requests.Ask == nil && len(s.Gates) == 0 && s.Exec == nil {
+		errs = append(errs, errNoPolicy)
 	}
+	errs = append(errs, validateGates(s.Gates, s.Exec)...)
 	if len(s.Notify) > MaxWebhooks {
 		errs = append(errs, fmt.Errorf("hitl.notify: at most %d webhooks are allowed", MaxWebhooks))
 	}

@@ -19,6 +19,7 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 	if fm.store == nil {
 		return
 	}
+	fm.hitlOrphans.Do(func() { fm.recoverOrphanRuns(ctx) })
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
 	if err != nil {
 		fm.logger.Warn("list pending interventions failed", "err", err)

@@ -1259,3 +1259,76 @@ func (s *PostgresStateStore) ListHitlAudit(ctx context.Context, f AuditFilter) (
 	}
 	return out, rows.Err()
 }
+
+// grantMatch is the match_json column: only the keyed hash of the action,
+// never the argv itself.
+type grantMatch struct {
+	Key string `json:"key"`
+}
+
+func (s *PostgresStateStore) InsertHitlGrant(ctx context.Context, g hitl.Grant) error {
+	match, err := json.Marshal(grantMatch{Key: g.Key})
+	if err != nil {
+		return err
+	}
+	var expires any
+	if g.ExpiresAt != nil {
+		expires = g.ExpiresAt.UTC()
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO orchestrator_hitl_grants
+			(grant_id, env_id, gate, match_json, scope, intervention_id, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		g.ID, g.EnvID, g.Gate, string(match), string(g.Scope), g.InterventionID, expires, g.CreatedAt.UTC())
+	if err != nil {
+		return fmt.Errorf("insert hitl grant %s: %w", g.ID, err)
+	}
+	return nil
+}
+
+func (s *PostgresStateStore) ListHitlGrants(ctx context.Context, envID string) ([]hitl.Grant, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT grant_id, env_id, gate, match_json, scope, intervention_id, expires_at, created_at
+		FROM orchestrator_hitl_grants WHERE env_id = $1 ORDER BY created_at`, envID)
+	if err != nil {
+		return nil, fmt.Errorf("list hitl grants: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]hitl.Grant, 0)
+	for rows.Next() {
+		var (
+			g       hitl.Grant
+			match   string
+			scope   string
+			expires sql.NullTime
+		)
+		if err := rows.Scan(&g.ID, &g.EnvID, &g.Gate, &match, &scope, &g.InterventionID, &expires, &g.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan hitl grant: %w", err)
+		}
+		var m grantMatch
+		if err := json.Unmarshal([]byte(match), &m); err != nil {
+			return nil, fmt.Errorf("hitl grant %s: match_json: %w", g.ID, err)
+		}
+		g.Key, g.Scope = m.Key, hitl.GrantScope(scope)
+		if expires.Valid {
+			t := expires.Time
+			g.ExpiresAt = &t
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStateStore) MoveHitlGrants(ctx context.Context, fromEnvID, toEnvID string) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE orchestrator_hitl_grants SET env_id = $2 WHERE env_id = $1`, fromEnvID, toEnvID); err != nil {
+		return fmt.Errorf("move hitl grants: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStateStore) DeleteHitlGrants(ctx context.Context, envID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM orchestrator_hitl_grants WHERE env_id = $1`, envID); err != nil {
+		return fmt.Errorf("delete hitl grants: %w", err)
+	}
+	return nil
+}

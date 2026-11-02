@@ -15,7 +15,7 @@ func TestSpecValidate(t *testing.T) {
 	}{
 		{"minimal", Spec{Requests: ask}, ""},
 		{"full", Spec{TimeoutSeconds: 600, OnTimeout: OnTimeoutAllow, Requests: ask}, ""},
-		{"no requests", Spec{}, "declare at least one request kind"},
+		{"no requests", Spec{}, "declare at least one of"},
 		{"negative timeout", Spec{TimeoutSeconds: -1, Requests: ask}, "must not be negative"},
 		{"timeout too short", Spec{TimeoutSeconds: 5, Requests: ask}, "must be between"},
 		{"timeout too long", Spec{TimeoutSeconds: 2 * 86400, Requests: ask}, "must be between"},
