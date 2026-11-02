@@ -132,6 +132,9 @@ type HitlGateSpec struct {
 	Args           []string
 	Shell          bool
 	Action         []string
+	Failures       int
+	QuietSeconds   int64
+	BeforeSeconds  int64
 	Mode           string
 	Grant          string
 	TimeoutSeconds int64
@@ -1174,6 +1177,13 @@ func compileHitl(f *Fusefile) *HitlSpec {
 			if d, err := time.ParseDuration(g.Timeout); err == nil {
 				gate.TimeoutSeconds = int64(d / time.Second)
 			}
+		}
+		gate.Failures = g.Match.Failures
+		if d, err := time.ParseDuration(g.Match.Quiet); err == nil {
+			gate.QuietSeconds = int64(d / time.Second)
+		}
+		if d, err := time.ParseDuration(g.Match.Before); err == nil {
+			gate.BeforeSeconds = int64(d / time.Second)
 		}
 		spec.Gates = append(spec.Gates, gate)
 	}

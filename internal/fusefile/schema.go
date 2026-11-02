@@ -669,6 +669,13 @@ type HitlMatch struct {
 	Args    []string   `yaml:"args,omitempty"`
 	Shell   bool       `yaml:"shell,omitempty"`
 	Action  StringList `yaml:"action,omitempty"`
+	// Failures raises a stall after this many consecutive failing execs.
+	Failures int `yaml:"failures,omitempty"`
+	// Quiet raises a stall after this long with no exec or computer call.
+	Quiet string `yaml:"quiet,omitempty"`
+	// Before raises an expiry this long ahead of the idle_timeout or
+	// max_runtime reap.
+	Before string `yaml:"before,omitempty"`
 }
 
 // StringList decodes either a single string or a list of strings.

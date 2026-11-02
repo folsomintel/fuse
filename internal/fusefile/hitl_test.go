@@ -187,3 +187,47 @@ func TestHitlSecretAndTakeoverCompile(t *testing.T) {
 		t.Fatalf("hitl = %+v, want %+v", c.Hitl, want)
 	}
 }
+
+func TestHitlSignalGatesCompile(t *testing.T) {
+	f, err := parseHitl(t, `hitl:
+  requests:
+    ask: {}
+  gates:
+    - { name: flailing, on: stall, match: { failures: 3 } }
+    - { name: quiet, on: stall, mode: notify, match: { quiet: 15m } }
+    - { name: extend, on: expiry, match: { before: 5m } }
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	want := []HitlGateSpec{
+		{Name: "flailing", On: "stall", Failures: 3},
+		{Name: "quiet", On: "stall", Mode: "notify", QuietSeconds: 900},
+		{Name: "extend", On: "expiry", BeforeSeconds: 300},
+	}
+	if !reflect.DeepEqual(c.Hitl.Gates, want) {
+		t.Fatalf("gates = %+v, want %+v", c.Hitl.Gates, want)
+	}
+}
+
+func TestHitlSignalGatesReject(t *testing.T) {
+	cases := map[string]string{
+		"- { name: s, on: stall, match: {} }":                           "needs failures or quiet",
+		"- { name: s, on: stall, match: { quiet: 5s } }":                "must be between 1m0s",
+		"- { name: s, on: stall, mode: deny, match: { failures: 1 } }":  "no action to deny",
+		"- { name: s, on: stall, match: { failures: 1, before: 5m } }":  "only applies to on: expiry",
+		"- { name: e, on: expiry, match: {} }":                          "needs before",
+		"- { name: e, on: expiry, grant: env, match: { before: 5m } }":  "cannot grant",
+		"- { name: x, on: exec, match: { program: git, failures: 2 } }": "only apply to on: stall or expiry",
+	}
+	for gate, want := range cases {
+		_, err := parseHitl(t, "hitl:\n  requests:\n    ask: {}\n  gates:\n    "+gate+"\n")
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", gate, err, want)
+		}
+	}
+}

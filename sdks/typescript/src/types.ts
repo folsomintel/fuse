@@ -739,6 +739,15 @@ export interface HitlGateMatch {
   shell?: boolean;
   /** Matches lifecycle actions (one of LifecycleAction). */
   action?: string[];
+  /** Raises a stall after this many consecutive non-zero exec exits
+   * (on: "stall"). */
+  failures?: number;
+  /** Raises a stall after this long with no exec or computer call
+   * (on: "stall"). */
+  quiet_seconds?: number;
+  /** Raises an expiry this long before the idle_timeout or max_runtime reap
+   * (on: "expiry"). */
+  before_seconds?: number;
 }
 
 /** HitlExecPolicy is allowlist mode for exec: a program not in allow is held

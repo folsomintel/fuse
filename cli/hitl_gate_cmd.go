@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -18,6 +19,7 @@ func newHitlApproveCmd() *cobra.Command {
 	var (
 		reason, actor, grant string
 		edit                 bool
+		extend               time.Duration
 	)
 	cmd := &cobra.Command{
 		Use:   "approve <id> [--edit [-- <argv>...]] [--grant env|ttl:30m]",
@@ -31,7 +33,9 @@ func newHitlApproveCmd() *cobra.Command {
 			"--grant lets identical repeats through without asking again: env for the\n" +
 			"environment's lifetime, or ttl:<duration>. a grant cannot be combined with\n" +
 			"an edit.\n\n" +
-			"for an ask, `fuse hitl approve <id> <answer>` still answers it.",
+			"for an ask, `fuse hitl approve <id> <answer>` still answers it. a stall\n" +
+			"signal is acked with a plain approve; an expiry takes --extend for how long\n" +
+			"to keep the environment alive (default: one more window of its reaper).",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			before, after := args, []string(nil)
@@ -49,7 +53,7 @@ func newHitlApproveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			opts := fuse.ApproveOptions{Reason: reason, Grant: grant, Answer: strings.Join(before[1:], " ")}
+			opts := fuse.ApproveOptions{Reason: reason, Grant: grant, Answer: strings.Join(before[1:], " "), ExtendSeconds: int64(extend / time.Second)}
 			if edit {
 				opts.EditedArgv = after
 				if len(opts.EditedArgv) == 0 {
@@ -79,6 +83,9 @@ func newHitlApproveCmd() *cobra.Command {
 			if in.Decision != nil && in.Decision.Grant != "" && in.Decision.Grant != "once" {
 				msg += " (grant " + in.Decision.Grant + ")"
 			}
+			if s := in.Payload.Signal; s != nil && s.ExtendedUntil != nil {
+				msg += ", environment kept until " + shortTime(*s.ExtendedUntil)
+			}
 			successf("%s", msg)
 			return nil
 		},
@@ -86,6 +93,7 @@ func newHitlApproveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&edit, "edit", false, "replace the held exec's argv (after `--`, or in $EDITOR)")
 	cmd.Flags().StringVar(&grant, "grant", "", "let identical repeats through: env or ttl:<duration> (default: the gate's)")
 	cmd.Flags().StringVar(&reason, "reason", "", "optional note passed back to the agent")
+	cmd.Flags().DurationVar(&extend, "extend", 0, "for an expiry: keep the environment alive this long, like 30m")
 	addActorFlag(cmd, &actor)
 	return cmd
 }
