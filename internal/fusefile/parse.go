@@ -614,16 +614,28 @@ func validateHitl(h *Hitl, secrets []string) []error {
 	}
 	errs = append(errs, validateHitlGates(h)...)
 	for name, node := range map[string]yaml.Node{
-		"hitl.requests.secret":   h.Requests.Secret,
-		"hitl.requests.review":   h.Requests.Review,
-		"hitl.requests.takeover": h.Requests.Takeover,
+		"hitl.requests.review": h.Requests.Review,
 	} {
 		if !node.IsZero() {
 			errs = append(errs, fmt.Errorf("%s: not yet supported", name))
 		}
 	}
-	if h.Requests.Ask == nil && len(h.Gates) == 0 && h.Exec == nil {
-		errs = append(errs, errors.New("hitl: declare at least one of requests.ask, gates or exec"))
+	if h.Requests.Ask == nil && h.Requests.Secret == nil && h.Requests.Takeover == nil && len(h.Gates) == 0 && h.Exec == nil {
+		errs = append(errs, errors.New("hitl: declare at least one of requests (ask, secret or takeover), gates or exec"))
+	}
+	if s := h.Requests.Secret; s != nil {
+		errs = append(errs, validateHitlSecret(s)...)
+	}
+	if t := h.Requests.Takeover; t != nil {
+		for i, v := range t.Via {
+			switch v {
+			case "terminal":
+			case "desktop", "port":
+				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: %q is not yet supported", i, v))
+			default:
+				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: must be \"terminal\", got %q", i, v))
+			}
+		}
 	}
 	// map iteration order is random; keep the report stable.
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
@@ -736,6 +748,58 @@ func validateHitlGates(h *Hitl) []error {
 		if len(g.Reason) > maxHitlReason {
 			errs = append(errs, fmt.Errorf("%s.reason: must be at most %d bytes", at, maxHitlReason))
 		}
+	}
+	return errs
+}
+
+// hitlEnvName is a valid secret env target. it mirrors internal/hitl.
+var hitlEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+const maxHitlSecretTargets = 20
+
+// validateHitlSecret checks the declared secret targets. It mirrors
+// internal/hitl.SecretRequests.Validate.
+func validateHitlSecret(s *HitlSecret) []error {
+	var errs []error
+	if len(s.Targets) == 0 {
+		errs = append(errs, errors.New("hitl.requests.secret.targets: declare at least one target"))
+	}
+	if len(s.Targets) > maxHitlSecretTargets {
+		errs = append(errs, fmt.Errorf("hitl.requests.secret.targets: at most %d targets are allowed", maxHitlSecretTargets))
+	}
+	seen := make(map[string]bool, len(s.Targets))
+	for i, t := range s.Targets {
+		at := fmt.Sprintf("hitl.requests.secret.targets[%d]", i)
+		name := t.Env
+		switch {
+		case t.Env != "" && t.File != "":
+			errs = append(errs, fmt.Errorf("%s: set one of env or file, not both", at))
+			continue
+		case t.Env == "" && t.File == "":
+			errs = append(errs, fmt.Errorf("%s: set one of env or file", at))
+			continue
+		case t.Env != "" && !hitlEnvName.MatchString(t.Env):
+			errs = append(errs, fmt.Errorf("%s: env %q is not a valid variable name", at, t.Env))
+		case t.File != "":
+			name = t.File
+			switch {
+			case !strings.HasPrefix(t.File, "/"):
+				errs = append(errs, fmt.Errorf("%s: file %q must be an absolute path", at, t.File))
+			case containsDotDot(t.File) || path.Clean(t.File) != t.File:
+				errs = append(errs, fmt.Errorf("%s: file %q must be a clean path to a file", at, t.File))
+			case t.File == "/fuse" || strings.HasPrefix(t.File, "/fuse/"):
+				errs = append(errs, fmt.Errorf("%s: file %q is under /fuse, which fuse reserves for its own credentials", at, t.File))
+			}
+		}
+		if strings.TrimSpace(t.Label) == "" {
+			errs = append(errs, fmt.Errorf("%s: label is required; it is what the human sees", at))
+		} else if len(t.Label) > 200 {
+			errs = append(errs, fmt.Errorf("%s: label must be at most 200 bytes", at))
+		}
+		if seen[name] {
+			errs = append(errs, fmt.Errorf("%s: %q is declared twice", at, name))
+		}
+		seen[name] = true
 	}
 	return errs
 }

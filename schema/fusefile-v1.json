@@ -432,9 +432,56 @@
               "additionalProperties": false,
               "description": "Let the agent ask a human a question, optionally with fixed choices."
             },
-            "secret": { "not": {}, "description": "Not yet supported; refused at validation." },
+            "secret": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["targets"],
+              "description": "Let the agent ask a human for a credential it never sees. The value goes straight into a declared target in the guest; the agent only gets back \"done\". Needs TOKEN_ENCRYPTION_KEY on the orchestrator.",
+              "properties": {
+                "targets": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 20,
+                  "description": "The only places a value may land. The agent names one; anything else is refused.",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["label"],
+                    "oneOf": [{ "required": ["env"] }, { "required": ["file"] }],
+                    "properties": {
+                      "env": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                        "description": "A variable the agent's later exec calls see."
+                      },
+                      "file": {
+                        "type": "string",
+                        "pattern": "^/",
+                        "description": "An absolute guest path outside /fuse, written root-only (0600)."
+                      },
+                      "label": {
+                        "type": "string",
+                        "maxLength": 200,
+                        "description": "What the human is shown first, ahead of the agent's own text."
+                      }
+                    }
+                  }
+                }
+              }
+            },
             "review": { "not": {}, "description": "Not yet supported; refused at validation." },
-            "takeover": { "not": {}, "description": "Not yet supported; refused at validation." }
+            "takeover": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Let a human take over the environment. While a human holds it, the agent's exec and computer calls get 423 and the SDKs wait.",
+              "properties": {
+                "via": {
+                  "type": "array",
+                  "items": { "type": "string", "enum": ["terminal"] },
+                  "description": "Allowed ways in. Only terminal exists so far; empty means terminal."
+                }
+              }
+            }
           }
         },
         "notify": {

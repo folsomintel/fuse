@@ -60,8 +60,16 @@ func TestHitlRejects(t *testing.T) {
 		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                                     "between",
 		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                                                 "between",
 		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                                               "hitl.on_timeout",
-		"hitl:\n  timeout: 5m\n":                                                                                               "declare at least one of requests.ask, gates or exec",
-		"hitl:\n  requests:\n    ask: {}\n    secret: {targets: []}\n":                                                         "hitl.requests.secret: not yet supported",
+		"hitl:\n  timeout: 5m\n":                                                                                               "declare at least one of requests (ask, secret or takeover), gates or exec",
+		"hitl:\n  requests:\n    secret: {targets: []}\n":                                                                      "declare at least one target",
+		"hitl:\n  requests:\n    secret: {targets: [{env: GH_TOKEN}]}\n":                                                       "label is required",
+		"hitl:\n  requests:\n    secret: {targets: [{env: 1BAD, label: x}]}\n":                                                 "not a valid variable name",
+		"hitl:\n  requests:\n    secret: {targets: [{file: rel/path, label: x}]}\n":                                            "absolute path",
+		"hitl:\n  requests:\n    secret: {targets: [{file: /fuse/env, label: x}]}\n":                                           "reserves",
+		"hitl:\n  requests:\n    secret: {targets: [{env: A, file: /a, label: x}]}\n":                                          "not both",
+		"hitl:\n  requests:\n    secret: {targets: [{env: A, label: x}, {env: A, label: y}]}\n":                                "declared twice",
+		"hitl:\n  requests:\n    takeover: {via: [desktop]}\n":                                                                 "not yet supported",
+		"hitl:\n  requests:\n    review: {}\n":                                                                                 "hitl.requests.review: not yet supported",
 		"hitl:\n  gates:\n    - {name: x, on: computer, match: {}}\n":                                                          "hitl.gates[0].on: \"computer\" is not yet supported",
 		"hitl:\n  gates:\n    - {name: x, on: exec, match: {}}\n":                                                              "needs program, args or shell",
 		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: /bin/git}}\n":                                             "not a path",
@@ -146,6 +154,34 @@ func TestHitlGatesCompile(t *testing.T) {
 			{Name: "opaque", On: "exec", Shell: true, Mode: "notify"},
 			{Name: "no-destroy", On: "lifecycle", Action: []string{"destroy", "migrate"}, Mode: "deny", Reason: "not yours"},
 		},
+	}
+	if !reflect.DeepEqual(c.Hitl, want) {
+		t.Fatalf("hitl = %+v, want %+v", c.Hitl, want)
+	}
+}
+
+func TestHitlSecretAndTakeoverCompile(t *testing.T) {
+	f, err := parseHitl(t, `hitl:
+  requests:
+    takeover: {via: [terminal]}
+    secret:
+      targets:
+        - { env: GH_TOKEN, label: "GitHub token for the deploy bot" }
+        - { file: /root/.netrc, label: "netrc for the private registry" }
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	want := &HitlSpec{OnTimeout: "reject",
+		Secret: &HitlSecretSpec{Targets: []HitlSecretTarget{
+			{Env: "GH_TOKEN", Label: "GitHub token for the deploy bot"},
+			{File: "/root/.netrc", Label: "netrc for the private registry"},
+		}},
+		Takeover: &HitlTakeoverSpec{Via: []string{"terminal"}},
 	}
 	if !reflect.DeepEqual(c.Hitl, want) {
 		t.Fatalf("hitl = %+v, want %+v", c.Hitl, want)

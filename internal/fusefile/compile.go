@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -103,10 +104,24 @@ type HitlSpec struct {
 	TimeoutSeconds int64
 	OnTimeout      string
 	Ask            bool
-	RequireActor   bool
-	Notify         []HitlWebhook
-	Gates          []HitlGateSpec
-	Exec           *HitlExecPolicy
+	// Secret is non-nil when secret requests are declared.
+	Secret *HitlSecretSpec
+	// Takeover is non-nil when takeover requests are declared.
+	Takeover     *HitlTakeoverSpec
+	RequireActor bool
+	Notify       []HitlWebhook
+	Gates        []HitlGateSpec
+	Exec         *HitlExecPolicy
+}
+
+// HitlSecretSpec is a compiled hitl.requests.secret block.
+type HitlSecretSpec struct {
+	Targets []HitlSecretTarget
+}
+
+// HitlTakeoverSpec is a compiled hitl.requests.takeover block.
+type HitlTakeoverSpec struct {
+	Via []string
 }
 
 // HitlGateSpec is a compiled hitl.gates entry, with its timeout in seconds.
@@ -1135,6 +1150,12 @@ func compileHitl(f *Fusefile) *HitlSpec {
 	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil, RequireActor: f.Hitl.RequireActor}
 	for _, n := range f.Hitl.Notify {
 		spec.Notify = append(spec.Notify, HitlWebhook{URL: n.Webhook, Secret: n.Secret})
+	}
+	if s := f.Hitl.Requests.Secret; s != nil {
+		spec.Secret = &HitlSecretSpec{Targets: slices.Clone(s.Targets)}
+	}
+	if t := f.Hitl.Requests.Takeover; t != nil {
+		spec.Takeover = &HitlTakeoverSpec{Via: slices.Clone(t.Via)}
 	}
 	if spec.OnTimeout == "" {
 		spec.OnTimeout = "reject"
