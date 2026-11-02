@@ -96,6 +96,10 @@ func hitlRoute(r *http.Request) bool {
 		return true
 	case strings.HasPrefix(path, "/v1/hitl/"):
 		return true
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/environments/") && !strings.Contains(strings.TrimPrefix(path, "/v1/environments/"), "/"):
+		// taking over and releasing are hitl actions on the environment.
+		action := r.URL.Query().Get("action")
+		return action == "takeover" || action == "release"
 	case path == "/v1/api-keys" && r.Method == http.MethodPost:
 		// minting, within the key's own scopes. see createAPIKey.
 		return true

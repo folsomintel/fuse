@@ -143,6 +143,12 @@ func (h *Handler) attachEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, err)
 		return
 	}
+	serveAttach(w, guest)
+}
+
+// serveAttach hijacks the connection, answers 101 and relays the guest
+// stream until either side goes away. it owns guest and closes it.
+func serveAttach(w http.ResponseWriter, guest io.ReadWriteCloser) {
 	defer func() { _ = guest.Close() }()
 
 	// ResponseController, not a direct w.(http.Hijacker) assertion: the

@@ -24,6 +24,16 @@ const (
 	AuditGrantUsed AuditEvent = "grant_used"
 )
 
+// audit events for secrets and takeover (#312).
+const (
+	AuditSecretAnswered  AuditEvent = "secret_answered"
+	AuditTakeoverStarted AuditEvent = "takeover_started"
+	AuditTakeoverEnded   AuditEvent = "takeover_ended"
+	// AuditTakeoverSession closes one recorded shell session; its row links
+	// the encrypted cast by RecordingID.
+	AuditTakeoverSession AuditEvent = "takeover_session"
+)
+
 // AuditEntry is one row of the hitl audit log. it holds who did what and
 // when, never content: payloads stay on the encrypted intervention row.
 //
@@ -36,9 +46,12 @@ type AuditEntry struct {
 	EnvID          string     `json:"env_id,omitempty"`
 	Actor          Actor      `json:"actor"`
 	RemoteAddr     string     `json:"remote_addr,omitempty"`
-	At             time.Time  `json:"at"`
-	PrevHash       []byte     `json:"prev_hash"`
-	Hash           []byte     `json:"hash"`
+	// RecordingID links a takeover session's encrypted cast. empty for
+	// every other event.
+	RecordingID string    `json:"recording_id,omitempty"`
+	At          time.Time `json:"at"`
+	PrevHash    []byte    `json:"prev_hash"`
+	Hash        []byte    `json:"hash"`
 }
 
 // GenesisHash is the prev_hash of the first row.
@@ -73,6 +86,11 @@ func (e AuditEntry) ComputeHash() []byte {
 	write([]byte(e.RemoteAddr))
 	write([]byte(AuditTime(e.At).Format(time.RFC3339Nano)))
 	write(e.PrevHash)
+	// appended only when set, so rows written before the field existed
+	// still hash the same.
+	if e.RecordingID != "" {
+		write([]byte(e.RecordingID))
+	}
 	sum := sha256.Sum256(buf.Bytes())
 	return sum[:]
 }

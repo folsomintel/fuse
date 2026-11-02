@@ -423,6 +423,27 @@ type StateStore interface {
 
 	// DeleteHitlGrants drops an environment's grants (a destroy).
 	DeleteHitlGrants(ctx context.Context, envID string) error
+	// SaveHitlRecording stores one takeover session's cast.
+	SaveHitlRecording(ctx context.Context, rec RecordingRecord) error
+
+	// GetHitlRecording returns one cast, or an error wrapping
+	// ErrRecordingNotFound.
+	GetHitlRecording(ctx context.Context, id string) (RecordingRecord, error)
+}
+
+// RecordingRecord is one recorded takeover shell session. Data is the
+// asciinema v2 cast, sealed by the fleet manager when Sealed is set.
+type RecordingRecord struct {
+	ID             string
+	InterventionID string
+	EnvID          string
+	Actor          json.RawMessage
+	StartedAt      time.Time
+	EndedAt        time.Time
+	Size           int64
+	Truncated      bool
+	Sealed         bool
+	Data           []byte
 }
 
 // MemoryStateStore is a process-local store useful for tests/default behavior.
@@ -437,6 +458,7 @@ type MemoryStateStore struct {
 	hitl        map[string]InterventionRecord
 	audit       []hitl.AuditEntry
 	grants      []hitl.Grant
+	recordings  map[string]RecordingRecord
 	nextID      int64
 	nextDLQID   int64
 }
@@ -450,6 +472,7 @@ func NewMemoryStateStore() *MemoryStateStore {
 		deadLetters: make(map[string]DeadLetterRecord),
 		hosts:       make(map[string]HostRecord),
 		hitl:        make(map[string]InterventionRecord),
+		recordings:  make(map[string]RecordingRecord),
 	}
 }
 
@@ -840,6 +863,23 @@ func (s *MemoryStateStore) AppendHitlAudit(_ context.Context, e hitl.AuditEntry)
 	e.Hash = e.ComputeHash()
 	s.audit = append(s.audit, e)
 	return e, nil
+}
+
+func (s *MemoryStateStore) SaveHitlRecording(_ context.Context, rec RecordingRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordings[rec.ID] = rec
+	return nil
+}
+
+func (s *MemoryStateStore) GetHitlRecording(_ context.Context, id string) (RecordingRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.recordings[id]
+	if !ok {
+		return RecordingRecord{}, fmt.Errorf("%w: %s", ErrRecordingNotFound, id)
+	}
+	return rec, nil
 }
 
 func (s *MemoryStateStore) ListHitlAudit(_ context.Context, f AuditFilter) ([]hitl.AuditEntry, error) {

@@ -256,4 +256,4 @@ func joinActions() string {
 }
 
 // errNoPolicy is returned when a spec declares nothing at all.
-var errNoPolicy = errors.New("hitl: declare at least one of requests.ask, gates or exec")
+var errNoPolicy = errors.New("hitl: declare at least one of requests (ask, secret or takeover), gates or exec")

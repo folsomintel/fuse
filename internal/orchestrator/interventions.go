@@ -31,10 +31,14 @@ var (
 
 // HumanRequest is what an agent sends to raise a request.
 type HumanRequest struct {
-	Kind    hitl.Kind
-	Ask     hitl.AskPayload
-	Timeout time.Duration // optional; can only shorten the policy's timeout
-	By      hitl.Actor
+	Kind hitl.Kind
+	Ask  hitl.AskPayload
+	// Secret names the declared target and carries the agent's text.
+	Secret hitl.SecretPayload
+	// Takeover carries the way in and the agent's reason.
+	Takeover hitl.TakeoverPayload
+	Timeout  time.Duration // optional; can only shorten the policy's timeout
+	By       hitl.Actor
 	// RemoteAddr is the caller's address, recorded on the audit row.
 	RemoteAddr string
 }
@@ -98,8 +102,39 @@ func (fm *FleetManager) RequestHuman(ctx context.Context, envID string, req Huma
 	if !spec.Allows(req.Kind) {
 		return hitl.Intervention{}, fmt.Errorf("%w: environment %s does not declare hitl.requests.%s", ErrHitlNotDeclared, envID, req.Kind)
 	}
-	if err := req.Ask.Validate(); err != nil {
-		return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+	in := hitl.Intervention{Kind: req.Kind}
+	switch req.Kind {
+	case hitl.KindAsk:
+		if err := req.Ask.Validate(); err != nil {
+			return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+		}
+		in.Payload = req.Ask
+	case hitl.KindSecret:
+		if len(fm.tokenEncryptionKey) != 32 {
+			return hitl.Intervention{}, fmt.Errorf("%w: refusing a secret request", ErrHitlNeedsKey)
+		}
+		t, ok := spec.Requests.Secret.Target(req.Secret.Target)
+		if !ok {
+			return hitl.Intervention{}, fmt.Errorf("%w: secret target %q is not declared under hitl.requests.secret.targets", ErrHitlNotDeclared, req.Secret.Target)
+		}
+		if err := hitl.ValidateSecretMessage(req.Secret.Message); err != nil {
+			return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+		}
+		in.Secret = &hitl.SecretPayload{Target: t.Name(), Label: t.Label, Message: req.Secret.Message}
+	case hitl.KindTakeover:
+		via := req.Takeover.Via
+		if via == "" {
+			via = hitl.ViaTerminal
+		}
+		if !spec.Requests.Takeover.Allows(via) {
+			return hitl.Intervention{}, fmt.Errorf("%w: environment %s does not allow takeover via %s", ErrHitlNotDeclared, envID, via)
+		}
+		if err := hitl.ValidateTakeoverReason(req.Takeover.Reason); err != nil {
+			return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+		}
+		in.Takeover = &hitl.TakeoverPayload{Via: via, Reason: req.Takeover.Reason}
+	default:
+		return hitl.Intervention{}, fmt.Errorf("%w: unknown request kind %q", ErrInvalidIntervention, req.Kind)
 	}
 	if req.Timeout < 0 {
 		return hitl.Intervention{}, fmt.Errorf("%w: timeout must not be negative", ErrInvalidIntervention)
@@ -111,32 +146,37 @@ func (fm *FleetManager) RequestHuman(ctx context.Context, envID string, req Huma
 	}
 
 	now := time.Now()
-	in := hitl.Intervention{
-		ID:          hitl.NewID(now),
-		EnvID:       envID,
-		Kind:        req.Kind,
-		State:       hitl.StatePending,
-		Payload:     req.Ask,
-		TriggeredBy: req.By,
-		Deadline:    hitl.Deadline(now, *spec, req.Timeout),
-		OnTimeout:   spec.EffectiveOnTimeout(),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+	in.ID = hitl.NewID(now)
+	in.EnvID = envID
+	in.State = hitl.StatePending
+	in.TriggeredBy = req.By
+	in.Deadline = hitl.Deadline(now, *spec, req.Timeout)
+	in.OnTimeout = spec.EffectiveOnTimeout()
+	in.CreatedAt, in.UpdatedAt = now, now
+	if err := fm.raiseIntervention(ctx, in, req.RemoteAddr); err != nil {
+		return hitl.Intervention{}, err
 	}
+	return in, nil
+}
+
+// raiseIntervention stores a new pending intervention and tells everyone
+// who listens: the event log, the sse stream, the audit log and webhooks.
+func (fm *FleetManager) raiseIntervention(ctx context.Context, in hitl.Intervention, remoteAddr string) error {
+	envID := in.EnvID
 	rec, err := fm.interventionToRecord(in)
 	if err != nil {
-		return hitl.Intervention{}, err
+		return err
 	}
 	if err := fm.store.UpsertIntervention(ctx, rec); err != nil {
-		return hitl.Intervention{}, err
+		return err
 	}
 	fm.touchActivity(envID)
 	fm.appendEvent(ctx, "intervention", in.ID, "intervention.raised", map[string]any{
 		"env_id": envID, "kind": string(in.Kind), "deadline": in.Deadline,
 	})
 	fm.publishInterventionEvent(in)
-	fm.auditIntervention(ctx, in, auditMeta{remoteAddr: req.RemoteAddr})
-	return in, nil
+	fm.auditIntervention(ctx, in, auditMeta{remoteAddr: remoteAddr})
+	return nil
 }
 
 // GetIntervention returns one intervention. a pending one past its
@@ -320,6 +360,11 @@ func (fm *FleetManager) moveInterventions(ctx context.Context, fromID, toID stri
 	if err := fm.store.MoveHitlGrants(ctx, fromID, toID); err != nil {
 		fm.logger.Warn("move hitl grants failed", "from", fromID, "to", toID, "err", err)
 	}
+	// a held takeover follows the environment too.
+	if l, ok := fm.hitlLocks[fromID]; ok {
+		delete(fm.hitlLocks, fromID)
+		fm.hitlLocks[toID] = l
+	}
 }
 
 func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl.Intervention, error) {
@@ -371,6 +416,7 @@ func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta
 		delete(fm.hitlWaiters, id)
 	}
 	run := fm.claimRun(next)
+	fm.dropLockLocked(next.EnvID, id)
 	fm.hitlMu.Unlock()
 	if run {
 		fm.launchRun(next)
@@ -445,6 +491,8 @@ type interventionPayload struct {
 	Mode      hitl.Mode              `json:"mode,omitempty"`
 	Exec      *hitl.ExecPayload      `json:"exec,omitempty"`
 	Lifecycle *hitl.LifecyclePayload `json:"lifecycle,omitempty"`
+	Secret    *hitl.SecretPayload    `json:"secret,omitempty"`
+	Takeover  *hitl.TakeoverPayload  `json:"takeover,omitempty"`
 }
 
 // interventionEdit is the sealed edited_payload column: what the decider
@@ -484,7 +532,7 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 		CreatedAt: in.CreatedAt,
 		UpdatedAt: in.UpdatedAt,
 	}
-	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle})
+	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle, Secret: in.Secret, Takeover: in.Takeover})
 	if err != nil {
 		return rec, err
 	}
@@ -566,6 +614,7 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 			return in, fmt.Errorf("intervention %s: payload: %w", rec.ID, err)
 		}
 		in.Payload, in.Mode, in.Exec, in.Lifecycle = p.AskPayload, p.Mode, p.Exec, p.Lifecycle
+		in.Secret, in.Takeover = p.Secret, p.Takeover
 	}
 	result, err := fm.unseal(rec.Result, rec.Sealed)
 	if err != nil {

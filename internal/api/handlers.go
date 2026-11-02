@@ -217,6 +217,8 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/interventions/{interventionId}", h.getIntervention)
 	r.Post("/v1/interventions/{interventionId}", h.interventionAction)
 	r.Get("/v1/hitl/audit", h.listHitlAudit)
+	r.Get("/v1/hitl/recordings/{recordingId}", h.getRecording)
+	r.Get("/v1/interventions/{interventionId}/attach", h.takeoverAttach)
 
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
@@ -995,10 +997,10 @@ func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 // environmentAction dispatches an action on an environment via ?action= query param.
 //
 //	@Summary		Environment action
-//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, migrate, exec, request.
+//	@Description	Perform an action on an environment. Supports: rotate-token, drain, fork, migrate, exec, request, takeover, release.
 //	@Tags			environments
 //	@Param			vmId	path	string	true	"VM identifier"
-//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, migrate, exec, request)
+//	@Param			action	query	string	true	"Action to perform"	Enums(rotate-token, drain, fork, migrate, exec, request, takeover, release)
 //	@Success		200		{object}	Environment	"Drain succeeded; updated VM state returned"
 //	@Success		200		{object}	ExecEnvironmentResponse	"Exec ran; a non-zero exit_code is still a 200"
 //	@Success		201		{object}	Environment	"Fork succeeded; new environment returned"
@@ -1021,6 +1023,10 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 		h.migrateEnvironment(w, r)
 	case "request":
 		h.requestHuman(w, r)
+	case "takeover":
+		h.startTakeover(w, r)
+	case "release":
+		h.releaseTakeover(w, r)
 	case "exec":
 		h.execEnvironment(w, r)
 	default:
