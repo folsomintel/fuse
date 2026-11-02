@@ -46,10 +46,10 @@ var SystemActor = Actor{ID: "system", Source: ActorSystem}
 // content and are encrypted at rest by the orchestrator; the rest is
 // metadata the sweeper and list filters read in the clear.
 type Intervention struct {
-	ID          string
-	EnvID       string
-	Kind        Kind
-	State       State
+	ID    string
+	EnvID string
+	Kind  Kind
+	State State
 	// Gate names the gate that raised it; empty for a request.
 	Gate string
 	// Mode is the gate's mode; empty for a request.
@@ -67,7 +67,7 @@ type Intervention struct {
 	// Result is what the orchestrator got running the approved action.
 	Result    *Result
 	CreatedAt time.Time
-	UpdatedAt   time.Time
+	UpdatedAt time.Time
 }
 
 // Decision is how an intervention was resolved.

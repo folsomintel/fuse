@@ -891,9 +891,9 @@ type InterventionDecision struct {
 
 // Intervention is one request for a human.
 type Intervention struct {
-	ID          string                `json:"id"`
-	EnvID       string                `json:"env_id"`
-	Kind        string                `json:"kind"`
+	ID    string `json:"id"`
+	EnvID string `json:"env_id"`
+	Kind  string `json:"kind"`
 	// Gate names the gate that raised it; empty for a request.
 	Gate string `json:"gate,omitempty"`
 	// Mode is the gate's mode; notify and deny records are born terminal.

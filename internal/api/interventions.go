@@ -358,9 +358,9 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 	}
 	if d := in.Decision; d != nil {
 		out.Decision = &InterventionDecision{
-			Outcome:   string(d.Outcome),
-			Answer:    d.Answer,
-			Reason:    d.Reason,
+			Outcome:    string(d.Outcome),
+			Answer:     d.Answer,
+			Reason:     d.Reason,
 			DecidedBy:  toAPIActor(d.DecidedBy),
 			DecidedAt:  d.DecidedAt,
 			EditedArgv: d.EditedArgv,

@@ -28,19 +28,6 @@ const (
 	ModeDeny Mode = "deny"
 )
 
-// strictness orders modes so the strictest matching gate wins.
-func (m Mode) strictness() int {
-	switch m {
-	case ModeNotify:
-		return 1
-	case ModeAsk:
-		return 2
-	case ModeDeny:
-		return 3
-	}
-	return 0
-}
-
 // LifecycleAction is an environment api action a lifecycle gate can hold.
 type LifecycleAction string
 
