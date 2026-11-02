@@ -32,7 +32,8 @@ pub(crate) struct Transport {
     user_agent: String,
     request_id: Option<Arc<RequestIdFn>>,
     actor: Option<ActorLabel>,
-    // hitl is how gated calls handle a hold. the builder sets it after new.
+    // hitl is how gated calls handle a hold and locked calls a 423. the
+    // builder sets it after new.
     pub(crate) hitl: HitlWait,
 }
 

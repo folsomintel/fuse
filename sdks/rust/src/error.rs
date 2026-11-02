@@ -4,6 +4,7 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::strenum::string_enum;
+use crate::takeover::LockedError;
 use crate::types::Intervention;
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -32,6 +33,10 @@ string_enum! {
         /// as opposed to [`ErrorCode::NotFound`]'s "route exists, resource
         /// doesn't".
         RouteNotFound => "route_not_found",
+        /// A human holds the environment, or a stall is pending (HTTP 423).
+        /// Exec and computer calls wait it out unless told not to; see
+        /// [`Error::Locked`].
+        Locked => "locked",
     }
 }
 
@@ -133,6 +138,10 @@ pub enum Error {
     /// without the result the call returns.
     #[error("approved action of intervention {} failed: {}", .0.id, result_error(.0))]
     HeldActionFailed(Box<Intervention>),
+    /// An exec or computer call hit a 423 while waiting is off. It names the
+    /// intervention holding the lock.
+    #[error(transparent)]
+    Locked(Box<LockedError>),
 }
 
 fn decision_reason(intervention: &Intervention) -> &str {
@@ -244,6 +253,20 @@ impl Error {
     /// Reports whether this is an `invalid_argument` api error.
     pub fn is_invalid_argument(&self) -> bool {
         self.is_code(ErrorCode::InvalidArgument)
+    }
+
+    /// Reports whether the environment is locked by a takeover or stall:
+    /// an [`Error::Locked`], or a 423 api error.
+    pub fn is_locked(&self) -> bool {
+        matches!(self, Self::Locked(_)) || self.status() == Some(423)
+    }
+
+    /// Returns the lock of an [`Error::Locked`].
+    pub fn locked(&self) -> Option<&LockedError> {
+        match self {
+            Self::Locked(locked) => Some(locked),
+            _ => None,
+        }
     }
 
     /// Reports whether this is an `unavailable` api error.
