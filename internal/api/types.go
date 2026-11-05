@@ -147,10 +147,16 @@ type Health struct {
 // Protocol is "socks5" (the default) or "http". Proxy mode leaves the guest
 // with no working local DNS by design, so a client must resolve names at the
 // proxy (socks5h://, or http CONNECT).
+//
+// Secret names an entry of the request's secrets that holds the provider's
+// credential, for a provider that takes one (wireguard: a base64 wg-quick
+// config). The value goes to the host's egress backend and is left out of
+// the secrets the guest receives.
 type EgressSpec struct {
 	Mode     string `json:"mode,omitempty"`
 	Provider string `json:"provider,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
+	Secret   string `json:"secret,omitempty"`
 }
 
 // EgressStatus is the resolved outbound policy of an environment. Mode is

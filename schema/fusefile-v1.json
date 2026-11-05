@@ -397,13 +397,17 @@
         },
         "provider": {
           "type": "string",
-          "description": "The proxy backend on the host, e.g. \"mock\". Required when mode is proxy and rejected when it is direct."
+          "description": "The proxy backend on the host: \"cloudflare-warp\", \"wireguard\", or \"mock\" for local development. Required when mode is proxy and rejected when it is direct."
         },
         "protocol": {
           "type": "string",
           "enum": ["socks5", "http"],
           "default": "socks5",
           "description": "What the proxy speaks. Only valid with mode proxy. Defaults to socks5."
+        },
+        "secret": {
+          "type": "string",
+          "description": "Name of the secret holding the provider's credential, for a provider that takes one (wireguard: a base64 wg-quick config). Supplied at fuse up like any secret, but delivered to the host's egress backend only, never into the guest. Only valid with mode proxy."
         }
       }
     },

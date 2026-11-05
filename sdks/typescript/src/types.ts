@@ -232,11 +232,16 @@ export interface Health {
 export interface EgressSpec {
   /** "direct" (the default) or "proxy". */
   mode?: string;
-  /** Proxy backend, required when mode is "proxy" (today "mock"; later
-   * "cloudflare-warp"). */
+  /** Proxy backend, required when mode is "proxy" ("cloudflare-warp",
+   * "wireguard", or "mock" for local development). */
   provider?: string;
   /** "socks5" (the default for proxy) or "http". */
   protocol?: string;
+  /** Name of an entry in the request's secrets holding the provider's
+   * credential, for a provider that takes one: "wireguard" reads a base64
+   * wg-quick config. The value goes to the host's egress backend only and is
+   * left out of the secrets the guest receives. */
+  secret?: string;
 }
 
 /**

@@ -260,7 +260,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `healthcheck.retries` | int | Consecutive failures that flip the verdict to `failing`. Omit for the guest agent's default (`3`). A single failed attempt is never a verdict. |
 | `healthcheck.start_period` | string | Go duration measured from the first attempt, during which failures are not counted. It ends for good once the probe passes once. |
 | `desktop` | `{width, height}` | The geometry of the environment's graphical session, both required, 320 to 3840 each. Requires an image baked with the desktop stack; on any other image the block is inert. Omit the whole block to keep a desktop image's baked default. See [Desktop](#desktop). |
-| `egress` | `{mode, provider, protocol}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`. With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
+| `egress` | `{mode, provider, protocol, secret}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`, and a `secret` naming the secret that holds the provider's credential (`wireguard` only). With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
 | `secrets` | list of strings | Secret *names* this environment requires. An empty name is rejected: nothing you could pass to `--secret` would satisfy it. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
 ## Naming an environment
@@ -518,7 +518,7 @@ that ignores the proxy gets no egress rather than direct egress, and a proxy
 that dies after boot leaves the environment with no egress rather than
 falling back. That is why `provider` and `protocol` are rejected under
 `mode: direct` instead of ignored: an author who wrote them believes they
-asked for proxying and did not.
+asked for proxying and did not. The same goes for `secret`.
 
 `provider` is required for `proxy` and names a backend the orchestrator has
 registered. The vocabulary is open, the Fusefile parser does not know which
@@ -529,6 +529,13 @@ backends exist, so an unknown name is refused by the orchestrator with a
 | --- | --- |
 | `mock` | An in-process socks5 server inside the orchestrator, for local development. No privacy or isolation. `fuse local` registers it. |
 | `cloudflare-warp` | Cloudflare WARP on the host, one connection shared by that host's proxy-mode environments. Speaks `socks5` and `http`. |
+| `wireguard` | The environment's own WireGuard tunnel, bridged on the host. Needs `secret`. Speaks `socks5` and `http`. |
+
+`secret` names one of the environment's secrets holding the provider's
+credential; `wireguard` reads a base64 wg-quick config from it. It counts as
+a required secret, so `fuse up` refuses to start without it, but its value
+goes to the host's egress backend only and never into the guest. See
+[WireGuard egress host setup](/docs/cloud/wireguard-host-setup#the-config-secret).
 
 `protocol` is how the workload talks to the proxy, `socks5` (the default) or
 `http`. Proxy mode leaves the guest with no working local resolver by design,

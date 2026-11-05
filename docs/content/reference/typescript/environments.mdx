@@ -66,6 +66,18 @@ if (info.egress?.health?.state === "unhealthy") {
 server that grows a new value does not turn into a compile error here. See
 the [egress guide](/docs/guides/egress) for what proxy mode enforces.
 
+A provider that takes a credential reads it from one of the request's
+secrets, named by `secret`. The value goes to the host's egress backend and
+is left out of the secrets the guest receives:
+
+```ts
+const env = await client.environments.create({
+  task_id: "scrape-1",
+  secrets: { WG_CONF: wgConfBase64 },
+  egress: { mode: "proxy", provider: "wireguard", secret: "WG_CONF" },
+});
+```
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

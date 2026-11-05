@@ -54,9 +54,25 @@ run: |
 ```
 
 `provider` is required for `proxy`, and `protocol` defaults to `socks5`. A
-`provider` or `protocol` on a `direct` block is rejected by `fuse validate`
-rather than ignored, because an author who wrote one believes they asked for
-proxying and did not.
+`provider`, `protocol` or `secret` on a `direct` block is rejected by
+`fuse validate` rather than ignored, because an author who wrote one believes
+they asked for proxying and did not.
+
+A provider that needs a credential of its own takes it through `secret`,
+which names one of the environment's secrets. `wireguard` is the one that
+does: the secret holds a base64 wg-quick config.
+
+```yaml
+egress:
+  mode: proxy
+  provider: wireguard
+  secret: WG_CONF
+```
+
+The value is supplied at `fuse up` like any secret (`--secret` or
+`--secrets-file`), but it goes to the host's egress backend only and is left
+out of the secrets the guest receives. See
+[WireGuard egress host setup](/docs/cloud/wireguard-host-setup#the-config-secret).
 
 Over the API, or from a [SDK](/reference/typescript/environments), the same
 block goes on the create request:
@@ -212,6 +228,7 @@ or it hits the [DNS](#dns) wall above.
 | --- | --- | --- | --- |
 | `mock` | A real socks5 server running **inside the orchestrator process**, egressing from wherever that process is. No privacy or isolation whatsoever. It exists so the whole lifecycle can be exercised without an account or a configured host. | `socks5` | `ORCH_EGRESS_MOCK=true` on the orchestrator. [`fuse local`](/docs/guides/local-development) sets it. |
 | `cloudflare-warp` | One `warp-svc` per host, in its own network namespace, shared and refcounted across that host's proxy-mode environments. Traffic exits through Cloudflare's network. | `socks5`, `http` | The orchestrator has WARP credentials configured. See [WARP egress host setup](/docs/cloud/warp-host-setup). |
+| `wireguard` | The environment's own WireGuard config (named by `egress.secret`), bridged by wireproxy in a network namespace on the host. One bridge per distinct config, shared and refcounted across that host's environments that use it. Traffic exits wherever the WireGuard peer is. | `socks5`, `http` | Always. A host needs wireproxy installed; see [WireGuard egress host setup](/docs/cloud/wireguard-host-setup). |
 
 The mock binds the host side of each vm's tap, which is only reachable when
 the orchestrator and the host agent share a machine, which is why it is a
@@ -283,5 +300,7 @@ the host and makes every other path impossible. It is not:
   for how the probe runs and what it does not do.
 - [WARP egress host setup](/docs/cloud/warp-host-setup) to bring up the
   `cloudflare-warp` provider on a host.
+- [WireGuard egress host setup](/docs/cloud/wireguard-host-setup) for the
+  `wireguard` provider and its config secret.
 - [Computer use](/docs/guides/computer-use) for the browser harness this is
   usually paired with.

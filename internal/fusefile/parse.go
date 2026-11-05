@@ -550,6 +550,10 @@ func validateEgress(eg *Egress) []error {
 			errs = append(errs, fmt.Errorf(
 				"egress.protocol: %q requires mode %q", eg.Protocol, EgressModeProxy))
 		}
+		if eg.Secret != "" {
+			errs = append(errs, fmt.Errorf(
+				"egress.secret: %q requires mode %q", eg.Secret, EgressModeProxy))
+		}
 		return errs
 	}
 

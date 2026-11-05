@@ -644,7 +644,14 @@ func provisionEgress(ctx context.Context, p Provider, env Environment, in bootIn
 	if in.opts.EgressRegistry == nil {
 		return egress.Status{}, fmt.Errorf("egress: mode %q requested but this orchestrator has no egress providers", spec.Mode)
 	}
-	ep, err := in.opts.EgressRegistry.Provision(ctx, spec, egressContext(p, env, in))
+	ec := egressContext(p, env, in)
+	if spec.Secret != "" {
+		ec.Credential = in.secretMap[spec.Secret]
+		if ec.Credential == "" {
+			return egress.Status{}, fmt.Errorf("egress: secret %q named by egress.secret was not supplied", spec.Secret)
+		}
+	}
+	ep, err := in.opts.EgressRegistry.Provision(ctx, spec, ec)
 	if err != nil {
 		return egress.Status{}, err
 	}
@@ -899,7 +906,7 @@ func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap
 	// files are included in AgentSpec.Files and uploaded generically; the
 	// in-memory token side effect is applied by setTokenIfSupported in
 	// bootFresh/bootRestore.
-	agentSpec := FusedAgentSpec(manifest, secretMap, creds, opts)
+	agentSpec := FusedAgentSpec(manifest, GuestSecrets(secretMap, spec.Egress), creds, opts)
 
 	in := bootInputs{
 		spec:      spec,

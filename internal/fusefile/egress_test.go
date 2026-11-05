@@ -79,6 +79,11 @@ func TestValidateEgressRejects(t *testing.T) {
 			want: `egress.protocol: "socks5" requires mode "proxy"`,
 		},
 		{
+			name: "direct with a secret",
+			body: "egress:\n  mode: direct\n  secret: WG_CONF\n",
+			want: `egress.secret: "WG_CONF" requires mode "proxy"`,
+		},
+		{
 			name: "empty mode reads as direct",
 			body: "egress:\n  provider: mock\n",
 			want: `egress.provider: "mock" requires mode "proxy"`,
@@ -135,6 +140,11 @@ func TestCompileEgress(t *testing.T) {
 			want: &EgressSpec{Mode: EgressModeProxy, Provider: "mock", Protocol: EgressProtocolHTTP},
 		},
 		{
+			name: "a secret is carried through",
+			body: "egress:\n  mode: proxy\n  provider: wireguard\n  secret: WG_CONF\n",
+			want: &EgressSpec{Mode: EgressModeProxy, Provider: "wireguard", Protocol: EgressProtocolSOCKS5, Secret: "WG_CONF"},
+		},
+		{
 			name: "an explicit direct block compiles to direct alone",
 			body: "egress:\n  mode: direct\n",
 			want: &EgressSpec{Mode: EgressModeDirect},
@@ -176,5 +186,20 @@ func TestCompileEgressAbsent(t *testing.T) {
 	}
 	if c.Egress != nil {
 		t.Errorf("egress = %+v, want nil", c.Egress)
+	}
+}
+
+// the egress secret is required at `fuse up` like any other reference.
+func TestCompileEgressSecretIsRequired(t *testing.T) {
+	f, err := parseEgress(t, "egress:\n  mode: proxy\n  provider: wireguard\n  secret: WG_CONF\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if !reflect.DeepEqual(c.RequiredSecrets, []string{"WG_CONF"}) {
+		t.Errorf("required secrets = %v, want [WG_CONF]", c.RequiredSecrets)
 	}
 }

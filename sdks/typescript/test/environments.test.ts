@@ -145,6 +145,11 @@ describe("environments", () => {
       egress: { mode: "proxy", provider: "mock", protocol: "socks5" },
     });
     await current.client.environments.create({ task_id: "task-1" });
+    await current.client.environments.create({
+      task_id: "task-1",
+      secrets: { WG_CONF: "d2c=" },
+      egress: { mode: "proxy", provider: "wireguard", secret: "WG_CONF" },
+    });
 
     // a request that never mentions egress serializes exactly as it did before
     // the field existed, so upgrading the SDK alone is not a wire change.
@@ -154,6 +159,11 @@ describe("environments", () => {
         egress: { mode: "proxy", provider: "mock", protocol: "socks5" },
       },
       { task_id: "task-1" },
+      {
+        task_id: "task-1",
+        secrets: { WG_CONF: "d2c=" },
+        egress: { mode: "proxy", provider: "wireguard", secret: "WG_CONF" },
+      },
     ]);
   });
 

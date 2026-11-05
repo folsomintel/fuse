@@ -291,12 +291,16 @@ class EgressSpec(_Model):
     # server that grows a new mode or provider does not fail to parse here.
     #
     # mode is "direct" (the default) or "proxy". provider is the proxy
-    # backend, required when mode is "proxy" (today "mock"; later
-    # "cloudflare-warp"). protocol is "socks5" (the default for proxy) or
-    # "http".
+    # backend, required when mode is "proxy" ("cloudflare-warp", "wireguard",
+    # or "mock" for local development). protocol is "socks5" (the default for
+    # proxy) or "http". secret names an entry of the request's secrets that
+    # holds the provider's credential, for a provider that takes one
+    # ("wireguard" reads a base64 wg-quick config); the value goes to the
+    # host's egress backend only and is left out of the guest's secrets.
     mode: Optional[str] = None
     provider: Optional[str] = None
     protocol: Optional[str] = None
+    secret: Optional[str] = None
 
 
 class EgressHealth(_Model):

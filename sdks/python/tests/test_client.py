@@ -139,6 +139,27 @@ def test_environments_create_carries_egress_and_omits_it_when_unset() -> None:
 
 
 @respx.mock
+def test_environments_create_carries_the_egress_secret_name() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": "vm-1", "state": "running", "task_id": "task-1", "url": "u"},
+        )
+    )
+    with new_client() as client:
+        client.environments.create(
+            fuse.CreateRequest(
+                task_id="task-1",
+                secrets={"WG_CONF": "d2c="},
+                egress=EgressSpec(mode="proxy", provider="wireguard", secret="WG_CONF"),
+            )
+        )
+    body = json.loads(route.calls[0].request.content)
+    assert body["egress"] == {"mode": "proxy", "provider": "wireguard", "secret": "WG_CONF"}
+    assert body["secrets"] == {"WG_CONF": "d2c="}
+
+
+@respx.mock
 def test_environment_decodes_egress_status() -> None:
     # mode is a plain str, not a Literal, so a mode or provider this build has
     # never heard of decodes rather than raising. egress is part of every

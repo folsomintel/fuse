@@ -73,6 +73,35 @@ if [ "${FUSE_WITH_WARP:-0}" = "1" ]; then
   fi
 fi
 
+# --- wireproxy (optional wireguard egress backend) ---------------------------
+# Only installed when asked. wireproxy is a single static binary (a userspace
+# wireguard client serving socks5/http), so this pins a release and checks it
+# against the sha256 recorded here rather than trusting whatever is latest.
+# fc-wireguard.sh runs it, one instance per config, under
+# ops/systemd/fuse-wireguard@.service.
+WIREPROXY_VERSION="v1.1.3"
+if [ "${FUSE_WITH_WIREGUARD:-0}" = "1" ]; then
+  case "$(uname -m)" in
+    x86_64)  wp_arch=amd64; wp_sha=e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c ;;
+    aarch64) wp_arch=arm64; wp_sha=370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6 ;;
+    *) die "FUSE_WITH_WIREGUARD=1: no pinned wireproxy build for $(uname -m)" ;;
+  esac
+  if [ -x /usr/local/bin/wireproxy ] && /usr/local/bin/wireproxy -v 2>/dev/null | grep -q "${WIREPROXY_VERSION#v}"; then
+    ok "wireproxy $WIREPROXY_VERSION already installed"
+  else
+    log "installing wireproxy $WIREPROXY_VERSION"
+    wp_tmp="$(mktemp -d)"
+    curl -fsSL -o "$wp_tmp/wireproxy.tar.gz" \
+      "https://github.com/whyvl/wireproxy/releases/download/$WIREPROXY_VERSION/wireproxy_linux_$wp_arch.tar.gz"
+    echo "$wp_sha  $wp_tmp/wireproxy.tar.gz" | sha256sum -c --status \
+      || { rm -rf "$wp_tmp"; die "wireproxy download does not match its pinned sha256; refusing to install it"; }
+    tar -xzf "$wp_tmp/wireproxy.tar.gz" -C "$wp_tmp" wireproxy
+    $SUDO install -m0755 "$wp_tmp/wireproxy" /usr/local/bin/wireproxy
+    rm -rf "$wp_tmp"
+    ok "wireproxy $WIREPROXY_VERSION installed (fc-wireguard.sh installs its unit on first use)"
+  fi
+fi
+
 # --- verify the tools the scripts actually shell out to ----------------------
 log "verifying required tools"
 missing=0

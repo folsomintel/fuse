@@ -95,6 +95,7 @@ type EgressSpec struct {
 	Mode     EgressMode     `json:"mode,omitempty"`
 	Provider string         `json:"provider,omitempty"`
 	Protocol EgressProtocol `json:"protocol,omitempty"`
+	Secret   string         `json:"secret,omitempty"`
 }
 
 // HitlSpec is the compiled hitl block. It mirrors internal/api.HitlSpec,
@@ -619,7 +620,7 @@ func compileEgress(f *Fusefile) *EgressSpec {
 	if f.Egress == nil {
 		return nil
 	}
-	spec := &EgressSpec{Mode: f.Egress.Mode, Provider: f.Egress.Provider, Protocol: f.Egress.Protocol}
+	spec := &EgressSpec{Mode: f.Egress.Mode, Provider: f.Egress.Provider, Protocol: f.Egress.Protocol, Secret: f.Egress.Secret}
 	if spec.Mode == "" {
 		spec.Mode = EgressModeDirect
 	}
@@ -728,6 +729,11 @@ func compileManifest(f *Fusefile) ([]byte, []string, error) {
 	secretSet := make(map[string]bool, len(f.Secrets))
 	for _, s := range f.Secrets {
 		secretSet[s] = true
+	}
+	// the egress credential is required like any other secret, so `fuse up`
+	// refuses to start without it; the orchestrator keeps it out of the guest.
+	if f.Egress != nil && f.Egress.Secret != "" {
+		secretSet[f.Egress.Secret] = true
 	}
 
 	m := manifest{
