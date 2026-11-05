@@ -1,0 +1,41 @@
+version: 1
+
+# hitl computer gates, deciders, review and desktop takeover (#313), on the
+# desktop image. __DECIDER_URL__ is replaced by test/e2e/hitl-computer.sh
+# with a decider the orchestrator can reach; __SLOW_URL__ with one that never
+# answers in time.
+image: desktop
+
+desktop:
+  width: 1280
+  height: 800
+
+resources:
+  cpus: 2
+  memory: 4GB
+  max_runtime: 30m
+
+secrets:
+  - DECIDE_KEY
+
+hitl:
+  timeout: 5m
+  on_timeout: reject
+  requests:
+    review: {}
+    takeover: { via: [desktop] }
+  gates:
+    # a human approves typing, and may edit the text first.
+    - name: typing
+      on: computer
+      match: { action: [type] }
+    # the decider judges keys: allow, deny or ask by the key combo.
+    - name: keys
+      on: computer
+      match: { action: [key] }
+      decide: { url: "__DECIDER_URL__", secret: DECIDE_KEY }
+    # this decider never answers in time, so the action falls through to ask.
+    - name: slow-decider
+      on: computer
+      match: { action: [right_click] }
+      decide: { url: "__SLOW_URL__", secret: DECIDE_KEY }
