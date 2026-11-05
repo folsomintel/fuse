@@ -60,9 +60,16 @@ type Intervention struct {
 	Exec *ExecPayload
 	// Lifecycle is the held environment action, for KindLifecycle.
 	Lifecycle *LifecyclePayload
-	// Secret and Takeover are the payloads of those kinds; nil otherwise.
+	// Computer is the held computer action, for KindComputer.
+	Computer *ComputerPayload
+	// Secret, Takeover and Review are the payloads of those kinds; nil
+	// otherwise.
 	Secret   *SecretPayload
 	Takeover *TakeoverPayload
+	Review   *ReviewPayload
+	// Decider is what the gate's decider said when it sent the action on
+	// to a human, nil when the gate has none or it decided on its own.
+	Decider *DeciderNote
 	// Signal is what fuse saw, for KindStall and KindExpiry.
 	Signal      *SignalPayload
 	TriggeredBy Actor
@@ -86,6 +93,8 @@ type Decision struct {
 	DecidedAt time.Time
 	// EditedArgv replaces a held exec's argv, set when the human edited it.
 	EditedArgv []string
+	// EditedText replaces a held type action's text.
+	EditedText *string
 	// Grant is how far the approval reaches: once, env or ttl:<duration>.
 	Grant string
 }
@@ -110,6 +119,8 @@ type LifecyclePayload struct {
 type Result struct {
 	// Exec is set for an exec that ran.
 	Exec *ExecResult `json:"exec,omitempty"`
+	// Computer is set for a computer action that ran.
+	Computer *ComputerResult `json:"computer,omitempty"`
 	// EnvID is the environment a fork or migrate produced.
 	EnvID string `json:"env_id,omitempty"`
 	// SnapshotID is the snapshot a snapshot action produced.
@@ -127,9 +138,14 @@ type ExecResult struct {
 }
 
 // Runs reports whether fuse performs the action itself once approved: an
-// ask gate holding an exec or a lifecycle action.
+// ask gate holding an exec, a lifecycle or a computer action.
+// a decider's allow is the exception: the caller goes on and performs the
+// action itself, as if no gate had matched.
 func (in Intervention) Runs() bool {
-	return in.Mode == ModeAsk && (in.Exec != nil || in.Lifecycle != nil)
+	if in.Decision != nil && in.Decision.DecidedBy.Source == ActorDecider {
+		return false
+	}
+	return in.Mode == ModeAsk && (in.Exec != nil || in.Lifecycle != nil || in.Computer != nil)
 }
 
 // Settled reports whether a waiting caller has its final answer: resolved,

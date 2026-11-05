@@ -37,8 +37,10 @@ type HumanRequest struct {
 	Secret hitl.SecretPayload
 	// Takeover carries the way in and the agent's reason.
 	Takeover hitl.TakeoverPayload
-	Timeout  time.Duration // optional; can only shorten the policy's timeout
-	By       hitl.Actor
+	// Review is the file path or inline content up for review.
+	Review  hitl.ReviewPayload
+	Timeout time.Duration // optional; can only shorten the policy's timeout
+	By      hitl.Actor
 	// RemoteAddr is the caller's address, recorded on the audit row.
 	RemoteAddr string
 }
@@ -53,6 +55,9 @@ type DecideRequest struct {
 	// EditedArgv replaces a held exec's argv. it is re-checked against the
 	// deny gates before the approval is accepted.
 	EditedArgv []string
+	// EditedText replaces a held type action's text, re-checked the same
+	// way.
+	EditedText *string
 	// Grant is once, env or ttl:<duration>; empty takes the gate's default.
 	Grant string
 	// Extend is how long an approved expiry keeps the env alive; zero is
@@ -136,6 +141,17 @@ func (fm *FleetManager) RequestHuman(ctx context.Context, envID string, req Huma
 			return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
 		}
 		in.Takeover = &hitl.TakeoverPayload{Via: via, Reason: req.Takeover.Reason}
+	case hitl.KindReview:
+		p, err := hitl.ValidateReviewRequest(req.Review)
+		if err != nil {
+			return hitl.Intervention{}, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+		}
+		if p.Path != "" {
+			if p.Content, p.Truncated, err = fm.readReviewFile(ctx, envID, p.Path); err != nil {
+				return hitl.Intervention{}, err
+			}
+		}
+		in.Review = &p
 	default:
 		return hitl.Intervention{}, fmt.Errorf("%w: unknown request kind %q", ErrInvalidIntervention, req.Kind)
 	}
@@ -251,7 +267,7 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 			}
 		}
 		signal := in.Kind == hitl.KindStall || in.Kind == hitl.KindExpiry
-		if signal && (req.EditedArgv != nil || req.Grant != "") {
+		if signal && (req.EditedArgv != nil || req.EditedText != nil || req.Grant != "") {
 			return in, fmt.Errorf("%w: edited_argv and grant do not apply to a %s signal", ErrInvalidIntervention, in.Kind)
 		}
 		if req.Extend != 0 && (in.Kind != hitl.KindExpiry || req.Outcome != hitl.OutcomeApprove) {
@@ -278,11 +294,11 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 			return out, err
 		}
 		if out.Decision.Outcome == hitl.OutcomeApprove {
-			if err := applyGateDecision(&out, fm.hitlSpec(in.EnvID), req.EditedArgv, req.Grant); err != nil {
+			if err := applyGateDecision(&out, fm.hitlSpec(in.EnvID), gateEdit{argv: req.EditedArgv, text: req.EditedText}, req.Grant); err != nil {
 				return in, err
 			}
-		} else if req.EditedArgv != nil || req.Grant != "" {
-			return in, fmt.Errorf("%w: edited_argv and grant only apply to an approval", ErrInvalidIntervention)
+		} else if req.EditedArgv != nil || req.EditedText != nil || req.Grant != "" {
+			return in, fmt.Errorf("%w: edited_argv, edited_text and grant only apply to an approval", ErrInvalidIntervention)
 		}
 		return out, nil
 	})
@@ -517,12 +533,16 @@ type interventionPayload struct {
 	Secret    *hitl.SecretPayload    `json:"secret,omitempty"`
 	Takeover  *hitl.TakeoverPayload  `json:"takeover,omitempty"`
 	Signal    *hitl.SignalPayload    `json:"signal,omitempty"`
+	Computer  *hitl.ComputerPayload  `json:"computer,omitempty"`
+	Review    *hitl.ReviewPayload    `json:"review,omitempty"`
+	Decider   *hitl.DeciderNote      `json:"decider,omitempty"`
 }
 
 // interventionEdit is the sealed edited_payload column: what the decider
 // changed about a gated action.
 type interventionEdit struct {
 	Argv  []string `json:"argv,omitempty"`
+	Text  *string  `json:"text,omitempty"`
 	Grant string   `json:"grant,omitempty"`
 }
 
@@ -556,7 +576,10 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 		CreatedAt: in.CreatedAt,
 		UpdatedAt: in.UpdatedAt,
 	}
-	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle, Secret: in.Secret, Takeover: in.Takeover, Signal: in.Signal})
+	payload, err := json.Marshal(interventionPayload{
+		AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle, Secret: in.Secret, Takeover: in.Takeover, Signal: in.Signal,
+		Computer: in.Computer, Review: in.Review, Decider: in.Decider,
+	})
 	if err != nil {
 		return rec, err
 	}
@@ -586,8 +609,8 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 				return rec, err
 			}
 		}
-		if d.EditedArgv != nil || d.Grant != "" {
-			if edit, err = json.Marshal(interventionEdit{Argv: d.EditedArgv, Grant: d.Grant}); err != nil {
+		if d.EditedArgv != nil || d.EditedText != nil || d.Grant != "" {
+			if edit, err = json.Marshal(interventionEdit{Argv: d.EditedArgv, Text: d.EditedText, Grant: d.Grant}); err != nil {
 				return rec, err
 			}
 		}
@@ -639,6 +662,7 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 		}
 		in.Payload, in.Mode, in.Exec, in.Lifecycle = p.AskPayload, p.Mode, p.Exec, p.Lifecycle
 		in.Secret, in.Takeover, in.Signal = p.Secret, p.Takeover, p.Signal
+		in.Computer, in.Review, in.Decider = p.Computer, p.Review, p.Decider
 	}
 	result, err := fm.unseal(rec.Result, rec.Sealed)
 	if err != nil {
@@ -673,7 +697,7 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 		if err := json.Unmarshal(edit, &e); err != nil {
 			return in, fmt.Errorf("intervention %s: edited_payload: %w", rec.ID, err)
 		}
-		d.EditedArgv, d.Grant = e.Argv, e.Grant
+		d.EditedArgv, d.EditedText, d.Grant = e.Argv, e.Text, e.Grant
 	}
 	reason, err := fm.unseal(rec.Reason, rec.Sealed)
 	if err != nil {

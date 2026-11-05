@@ -19,6 +19,13 @@ import (
 // ErrRecordingNotFound is returned for an unknown recording id.
 var ErrRecordingNotFound = errors.New("recording not found")
 
+// recording kinds: a terminal session is an asciinema v2 cast, a desktop
+// session a json input log with screenshots (desktop_record.go).
+const (
+	recordingTerminal = "terminal"
+	recordingDesktop  = "desktop"
+)
+
 // fuse-attach/1 frame types the recorder reads. see docs/attach.md.
 const (
 	attachFrameStdout byte = 1
@@ -194,10 +201,10 @@ func (r *recordedStream) Close() error {
 	return err
 }
 
-// saveRecording seals a finished session and links it from the audit log.
-// a store failure is logged; the session already happened and failing
-// loudly here would not undo it.
-func (fm *FleetManager) saveRecording(ctx context.Context, in hitl.Intervention, by hitl.Actor, remoteAddr string, c cast) {
+// saveRecording seals a finished session of either kind and links it from
+// the audit log. a store failure is logged; the session already happened
+// and failing loudly here would not undo it.
+func (fm *FleetManager) saveRecording(ctx context.Context, in hitl.Intervention, by hitl.Actor, remoteAddr, kind string, c cast) {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	id := fmt.Sprintf("rec_%016x%s", c.startedAt.UnixNano(), hex.EncodeToString(b[:]))
@@ -214,6 +221,7 @@ func (fm *FleetManager) saveRecording(ctx context.Context, in hitl.Intervention,
 		ID:             id,
 		InterventionID: in.ID,
 		EnvID:          in.EnvID,
+		Kind:           kind,
 		Actor:          actor,
 		StartedAt:      c.startedAt,
 		EndedAt:        c.endedAt,
@@ -231,9 +239,12 @@ func (fm *FleetManager) saveRecording(ctx context.Context, in hitl.Intervention,
 	}, fm.webhookTargetsFor(in.EnvID), &in)
 }
 
-// Recording is a decrypted takeover cast and what it belongs to.
+// Recording is a decrypted takeover session and what it belongs to. Kind
+// is terminal (Cast is an asciinema v2 cast) or desktop (Cast is the json
+// input log with screenshots).
 type Recording struct {
 	ID             string
+	Kind           string
 	InterventionID string
 	EnvID          string
 	Actor          hitl.Actor
@@ -254,8 +265,11 @@ func (fm *FleetManager) GetRecording(ctx context.Context, id string) (Recording,
 	if err != nil {
 		return Recording{}, fmt.Errorf("recording %s: %w", id, err)
 	}
+	if rec.Kind == "" {
+		rec.Kind = recordingTerminal
+	}
 	out := Recording{
-		ID: rec.ID, InterventionID: rec.InterventionID, EnvID: rec.EnvID,
+		ID: rec.ID, Kind: rec.Kind, InterventionID: rec.InterventionID, EnvID: rec.EnvID,
 		StartedAt: rec.StartedAt, EndedAt: rec.EndedAt, Truncated: rec.Truncated, Cast: data,
 	}
 	if len(rec.Actor) > 0 {

@@ -30,9 +30,9 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 		kind = hitl.KindAsk
 	}
 	switch kind {
-	case hitl.KindAsk, hitl.KindSecret, hitl.KindTakeover:
+	case hitl.KindAsk, hitl.KindSecret, hitl.KindTakeover, hitl.KindReview:
 	default:
-		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "kind must be \"ask\", \"secret\" or \"takeover\", got \""+req.Kind+"\"", nil)
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "kind must be \"ask\", \"secret\", \"takeover\" or \"review\", got \""+req.Kind+"\"", nil)
 		return
 	}
 	in, err := h.Fleet.RequestHuman(r.Context(), vmID, orchestrator.HumanRequest{
@@ -40,6 +40,7 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 		Ask:        hitl.AskPayload{Question: req.Question, Choices: req.Choices},
 		Secret:     hitl.SecretPayload{Target: req.Target, Message: req.Message},
 		Takeover:   hitl.TakeoverPayload{Via: hitl.TakeoverVia(req.Via), Reason: req.Reason},
+		Review:     hitl.ReviewPayload{Path: req.Path, Content: req.Content, Format: hitl.ReviewFormat(req.Format), Message: req.Message},
 		Timeout:    time.Duration(req.TimeoutSeconds) * time.Second,
 		By:         principal(r).Actor,
 		RemoteAddr: r.RemoteAddr,
@@ -216,6 +217,7 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 		Answer:     req.Answer,
 		Reason:     req.Reason,
 		EditedArgv: req.EditedArgv,
+		EditedText: req.EditedText,
 		Grant:      req.Grant,
 		Extend:     time.Duration(req.ExtendSeconds) * time.Second,
 		By:         principal(r).Actor,
@@ -333,6 +335,9 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 			out.Requests.Secret.Targets = append(out.Requests.Secret.Targets, hitl.SecretTarget{Env: t.Env, File: t.File, Label: t.Label})
 		}
 	}
+	if s.Requests.Review != nil {
+		out.Requests.Review = &hitl.ReviewRequests{}
+	}
 	if s.Requests.Takeover != nil {
 		out.Requests.Takeover = &hitl.TakeoverRequests{}
 		for _, v := range s.Requests.Takeover.Via {
@@ -347,12 +352,12 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 			Name: g.Name, On: hitl.Kind(g.On), Mode: hitl.Mode(g.Mode), Grant: g.Grant,
 			TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
 			Match: hitl.GateMatch{
-				Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell,
+				Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell, Action: g.Match.Action, TextContains: g.Match.TextContains,
 				Failures: g.Match.Failures, QuietSeconds: g.Match.QuietSeconds, BeforeSeconds: g.Match.BeforeSeconds,
 			},
 		}
-		for _, a := range g.Match.Action {
-			gate.Match.Action = append(gate.Match.Action, hitl.LifecycleAction(a))
+		if g.Decide != nil {
+			gate.Decide = &hitl.Decider{URL: g.Decide.URL, Secret: g.Decide.Secret}
 		}
 		out.Gates = append(out.Gates, gate)
 	}
@@ -406,8 +411,18 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 			DecidedBy:  toAPIActor(d.DecidedBy),
 			DecidedAt:  d.DecidedAt,
 			EditedArgv: d.EditedArgv,
+			EditedText: d.EditedText,
 			Grant:      d.Grant,
 		}
+	}
+	if p := in.Computer; p != nil {
+		out.Payload.Computer = &ComputerPayload{Action: p.Action, Text: p.Text, Input: p.Input}
+	}
+	if p := in.Review; p != nil {
+		out.Payload.Review = &InterventionReview{Path: p.Path, Content: p.Content, Format: string(p.Format), Message: p.Message, Truncated: p.Truncated}
+	}
+	if p := in.Decider; p != nil {
+		out.Payload.Decider = &InterventionDecider{Verdict: string(p.Verdict), Reason: p.Reason, Error: p.Error}
 	}
 	if p := in.Exec; p != nil {
 		out.Payload.Exec = &ExecPayload{Argv: p.Argv, Shell: p.Shell, TimeoutMS: p.TimeoutMS}
@@ -419,6 +434,9 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 		out.Result = &InterventionResult{EnvID: r.EnvID, SnapshotID: r.SnapshotID, Error: r.Error, FinishedAt: r.FinishedAt}
 		if e := r.Exec; e != nil {
 			out.Result.Exec = &ExecEnvironmentResponse{ExitCode: e.ExitCode, Stdout: e.Stdout, Stderr: e.Stderr}
+		}
+		if c := r.Computer; c != nil {
+			out.Result.Computer = &ComputerActionResponse{Output: c.Output, Screenshot: c.Screenshot}
 		}
 	}
 	return out

@@ -17,8 +17,8 @@ func gateSpec() *hitl.Spec {
 		{Name: "force-push", On: hitl.KindExec, Match: hitl.GateMatch{Program: []string{"git"}, Args: []string{"push", "--force"}}},
 		{Name: "watch-shell", On: hitl.KindExec, Match: hitl.GateMatch{Shell: true}, Mode: hitl.ModeNotify},
 		{Name: "no-rm", On: hitl.KindExec, Match: hitl.GateMatch{Program: []string{"rm"}}, Mode: hitl.ModeDeny},
-		{Name: "no-destroy", On: hitl.KindLifecycle, Match: hitl.GateMatch{Action: []hitl.LifecycleAction{hitl.ActionDestroy}}, Mode: hitl.ModeDeny, Reason: "this env is not yours to destroy"},
-		{Name: "snap", On: hitl.KindLifecycle, Match: hitl.GateMatch{Action: []hitl.LifecycleAction{hitl.ActionDrain}}},
+		{Name: "no-destroy", On: hitl.KindLifecycle, Match: hitl.GateMatch{Action: []string{"destroy"}}, Mode: hitl.ModeDeny, Reason: "this env is not yours to destroy"},
+		{Name: "snap", On: hitl.KindLifecycle, Match: hitl.GateMatch{Action: []string{"drain"}}},
 	}}
 }
 

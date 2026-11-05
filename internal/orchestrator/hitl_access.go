@@ -98,7 +98,7 @@ func (fm *FleetManager) EnvsCoveredBy(keyEnv string) []string {
 	return out
 }
 
-// hitlKeysFor picks the hitl.notify signing secrets out of a create
+// hitlKeysFor picks the hitl.notify and decider signing secrets out of a create
 // request's secrets and seals them for the vm row. without an encryption
 // key they are kept in memory only, so deliveries stop being sent after a
 // restart rather than having their key stored in the clear.
@@ -106,7 +106,7 @@ func (fm *FleetManager) hitlKeysFor(spec *hitl.Spec, secretMap map[string]string
 	if spec != nil && spec.Requests.Secret != nil && len(fm.tokenEncryptionKey) != 32 {
 		return nil, nil, fmt.Errorf("%w: set it on the orchestrator or drop hitl.requests.secret", ErrHitlNeedsKey)
 	}
-	if spec == nil || len(spec.Notify) == 0 {
+	if spec == nil || (len(spec.Notify) == 0 && len(spec.Deciders()) == 0) {
 		return nil, nil, nil
 	}
 	keys := make(map[string]string, len(spec.Notify))
@@ -116,6 +116,17 @@ func (fm *FleetManager) hitlKeysFor(spec *hitl.Spec, secretMap map[string]string
 			return nil, nil, fmt.Errorf("%w: hitl.notify[%d].secret names %q, which is not in secrets", ErrHitlSecretMissing, i, w.Secret)
 		}
 		keys[w.Secret] = val
+	}
+	// decider calls are signed the same way.
+	for _, g := range spec.Gates {
+		if g.Decide == nil {
+			continue
+		}
+		val, ok := secretMap[g.Decide.Secret]
+		if !ok || val == "" {
+			return nil, nil, fmt.Errorf("%w: hitl gate %s decide.secret names %q, which is not in secrets", ErrHitlSecretMissing, g.Name, g.Decide.Secret)
+		}
+		keys[g.Decide.Secret] = val
 	}
 	if len(fm.tokenEncryptionKey) != 32 {
 		fm.logger.Warn("hitl webhook secrets kept in memory only; set TOKEN_ENCRYPTION_KEY to keep them across a restart")

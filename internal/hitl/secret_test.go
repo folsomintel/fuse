@@ -27,7 +27,7 @@ func TestSpecValidatesSecretTakeoverAndSignals(t *testing.T) {
 		"label is required":       {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{Env: "A"}}}}},
 		"reserves":                {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/fuse/x", Label: "x"}}}}},
 		"must not contain ..":     {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/a/../etc/shadow", Label: "x"}}}}},
-		"not yet supported":       {Requests: Requests{Takeover: &TakeoverRequests{Via: []TakeoverVia{"desktop"}}}},
+		"not yet supported":       {Requests: Requests{Takeover: &TakeoverRequests{Via: []TakeoverVia{"port"}}}},
 		"needs failures or quiet": {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall}}},
 		"needs before":            {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "e", On: KindExpiry}}},
 		"no action to deny":       {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Mode: ModeDeny, Match: GateMatch{Failures: 1}}}},

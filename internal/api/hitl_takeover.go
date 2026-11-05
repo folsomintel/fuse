@@ -127,10 +127,41 @@ func (h *Handler) takeoverAttach(w http.ResponseWriter, r *http.Request) {
 	serveAttach(w, guest)
 }
 
-// getRecording returns one recorded takeover session as an asciinema v2
-// cast, decrypted with the orchestrator key (GET /v1/hitl/recordings/{id}).
-// takeover_session audit rows link it. needs hitl:read and a key covering
-// the environment.
+// takeoverDesktop opens the takeover holder's live desktop
+// (GET /v1/interventions/{id}/desktop, Upgrade: fuse-vnc/1). it is the
+// computer stream with a recording on it: an input-action log plus a
+// screenshot every few seconds, saved sealed and linked from a
+// takeover_session audit row. the plain computer stream answers 423 while
+// the takeover is held, so this is the only way in. only the holder may
+// open it.
+func (h *Handler) takeoverDesktop(w http.ResponseWriter, r *http.Request) {
+	if !h.requireScope(w, r, hitl.ScopeTakeover) {
+		return
+	}
+	if !strings.EqualFold(r.Header.Get("Upgrade"), orchestrator.VNCProto) {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			"takeover desktop requires Upgrade: "+orchestrator.VNCProto, nil)
+		return
+	}
+	id := chi.URLParam(r, "interventionId")
+	if !h.interventionVisible(w, r, id) {
+		return
+	}
+	p := principal(r)
+	guest, err := h.Fleet.TakeoverDesktop(r.Context(), id, p.Actor, p.Master, r.RemoteAddr)
+	if err != nil {
+		writeHitlError(w, err)
+		return
+	}
+	defer func() { _ = guest.Close() }()
+	serveVNC(w, guest)
+}
+
+// getRecording returns one recorded takeover session, decrypted with the
+// orchestrator key (GET /v1/hitl/recordings/{id}): a terminal session as an
+// asciinema v2 cast, a desktop session as json (an input-action log plus
+// screenshots). takeover_session audit rows link it. needs hitl:read and a
+// key covering the environment.
 func (h *Handler) getRecording(w http.ResponseWriter, r *http.Request) {
 	if !h.requireScope(w, r, hitl.ScopeRead) {
 		return
@@ -144,7 +175,12 @@ func (h *Handler) getRecording(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, CodeNotFound, "recording not found", nil)
 		return
 	}
-	w.Header().Set("Content-Type", "application/x-asciicast")
+	if rec.Kind == "desktop" {
+		w.Header().Set("Content-Type", "application/json")
+	} else {
+		w.Header().Set("Content-Type", "application/x-asciicast")
+	}
+	w.Header().Set("Fuse-Recording-Kind", rec.Kind)
 	w.Header().Set("Fuse-Intervention-Id", rec.InterventionID)
 	if rec.Truncated {
 		w.Header().Set("Fuse-Recording-Truncated", "true")

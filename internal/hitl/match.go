@@ -70,11 +70,50 @@ func (s Spec) EvaluateExec(call ExecCall) Verdict {
 func (s Spec) EvaluateLifecycle(action LifecycleAction) Verdict {
 	var v Verdict
 	for _, g := range s.Gates {
-		if g.On == KindLifecycle && slices.Contains(g.Match.Action, action) {
+		if g.On == KindLifecycle && slices.Contains(g.Match.Action, string(action)) {
 			v.add(g)
 		}
 	}
 	return v
+}
+
+// ComputerCall is a computer action as the gates see it: the action name
+// and, for type, the text.
+type ComputerCall struct {
+	Action string
+	Text   string
+}
+
+// EvaluateComputer runs a computer action through the computer gates.
+func (s Spec) EvaluateComputer(call ComputerCall) Verdict {
+	var v Verdict
+	for _, g := range s.Gates {
+		if g.On == KindComputer && g.Match.matchComputer(call) {
+			v.add(g)
+		}
+	}
+	return v
+}
+
+// matchComputer matches the action name, and text_contains against the
+// text of a type. text_contains alone implies action: type.
+func (m GateMatch) matchComputer(call ComputerCall) bool {
+	if len(m.Action) > 0 && !slices.Contains(m.Action, call.Action) {
+		return false
+	}
+	if len(m.TextContains) == 0 {
+		return true
+	}
+	if call.Action != "type" {
+		return false
+	}
+	text := strings.ToLower(call.Text)
+	for _, t := range m.TextContains {
+		if strings.Contains(text, strings.ToLower(t)) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchExec matches an already stripped argv. shell exec is opaque: only a

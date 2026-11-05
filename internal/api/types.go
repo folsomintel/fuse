@@ -10,7 +10,10 @@
 // conversion helpers in convert.go enforce that separation.
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ResourceSpec is the JSON shape of the hardware spec attached to an
 // environment create request or response body.
@@ -712,7 +715,8 @@ type HitlSpec struct {
 	// Notify are webhooks told about every intervention and audit event.
 	// Deliveries are content-free and signed with the named secret.
 	Notify []HitlWebhook `json:"notify,omitempty"`
-	// Gates hold, record or deny exec and lifecycle actions.
+	// Gates hold, record or deny exec, lifecycle and computer actions, and
+	// raise stall and expiry signals.
 	Gates []HitlGate `json:"gates,omitempty"`
 	// Exec is allowlist mode for exec: a program not in allow is held.
 	Exec *HitlExecPolicy `json:"exec,omitempty"`
@@ -722,7 +726,7 @@ type HitlSpec struct {
 type HitlGate struct {
 	// Name identifies the gate on interventions and grants.
 	Name string `json:"name"`
-	// On is "exec" or "lifecycle".
+	// On is "exec", "lifecycle", "computer", "stall" or "expiry".
 	On string `json:"on"`
 	// Match selects the actions the gate applies to. Every field set must
 	// match.
@@ -736,6 +740,17 @@ type HitlGate struct {
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// Reason is returned on a deny and shown to the human on an ask.
 	Reason string `json:"reason,omitempty"`
+	// Decide is a webhook asked before a human on an ask gate. It answers
+	// allow, deny or ask; a failure or a timeout means ask.
+	Decide *HitlDecider `json:"decide,omitempty"`
+}
+
+// HitlDecider is a gate's decide webhook. Secret names an entry of the
+// create request's secrets; its value signs each call with HMAC-SHA256 in
+// the Fuse-Signature header, like hitl.notify.
+type HitlDecider struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
 }
 
 // HitlGateMatch is a gate's structured match.
@@ -747,9 +762,13 @@ type HitlGateMatch struct {
 	Args []string `json:"args,omitempty"`
 	// Shell matches any opaque shell exec (shell:, or sh/bash -c).
 	Shell bool `json:"shell,omitempty"`
-	// Action matches lifecycle actions: destroy, fork, migrate, drain,
-	// snapshot, rotate-token.
+	// Action matches lifecycle actions (destroy, fork, migrate, drain,
+	// snapshot, rotate-token) or, on a computer gate, fused's computer
+	// actions (left_click, type, key, left_click_drag, ...).
 	Action []string `json:"action,omitempty"`
+	// TextContains matches a computer type action whose text contains any
+	// entry, ignoring case.
+	TextContains []string `json:"text_contains,omitempty"`
 	// Failures raises a stall after this many consecutive non-zero exec
 	// exits (on: stall).
 	Failures int `json:"failures,omitempty"`
@@ -774,7 +793,11 @@ type HitlRequests struct {
 	Ask      *HitlAskRequests      `json:"ask,omitempty"`
 	Secret   *HitlSecretRequests   `json:"secret,omitempty"`
 	Takeover *HitlTakeoverRequests `json:"takeover,omitempty"`
+	Review   *HitlReviewRequests   `json:"review,omitempty"`
 }
+
+// HitlReviewRequests configures review requests. Present means allowed.
+type HitlReviewRequests struct{}
 
 // HitlSecretRequests declares where a secret may land. The agent names one
 // of these targets; it can never choose a path or variable of its own.
@@ -791,8 +814,8 @@ type HitlSecretTarget struct {
 	Label string `json:"label"`
 }
 
-// HitlTakeoverRequests declares the ways a human may take over. Only
-// "terminal" exists today; empty means terminal.
+// HitlTakeoverRequests declares the ways a human may take over: "terminal"
+// and "desktop" (which needs a desktop block). Empty means terminal.
 type HitlTakeoverRequests struct {
 	Via []string `json:"via,omitempty"`
 }
@@ -833,7 +856,8 @@ type AuditList struct {
 
 // RequestHumanRequest is the body of POST /v1/environments/{vmId}?action=request.
 type RequestHumanRequest struct {
-	// Kind is the request kind: "ask" (the default), "secret" or "takeover".
+	// Kind is the request kind: "ask" (the default), "secret", "takeover"
+	// or "review".
 	Kind string `json:"kind"`
 	// Question is what the human is asked (ask).
 	Question string `json:"question,omitempty"`
@@ -842,9 +866,17 @@ type RequestHumanRequest struct {
 	// Target names a declared secret target: its env name or file path
 	// (secret).
 	Target string `json:"target,omitempty"`
-	// Message is the agent's text shown under the target's label (secret).
+	// Message is the agent's text shown under the target's label (secret),
+	// or with the content up for review (review).
 	Message string `json:"message,omitempty"`
-	// Via is how the human takes over; "terminal" (takeover).
+	// Path is an absolute guest file to review; fuse reads it at request
+	// time, up to 1 MiB (review). Exclusive with content.
+	Path string `json:"path,omitempty"`
+	// Content is inline text or a diff to review (review).
+	Content string `json:"content,omitempty"`
+	// Format is "text" or "diff"; empty guesses from the content (review).
+	Format string `json:"format,omitempty"`
+	// Via is how the human takes over: "terminal" or "desktop" (takeover).
 	Via string `json:"via,omitempty"`
 	// Reason is why the agent wants a human to take over (takeover).
 	Reason string `json:"reason,omitempty"`
@@ -863,6 +895,9 @@ type DecideInterventionRequest struct {
 	// EditedArgv replaces a held exec's argv on approval. It is re-checked
 	// against the deny gates.
 	EditedArgv []string `json:"edited_argv,omitempty"`
+	// EditedText replaces a held computer type action's text on approval.
+	// It is re-checked against the deny gates.
+	EditedText *string `json:"edited_text,omitempty"`
 	// Grant is how far an approval of a gated action reaches: "once",
 	// "env" or "ttl:<duration>". Empty takes the gate's default. It cannot
 	// be combined with an edit.
@@ -909,7 +944,7 @@ type AnswerSecretRequest struct {
 
 // TakeoverRequest is the body of POST /v1/environments/{vmId}?action=takeover.
 type TakeoverRequest struct {
-	// Via is how to take over; "terminal" (the default).
+	// Via is how to take over: "terminal" (the default) or "desktop".
 	Via string `json:"via,omitempty"`
 	// Reason is recorded when no agent request is pending to claim.
 	Reason string `json:"reason,omitempty"`
@@ -933,6 +968,39 @@ type InterventionPayload struct {
 	Takeover *InterventionTakeover `json:"takeover,omitempty"`
 	// Signal is what fuse saw, for a stall or expiry.
 	Signal *InterventionSignal `json:"signal,omitempty"`
+	// Computer is the held computer action.
+	Computer *ComputerPayload `json:"computer,omitempty"`
+	// Review is what is up for review.
+	Review *InterventionReview `json:"review,omitempty"`
+	// Decider is what the gate's decider said when it sent the action on
+	// to a human.
+	Decider *InterventionDecider `json:"decider,omitempty"`
+}
+
+// ComputerPayload is a held computer action. Input is the action body as
+// sent; on approval it is replayed, with edited_text replacing the text.
+type ComputerPayload struct {
+	Action string          `json:"action"`
+	Text   string          `json:"text,omitempty"`
+	Input  json.RawMessage `json:"input"`
+}
+
+// InterventionReview is a review request. Content is the file as fuse read
+// it at request time when Path is set.
+type InterventionReview struct {
+	Path      string `json:"path,omitempty"`
+	Content   string `json:"content"`
+	Format    string `json:"format"`
+	Message   string `json:"message,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// InterventionDecider is a decider's note on an action it escalated:
+// verdict "ask" with its reason, or the error that made fuse fall through.
+type InterventionDecider struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // InterventionSignal is what fuse noticed on its own. A stall carries the
@@ -966,6 +1034,9 @@ type InterventionResult struct {
 	// Exec is set for an exec that ran. A non-zero exit code is still a
 	// result, not an error.
 	Exec *ExecEnvironmentResponse `json:"exec,omitempty"`
+	// Computer is set for a computer action that ran: the guest's output and
+	// screenshot, as the action would have returned them.
+	Computer *ComputerActionResponse `json:"computer,omitempty"`
 	// EnvID is the environment a fork or migrate produced.
 	EnvID string `json:"env_id,omitempty"`
 	// SnapshotID is the snapshot a snapshot action produced.
@@ -975,7 +1046,8 @@ type InterventionResult struct {
 	FinishedAt time.Time `json:"finished_at"`
 }
 
-// HeldResponse is the 202 body of an exec or lifecycle action a gate holds.
+// HeldResponse is the 202 body of an exec, lifecycle or computer action a
+// gate holds.
 // Wait on the intervention with GET /v1/interventions/{id}?wait=; once it
 // is approved the orchestrator performs the action and stores the result.
 type HeldResponse struct {
@@ -994,6 +1066,8 @@ type InterventionDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 	// EditedArgv is the argv the approver replaced a held exec's with.
 	EditedArgv []string `json:"edited_argv,omitempty"`
+	// EditedText is the text the approver replaced a held type's with.
+	EditedText *string `json:"edited_text,omitempty"`
 	// Grant is how far an approval of a gated action reaches.
 	Grant string `json:"grant,omitempty"`
 }

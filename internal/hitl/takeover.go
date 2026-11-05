@@ -14,6 +14,9 @@ type TakeoverVia string
 const (
 	// ViaTerminal gives the human their own shell on the attach path.
 	ViaTerminal TakeoverVia = "terminal"
+	// ViaDesktop gives the human the live desktop view. it needs the
+	// environment to have a desktop block.
+	ViaDesktop TakeoverVia = "desktop"
 )
 
 // TakeoverRequests configures `takeover` requests. Via lists the allowed
@@ -22,16 +25,17 @@ type TakeoverRequests struct {
 	Via []TakeoverVia `json:"via,omitempty"`
 }
 
-// Validate checks the allowed ways in. desktop and port are designed but
-// not built yet.
+// Validate checks the allowed ways in. port is designed but not built yet.
+// that desktop has a desktop block to take over is checked at create,
+// where the block is known.
 func (r TakeoverRequests) Validate() error {
 	for i, v := range r.Via {
 		switch v {
-		case ViaTerminal:
-		case "desktop", "port":
+		case ViaTerminal, ViaDesktop:
+		case "port":
 			return fmt.Errorf("hitl.requests.takeover.via[%d]: %q is not yet supported", i, v)
 		default:
-			return fmt.Errorf("hitl.requests.takeover.via[%d]: must be %q, got %q", i, ViaTerminal, v)
+			return fmt.Errorf("hitl.requests.takeover.via[%d]: must be %q or %q, got %q", i, ViaTerminal, ViaDesktop, v)
 		}
 	}
 	return nil
