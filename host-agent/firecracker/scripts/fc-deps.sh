@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# Install everything a Fuse Firecracker host needs to run fc-install.sh,
+# fc-bake-rootfs.sh, and fc-agent.py.
+#
+# Supports apt (Ubuntu/Debian) and dnf (Fedora/RHEL). Idempotent — safe to
+# re-run. Run on the HOST that will run microVMs.
+#
+# Usage:
+#   ./scripts/fc-deps.sh             # install runtime deps + check KVM
+#   ./scripts/fc-deps.sh --with-go   # also install Go (to build fused on this host)
+#
+# Firecracker itself is fetched by fc-install.sh, not here.
+set -euo pipefail
+
+GO_VERSION="${GO_VERSION:-1.26.5}"   # keep in sync with go.mod
+WITH_GO=0
+[ "${1:-}" = "--with-go" ] && WITH_GO=1
+
+log()  { printf '\033[1;36m[deps] %s\033[0m\n' "$*"; }
+ok()   { printf '\033[1;32m  ✓ %s\033[0m\n' "$*"; }
+warn() { printf '\033[1;33m  ! %s\033[0m\n' "$*" >&2; }
+die()  { printf '\033[1;31m  ✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# sudo wrapper (no-op if already root).
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null 2>&1 || die "need root or sudo"
+  SUDO="sudo"
+fi
+
+ARCH="$(uname -m)"   # x86_64 / aarch64
+
+# --- package install ---------------------------------------------------------
+# Common tool set across distros; package names differ per manager.
+if command -v apt-get >/dev/null 2>&1; then
+  log "apt: installing host dependencies"
+  export DEBIAN_FRONTEND=noninteractive
+  $SUDO apt-get update -y
+  $SUDO apt-get install -y --no-install-recommends \
+    podman python3 curl ca-certificates tar \
+    iptables nftables iproute2 e2fsprogs util-linux coreutils \
+    openssh-client procps openssl
+elif command -v dnf >/dev/null 2>&1; then
+  log "dnf: installing host dependencies"
+  $SUDO dnf install -y \
+    podman python3 curl ca-certificates tar \
+    iptables nftables iproute e2fsprogs util-linux coreutils \
+    openssh-clients procps-ng openssl
+else
+  die "unsupported package manager (need apt-get or dnf); install manually: podman python3 curl tar iptables nftables iproute2 e2fsprogs util-linux openssh-client procps openssl"
+fi
+ok "packages installed"
+
+# --- cloudflare warp (optional egress backend) --------------------------------
+# Only installed when asked: it pulls in gtk/webkit as hard dependencies, and
+# a host that never runs proxy-mode egress has no use for it. The daemon is
+# not started here; fc-warp.sh runs it inside its own network namespace.
+if [ "${FUSE_WITH_WARP:-0}" = "1" ]; then
+  if command -v apt-get >/dev/null 2>&1; then
+    log "apt: installing cloudflare-warp"
+    curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+      | $SUDO gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+      | $SUDO tee /etc/apt/sources.list.d/cloudflare-client.list >/dev/null
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y cloudflare-warp
+    # the stock unit would run warp-svc in the host's own namespace, which
+    # is exactly what fc-warp.sh exists to avoid.
+    $SUDO systemctl disable --now warp-svc.service >/dev/null 2>&1 || true
+    ok "cloudflare-warp installed (warp-svc left stopped; fc-warp.sh install wires the fuse unit)"
+  else
+    warn "FUSE_WITH_WARP=1 is only automated for apt hosts; install cloudflare-warp by hand: https://pkg.cloudflareclient.com/"
+  fi
+fi
+
+# --- wireproxy (optional wireguard egress backend) ---------------------------
+# Only installed when asked. wireproxy is a single static binary (a userspace
+# wireguard client serving socks5/http), so this pins a release and checks it
+# against the sha256 recorded here rather than trusting whatever is latest.
+# fc-wireguard.sh runs it, one instance per config, under
+# ops/systemd/fuse-wireguard@.service.
+WIREPROXY_VERSION="v1.1.3"
+if [ "${FUSE_WITH_WIREGUARD:-0}" = "1" ]; then
+  case "$(uname -m)" in
+    x86_64)  wp_arch=amd64; wp_sha=e88c1d090740373fc606c1bafd81d9a5eadc642cce5667616e20e9d7a444f51c ;;
+    aarch64) wp_arch=arm64; wp_sha=370e00bd2167960d1ecd1c3c1439715bbaa94a0a110a2040468670c9af6021b6 ;;
+    *) die "FUSE_WITH_WIREGUARD=1: no pinned wireproxy build for $(uname -m)" ;;
+  esac
+  if [ -x /usr/local/bin/wireproxy ] && /usr/local/bin/wireproxy -v 2>/dev/null | grep -q "${WIREPROXY_VERSION#v}"; then
+    ok "wireproxy $WIREPROXY_VERSION already installed"
+  else
+    log "installing wireproxy $WIREPROXY_VERSION"
+    wp_tmp="$(mktemp -d)"
+    curl -fsSL -o "$wp_tmp/wireproxy.tar.gz" \
+      "https://github.com/whyvl/wireproxy/releases/download/$WIREPROXY_VERSION/wireproxy_linux_$wp_arch.tar.gz"
+    echo "$wp_sha  $wp_tmp/wireproxy.tar.gz" | sha256sum -c --status \
+      || { rm -rf "$wp_tmp"; die "wireproxy download does not match its pinned sha256; refusing to install it"; }
+    tar -xzf "$wp_tmp/wireproxy.tar.gz" -C "$wp_tmp" wireproxy
+    $SUDO install -m0755 "$wp_tmp/wireproxy" /usr/local/bin/wireproxy
+    rm -rf "$wp_tmp"
+    ok "wireproxy $WIREPROXY_VERSION installed (fc-wireguard.sh installs its unit on first use)"
+  fi
+fi
+
+# --- verify the tools the scripts actually shell out to ----------------------
+log "verifying required tools"
+missing=0
+for t in podman python3 curl tar iptables nft ip e2fsck resize2fs truncate mount umount setsid ssh pgrep openssl awk; do
+  if command -v "$t" >/dev/null 2>&1; then
+    ok "$t"
+  else
+    warn "missing: $t"
+    missing=1
+  fi
+done
+[ "$missing" -eq 0 ] || die "some required tools are still missing (see above)"
+
+# --- KVM (Firecracker requires hardware virtualization) ----------------------
+log "checking KVM"
+if [ ! -e /dev/kvm ]; then
+  warn "/dev/kvm not present — this host cannot run Firecracker."
+  warn "Use a bare-metal box or a VM/instance with nested virtualization enabled."
+else
+  ok "/dev/kvm present"
+  if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+    ok "/dev/kvm is read/writable by $(id -un)"
+  else
+    warn "/dev/kvm not accessible by $(id -un); adding you to the 'kvm' group"
+    getent group kvm >/dev/null 2>&1 || $SUDO groupadd kvm || true
+    $SUDO usermod -aG kvm "$(id -un)" || warn "could not add to kvm group; run firecracker as root or fix /dev/kvm perms"
+    warn "log out and back in (or run 'newgrp kvm') for the group change to take effect"
+  fi
+fi
+
+# --- optional: Go toolchain (to build fused on this host) --------------------
+if [ "$WITH_GO" -eq 1 ]; then
+  log "installing Go ${GO_VERSION}"
+  case "$ARCH" in
+    x86_64)  GOARCH=amd64 ;;
+    aarch64) GOARCH=arm64 ;;
+    *) die "unsupported arch for Go install: $ARCH" ;;
+  esac
+  TARBALL="go${GO_VERSION}.linux-${GOARCH}.tar.gz"
+  TMP="$(mktemp -d)"
+  curl -fsSL -o "$TMP/$TARBALL" "https://go.dev/dl/$TARBALL"
+  $SUDO rm -rf /usr/local/go
+  $SUDO tar -C /usr/local -xzf "$TMP/$TARBALL"
+  rm -rf "$TMP"
+  if /usr/local/go/bin/go version >/dev/null 2>&1; then
+    ok "$('/usr/local/go/bin/go' version)"
+    warn "add Go to PATH:  export PATH=\$PATH:/usr/local/go/bin"
+  else
+    die "Go install verification failed"
+  fi
+fi
+
+printf '\n\033[1;32m[deps] done.\033[0m next: ./scripts/fc-install.sh  (then ../shared/fc-build-agent.sh && ./scripts/fc-bake-rootfs.sh)\n'

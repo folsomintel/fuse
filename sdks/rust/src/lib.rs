@@ -54,10 +54,12 @@ mod computer;
 mod environments;
 mod error;
 mod events;
+mod gates;
 mod hosts;
 mod interventions;
 mod snapshots;
 mod strenum;
+mod takeover;
 mod transport;
 mod types;
 
@@ -72,20 +74,25 @@ pub use environments::{
 };
 pub use error::{ApiError, Error, ErrorCode, ForbiddenReason};
 pub use events::EventStream;
+pub use gates::OnHeld;
 pub use hosts::{HostPage, Hosts, ListHostsOptions};
 pub use interventions::{
-    AuditOptions, AuditPage, HumanRequest, InterventionPage, Interventions,
+    ApproveOptions, AuditOptions, AuditPage, HumanRequest, InterventionPage, Interventions,
     ListInterventionsOptions,
 };
 pub use snapshots::{ListSnapshotsOptions, SnapshotPage, Snapshots};
+pub use takeover::{LockedError, ReleaseOptions, TakeoverOptions};
 pub use types::{
     Actor, ActorLabel, ActorSource, ApiKey, Arch, AuditEntry, AuditEvent, CreateRequest,
     CreatedApiKey, DesktopSpec, DesktopWm, EgressHealth, EgressHealthState, EgressMode,
     EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event,
-    EventKind, ExposeSpec, ForkOptions, GpuDevice, Health, HealthState, HealthcheckHttp,
-    HealthcheckProbe, HealthcheckSpec, HitlAskRequests, HitlKind, HitlOnTimeout, HitlRequests,
-    HitlScope, HitlSpec, HitlWebhook, Host, HostBackend, HostCapacity, HostState, Intervention,
-    InterventionDecision, InterventionOutcome, InterventionPayload, InterventionState, MigInstance,
-    MigrateOptions, MissReason, Protocol, RegisterHostRequest, Snapshot, SnapshotExport,
-    SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, VersionInfo,
+    EventKind, ExecPayload, ExposeSpec, ForkOptions, GateMode, GpuDevice, Health, HealthState,
+    HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, HitlAskRequests, HitlExecPolicy, HitlGate,
+    HitlGateMatch, HitlKind, HitlOnTimeout, HitlRequests, HitlScope, HitlSecretRequests,
+    HitlSecretTarget, HitlSpec, HitlTakeoverRequests, HitlWebhook, Host, HostBackend, HostCapacity,
+    HostState, Intervention, InterventionDecision, InterventionOutcome, InterventionPayload,
+    InterventionResult, InterventionSecret, InterventionSignal, InterventionState,
+    InterventionTakeover, LifecycleAction, LifecyclePayload, MigInstance, MigrateOptions,
+    MissReason, Protocol, Reaper, RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind,
+    SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia, VersionInfo, ALLOWLIST_GATE,
 };

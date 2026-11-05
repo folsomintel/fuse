@@ -42,13 +42,13 @@ proven, and this one as the thing that is wired.
 cd ~/fc/host-agent/firecracker
 
 # 0. host dependencies, now including the cloudflare-warp package
-./fc-deps.sh
+./scripts/fc-deps.sh
 
 # 1. create the fuse-warp namespace, write the systemd unit, enable it
-sudo ./fc-warp.sh install
+sudo ./scripts/fc-warp.sh install
 
 # 2. restart the agent so it registers the provider
-./fc-agent.sh restart
+./scripts/fc-agent.sh restart
 ```
 
 `fc-warp.sh install` places `ops/systemd/fuse-warp.service` as the unit that

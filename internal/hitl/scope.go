@@ -50,14 +50,15 @@ func ParseScopes(raw []string) ([]Scope, error) {
 }
 
 // Grants reports whether a key holding scopes may act with want. scopes nil
-// is a full-access key, which holds read and takeover (it could already
-// read interventions and attach) but never decide, secret or act-as: those
-// have to be minted on purpose, so the agent's own key cannot approve its
-// own requests. decide and secret imply read, since deciding means seeing
-// what is being decided.
+// is a full-access key, which holds read (it could already read
+// interventions) but never decide, secret, takeover or act-as: those have
+// to be minted on purpose, so the agent's own key cannot approve its own
+// requests, and takeover, which opens a shell in the guest, stays as rare
+// as attach, which is master-only. decide and secret imply read, since
+// deciding means seeing what is being decided.
 func Grants(scopes []Scope, want Scope) bool {
 	if scopes == nil {
-		return want == ScopeRead || want == ScopeTakeover
+		return want == ScopeRead
 	}
 	if slices.Contains(scopes, want) {
 		return true

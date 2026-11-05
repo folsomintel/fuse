@@ -24,6 +24,9 @@ type transport struct {
 	// actor, when its id is set, is sent as the Fuse-Actor headers on
 	// every request.
 	actor ActorLabel
+	// hitlNoWait and onHeld are the client's hitl wait options.
+	hitlNoWait bool
+	onHeld     func(*Intervention)
 }
 
 // setActorHeaders adds the Fuse-Actor headers when the transport has an actor.
@@ -309,6 +312,12 @@ func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOp
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		return s.heldEnvironment(ctx, held)
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -338,6 +347,12 @@ func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts Mig
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		return s.heldEnvironment(ctx, held)
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -360,14 +375,7 @@ func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) erro
 	if err != nil {
 		return err
 	}
-	resp, err := s.t.do(req)
-	if err != nil {
-		return err
-	}
-	if err := CheckResponse(resp); err != nil {
-		return err
-	}
-	return nil
+	return s.t.doHeldNoBody(ctx, req)
 }
 
 func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error {
@@ -382,13 +390,41 @@ func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := s.t.do(req)
+	return s.t.doHeldNoBody(ctx, req)
+}
+
+// heldEnvironment waits out a held fork or migrate and returns the
+// environment it produced.
+func (s *EnvironmentsService) heldEnvironment(ctx context.Context, held *Intervention) (*EnvironmentInfo, error) {
+	in, err := s.t.settleHeld(ctx, held, heldOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if in.Result == nil || in.Result.EnvID == "" {
+		return nil, fmt.Errorf("intervention %s settled without an environment", in.ID)
+	}
+	return s.Get(ctx, in.Result.EnvID)
+}
+
+// doHeldNoBody sends a call whose success has no body, waiting it out when
+// a gate holds it.
+func (t *transport) doHeldNoBody(ctx context.Context, req *http.Request) error {
+	resp, err := t.do(req)
 	if err != nil {
 		return err
 	}
 	if err := CheckResponse(resp); err != nil {
 		return err
 	}
+	held, err := readHeld(resp)
+	if err != nil {
+		return err
+	}
+	if held != nil {
+		_, err = t.settleHeld(ctx, held, heldOptions{})
+		return err
+	}
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -416,6 +452,15 @@ func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.t.settleHeld(ctx, held, heldOptions{}); err != nil {
+			return nil, err
+		}
+		return s.Get(ctx, vmID)
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var env EnvironmentInfo
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
@@ -429,7 +474,19 @@ func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (
 // environment booted from a desktop image; on any other image the server
 // answers 503 with a reason. Screenshots ride back base64-encoded, so the
 // stream client with no overall timeout carries the call.
+//
+// While a human holds the environment the server answers 423; Computer
+// waits for that intervention to end and sends the action then, unless the
+// client was built WithHitlNoWait, in which case it returns a *LockedError.
 func (s *EnvironmentsService) Computer(ctx context.Context, vmID string, action ComputerActionRequest) (*ComputerActionResponse, error) {
+	var t *transport
+	if s != nil {
+		t = s.t
+	}
+	return retryLocked(ctx, t, false, func() (*ComputerActionResponse, error) { return s.computerOnce(ctx, vmID, action) })
+}
+
+func (s *EnvironmentsService) computerOnce(ctx context.Context, vmID string, action ComputerActionRequest) (*ComputerActionResponse, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}

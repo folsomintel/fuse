@@ -87,6 +87,19 @@ func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody Snap
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		in, err := s.t.settleHeld(ctx, held, heldOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if in.Result == nil || in.Result.SnapshotID == "" {
+			return nil, fmt.Errorf("intervention %s settled without a snapshot", in.ID)
+		}
+		return s.Get(ctx, in.Result.SnapshotID)
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var snap Snapshot
 	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {

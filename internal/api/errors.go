@@ -38,11 +38,16 @@ func classifyFleetError(err error) (status int, code string) {
 		return http.StatusOK, ""
 	case errors.Is(err, orchestrator.ErrTaskAlreadyAssigned):
 		return http.StatusConflict, CodeConflict
+	case errors.Is(err, orchestrator.ErrEnvLocked):
+		return http.StatusLocked, CodeLocked
+	case errors.Is(err, orchestrator.ErrNotTakeoverHolder):
+		return http.StatusForbidden, CodeForbidden
 	case errors.Is(err, orchestrator.ErrVMNotFound),
 		errors.Is(err, orchestrator.ErrTaskNotFound),
 		errors.Is(err, orchestrator.ErrHostNotFound),
 		errors.Is(err, orchestrator.ErrSnapshotNotFound),
-		errors.Is(err, orchestrator.ErrInterventionNotFound):
+		errors.Is(err, orchestrator.ErrInterventionNotFound),
+		errors.Is(err, orchestrator.ErrRecordingNotFound):
 		return http.StatusNotFound, CodeNotFound
 	case errors.Is(err, orchestrator.ErrNoCapacity),
 		errors.Is(err, orchestrator.ErrNoHosts),
@@ -58,7 +63,9 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrVMNotRunning),
 		errors.Is(err, orchestrator.ErrGPUUnsupported),
 		errors.Is(err, orchestrator.ErrHostHasVMs),
-		errors.Is(err, orchestrator.ErrInterventionResolved):
+		errors.Is(err, orchestrator.ErrInterventionResolved),
+		errors.Is(err, orchestrator.ErrNoTakeover),
+		errors.Is(err, orchestrator.ErrTakeoverHeld):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrExecUnsupported),
 		errors.Is(err, orchestrator.ErrAttachUnsupported),
@@ -71,6 +78,7 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrInvalidCursor),
 		errors.Is(err, orchestrator.ErrHitlNotDeclared),
 		errors.Is(err, orchestrator.ErrHitlSecretMissing),
+		errors.Is(err, orchestrator.ErrHitlNeedsKey),
 		errors.Is(err, orchestrator.ErrInvalidIntervention):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:
@@ -87,7 +95,13 @@ func writeFleetError(w http.ResponseWriter, err error) {
 		return
 	}
 	status, code := classifyFleetError(err)
-	writeError(w, status, code, err.Error(), nil)
+	var details map[string]string
+	var locked *orchestrator.LockedError
+	if errors.As(err, &locked) {
+		// the sdks wait on this intervention, then retry the call.
+		details = map[string]string{"intervention_id": locked.InterventionID, "kind": string(locked.Kind)}
+	}
+	writeError(w, status, code, err.Error(), details)
 }
 
 // writeFleetErrorRedacted is like writeFleetError but replaces any

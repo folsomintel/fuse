@@ -19,8 +19,8 @@ func newHitlCmd() *cobra.Command {
 			"deciding needs the master token or a key with hitl:decide (see `fuse hitl\n" +
 			"invite`), and never the key or actor that raised the request.",
 	}
-	cmd.AddCommand(newHitlListCmd(), newHitlShowCmd(), newHitlAnswerCmd(), newHitlRejectCmd(),
-		newHitlInviteCmd(), newHitlAuditCmd())
+	cmd.AddCommand(newHitlListCmd(), newHitlShowCmd(), newHitlAnswerCmd(), newHitlApproveCmd(), newHitlRejectCmd(),
+		newHitlInviteCmd(), newHitlAuditCmd(), newHitlSecretCmd(), newHitlTakeoverCmd(), newHitlReleaseCmd())
 	return cmd
 }
 
@@ -86,9 +86,8 @@ func newHitlShowCmd() *cobra.Command {
 func newHitlAnswerCmd() *cobra.Command {
 	var reason, actor string
 	cmd := &cobra.Command{
-		Use:     "answer <id> <answer>",
-		Aliases: []string{"approve"},
-		Short:   "Answer an ask (approves it)",
+		Use:   "answer <id> <answer>",
+		Short: "Answer an ask (approves it)",
 		Long: "answers a pending ask, which approves it and hands the answer back to\n" +
 			"the waiting agent. when the ask offered choices, the answer must be one\n" +
 			"of them. everything after the id is joined into the answer.",
@@ -152,7 +151,48 @@ func renderIntervention(in *fuse.Intervention) error {
 		{"env", in.EnvID},
 		{"kind", in.Kind},
 		{"state", renderInterventionState(*in)},
-		{"question", in.Payload.Question},
+	}
+	// a secret's fusefile label comes first: the agent wrote the message,
+	// so it is the part a human should trust least.
+	if p := in.Payload.Secret; p != nil {
+		pairs = append(pairs, [2]string{"secret for", p.Label}, [2]string{"target", p.Target})
+		if p.Message != "" {
+			pairs = append(pairs, [2]string{"agent says", p.Message})
+		}
+	}
+	if p := in.Payload.Takeover; p != nil {
+		pairs = append(pairs, [2]string{"via", p.Via})
+		if p.Reason != "" {
+			pairs = append(pairs, [2]string{"reason", p.Reason})
+		}
+		if p.Holder != nil {
+			pairs = append(pairs, [2]string{"held by", renderActor(*p.Holder)})
+		}
+	}
+	if p := in.Payload.Signal; p != nil {
+		switch {
+		case p.Failures > 0:
+			pairs = append(pairs, [2]string{"signal", fmt.Sprintf("%d failing execs in a row (last exit %d)", p.Failures, p.LastExitCode)})
+		case p.QuietSeconds > 0:
+			pairs = append(pairs, [2]string{"signal", fmt.Sprintf("no exec or computer call for %s", time.Duration(p.QuietSeconds)*time.Second)})
+		case p.ReapAt != nil:
+			pairs = append(pairs, [2]string{"signal", p.Reaper + " reap at " + shortTime(*p.ReapAt)})
+		}
+		if p.ExtendedUntil != nil {
+			pairs = append(pairs, [2]string{"extended until", shortTime(*p.ExtendedUntil)})
+		}
+	}
+	if in.Gate != "" {
+		pairs = append(pairs, [2]string{"gate", in.Gate + " (" + in.Mode + ")"})
+	}
+	if in.Payload.Question != "" {
+		pairs = append(pairs, [2]string{"question", in.Payload.Question})
+	}
+	if e := in.Payload.Exec; e != nil {
+		pairs = append(pairs, [2]string{"argv", renderArgv(e.Argv)})
+	}
+	if l := in.Payload.Lifecycle; l != nil {
+		pairs = append(pairs, [2]string{"action", l.Action})
 	}
 	if len(in.Payload.Choices) > 0 {
 		pairs = append(pairs, [2]string{"choices", strings.Join(in.Payload.Choices, ", ")})
@@ -170,10 +210,30 @@ func renderIntervention(in *fuse.Intervention) error {
 		if d.Reason != "" {
 			pairs = append(pairs, [2]string{"reason", d.Reason})
 		}
+		if d.EditedArgv != nil {
+			pairs = append(pairs, [2]string{"edited argv", renderArgv(d.EditedArgv)})
+		}
+		if d.Grant != "" {
+			pairs = append(pairs, [2]string{"grant", d.Grant})
+		}
 		pairs = append(pairs,
 			[2]string{"decided by", renderActor(d.DecidedBy)},
 			[2]string{"decided", shortTime(d.DecidedAt)},
 		)
+	}
+	if r := in.Result; r != nil {
+		switch {
+		case r.Error != "":
+			pairs = append(pairs, [2]string{"result", styleBad.Render("error: " + r.Error)})
+		case r.Exec != nil:
+			pairs = append(pairs, [2]string{"result", fmt.Sprintf("exit %d", r.Exec.ExitCode)})
+		case r.EnvID != "":
+			pairs = append(pairs, [2]string{"result", "environment " + r.EnvID})
+		case r.SnapshotID != "":
+			pairs = append(pairs, [2]string{"result", "snapshot " + r.SnapshotID})
+		default:
+			pairs = append(pairs, [2]string{"result", "done"})
+		}
 	}
 	renderDetail(pairs)
 	return nil

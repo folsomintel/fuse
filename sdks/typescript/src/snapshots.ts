@@ -1,6 +1,8 @@
 import type { CallOptions, Transport } from "./transport.js";
 import type { ResolveSnapshotResponse, Snapshot, SnapshotRequest } from "./types.js";
 import { requireArg } from "./validate.js";
+import { FuseError } from "./errors.js";
+import { settleHeld } from "./gates.js";
 
 /** The server's max page size; list() requests this internally so it walks
  * every page in as few round trips as possible. */
@@ -54,18 +56,27 @@ export class SnapshotsService {
    * be `"disk"` even for a `live: true` request that reached a host too old to
    * honour it. A caller that depends on the memory being there should check
    * it. `live: true` against a backend with no live-snapshot support throws a
-   * 501 `unimplemented`, not a conflict. */
+   * 501 `unimplemented`, not a conflict.
+   *
+   * When a hitl gate holds the snapshot, create waits for the decision and
+   * returns the snapshot the orchestrator then took. */
   async create(
     vmId: string,
     body: SnapshotRequest = {},
     opts: CallOptions = {},
   ): Promise<Snapshot> {
     requireArg(vmId, "vm id");
-    return this.t.json<Snapshot>(
+    const out = await this.t.gated<Snapshot>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}/snapshots`,
       { body, signal: opts.signal },
     );
+    if (!out.held) return out.value;
+    const i = await settleHeld(this.t, out.held, {}, opts);
+    if (!i.result?.snapshot_id) {
+      throw new FuseError(`intervention ${i.id} settled without a snapshot`);
+    }
+    return this.get(i.result.snapshot_id, opts);
   }
 
   /** List snapshots, optionally filtered. Transparently walks every result

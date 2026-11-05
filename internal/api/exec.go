@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -40,6 +41,21 @@ func (h *Handler) execEnvironment(w http.ResponseWriter, r *http.Request) {
 	cmd, err := execArgv(req)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+		return
+	}
+
+	// the hold point. it sits before the host agent is called, so a held
+	// exec never waits inside the agent's per-vm lock: an unrelated
+	// snapshot of the same vm goes ahead while a human decides.
+	held, err := h.Fleet.GateExec(r.Context(), vmID, hitl.ExecPayload{
+		Argv: cmd, Shell: req.Shell, TimeoutMS: int64(req.TimeoutMS),
+	}, gateCaller(r))
+	if err != nil {
+		writeHitlError(w, err)
+		return
+	}
+	if held != nil {
+		writeHeld(w, held)
 		return
 	}
 
@@ -127,6 +143,12 @@ func (h *Handler) attachEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeFleetError(w, err)
 		return
 	}
+	serveAttach(w, guest)
+}
+
+// serveAttach hijacks the connection, answers 101 and relays the guest
+// stream until either side goes away. it owns guest and closes it.
+func serveAttach(w http.ResponseWriter, guest io.ReadWriteCloser) {
 	defer func() { _ = guest.Close() }()
 
 	// ResponseController, not a direct w.(http.Hijacker) assertion: the

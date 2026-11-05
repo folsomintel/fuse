@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/folsomintel/fuse/internal/hitl"
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // forbidden reasons, sent as details.reason on a 403 forbidden so an sdk can
@@ -18,6 +19,7 @@ const (
 	reasonActorMismatch   = "actor_mismatch"
 	reasonActorNotAllowed = "actor_not_allowed"
 	reasonMintEscalation  = "mint_escalation"
+	reasonHitlDenied      = "hitl_denied"
 )
 
 func writeForbidden(w http.ResponseWriter, reason, msg string) {
@@ -94,6 +96,10 @@ func hitlRoute(r *http.Request) bool {
 		return true
 	case strings.HasPrefix(path, "/v1/hitl/"):
 		return true
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/environments/") && !strings.Contains(strings.TrimPrefix(path, "/v1/environments/"), "/"):
+		// taking over and releasing are hitl actions on the environment.
+		action := r.URL.Query().Get("action")
+		return action == "takeover" || action == "release"
 	case path == "/v1/api-keys" && r.Method == http.MethodPost:
 		// minting, within the key's own scopes. see createAPIKey.
 		return true
@@ -147,11 +153,18 @@ func (h *Handler) coveredEnvs(p Principal) []string {
 // writeHitlError maps the decider refusals to a 403 and everything else
 // through writeFleetError.
 func writeHitlError(w http.ResponseWriter, err error) {
+	var denied *orchestrator.GateDeniedError
 	switch {
 	case errors.Is(err, hitl.ErrSelfApproval):
 		writeForbidden(w, reasonSelfApproval, err.Error())
 	case errors.Is(err, hitl.ErrActorRequired):
 		writeForbidden(w, reasonActorRequired, err.Error()+" (use a key pinned to an actor, or send "+hitl.HeaderActor+" from a hitl:act-as key)")
+	case errors.As(err, &denied):
+		details := map[string]string{"reason": reasonHitlDenied, "gate": denied.Gate}
+		if denied.InterventionID != "" {
+			details["intervention_id"] = denied.InterventionID
+		}
+		writeError(w, http.StatusForbidden, CodeForbidden, denied.Reason, details)
 	default:
 		writeFleetError(w, err)
 	}

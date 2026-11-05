@@ -374,6 +374,20 @@ export interface ExecRequest {
    * default; the server clamps anything above its ceiling.
    */
   timeout_ms?: number;
+
+  /**
+   * Wait for a human when a hitl gate holds the exec (202), or when a
+   * human holds the environment (423, a takeover or a pending stall), then
+   * run (the default). false throws a PendingInterventionError or a
+   * LockedError at once instead. Not sent on the wire.
+   */
+  wait?: boolean;
+
+  /**
+   * Called with the pending intervention when a gate holds the exec, before
+   * waiting on it. It overrides the client's onHeld. Not sent on the wire.
+   */
+  onHeld?: (held: Intervention) => void;
 }
 
 /**
@@ -697,6 +711,78 @@ export interface HitlSpec {
   require_actor?: boolean;
   /** Webhooks told about every intervention and audit event. */
   notify?: HitlWebhook[];
+  /** Gates hold, record or deny exec and lifecycle actions. */
+  gates?: HitlGate[];
+  /** Allowlist mode for exec. */
+  exec?: HitlExecPolicy;
+}
+
+/** HitlGate is one enforced gate. */
+export interface HitlGate {
+  name: string;
+  /** HitlKind.Exec or HitlKind.Lifecycle. */
+  on: string;
+  match: HitlGateMatch;
+  /** One of GateMode; ask is the default. */
+  mode?: string;
+  /** The default reach of an approval: "once", "env" or "ttl:<duration>". */
+  grant?: string;
+  timeout_seconds?: number;
+  /** Returned on a deny and shown to the human on an ask. */
+  reason?: string;
+}
+
+/** HitlGateMatch selects the actions a gate applies to. Every field set must
+ * match. */
+export interface HitlGateMatch {
+  /** Matches the basename of argv[0] after env, sudo, nice, timeout, xargs,
+   * nohup and stdbuf are stripped. */
+  program?: string[];
+  /** Matches when these appear in argv in this order. */
+  args?: string[];
+  /** Matches any opaque shell exec. */
+  shell?: boolean;
+  /** Matches lifecycle actions (one of LifecycleAction). */
+  action?: string[];
+  /** Raises a stall after this many consecutive non-zero exec exits
+   * (on: "stall"). */
+  failures?: number;
+  /** Raises a stall after this long with no exec or computer call
+   * (on: "stall"). */
+  quiet_seconds?: number;
+  /** Raises an expiry this long before the idle_timeout or max_runtime reap
+   * (on: "expiry"). */
+  before_seconds?: number;
+}
+
+/** HitlExecPolicy is allowlist mode for exec: a program not in allow is held
+ * with default ("ask" or "deny"), interpreters and shells included. */
+export interface HitlExecPolicy {
+  default: string;
+  allow: string[];
+}
+
+/** ExecPayload is a held exec. */
+export interface ExecPayload {
+  argv: string[];
+  shell?: string;
+  timeout_ms?: number;
+}
+
+/** LifecyclePayload is a held environment action. */
+export interface LifecyclePayload {
+  /** One of LifecycleAction. */
+  action: string;
+}
+
+/** InterventionResult is what running an approved gated action produced. */
+export interface InterventionResult {
+  exec?: ExecResult;
+  env_id?: string;
+  snapshot_id?: string;
+  error?: string;
+  /** RFC 3339 timestamp. */
+  finished_at: string;
 }
 
 /** HitlWebhook is one hitl.notify target. `secret` names an entry of the
@@ -707,10 +793,33 @@ export interface HitlWebhook {
   secret: string;
 }
 
-/** HitlRequests declares the allowed request kinds. Only ask exists today;
- * set it (to {}) to allow asks. */
+/** HitlRequests declares the allowed request kinds. Present means allowed;
+ * set ask (to {}) to allow asks. */
 export interface HitlRequests {
   ask?: HitlAskRequests;
+  secret?: HitlSecretRequests;
+  takeover?: HitlTakeoverRequests;
+}
+
+/** HitlSecretRequests declares where a secret may land. The agent names one
+ * of these targets; it can never choose a path or variable of its own. */
+export interface HitlSecretRequests {
+  targets: HitlSecretTarget[];
+}
+
+/** HitlSecretTarget is one declared destination: exactly one of env (a
+ * variable later execs see) or file (an absolute guest path, written 0600).
+ * label is what the human is shown first. */
+export interface HitlSecretTarget {
+  env?: string;
+  file?: string;
+  label: string;
+}
+
+/** HitlTakeoverRequests declares the ways a human may take over. Only
+ * "terminal" exists today; empty means terminal. */
+export interface HitlTakeoverRequests {
+  via?: string[];
 }
 
 /** HitlAskRequests configures ask requests. Present means allowed. */
@@ -726,10 +835,55 @@ export interface Actor {
   key_id?: string;
 }
 
-/** InterventionPayload is what the agent asked. */
+/** InterventionPayload is what was asked, attempted or noticed: a question
+ * for an ask, the held exec or lifecycle action for a gate, a secret or
+ * takeover request, or a signal. */
 export interface InterventionPayload {
-  question: string;
+  question?: string;
   choices?: string[];
+  exec?: ExecPayload;
+  lifecycle?: LifecyclePayload;
+  /** Set for a secret request only. */
+  secret?: InterventionSecret;
+  /** Set for a takeover only. */
+  takeover?: InterventionTakeover;
+  /** What fuse saw, for a stall or expiry. */
+  signal?: InterventionSignal;
+}
+
+/** InterventionSecret is a secret request. label comes from the Fusefile and
+ * is what a human should read first; message is the agent's own text. The
+ * value is never part of any intervention. */
+export interface InterventionSecret {
+  target: string;
+  label: string;
+  message?: string;
+}
+
+/** InterventionTakeover is a takeover. holder and started_at are set while a
+ * human holds the environment, which is also when the agent's exec and
+ * computer calls get 423. */
+export interface InterventionTakeover {
+  via: string;
+  reason?: string;
+  holder?: Actor;
+  /** RFC 3339 timestamp. */
+  started_at?: string;
+}
+
+/** InterventionSignal is what fuse noticed on its own. A stall carries the
+ * failure run or the quiet time; an expiry carries the reaper due and when,
+ * and once approved the time the environment is kept until. */
+export interface InterventionSignal {
+  failures?: number;
+  last_exit_code?: number;
+  quiet_seconds?: number;
+  /** "idle_timeout" or "max_runtime". */
+  reaper?: string;
+  /** RFC 3339 timestamp. */
+  reap_at?: string;
+  /** RFC 3339 timestamp. */
+  extended_until?: string;
 }
 
 /** InterventionDecision is how an intervention resolved. An expired one
@@ -741,6 +895,10 @@ export interface InterventionDecision {
   reason?: string;
   decided_by: Actor;
   decided_at: string;
+  /** The argv the approver replaced a held exec's with. */
+  edited_argv?: string[];
+  /** How far an approval of a gated action reaches. */
+  grant?: string;
 }
 
 /** Intervention is one request for a human. */
@@ -748,6 +906,11 @@ export interface Intervention {
   id: string;
   env_id: string;
   kind: string;
+  /** Names the gate that raised it; absent for a request. */
+  gate?: string;
+  /** The gate's mode (one of GateMode). notify and deny records are born
+   * terminal. */
+  mode?: string;
   /** One of InterventionState. */
   state: string;
   payload: InterventionPayload;
@@ -757,6 +920,8 @@ export interface Intervention {
   on_timeout: string;
   /** Set on every terminal intervention. */
   decision?: InterventionDecision;
+  /** Set once an approved gated action has been performed. */
+  result?: InterventionResult;
   created_at: string;
   updated_at: string;
 }
@@ -771,6 +936,9 @@ export interface AuditEntry {
   env_id?: string;
   actor: Actor;
   remote_addr?: string;
+  /** Links a takeover_session row to its cast; fetch it with
+   * interventions.getRecording. */
+  recording_id?: string;
   /** RFC 3339 timestamp. */
   at: string;
   prev_hash: string;
@@ -785,16 +953,53 @@ export const AuditEvent = {
   Cancelled: "cancelled",
   InviteMinted: "invite_minted",
   InviteUsed: "invite_used",
+  GrantCreated: "grant_created",
+  GrantUsed: "grant_used",
+  SecretAnswered: "secret_answered",
+  TakeoverStarted: "takeover_started",
+  TakeoverEnded: "takeover_ended",
+  TakeoverSession: "takeover_session",
 } as const;
 
 export type AuditEvent = (typeof AuditEvent)[keyof typeof AuditEvent];
 
-/** Hitl request kinds. */
+/** Intervention kinds: ask is a request, exec and lifecycle are the gate
+ * surfaces. */
 export const HitlKind = {
   Ask: "ask",
+  Exec: "exec",
+  Lifecycle: "lifecycle",
+  Secret: "secret",
+  Takeover: "takeover",
+  Stall: "stall",
+  Expiry: "expiry",
 } as const;
 
 export type HitlKind = (typeof HitlKind)[keyof typeof HitlKind];
+
+/** Gate modes. */
+export const GateMode = {
+  Ask: "ask",
+  Notify: "notify",
+  Deny: "deny",
+} as const;
+
+export type GateMode = (typeof GateMode)[keyof typeof GateMode];
+
+/** Lifecycle actions a gate can hold. */
+export const LifecycleAction = {
+  Destroy: "destroy",
+  Fork: "fork",
+  Migrate: "migrate",
+  Drain: "drain",
+  Snapshot: "snapshot",
+  RotateToken: "rotate-token",
+} as const;
+
+export type LifecycleAction = (typeof LifecycleAction)[keyof typeof LifecycleAction];
+
+/** The gate name the exec allowlist reports. */
+export const ALLOWLIST_GATE = "exec.allowlist";
 
 /** Intervention states. pending is the only non-terminal one. */
 export const InterventionState = {
@@ -826,4 +1031,13 @@ export function isInterventionTerminal(i: Intervention | undefined): boolean {
  * approve, which includes an expiry under on_timeout: allow. */
 export function isInterventionApproved(i: Intervention | undefined): boolean {
   return i?.decision?.outcome === InterventionOutcome.Approve;
+}
+
+/** isInterventionSettled reports whether a caller has its final answer:
+ * resolved, and for an approved gated action that fuse performs, performed
+ * (with the outcome on result). */
+export function isInterventionSettled(i: Intervention | undefined): boolean {
+  if (!i || !isInterventionTerminal(i)) return false;
+  const runs = i.mode === GateMode.Ask && (!!i.payload?.exec || !!i.payload?.lifecycle);
+  return !runs || !isInterventionApproved(i) || !!i.result;
 }

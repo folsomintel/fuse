@@ -44,6 +44,10 @@ type HitlSpec struct {
 	RequireActor bool `json:"require_actor,omitempty"`
 	// Notify are webhooks told about every intervention and audit event.
 	Notify []HitlWebhook `json:"notify,omitempty"`
+	// Gates hold, record or deny exec and lifecycle actions.
+	Gates []HitlGate `json:"gates,omitempty"`
+	// Exec is allowlist mode for exec.
+	Exec *HitlExecPolicy `json:"exec,omitempty"`
 }
 
 // HitlWebhook is one hitl.notify target. Secret names an entry in the
@@ -56,7 +60,9 @@ type HitlWebhook struct {
 // HitlRequests declares the allowed request kinds. Only Ask exists today;
 // set it to a non-nil value to allow asks.
 type HitlRequests struct {
-	Ask *HitlAskRequests `json:"ask,omitempty"`
+	Ask      *HitlAskRequests      `json:"ask,omitempty"`
+	Secret   *HitlSecretRequests   `json:"secret,omitempty"`
+	Takeover *HitlTakeoverRequests `json:"takeover,omitempty"`
 }
 
 // HitlAskRequests configures ask requests. Present means allowed.
@@ -71,10 +77,17 @@ type Actor struct {
 	KeyID  string `json:"key_id,omitempty"`
 }
 
-// InterventionPayload is what the agent asked.
+// InterventionPayload is what was asked or attempted: a question for an
+// ask, the held exec or lifecycle action for a gate.
 type InterventionPayload struct {
-	Question string   `json:"question"`
-	Choices  []string `json:"choices,omitempty"`
+	Question  string            `json:"question,omitempty"`
+	Choices   []string          `json:"choices,omitempty"`
+	Exec      *ExecPayload      `json:"exec,omitempty"`
+	Lifecycle *LifecyclePayload `json:"lifecycle,omitempty"`
+	// Secret, Takeover and Signal are set for those kinds only.
+	Secret   *SecretPayload   `json:"secret,omitempty"`
+	Takeover *TakeoverPayload `json:"takeover,omitempty"`
+	Signal   *SignalPayload   `json:"signal,omitempty"`
 }
 
 // InterventionDecision is how an intervention resolved. An expired one
@@ -85,21 +98,31 @@ type InterventionDecision struct {
 	Reason    string    `json:"reason,omitempty"`
 	DecidedBy Actor     `json:"decided_by"`
 	DecidedAt time.Time `json:"decided_at"`
+	// EditedArgv is the argv the approver replaced a held exec's with.
+	EditedArgv []string `json:"edited_argv,omitempty"`
+	// Grant is how far an approval of a gated action reaches.
+	Grant string `json:"grant,omitempty"`
 }
 
 // Intervention is one request for a human.
 type Intervention struct {
-	ID          string                `json:"id"`
-	EnvID       string                `json:"env_id"`
-	Kind        string                `json:"kind"`
+	ID    string `json:"id"`
+	EnvID string `json:"env_id"`
+	Kind  string `json:"kind"`
+	// Gate names the gate that raised it; empty for a request.
+	Gate string `json:"gate,omitempty"`
+	// Mode is the gate's mode. notify and deny records are born terminal.
+	Mode        string                `json:"mode,omitempty"`
 	State       string                `json:"state"`
 	Payload     InterventionPayload   `json:"payload"`
 	TriggeredBy Actor                 `json:"triggered_by"`
 	Deadline    time.Time             `json:"deadline"`
 	OnTimeout   string                `json:"on_timeout"`
 	Decision    *InterventionDecision `json:"decision,omitempty"`
-	CreatedAt   time.Time             `json:"created_at"`
-	UpdatedAt   time.Time             `json:"updated_at"`
+	// Result is set once an approved gated action has been performed.
+	Result    *InterventionResult `json:"result,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
 }
 
 // Terminal reports whether the intervention is resolved.
@@ -117,8 +140,16 @@ func (in *Intervention) Approved() bool {
 type HumanRequest struct {
 	// Kind is the request kind. Empty means HitlKindAsk.
 	Kind     string   `json:"kind,omitempty"`
-	Question string   `json:"question"`
+	Question string   `json:"question,omitempty"`
 	Choices  []string `json:"choices,omitempty"`
+	// Target names a declared secret target, its env name or file path
+	// (HitlKindSecret). Message is the agent's text, shown under the
+	// target's label.
+	Target  string `json:"target,omitempty"`
+	Message string `json:"message,omitempty"`
+	// Via ("terminal") and Reason describe a takeover (HitlKindTakeover).
+	Via    string `json:"via,omitempty"`
+	Reason string `json:"reason,omitempty"`
 	// TimeoutSeconds shortens the policy's deadline. It can never extend it.
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// NoWait returns the pending intervention at once instead of waiting
@@ -234,7 +265,8 @@ func (s *InterventionsService) Get(ctx context.Context, id string) (*Interventio
 	return getIntervention(ctx, s.t, id, 0)
 }
 
-// Wait blocks until the intervention resolves or ctx is done. Every
+// Wait blocks until the intervention settles (resolved, and for an approved
+// gated action, performed, with the outcome on Result) or ctx is done. Every
 // intervention has a deadline, so this always returns eventually. A
 // dropped connection or an orchestrator restart is survived by polling
 // again; postgres, not the connection, holds the state.
@@ -249,17 +281,24 @@ func (s *InterventionsService) Wait(ctx context.Context, id string) (*Interventi
 // answer (one of its choices, when it has any). Needs the master token or
 // a key with hitl:decide, and not the key or actor that raised it.
 func (s *InterventionsService) Approve(ctx context.Context, id, answer, reason string) (*Intervention, error) {
-	return s.decide(ctx, id, "approve", answer, reason)
+	return s.decide(ctx, id, "approve", ApproveOptions{Answer: answer, Reason: reason})
+}
+
+// ApproveWith approves a held exec or lifecycle action, optionally editing
+// the exec's argv or granting repeats ("env", "ttl:30m"). The orchestrator
+// then performs the action; Wait on the id for its result.
+func (s *InterventionsService) ApproveWith(ctx context.Context, id string, opts ApproveOptions) (*Intervention, error) {
+	return s.decide(ctx, id, "approve", opts)
 }
 
 // Reject resolves a pending intervention as rejected. The reason is fed
 // back to the agent; one is filled in when empty. Needs the master token
 // or a key with hitl:decide, and not the key or actor that raised it.
 func (s *InterventionsService) Reject(ctx context.Context, id, reason string) (*Intervention, error) {
-	return s.decide(ctx, id, "reject", "", reason)
+	return s.decide(ctx, id, "reject", ApproveOptions{Reason: reason})
 }
 
-func (s *InterventionsService) decide(ctx context.Context, id, action, answer, reason string) (*Intervention, error) {
+func (s *InterventionsService) decide(ctx context.Context, id, action string, body ApproveOptions) (*Intervention, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("interventions service is not configured")
 	}
@@ -268,10 +307,6 @@ func (s *InterventionsService) decide(ctx context.Context, id, action, answer, r
 	}
 	values := url.Values{}
 	values.Set("action", action)
-	body := struct {
-		Answer string `json:"answer,omitempty"`
-		Reason string `json:"reason,omitempty"`
-	}{answer, reason}
 	var in Intervention
 	if err := doJSON(ctx, s.t, http.MethodPost, "/v1/interventions/"+url.PathEscape(id), values, body, &in); err != nil {
 		return nil, err
@@ -287,6 +322,8 @@ const (
 	AuditCancelled    = "cancelled"
 	AuditInviteMinted = "invite_minted"
 	AuditInviteUsed   = "invite_used"
+	AuditGrantCreated = "grant_created"
+	AuditGrantUsed    = "grant_used"
 )
 
 // AuditOptions filters an audit read. Empty fields match everything.
@@ -302,13 +339,16 @@ type AuditOptions struct {
 // AuditEntry is one row of the hash-chained hitl audit log. It records who
 // did what and from where, never content.
 type AuditEntry struct {
-	Seq            int64     `json:"seq"`
-	Event          string    `json:"event"`
-	InterventionID string    `json:"intervention_id,omitempty"`
-	EnvID          string    `json:"env_id,omitempty"`
-	Actor          Actor     `json:"actor"`
-	RemoteAddr     string    `json:"remote_addr,omitempty"`
-	At             time.Time `json:"at"`
+	Seq            int64  `json:"seq"`
+	Event          string `json:"event"`
+	InterventionID string `json:"intervention_id,omitempty"`
+	EnvID          string `json:"env_id,omitempty"`
+	Actor          Actor  `json:"actor"`
+	RemoteAddr     string `json:"remote_addr,omitempty"`
+	// RecordingID links a takeover_session row to its cast; read it with
+	// Interventions.Recording.
+	RecordingID string    `json:"recording_id,omitempty"`
+	At          time.Time `json:"at"`
 	// PrevHash and Hash are hex; each row's PrevHash is the Hash before it.
 	PrevHash string `json:"prev_hash"`
 	Hash     string `json:"hash"`
@@ -380,7 +420,7 @@ func waitIntervention(ctx context.Context, t *transport, id string) (*Interventi
 		if err != nil {
 			return nil, err
 		}
-		if in.Terminal() {
+		if in.Settled() {
 			return in, nil
 		}
 		if err := ctx.Err(); err != nil {

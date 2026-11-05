@@ -491,8 +491,29 @@ func toSDKHitl(in *fusefile.HitlSpec) *fuse.HitlSpec {
 	if in.Ask {
 		out.Requests.Ask = &fuse.HitlAskRequests{}
 	}
+	if s := in.Secret; s != nil {
+		out.Requests.Secret = &fuse.HitlSecretRequests{}
+		for _, t := range s.Targets {
+			out.Requests.Secret.Targets = append(out.Requests.Secret.Targets, fuse.HitlSecretTarget{Env: t.Env, File: t.File, Label: t.Label})
+		}
+	}
+	if t := in.Takeover; t != nil {
+		out.Requests.Takeover = &fuse.HitlTakeoverRequests{Via: t.Via}
+	}
 	for _, w := range in.Notify {
 		out.Notify = append(out.Notify, fuse.HitlWebhook{URL: w.URL, Secret: w.Secret})
+	}
+	for _, g := range in.Gates {
+		out.Gates = append(out.Gates, fuse.HitlGate{
+			Name: g.Name, On: g.On, Mode: g.Mode, Grant: g.Grant, TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
+			Match: fuse.HitlGateMatch{
+				Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action,
+				Failures: g.Failures, QuietSeconds: g.QuietSeconds, BeforeSeconds: g.BeforeSeconds,
+			},
+		})
+	}
+	if e := in.Exec; e != nil {
+		out.Exec = &fuse.HitlExecPolicy{Default: e.Default, Allow: e.Allow}
 	}
 	return out
 }

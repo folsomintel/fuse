@@ -5,7 +5,7 @@
 // no timeout (the Go SDK uses a separate Timeout:0 client for events).
 
 import { FuseError, errorFromResponse } from "./errors.js";
-import type { ActorLabel } from "./types.js";
+import type { ActorLabel, Intervention } from "./types.js";
 
 const REQUEST_ID_HEADER = "X-Request-ID";
 const ACTOR_HEADER = "Fuse-Actor";
@@ -29,7 +29,13 @@ export interface TransportConfig {
   timeoutMs?: number;
   headers?: Record<string, string>;
   actor?: ActorLabel;
+  hitlNoWait?: boolean;
+  onHeld?: (held: Intervention) => void;
 }
+
+/** Gated is the answer to a call a hitl gate may hold: the action's own
+ * response body, or the held intervention of a 202. */
+export type Gated<T> = { held: Intervention } | { held?: undefined; value: T };
 
 type Query = Record<string, string | undefined>;
 
@@ -77,6 +83,9 @@ export class Transport {
   private readonly timeoutMs?: number;
   private readonly defaultHeaders?: Record<string, string>;
   private readonly actor?: ActorLabel;
+  /** The client's hitl wait options. */
+  readonly hitlNoWait: boolean;
+  readonly onHeld?: (held: Intervention) => void;
 
   constructor(cfg: TransportConfig) {
     if (!cfg.baseUrl) {
@@ -95,6 +104,8 @@ export class Transport {
     this.timeoutMs = cfg.timeoutMs;
     this.defaultHeaders = cfg.headers;
     this.actor = cfg.actor;
+    this.hitlNoWait = cfg.hitlNoWait ?? false;
+    this.onHeld = cfg.onHeld;
 
     const provided = cfg.fetch;
     if (provided) {
@@ -118,6 +129,63 @@ export class Transport {
     } finally {
       cleanup();
     }
+  }
+
+  /**
+   * Perform a call a hitl gate may hold. A 202 answers with the held
+   * intervention; anything else 2xx with the action's own (possibly empty)
+   * body.
+   */
+  async gated<T>(
+    method: string,
+    path: string,
+    spec: RequestSpec = {},
+  ): Promise<Gated<T>> {
+    const { signal: combined, cleanup } = this.withTimeout(spec.signal);
+    try {
+      const res = await this.execute(method, path, spec, combined);
+      if (!res.ok) throw await errorFromResponse(res);
+      if (res.status === 202) return { held: await this.decodeHeld(res) };
+      return { value: await this.decodeJson<T>(res) };
+    } finally {
+      cleanup();
+    }
+  }
+
+  /** Like noContent for a call a hitl gate may hold: it resolves to the held
+   * intervention of a 202, or undefined when the action itself answered. */
+  async gatedNoContent(
+    method: string,
+    path: string,
+    spec: RequestSpec = {},
+  ): Promise<Intervention | undefined> {
+    const { signal: combined, cleanup } = this.withTimeout(spec.signal);
+    try {
+      const res = await this.execute(method, path, spec, combined);
+      if (!res.ok) throw await errorFromResponse(res);
+      if (res.status === 202) return await this.decodeHeld(res);
+      await res.body?.cancel().catch(() => {});
+      return undefined;
+    } finally {
+      cleanup();
+    }
+  }
+
+  /** Perform a request and return the response body as text. */
+  async text(method: string, path: string, spec: RequestSpec = {}): Promise<string> {
+    const { signal: combined, cleanup } = this.withTimeout(spec.signal);
+    try {
+      const res = await this.execute(method, path, spec, combined);
+      if (!res.ok) throw await errorFromResponse(res);
+      return await res.text();
+    } finally {
+      cleanup();
+    }
+  }
+  private async decodeHeld(res: Response): Promise<Intervention> {
+    const body = await this.decodeJson<{ intervention?: Intervention }>(res);
+    if (!body?.intervention?.id) throw new FuseError("decode held response");
+    return body.intervention;
   }
 
   /** Perform a request that returns no body (e.g. 204 actions). */

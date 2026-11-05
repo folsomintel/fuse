@@ -7,6 +7,7 @@ export { VERSION } from "./version.js";
 // Services and their option types.
 export { EnvironmentsService } from "./environments.js";
 export type { ListEnvironmentsOptions, HumanRequest } from "./environments.js";
+export type { LockedCallOptions, TakeoverOptions, ReleaseOptions } from "./takeover.js";
 export { SnapshotsService } from "./snapshots.js";
 export type { ListSnapshotsOptions } from "./snapshots.js";
 export { HostsService } from "./hosts.js";
@@ -66,10 +67,22 @@ export type {
   AuditEntry,
   HitlRequests,
   HitlAskRequests,
+  HitlSecretRequests,
+  HitlSecretTarget,
+  HitlTakeoverRequests,
+  InterventionSecret,
+  InterventionTakeover,
+  InterventionSignal,
   Actor,
   InterventionPayload,
   InterventionDecision,
   Intervention,
+  HitlGate,
+  HitlGateMatch,
+  HitlExecPolicy,
+  ExecPayload,
+  LifecyclePayload,
+  InterventionResult,
 } from "./types.js";
 export {
   State,
@@ -82,6 +95,10 @@ export {
   InterventionOutcome,
   isInterventionTerminal,
   isInterventionApproved,
+  isInterventionSettled,
+  GateMode,
+  LifecycleAction,
+  ALLOWLIST_GATE,
 } from "./types.js";
 
 // Errors and code helpers.
@@ -90,6 +107,8 @@ export {
   FuseError,
   ForbiddenError,
   ForbiddenReason,
+  LockedError,
+  isLocked,
   ErrorCode,
   isFuseApiError,
   isNotFound,
@@ -98,5 +117,9 @@ export {
   isForbidden,
   isInvalidArgument,
   isUnavailable,
+  isHitlDenied,
+  PendingInterventionError,
+  InterventionRejectedError,
+  HeldActionError,
 } from "./errors.js";
 export type { FuseApiErrorInit } from "./errors.js";

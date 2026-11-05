@@ -4,6 +4,8 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::strenum::string_enum;
+use crate::takeover::LockedError;
+use crate::types::Intervention;
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -31,6 +33,10 @@ string_enum! {
         /// as opposed to [`ErrorCode::NotFound`]'s "route exists, resource
         /// doesn't".
         RouteNotFound => "route_not_found",
+        /// A human holds the environment, or a stall is pending (HTTP 423).
+        /// Exec and computer calls wait it out unless told not to; see
+        /// [`Error::Locked`].
+        Locked => "locked",
     }
 }
 
@@ -53,6 +59,10 @@ string_enum! {
         ActorNotAllowed => "actor_not_allowed",
         /// A minted key would exceed the minting key's own access.
         MintEscalation => "mint_escalation",
+        /// A hitl deny gate (or the exec allowlist in deny mode) refused the
+        /// action. The message is the gate's reason; `details["gate"]` names
+        /// the gate.
+        HitlDenied => "hitl_denied",
     }
 }
 
@@ -111,6 +121,43 @@ pub enum Error {
     /// The request was rejected client-side before being sent.
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// A hitl gate held the call and waiting is off
+    /// ([`ExecRequest::no_wait`](crate::ExecRequest::no_wait) or
+    /// [`ClientBuilder::hitl_no_wait`](crate::ClientBuilder::hitl_no_wait)).
+    /// Wait on the intervention with
+    /// [`Interventions::wait`](crate::Interventions::wait); the outcome is
+    /// on its [`result`](Intervention::result).
+    #[error("held by hitl gate {}: waiting on intervention {}", .0.gate.as_deref().unwrap_or_default(), .0.id)]
+    InterventionPending(Box<Intervention>),
+    /// A held call a human rejected, or that expired or was cancelled
+    /// without approval. The decision's reason is for the agent to read and
+    /// replan on.
+    #[error("intervention {} {}: {}", .0.id, .0.state, decision_reason(.0))]
+    InterventionRejected(Box<Intervention>),
+    /// An approved held call fuse could not perform, or that settled
+    /// without the result the call returns.
+    #[error("approved action of intervention {} failed: {}", .0.id, result_error(.0))]
+    HeldActionFailed(Box<Intervention>),
+    /// An exec or computer call hit a 423 while waiting is off. It names the
+    /// intervention holding the lock.
+    #[error(transparent)]
+    Locked(Box<LockedError>),
+}
+
+fn decision_reason(intervention: &Intervention) -> &str {
+    intervention
+        .decision
+        .as_ref()
+        .and_then(|d| d.reason.as_deref())
+        .unwrap_or_default()
+}
+
+fn result_error(intervention: &Intervention) -> &str {
+    intervention
+        .result
+        .as_ref()
+        .and_then(|r| r.error.as_deref())
+        .unwrap_or("no result")
 }
 
 impl From<ApiError> for Error {
@@ -175,6 +222,23 @@ impl Error {
             .map(|reason| ForbiddenReason::from(reason.as_str()))
     }
 
+    /// Reports whether a hitl gate denied the action.
+    pub fn is_hitl_denied(&self) -> bool {
+        self.forbidden_reason() == Some(ForbiddenReason::HitlDenied)
+    }
+
+    /// Returns the intervention of a held call that did not complete:
+    /// [`Error::InterventionPending`], [`Error::InterventionRejected`] or
+    /// [`Error::HeldActionFailed`].
+    pub fn intervention(&self) -> Option<&Intervention> {
+        match self {
+            Self::InterventionPending(intervention)
+            | Self::InterventionRejected(intervention)
+            | Self::HeldActionFailed(intervention) => Some(intervention),
+            _ => None,
+        }
+    }
+
     /// Returns the missing scope of a `forbidden` api error, when the server
     /// named one.
     pub fn forbidden_scope(&self) -> Option<&str> {
@@ -189,6 +253,20 @@ impl Error {
     /// Reports whether this is an `invalid_argument` api error.
     pub fn is_invalid_argument(&self) -> bool {
         self.is_code(ErrorCode::InvalidArgument)
+    }
+
+    /// Reports whether the environment is locked by a takeover or stall:
+    /// an [`Error::Locked`], or a 423 api error.
+    pub fn is_locked(&self) -> bool {
+        matches!(self, Self::Locked(_)) || self.status() == Some(423)
+    }
+
+    /// Returns the lock of an [`Error::Locked`].
+    pub fn locked(&self) -> Option<&LockedError> {
+        match self {
+            Self::Locked(locked) => Some(locked),
+            _ => None,
+        }
     }
 
     /// Reports whether this is an `unavailable` api error.

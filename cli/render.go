@@ -106,6 +106,8 @@ func friendly(err error) error {
 	switch {
 	case apiErr.Code == fuse.CodeRouteNotFound:
 		return fmt.Errorf("%s (is this the orchestrator? the url may be wrong, or point at a different service)", msg)
+	case fuse.IsHitlDenied(err):
+		return fmt.Errorf("denied by hitl gate %s: %s", apiErr.Details["gate"], msg)
 	case fuse.ForbiddenReason(err) != "":
 		// hitl refusals explain themselves; the generic hint would mislead.
 		return fmt.Errorf("forbidden: %s", msg)

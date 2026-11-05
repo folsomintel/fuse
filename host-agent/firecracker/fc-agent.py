@@ -619,7 +619,7 @@ def release_egress(meta: dict) -> None:
 # the credential's one-way trip from the request to the script's stdin.
 
 WARP_PROVIDER = "cloudflare-warp"
-WARP_SCRIPT = FC_DIR / "fc-warp.sh"
+WARP_SCRIPT = FC_DIR / "scripts" / "fc-warp.sh"
 # the port the proxy is published on at each vm's tap address. one port for
 # every vm, because the tap address already differs per vm.
 WARP_GUEST_PORT = int(os.environ.get("FUSE_WARP_GUEST_PORT", "1080"))
@@ -945,7 +945,7 @@ def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
     the rules it always did.
     """
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), str(host_port), guest_ip,
+        ["bash", str(FC_DIR / "scripts" / "fc-expose.sh"), str(host_port), guest_ip,
          str(guest_port), protocol],
         check=True,
     )
@@ -957,7 +957,7 @@ def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
     effort (mirrors del_agent_forward): a vm being destroyed should not fail
     to tear down over a stale firewall rule."""
     subprocess.run(
-        ["bash", str(FC_DIR / "fc-expose.sh"), "-d", str(host_port), guest_ip,
+        ["bash", str(FC_DIR / "scripts" / "fc-expose.sh"), "-d", str(host_port), guest_ip,
          str(guest_port), protocol],
         check=False,
     )

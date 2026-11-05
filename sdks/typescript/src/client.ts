@@ -5,7 +5,7 @@ import { HostsService } from "./hosts.js";
 import { ApiKeysService } from "./apiKeys.js";
 import { InterventionsService } from "./interventions.js";
 import { VERSION } from "./version.js";
-import type { ActorLabel } from "./types.js";
+import type { ActorLabel, Intervention } from "./types.js";
 
 /** Options for constructing a FuseClient. */
 export interface FuseClientOptions {
@@ -26,6 +26,13 @@ export interface FuseClientOptions {
   /** The human this client acts for, sent as the Fuse-Actor and
    * Fuse-Actor-Name headers on every request. */
   actor?: ActorLabel;
+  /** Make every hitl-gated call throw a PendingInterventionError at once
+   * instead of waiting for the human. exec's `wait: false` does the same for
+   * one exec. */
+  hitlNoWait?: boolean;
+  /** Called with the pending intervention whenever a gate holds a call,
+   * before the call waits on it. exec's `onHeld` overrides it. */
+  onHeld?: (held: Intervention) => void;
 }
 
 /**
@@ -55,6 +62,8 @@ export class FuseClient {
       timeoutMs: options.timeoutMs,
       headers: options.headers,
       actor: options.actor,
+      hitlNoWait: options.hitlNoWait,
+      onHeld: options.onHeld,
     });
     this.environments = new EnvironmentsService(transport);
     this.snapshots = new SnapshotsService(transport);

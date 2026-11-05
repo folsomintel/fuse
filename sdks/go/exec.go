@@ -44,6 +44,14 @@ type ExecRequest struct {
 	// TimeoutMS bounds the command inside the guest. Zero takes the server
 	// default; the server clamps anything above its ceiling.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
+
+	// NoWait returns a *PendingInterventionError at once when a hitl gate
+	// holds the exec, instead of waiting for a human to decide.
+	NoWait bool `json:"-"`
+
+	// OnHeld is called with the pending intervention when a gate holds the
+	// exec, before waiting on it. It overrides the client's WithOnHeld.
+	OnHeld func(*Intervention) `json:"-"`
 }
 
 // ExecResult is the outcome of a guest command.
@@ -60,7 +68,20 @@ type ExecResult struct {
 // code with stdout and stderr kept separate.
 //
 // Exec requires the master token.
+//
+// When a hitl gate holds the exec, Exec waits for the decision; the
+// orchestrator runs the approved (possibly edited) argv and Exec returns its
+// result. A rejection is an *InterventionRejectedError, a deny gate an error
+// IsHitlDenied matches.
+//
+// While a human holds the environment (a takeover, or a stall waiting for
+// an ack) the server answers 423; Exec waits for that intervention to end
+// and runs the command then. With NoWait it returns a *LockedError instead.
 func (s *EnvironmentsService) Exec(ctx context.Context, vmID string, in ExecRequest) (*ExecResult, error) {
+	return retryLocked(ctx, s.t, in.NoWait, func() (*ExecResult, error) { return s.execOnce(ctx, vmID, in) })
+}
+
+func (s *EnvironmentsService) execOnce(ctx context.Context, vmID string, in ExecRequest) (*ExecResult, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
@@ -88,6 +109,7 @@ func (s *EnvironmentsService) Exec(ctx context.Context, vmID string, in ExecRequ
 	if guest <= 0 {
 		guest = defaultExecServerTimeout
 	}
+	parent := ctx
 	ctx, cancel := context.WithTimeout(ctx, guest+execHTTPOverhead)
 	defer cancel()
 
@@ -101,6 +123,21 @@ func (s *EnvironmentsService) Exec(ctx context.Context, vmID string, in ExecRequ
 	}
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
+	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		// the human's decision is not bounded by the guest timeout, only
+		// by the caller's ctx and the intervention's deadline.
+		settled, err := s.t.settleHeld(parent, held, heldOptions{noWait: in.NoWait, onHeld: in.OnHeld})
+		if err != nil {
+			return nil, err
+		}
+		if settled.Result == nil || settled.Result.Exec == nil {
+			return nil, fmt.Errorf("intervention %s settled without an exec result", settled.ID)
+		}
+		return settled.Result.Exec, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
 

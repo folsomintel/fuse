@@ -15,10 +15,10 @@ the full prerequisites and a quick `/dev/kvm` check.
 
 ```bash
 cd firecracker
-./fc-install.sh        # fetch firecracker binary + CI kernel/rootfs + SSH key
-./fc-bake-rootfs.sh    # bake the guest rootfs (agent binary is baked in)
-./fc-agent.sh start    # prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN for Fuse
-./fc-agent-test.sh     # smoke test the contract
+./scripts/fc-install.sh        # fetch firecracker binary + CI kernel/rootfs + SSH key
+./scripts/fc-bake-rootfs.sh    # bake the guest rootfs (agent binary is baked in)
+./scripts/fc-agent.sh start    # prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN for Fuse
+./tests/fc-agent-test.sh     # smoke test the contract
 ```
 
 Point Fuse at the printed `FIRECRACKER_BASE_URL` / `FIRECRACKER_TOKEN`. Full setup,

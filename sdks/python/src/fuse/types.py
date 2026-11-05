@@ -22,8 +22,41 @@ HEALTH_PASSING = "passing"
 HEALTH_FAILING = "failing"
 
 
-# hitl request kinds.
+# hitl intervention kinds. ask is raised by request_human; exec and
+# lifecycle are raised by a gate holding that surface.
 HITL_KIND_ASK = "ask"
+HITL_KIND_EXEC = "exec"
+HITL_KIND_LIFECYCLE = "lifecycle"
+
+# gate modes, carried in HitlGate.mode and Intervention.mode.
+GATE_MODE_ASK = "ask"
+GATE_MODE_NOTIFY = "notify"
+GATE_MODE_DENY = "deny"
+
+# lifecycle actions a gate can hold, for HitlGateMatch.action.
+LIFECYCLE_DESTROY = "destroy"
+LIFECYCLE_FORK = "fork"
+LIFECYCLE_MIGRATE = "migrate"
+LIFECYCLE_DRAIN = "drain"
+LIFECYCLE_SNAPSHOT = "snapshot"
+LIFECYCLE_ROTATE_TOKEN = "rotate-token"
+
+# the gate name the exec allowlist reports.
+ALLOWLIST_GATE = "exec.allowlist"
+
+HITL_KIND_SECRET = "secret"
+HITL_KIND_TAKEOVER = "takeover"
+# raised by fuse itself, never by the agent: a stall (a failure run or quiet
+# time) or an expiry (a reaper about to fire).
+HITL_KIND_STALL = "stall"
+HITL_KIND_EXPIRY = "expiry"
+
+# the only way a human takes over today.
+TAKEOVER_VIA_TERMINAL = "terminal"
+
+# which reaper an expiry signal is about, carried in InterventionSignal.reaper.
+REAPER_IDLE_TIMEOUT = "idle_timeout"
+REAPER_MAX_RUNTIME = "max_runtime"
 
 # intervention states. pending is the only non-terminal one.
 INTERVENTION_PENDING = "pending"
@@ -50,6 +83,14 @@ AUDIT_EXPIRED = "expired"
 AUDIT_CANCELLED = "cancelled"
 AUDIT_INVITE_MINTED = "invite_minted"
 AUDIT_INVITE_USED = "invite_used"
+AUDIT_GRANT_CREATED = "grant_created"
+AUDIT_GRANT_USED = "grant_used"
+AUDIT_SECRET_ANSWERED = "secret_answered"
+AUDIT_TAKEOVER_STARTED = "takeover_started"
+AUDIT_TAKEOVER_ENDED = "takeover_ended"
+# links a recorded takeover session; its AuditEntry.recording_id names the
+# cast to fetch with client.interventions.get_recording.
+AUDIT_TAKEOVER_SESSION = "takeover_session"
 
 
 def is_terminal_state(state: str) -> bool:
@@ -288,10 +329,33 @@ class HitlAskRequests(_Model):
     pass
 
 
+class HitlSecretTarget(_Model):
+    # one declared destination for a secret: exactly one of env (a variable
+    # later execs see) or file (an absolute guest path, written 0600). label
+    # is what the human is shown first.
+    env: Optional[str] = None
+    file: Optional[str] = None
+    label: str = ""
+
+
+class HitlSecretRequests(_Model):
+    # configures secret requests. the agent names one of these targets; it
+    # can never choose a path or variable of its own.
+    targets: list[HitlSecretTarget] = Field(default_factory=list)
+
+
+class HitlTakeoverRequests(_Model):
+    # configures takeover requests. via lists the ways a human may take
+    # over; only "terminal" exists, and none means terminal.
+    via: Optional[list[str]] = None
+
+
 class HitlRequests(_Model):
-    # declares the request kinds the agent may raise. only ask exists today;
-    # set it to HitlAskRequests() to allow asks.
+    # declares the request kinds the agent may raise. present means allowed:
+    # set ask to HitlAskRequests() to allow asks, and so on.
     ask: Optional[HitlAskRequests] = None
+    secret: Optional[HitlSecretRequests] = None
+    takeover: Optional[HitlTakeoverRequests] = None
 
 
 class HitlWebhook(_Model):
@@ -299,6 +363,45 @@ class HitlWebhook(_Model):
     # entry in the create request's secrets map, used to sign each delivery.
     url: str
     secret: str
+
+
+class HitlGateMatch(_Model):
+    # selects the actions a gate applies to; every field set must match.
+    # program matches the basename of argv[0] after env, sudo, nice, timeout,
+    # xargs, nohup and stdbuf are stripped. args match when they appear in
+    # argv in this order. shell matches any opaque shell exec. action matches
+    # lifecycle actions (the LIFECYCLE_* constants). failures and
+    # quiet_seconds raise a stall (on HITL_KIND_STALL); before_seconds raises
+    # an expiry ahead of a reap (on HITL_KIND_EXPIRY).
+    program: Optional[list[str]] = None
+    args: Optional[list[str]] = None
+    shell: Optional[bool] = None
+    action: Optional[list[str]] = None
+    failures: Optional[int] = None
+    quiet_seconds: Optional[int] = None
+    before_seconds: Optional[int] = None
+
+
+class HitlGate(_Model):
+    # one enforced gate. on is HITL_KIND_EXEC, HITL_KIND_LIFECYCLE,
+    # HITL_KIND_STALL or HITL_KIND_EXPIRY. mode is
+    # GATE_MODE_ASK (the default), GATE_MODE_NOTIFY or GATE_MODE_DENY. grant
+    # is the default reach of an approval: "once", "env" or "ttl:<duration>".
+    # reason is returned on a deny and shown to the human on an ask.
+    name: str
+    on: str
+    match: HitlGateMatch = Field(default_factory=HitlGateMatch)
+    mode: Optional[str] = None
+    grant: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    reason: Optional[str] = None
+
+
+class HitlExecPolicy(_Model):
+    # allowlist mode for exec: a program not in allow is held with default
+    # ("ask" or "deny"), interpreters and shells included.
+    default: str
+    allow: list[str] = Field(default_factory=list)
 
 
 class HitlSpec(_Model):
@@ -313,6 +416,10 @@ class HitlSpec(_Model):
     requests: HitlRequests = Field(default_factory=HitlRequests)
     require_actor: Optional[bool] = None
     notify: Optional[list[HitlWebhook]] = None
+    # gates hold, record or deny exec and lifecycle actions. exec is
+    # allowlist mode for exec.
+    gates: Optional[list[HitlGate]] = None
+    exec: Optional[HitlExecPolicy] = None
 
 
 class CreateRequest(_Model):
@@ -420,9 +527,7 @@ class ExecResult(_Model):
 class Event(BaseModel):
     # one item from EnvironmentsService.events. err is set only on a
     # stream-level failure, as the final event before the iterator ends.
-    model_config = ConfigDict(
-        populate_by_name=True, extra="ignore", arbitrary_types_allowed=True
-    )
+    model_config = ConfigDict(populate_by_name=True, extra="ignore", arbitrary_types_allowed=True)
 
     id: str = ""
     kind: str = Field(default="", alias="event")
@@ -677,10 +782,59 @@ class Actor(_Model):
     key_id: str = ""
 
 
+class ExecPayload(_Model):
+    # a held exec.
+    argv: list[str] = Field(default_factory=list)
+    shell: str = ""
+    timeout_ms: int = 0
+
+
+class LifecyclePayload(_Model):
+    # a held environment action, one of the LIFECYCLE_* constants.
+    action: str = ""
+
+
+class InterventionSecret(_Model):
+    # a secret request. label comes from the fusefile and is what a human
+    # should read first; message is the agent's own text. the value is never
+    # part of any intervention.
+    target: str = ""
+    label: str = ""
+    message: str = ""
+
+
+class InterventionTakeover(_Model):
+    # a takeover. holder and started_at are set while a human holds the
+    # environment, which is also when agent exec and computer calls get 423.
+    via: str = ""
+    reason: str = ""
+    holder: Optional[Actor] = None
+    started_at: Optional[datetime] = None
+
+
+class InterventionSignal(_Model):
+    # what fuse noticed on its own. a stall carries the failure run or the
+    # quiet time; an expiry carries the reaper due and when, and once
+    # approved the time the environment is kept until.
+    failures: int = 0
+    last_exit_code: int = 0
+    quiet_seconds: int = 0
+    reaper: str = ""
+    reap_at: Optional[datetime] = None
+    extended_until: Optional[datetime] = None
+
+
 class InterventionPayload(_Model):
-    # what the agent asked.
+    # what was asked, attempted or noticed: a question for an ask, the held
+    # exec or lifecycle action for a gate, the target for a secret, the
+    # takeover, or the signal fuse saw for a stall or expiry.
     question: str = ""
     choices: list[str] = Field(default_factory=list)
+    exec: Optional[ExecPayload] = None
+    lifecycle: Optional[LifecyclePayload] = None
+    secret: Optional[InterventionSecret] = None
+    takeover: Optional[InterventionTakeover] = None
+    signal: Optional[InterventionSignal] = None
 
 
 class InterventionDecision(_Model):
@@ -691,19 +845,38 @@ class InterventionDecision(_Model):
     reason: str = ""
     decided_by: Actor = Field(default_factory=Actor)
     decided_at: Optional[datetime] = None
+    # the argv the approver replaced a held exec's with.
+    edited_argv: list[str] = Field(default_factory=list)
+    # how far an approval of a gated action reaches.
+    grant: str = ""
+
+
+class InterventionResult(_Model):
+    # what running an approved gated action produced.
+    exec: Optional[ExecResult] = None
+    env_id: str = ""
+    snapshot_id: str = ""
+    error: str = ""
+    finished_at: Optional[datetime] = None
 
 
 class Intervention(_Model):
-    # one request for a human.
+    # one request for a human. gate names the gate that raised it (empty for
+    # a request) and mode is that gate's mode; notify and deny records are
+    # born terminal.
     id: str = ""
     env_id: str = ""
     kind: str = ""
+    gate: str = ""
+    mode: str = ""
     state: str = ""
     payload: InterventionPayload = Field(default_factory=InterventionPayload)
     triggered_by: Actor = Field(default_factory=Actor)
     deadline: Optional[datetime] = None
     on_timeout: str = ""
     decision: Optional[InterventionDecision] = None
+    # set once an approved gated action has been performed.
+    result: Optional[InterventionResult] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -718,14 +891,43 @@ class Intervention(_Model):
         # an expiry under on_timeout: allow.
         return self.decision is not None and self.decision.outcome == OUTCOME_APPROVE
 
+    @property
+    def settled(self) -> bool:
+        # reports whether a caller has its final answer: resolved, and for an
+        # approved gated action that fuse performs, performed.
+        if not self.terminal:
+            return False
+        runs = self.mode == GATE_MODE_ASK and (
+            self.payload.exec is not None or self.payload.lifecycle is not None
+        )
+        return not runs or not self.approved or self.result is not None
+
 
 class HumanRequest(_Model):
     # body for environments.request_human. timeout_seconds shortens the
-    # policy's deadline; it can never extend it.
+    # policy's deadline; it can never extend it. question and choices are for
+    # an ask, target and message for a secret, via and reason for a takeover.
     kind: str = HITL_KIND_ASK
-    question: str
+    question: Optional[str] = None
     choices: Optional[list[str]] = None
+    target: Optional[str] = None
+    message: Optional[str] = None
+    via: Optional[str] = None
+    reason: Optional[str] = None
     timeout_seconds: Optional[int] = None
+
+
+class TakeoverRequest(_Model):
+    # body for environments.takeover. via defaults to terminal; reason is
+    # recorded when no agent request is pending to claim.
+    via: Optional[str] = None
+    reason: Optional[str] = None
+
+
+class ReleaseRequest(_Model):
+    # body for environments.release. note is handed back to the agent as the
+    # takeover's answer.
+    note: Optional[str] = None
 
 
 class InterventionPage(_Model):
@@ -744,6 +946,9 @@ class AuditEntry(_Model):
     env_id: str = ""
     actor: Actor = Field(default_factory=Actor)
     remote_addr: str = ""
+    # set on a takeover_session row; fetch the cast with
+    # client.interventions.get_recording.
+    recording_id: str = ""
     at: Optional[datetime] = None
     prev_hash: str = ""
     hash: str = ""

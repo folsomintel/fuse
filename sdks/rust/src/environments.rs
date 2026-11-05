@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::Error;
 use crate::events::EventStream;
+use crate::gates::{decode, Gated, OnHeld};
 use crate::interventions::{wait_intervention, HumanRequest};
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{
@@ -110,6 +111,15 @@ pub struct ExecRequest {
     /// Bounds the command inside the guest, in milliseconds. `None` takes
     /// the server default; the server clamps anything above its ceiling.
     pub timeout_ms: Option<u64>,
+    /// Waits for a human when a hitl gate holds the exec (202), or when a
+    /// human holds the environment (423, a takeover or a pending stall).
+    /// Default true; when false the call returns
+    /// [`Error::InterventionPending`] or [`Error::Locked`] at once.
+    pub wait: bool,
+    /// Called with the pending intervention when a gate holds the exec,
+    /// before waiting on it. Overrides the client's
+    /// [`ClientBuilder::on_held`](crate::ClientBuilder::on_held).
+    pub on_held: Option<OnHeld>,
 }
 
 impl ExecRequest {
@@ -122,6 +132,8 @@ impl ExecRequest {
         Self {
             command: ExecCommand::Argv(argv.into_iter().map(Into::into).collect()),
             timeout_ms: None,
+            wait: true,
+            on_held: None,
         }
     }
 
@@ -130,6 +142,8 @@ impl ExecRequest {
         Self {
             command: ExecCommand::Shell(script.into()),
             timeout_ms: None,
+            wait: true,
+            on_held: None,
         }
     }
 
@@ -142,6 +156,21 @@ impl ExecRequest {
 
     pub fn timeout_ms(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    /// Returns [`Error::InterventionPending`] at once when a hitl gate holds
+    /// the exec, and [`Error::Locked`] when a human holds the environment,
+    /// instead of waiting.
+    pub fn no_wait(mut self) -> Self {
+        self.wait = false;
+        self
+    }
+
+    /// Calls `callback` with the pending intervention when a hitl gate holds
+    /// the exec, before waiting on it.
+    pub fn on_held(mut self, callback: impl Fn(&Intervention) + Send + Sync + 'static) -> Self {
+        self.on_held = Some(OnHeld::new(callback));
         self
     }
 }
@@ -183,6 +212,12 @@ impl ExecResult {
 
 /// The environments service, from
 /// [`Client::environments`](crate::Client::environments).
+///
+/// Exec, destroy, fork, migrate, drain and rotate-token can be held by a
+/// hitl gate. A held call waits for the human transparently and returns what
+/// it normally returns; see [`Error::InterventionPending`],
+/// [`Error::InterventionRejected`] and [`Error::HeldActionFailed`] for the
+/// other outcomes.
 #[derive(Clone)]
 pub struct Environments {
     t: Arc<Transport>,
@@ -273,7 +308,7 @@ impl Environments {
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "fork")])
             .json(&options);
-        self.t.send_json(request).await
+        self.send_env(request).await
     }
 
     /// Moves an environment to another host and returns the new environment.
@@ -289,7 +324,7 @@ impl Environments {
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "migrate")])
             .json(&options);
-        self.t.send_json(request).await
+        self.send_env(request).await
     }
 
     /// Rotates the environment's own credentials.
@@ -299,7 +334,7 @@ impl Environments {
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "rotate-token")]);
-        self.t.send_unit(request).await
+        self.send_unit_gated(request).await
     }
 
     /// Destroys an environment.
@@ -308,13 +343,22 @@ impl Environments {
         let request = self
             .t
             .request(Method::DELETE, &["v1", "environments", vm_id]);
-        self.t.send_unit(request).await
+        self.send_unit_gated(request).await
     }
 
     /// Runs a command inside a running environment's guest and returns its
     /// exit code with stdout and stderr kept separate.
     ///
     /// Exec requires the master token.
+    ///
+    /// When a hitl gate holds the exec, the call waits for the decision; the
+    /// orchestrator runs the approved (possibly edited) argv and this
+    /// returns its result. A rejection is [`Error::InterventionRejected`], a
+    /// deny gate an error [`Error::is_hitl_denied`] matches.
+    ///
+    /// While a human holds the environment (a takeover) or a stall is
+    /// pending, the call waits for it to end and then runs the command; see
+    /// [`ExecRequest::no_wait`] to get [`Error::Locked`] instead.
     pub async fn exec(&self, vm_id: &str, request: ExecRequest) -> Result<ExecResult, Error> {
         require(vm_id, "vm id")?;
         match &request.command {
@@ -337,13 +381,30 @@ impl Environments {
             .filter(|&ms| ms > 0)
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_EXEC_SERVER_TIMEOUT);
-        let http_request = self
+        // a 423 (a human holds the environment) waits and retries; a 202 (a
+        // gate holds this exec) waits for the decision and its run. the
+        // guest-timeout deadline bounds only each request.
+        let held = loop {
+            let http_request = self
+                .t
+                .stream_request(Method::POST, &["v1", "environments", vm_id])
+                .query(&[("action", "exec")])
+                .timeout(guest + EXEC_HTTP_OVERHEAD)
+                .json(&request);
+            match self.t.send_gated(http_request).await {
+                Ok(Gated::Done(response)) => return decode(response).await,
+                Ok(Gated::Held(held)) => break held,
+                Err(err) => self.t.wait_unlocked(err, !request.wait).await?,
+            }
+        };
+        let settled = self
             .t
-            .stream_request(Method::POST, &["v1", "environments", vm_id])
-            .query(&[("action", "exec")])
-            .timeout(guest + EXEC_HTTP_OVERHEAD)
-            .json(&request);
-        self.t.send_json(http_request).await
+            .settle_held(held, request.on_held.as_ref(), !request.wait)
+            .await?;
+        match settled.result.as_ref().and_then(|r| r.exec.clone()) {
+            Some(result) => Ok(result),
+            None => Err(Error::HeldActionFailed(Box::new(settled))),
+        }
     }
 
     /// Asks a human for something the environment's hitl policy declares.
@@ -390,6 +451,35 @@ impl Environments {
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", action)]);
-        self.t.send_json(request).await
+        match self.t.send_gated(request).await? {
+            Gated::Done(response) => decode(response).await,
+            Gated::Held(held) => {
+                self.t.settle_held(held, None, false).await?;
+                self.get(vm_id).await
+            }
+        }
+    }
+
+    // send_env sends a fork or migrate. a held one is waited out and the
+    // environment it produced is fetched.
+    async fn send_env(&self, request: reqwest::RequestBuilder) -> Result<EnvironmentInfo, Error> {
+        let held = match self.t.send_gated(request).await? {
+            Gated::Done(response) => return decode(response).await,
+            Gated::Held(held) => held,
+        };
+        let settled = self.t.settle_held(held, None, false).await?;
+        match settled.result.as_ref().and_then(|r| r.env_id.clone()) {
+            Some(env_id) if !env_id.is_empty() => self.get(&env_id).await,
+            _ => Err(Error::HeldActionFailed(Box::new(settled))),
+        }
+    }
+
+    // send_unit_gated sends a call whose success has no body, waiting it out
+    // when a gate holds it.
+    async fn send_unit_gated(&self, request: reqwest::RequestBuilder) -> Result<(), Error> {
+        if let Gated::Held(held) = self.t.send_gated(request).await? {
+            self.t.settle_held(held, None, false).await?;
+        }
+        Ok(())
     }
 }

@@ -431,6 +431,11 @@ const (
 	// actor the key may not assert. details.reason says which.
 	CodeForbidden = "forbidden"
 
+	// CodeLocked is a 423: a human holds the environment (a takeover), so
+	// agent exec and computer calls wait. details.intervention_id names the
+	// intervention to wait on.
+	CodeLocked = "locked"
+
 	// CodePayloadTooLarge marks a request body that ran past the endpoint's
 	// size limit. Distinct from CodeInvalidArgument because the body may be
 	// perfectly valid JSON and simply too big, which a client can fix by
@@ -713,11 +718,89 @@ type HitlSpec struct {
 	// Notify are webhooks told about every intervention and audit event.
 	// Deliveries are content-free and signed with the named secret.
 	Notify []HitlWebhook `json:"notify,omitempty"`
+	// Gates hold, record or deny exec and lifecycle actions.
+	Gates []HitlGate `json:"gates,omitempty"`
+	// Exec is allowlist mode for exec: a program not in allow is held.
+	Exec *HitlExecPolicy `json:"exec,omitempty"`
 }
 
-// HitlRequests declares the allowed request kinds. Only ask exists today.
+// HitlGate is one enforced gate.
+type HitlGate struct {
+	// Name identifies the gate on interventions and grants.
+	Name string `json:"name"`
+	// On is "exec" or "lifecycle".
+	On string `json:"on"`
+	// Match selects the actions the gate applies to. Every field set must
+	// match.
+	Match HitlGateMatch `json:"match"`
+	// Mode is "ask" (the default), "notify" or "deny".
+	Mode string `json:"mode,omitempty"`
+	// Grant is the default reach of an approval: "once" (the default),
+	// "env" or "ttl:<duration>".
+	Grant string `json:"grant,omitempty"`
+	// TimeoutSeconds overrides the policy deadline for this gate.
+	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
+	// Reason is returned on a deny and shown to the human on an ask.
+	Reason string `json:"reason,omitempty"`
+}
+
+// HitlGateMatch is a gate's structured match.
+type HitlGateMatch struct {
+	// Program matches the basename of argv[0] after env, sudo, nice,
+	// timeout, xargs, nohup and stdbuf are stripped.
+	Program []string `json:"program,omitempty"`
+	// Args matches when they appear in argv in this order.
+	Args []string `json:"args,omitempty"`
+	// Shell matches any opaque shell exec (shell:, or sh/bash -c).
+	Shell bool `json:"shell,omitempty"`
+	// Action matches lifecycle actions: destroy, fork, migrate, drain,
+	// snapshot, rotate-token.
+	Action []string `json:"action,omitempty"`
+	// Failures raises a stall after this many consecutive non-zero exec
+	// exits (on: stall).
+	Failures int `json:"failures,omitempty"`
+	// QuietSeconds raises a stall after this long with no exec or computer
+	// call (on: stall).
+	QuietSeconds int64 `json:"quiet_seconds,omitempty"`
+	// BeforeSeconds raises an expiry this long before the idle_timeout or
+	// max_runtime reap (on: expiry).
+	BeforeSeconds int64 `json:"before_seconds,omitempty"`
+}
+
+// HitlExecPolicy is allowlist mode for exec.
+type HitlExecPolicy struct {
+	// Default is "ask" or "deny".
+	Default string `json:"default"`
+	// Allow lists program basenames that run without a gate.
+	Allow []string `json:"allow"`
+}
+
+// HitlRequests declares the allowed request kinds. Present means allowed.
 type HitlRequests struct {
-	Ask *HitlAskRequests `json:"ask,omitempty"`
+	Ask      *HitlAskRequests      `json:"ask,omitempty"`
+	Secret   *HitlSecretRequests   `json:"secret,omitempty"`
+	Takeover *HitlTakeoverRequests `json:"takeover,omitempty"`
+}
+
+// HitlSecretRequests declares where a secret may land. The agent names one
+// of these targets; it can never choose a path or variable of its own.
+type HitlSecretRequests struct {
+	Targets []HitlSecretTarget `json:"targets"`
+}
+
+// HitlSecretTarget is one declared destination: exactly one of Env (a
+// variable later execs see) or File (an absolute guest path, written 0600).
+// Label is what the human is shown first.
+type HitlSecretTarget struct {
+	Env   string `json:"env,omitempty"`
+	File  string `json:"file,omitempty"`
+	Label string `json:"label"`
+}
+
+// HitlTakeoverRequests declares the ways a human may take over. Only
+// "terminal" exists today; empty means terminal.
+type HitlTakeoverRequests struct {
+	Via []string `json:"via,omitempty"`
 }
 
 // HitlAskRequests configures ask requests. Present means allowed.
@@ -734,15 +817,18 @@ type HitlWebhook struct {
 // AuditEntry is one row of the hitl audit log. Hashes are hex. Rows hold
 // who did what and when, never intervention content.
 type AuditEntry struct {
-	Seq            int64     `json:"seq"`
-	Event          string    `json:"event"`
-	InterventionID string    `json:"intervention_id,omitempty"`
-	EnvID          string    `json:"env_id,omitempty"`
-	Actor          Actor     `json:"actor"`
-	RemoteAddr     string    `json:"remote_addr,omitempty"`
-	At             time.Time `json:"at"`
-	PrevHash       string    `json:"prev_hash"`
-	Hash           string    `json:"hash"`
+	Seq            int64  `json:"seq"`
+	Event          string `json:"event"`
+	InterventionID string `json:"intervention_id,omitempty"`
+	EnvID          string `json:"env_id,omitempty"`
+	Actor          Actor  `json:"actor"`
+	RemoteAddr     string `json:"remote_addr,omitempty"`
+	// RecordingID links a takeover_session row to its cast at
+	// GET /v1/hitl/recordings/{id}.
+	RecordingID string    `json:"recording_id,omitempty"`
+	At          time.Time `json:"at"`
+	PrevHash    string    `json:"prev_hash"`
+	Hash        string    `json:"hash"`
 }
 
 // AuditList is the response body for GET /v1/hitl/audit.
@@ -753,12 +839,21 @@ type AuditList struct {
 
 // RequestHumanRequest is the body of POST /v1/environments/{vmId}?action=request.
 type RequestHumanRequest struct {
-	// Kind is the request kind. Only "ask" is supported.
+	// Kind is the request kind: "ask" (the default), "secret" or "takeover".
 	Kind string `json:"kind"`
-	// Question is what the human is asked.
-	Question string `json:"question"`
-	// Choices, when set, restricts the answer to one of them.
+	// Question is what the human is asked (ask).
+	Question string `json:"question,omitempty"`
+	// Choices, when set, restricts the answer to one of them (ask).
 	Choices []string `json:"choices,omitempty"`
+	// Target names a declared secret target: its env name or file path
+	// (secret).
+	Target string `json:"target,omitempty"`
+	// Message is the agent's text shown under the target's label (secret).
+	Message string `json:"message,omitempty"`
+	// Via is how the human takes over; "terminal" (takeover).
+	Via string `json:"via,omitempty"`
+	// Reason is why the agent wants a human to take over (takeover).
+	Reason string `json:"reason,omitempty"`
 	// TimeoutSeconds shortens the policy's deadline for this request. It can
 	// never extend it.
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
@@ -771,6 +866,16 @@ type DecideInterventionRequest struct {
 	// Reason is text fed back to the agent. A reject without one gets a
 	// default.
 	Reason string `json:"reason,omitempty"`
+	// EditedArgv replaces a held exec's argv on approval. It is re-checked
+	// against the deny gates.
+	EditedArgv []string `json:"edited_argv,omitempty"`
+	// Grant is how far an approval of a gated action reaches: "once",
+	// "env" or "ttl:<duration>". Empty takes the gate's default. It cannot
+	// be combined with an edit.
+	Grant string `json:"grant,omitempty"`
+	// ExtendSeconds is how long approving an expiry keeps the environment
+	// alive. Zero is one more full window of the reaper that was due.
+	ExtendSeconds int64 `json:"extend_seconds,omitempty"`
 }
 
 // Actor is who raised or decided an intervention. Fuse records it and
@@ -782,10 +887,106 @@ type Actor struct {
 	KeyID  string `json:"key_id,omitempty"`
 }
 
-// InterventionPayload is what the agent asked.
+// InterventionSecret is a secret request. Label comes from the Fusefile and
+// is what a human should read first; Message is the agent's own text. The
+// value is never part of any intervention.
+type InterventionSecret struct {
+	Target  string `json:"target"`
+	Label   string `json:"label"`
+	Message string `json:"message,omitempty"`
+}
+
+// InterventionTakeover is a takeover. Holder and StartedAt are set while a
+// human holds the environment, which is also when the agent's exec and
+// computer calls get 423.
+type InterventionTakeover struct {
+	Via       string     `json:"via"`
+	Reason    string     `json:"reason,omitempty"`
+	Holder    *Actor     `json:"holder,omitempty"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+}
+
+// AnswerSecretRequest is the body of POST /v1/interventions/{id}?action=secret.
+type AnswerSecretRequest struct {
+	// Value is written into the guest and dropped. It is never stored,
+	// logged or returned.
+	Value string `json:"value"`
+}
+
+// TakeoverRequest is the body of POST /v1/environments/{vmId}?action=takeover.
+type TakeoverRequest struct {
+	// Via is how to take over; "terminal" (the default).
+	Via string `json:"via,omitempty"`
+	// Reason is recorded when no agent request is pending to claim.
+	Reason string `json:"reason,omitempty"`
+}
+
+// ReleaseRequest is the body of POST /v1/environments/{vmId}?action=release.
+type ReleaseRequest struct {
+	// Note is handed back to the agent as the takeover's answer.
+	Note string `json:"note,omitempty"`
+}
+
+// InterventionPayload is what was asked or attempted: a question for an
+// ask, the held exec or lifecycle action for a gate.
 type InterventionPayload struct {
-	Question string   `json:"question"`
-	Choices  []string `json:"choices,omitempty"`
+	Question  string            `json:"question,omitempty"`
+	Choices   []string          `json:"choices,omitempty"`
+	Exec      *ExecPayload      `json:"exec,omitempty"`
+	Lifecycle *LifecyclePayload `json:"lifecycle,omitempty"`
+	// Secret and Takeover are set for those request kinds only.
+	Secret   *InterventionSecret   `json:"secret,omitempty"`
+	Takeover *InterventionTakeover `json:"takeover,omitempty"`
+	// Signal is what fuse saw, for a stall or expiry.
+	Signal *InterventionSignal `json:"signal,omitempty"`
+}
+
+// InterventionSignal is what fuse noticed on its own. A stall carries the
+// failure run or the quiet time; an expiry carries the reaper due and when,
+// and once approved the time the environment is kept until.
+type InterventionSignal struct {
+	Failures      int        `json:"failures,omitempty"`
+	LastExitCode  int        `json:"last_exit_code,omitempty"`
+	QuietSeconds  int64      `json:"quiet_seconds,omitempty"`
+	Reaper        string     `json:"reaper,omitempty"`
+	ReapAt        *time.Time `json:"reap_at,omitempty"`
+	ExtendedUntil *time.Time `json:"extended_until,omitempty"`
+}
+
+// ExecPayload is a held exec.
+type ExecPayload struct {
+	Argv []string `json:"argv"`
+	// Shell is the script when the caller sent shell, in which case argv is
+	// the sh -lc that runs it.
+	Shell     string `json:"shell,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+}
+
+// LifecyclePayload is a held environment action.
+type LifecyclePayload struct {
+	Action string `json:"action"`
+}
+
+// InterventionResult is what running an approved gated action produced.
+type InterventionResult struct {
+	// Exec is set for an exec that ran. A non-zero exit code is still a
+	// result, not an error.
+	Exec *ExecEnvironmentResponse `json:"exec,omitempty"`
+	// EnvID is the environment a fork or migrate produced.
+	EnvID string `json:"env_id,omitempty"`
+	// SnapshotID is the snapshot a snapshot action produced.
+	SnapshotID string `json:"snapshot_id,omitempty"`
+	// Error is set when the approved action could not be performed.
+	Error      string    `json:"error,omitempty"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// HeldResponse is the 202 body of an exec or lifecycle action a gate holds.
+// Wait on the intervention with GET /v1/interventions/{id}?wait=; once it
+// is approved the orchestrator performs the action and stores the result.
+type HeldResponse struct {
+	InterventionID string       `json:"intervention_id"`
+	Intervention   Intervention `json:"intervention"`
 }
 
 // InterventionDecision is how an intervention resolved. Every terminal
@@ -797,21 +998,31 @@ type InterventionDecision struct {
 	Reason    string    `json:"reason,omitempty"`
 	DecidedBy Actor     `json:"decided_by"`
 	DecidedAt time.Time `json:"decided_at"`
+	// EditedArgv is the argv the approver replaced a held exec's with.
+	EditedArgv []string `json:"edited_argv,omitempty"`
+	// Grant is how far an approval of a gated action reaches.
+	Grant string `json:"grant,omitempty"`
 }
 
 // Intervention is one request for a human.
 type Intervention struct {
-	ID          string                `json:"id"`
-	EnvID       string                `json:"env_id"`
-	Kind        string                `json:"kind"`
+	ID    string `json:"id"`
+	EnvID string `json:"env_id"`
+	Kind  string `json:"kind"`
+	// Gate names the gate that raised it; empty for a request.
+	Gate string `json:"gate,omitempty"`
+	// Mode is the gate's mode; notify and deny records are born terminal.
+	Mode        string                `json:"mode,omitempty"`
 	State       string                `json:"state"`
 	Payload     InterventionPayload   `json:"payload"`
 	TriggeredBy Actor                 `json:"triggered_by"`
 	Deadline    time.Time             `json:"deadline"`
 	OnTimeout   string                `json:"on_timeout"`
 	Decision    *InterventionDecision `json:"decision,omitempty"`
-	CreatedAt   time.Time             `json:"created_at"`
-	UpdatedAt   time.Time             `json:"updated_at"`
+	// Result is set once an approved gated action has been performed.
+	Result    *InterventionResult `json:"result,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
 }
 
 // InterventionList is the response body for GET /v1/interventions.

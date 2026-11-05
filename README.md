@@ -35,7 +35,7 @@ are the orchestrator, `fuse-cli_*` is the CLI.
 ## First run
 
 The CLI is only a client. You need an orchestrator reachable over HTTP and at least one host
-agent running before it can do anything. `sudo ./fc-agent.sh bootstrap` in
+agent running before it can do anything. `sudo ./scripts/fc-agent.sh bootstrap` in
 [`host-agent/`](host-agent/) brings both up on a single machine.
 
 ```bash

@@ -67,6 +67,7 @@ func (fm *FleetManager) recordAudit(ctx context.Context, e hitl.AuditEntry, targ
 	n := hitl.Notification{Event: e.Event, InterventionID: e.InterventionID, EnvID: e.EnvID}
 	if in != nil {
 		n.On = string(in.Kind)
+		n.Gate = in.Gate
 		d := in.Deadline.UTC()
 		n.Deadline = &d
 	}
@@ -92,6 +93,14 @@ func (fm *FleetManager) auditIntervention(ctx context.Context, in hitl.Intervent
 		event, actor = hitl.AuditRaised, in.TriggeredBy
 	case hitl.StateApproved, hitl.StateRejected:
 		event, actor = hitl.AuditDecided, in.Decision.DecidedBy
+		if in.State == hitl.StateApproved {
+			switch in.Kind {
+			case hitl.KindSecret:
+				event = hitl.AuditSecretAnswered
+			case hitl.KindTakeover:
+				event = hitl.AuditTakeoverEnded
+			}
+		}
 	case hitl.StateExpired:
 		event, actor = hitl.AuditExpired, in.Decision.DecidedBy
 	case hitl.StateCancelled:

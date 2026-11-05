@@ -55,6 +55,8 @@ type clientConfig struct {
 	requestID  func() string
 	baseURL    string
 	actor      ActorLabel
+	hitlNoWait bool
+	onHeld     func(*Intervention)
 }
 
 // Option configures a Client in New.
@@ -132,6 +134,8 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		userAgent:  cfg.userAgent,
 		requestID:  cfg.requestID,
 		actor:      cfg.actor,
+		hitlNoWait: cfg.hitlNoWait,
+		onHeld:     cfg.onHeld,
 	}
 	return newClient(t), nil
 }

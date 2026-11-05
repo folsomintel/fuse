@@ -258,17 +258,35 @@ impl Environments {
     /// environment booted from a desktop image; on any other image the
     /// server answers 503 with a reason. Screenshots ride back
     /// base64-encoded, so the no-timeout stream client carries the call.
+    ///
+    /// While a human holds the environment or a stall is pending, the call
+    /// waits for it to end and then retries, unless the client was built
+    /// with [`ClientBuilder::hitl_no_wait`](crate::ClientBuilder::hitl_no_wait).
     pub async fn computer(
         &self,
         vm_id: &str,
         action: ComputerAction,
     ) -> Result<ComputerResult, Error> {
         require(vm_id, "vm id")?;
-        let request = self
-            .transport()
-            .stream_request(Method::POST, &["v1", "environments", vm_id, "computer"])
-            .json(&action);
-        self.transport().send_json(request).await
+        self.send_computer(vm_id, &action).await
+    }
+
+    // send_computer posts one action, waiting out a 423 lock and retrying.
+    async fn send_computer<B: Serialize + ?Sized>(
+        &self,
+        vm_id: &str,
+        body: &B,
+    ) -> Result<ComputerResult, Error> {
+        loop {
+            let request = self
+                .transport()
+                .stream_request(Method::POST, &["v1", "environments", vm_id, "computer"])
+                .json(body);
+            match self.transport().send_json(request).await {
+                Err(err) => self.transport().wait_unlocked(err, false).await?,
+                result => return result,
+            }
+        }
     }
 
     /// Reports whether the environment has a live display and at what
@@ -315,11 +333,7 @@ impl Environments {
             return Ok(tool_error("tool input names no action"));
         }
 
-        let request = self
-            .transport()
-            .stream_request(Method::POST, &["v1", "environments", vm_id, "computer"])
-            .json(input);
-        let result: ComputerResult = match self.transport().send_json(request).await {
+        let result = match self.send_computer(vm_id, input).await {
             Ok(result) => result,
             Err(Error::Api(api_err)) if matches!(api_err.status, 400 | 409 | 503) => {
                 // the model asked for something the environment refused;

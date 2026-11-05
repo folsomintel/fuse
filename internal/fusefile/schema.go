@@ -618,10 +618,10 @@ func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // Hitl is the human-in-the-loop block. timeout, on_timeout, require_actor,
-// notify and requests.ask are supported so far. The other keys the design
-// names (gates and the secret, review and takeover requests) are accepted by
-// the decoder only so they can be refused with a "not yet supported" error
-// instead of a generic unknown-field one.
+// notify, the ask, secret and takeover requests, exec, and exec, lifecycle,
+// stall and expiry gates are supported so far. The review request is
+// accepted by the decoder only so it can be refused with a "not yet
+// supported" error instead of a generic unknown-field one.
 type Hitl struct {
 	// Timeout is the default deadline for every intervention, as a go
 	// duration between 10s and 24h. Empty means 10m.
@@ -641,7 +641,66 @@ type Hitl struct {
 	// delivery is content-free and signed with the named secret.
 	Notify []HitlNotify `yaml:"notify,omitempty"`
 
-	Gates yaml.Node `yaml:"gates,omitempty"`
+	// Exec is allowlist mode: an exec whose program is not in allow is held
+	// (default: ask) or refused (default: deny), interpreters included.
+	Exec *HitlExec `yaml:"exec,omitempty"`
+
+	// Gates hold (ask), record (notify) or refuse (deny) the exec and
+	// lifecycle actions they match.
+	Gates []HitlGate `yaml:"gates,omitempty"`
+}
+
+// HitlExec is hitl.exec, allowlist mode for exec.
+type HitlExec struct {
+	Default string   `yaml:"default"`
+	Allow   []string `yaml:"allow"`
+}
+
+// HitlGate is one entry of hitl.gates.
+type HitlGate struct {
+	Name  string    `yaml:"name"`
+	On    string    `yaml:"on"`
+	Match HitlMatch `yaml:"match"`
+	// Mode is ask (the default), notify or deny.
+	Mode string `yaml:"mode,omitempty"`
+	// Grant is the default reach of an approval: once, env or ttl:<dur>.
+	Grant string `yaml:"grant,omitempty"`
+	// Timeout overrides hitl.timeout for this gate.
+	Timeout string `yaml:"timeout,omitempty"`
+	// Reason is returned on a deny and shown to the human on an ask.
+	Reason string `yaml:"reason,omitempty"`
+}
+
+// HitlMatch is a gate's match. program and action take one name or a
+// list of them.
+type HitlMatch struct {
+	Program StringList `yaml:"program,omitempty"`
+	Args    []string   `yaml:"args,omitempty"`
+	Shell   bool       `yaml:"shell,omitempty"`
+	Action  StringList `yaml:"action,omitempty"`
+	// Failures raises a stall after this many consecutive failing execs.
+	Failures int `yaml:"failures,omitempty"`
+	// Quiet raises a stall after this long with no exec or computer call.
+	Quiet string `yaml:"quiet,omitempty"`
+	// Before raises an expiry this long ahead of the idle_timeout or
+	// max_runtime reap.
+	Before string `yaml:"before,omitempty"`
+}
+
+// StringList decodes either a single string or a list of strings.
+type StringList []string
+
+func (l *StringList) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*l = StringList{node.Value}
+		return nil
+	}
+	var raw []string
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*l = raw
+	return nil
 }
 
 // HitlNotify is one hitl.notify webhook. Secret names an entry of the
@@ -654,12 +713,33 @@ type HitlNotify struct {
 // HitlRequests declares the request kinds the agent may raise. Declaring a
 // kind (even as an empty map) allows it.
 type HitlRequests struct {
-	Ask *HitlAsk `yaml:"ask,omitempty"`
+	Ask      *HitlAsk      `yaml:"ask,omitempty"`
+	Secret   *HitlSecret   `yaml:"secret,omitempty"`
+	Takeover *HitlTakeover `yaml:"takeover,omitempty"`
 
-	Secret   yaml.Node `yaml:"secret,omitempty"`
-	Review   yaml.Node `yaml:"review,omitempty"`
-	Takeover yaml.Node `yaml:"takeover,omitempty"`
+	Review yaml.Node `yaml:"review,omitempty"`
 }
 
 // HitlAsk configures ask requests. It has no fields yet.
 type HitlAsk struct{}
+
+// HitlSecret configures secret requests: the only places a value a human
+// types may land. The agent names a target; it never picks one.
+type HitlSecret struct {
+	Targets []HitlSecretTarget `yaml:"targets"`
+}
+
+// HitlSecretTarget is one declared destination. Exactly one of Env (a
+// variable the agent's later execs see) and File (an absolute guest path,
+// written 0600) is set. Label is what the human is shown first.
+type HitlSecretTarget struct {
+	Env   string `yaml:"env,omitempty"`
+	File  string `yaml:"file,omitempty"`
+	Label string `yaml:"label"`
+}
+
+// HitlTakeover configures takeover requests. Via lists the allowed ways in;
+// only terminal exists so far, and empty means terminal.
+type HitlTakeover struct {
+	Via []string `yaml:"via,omitempty"`
+}

@@ -8,11 +8,12 @@ use url::Url;
 use crate::apikeys::ApiKeys;
 use crate::environments::Environments;
 use crate::error::Error;
+use crate::gates::{HitlWait, OnHeld};
 use crate::hosts::Hosts;
 use crate::interventions::Interventions;
 use crate::snapshots::Snapshots;
 use crate::transport::{RequestIdFn, Transport, DEFAULT_TIMEOUT};
-use crate::types::{ActorLabel, VersionInfo};
+use crate::types::{ActorLabel, Intervention, VersionInfo};
 
 /// The entry point for the Fuse API. It groups the resource services that
 /// share a single transport, and is cheap to clone.
@@ -145,6 +146,7 @@ pub struct ClientBuilder {
     request_id: Option<Arc<RequestIdFn>>,
     http: Option<reqwest::Client>,
     actor: Option<ActorLabel>,
+    hitl: HitlWait,
 }
 
 impl ClientBuilder {
@@ -157,6 +159,7 @@ impl ClientBuilder {
             request_id: None,
             http: None,
             actor: None,
+            hitl: HitlWait::default(),
         }
     }
 
@@ -202,6 +205,24 @@ impl ClientBuilder {
         self
     }
 
+    /// Makes every gated call return [`Error::InterventionPending`] at once
+    /// when a hitl gate holds it, and exec and computer calls return
+    /// [`Error::Locked`] at once when a human holds the environment, instead
+    /// of waiting for the human.
+    /// [`ExecRequest::no_wait`](crate::ExecRequest::no_wait) does the same
+    /// for one exec.
+    pub fn hitl_no_wait(mut self) -> Self {
+        self.hitl.no_wait = true;
+        self
+    }
+
+    /// Calls `callback` with the pending intervention whenever a hitl gate
+    /// holds a call, before the call waits on it.
+    pub fn on_held(mut self, callback: impl Fn(&Intervention) + Send + Sync + 'static) -> Self {
+        self.hitl.on_held = Some(OnHeld::new(callback));
+        self
+    }
+
     /// Builds the client. Fails if the base URL is empty or not a valid
     /// absolute HTTP URL.
     pub fn build(self) -> Result<Client, Error> {
@@ -224,16 +245,18 @@ impl ClientBuilder {
         let stream_http = reqwest::Client::builder()
             .build()
             .map_err(Error::Transport)?;
+        let mut transport = Transport::new(
+            base_url,
+            http,
+            stream_http,
+            self.token,
+            self.user_agent,
+            self.request_id,
+            self.actor,
+        );
+        transport.hitl = self.hitl;
         Ok(Client {
-            transport: Arc::new(Transport::new(
-                base_url,
-                http,
-                stream_http,
-                self.token,
-                self.user_agent,
-                self.request_id,
-                self.actor,
-            )),
+            transport: Arc::new(transport),
         })
     }
 }

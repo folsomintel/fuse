@@ -1,5 +1,5 @@
 import type { CallOptions, Transport } from "./transport.js";
-import { isInterventionTerminal, type AuditEntry, type Intervention } from "./types.js";
+import { isInterventionSettled, type AuditEntry, type Intervention } from "./types.js";
 import { requireArg } from "./validate.js";
 
 /** The server's max page size; list() requests this internally. */
@@ -61,11 +61,20 @@ export interface AuditPage {
   nextCursor?: string;
 }
 
-/** Body for interventions.approve. */
+/** Body for interventions.approve: an answer to an ask, or an approval of a
+ * held exec or lifecycle action. */
 export interface ApproveOptions {
   /** An ask needs an answer (one of its choices, when it has any). */
   answer?: string;
   reason?: string;
+  /** Replaces a held exec's argv. It is re-checked against the deny gates,
+   * and cannot be combined with grant. */
+  editedArgv?: string[];
+  /** "once", "env" or "ttl:<duration>"; unset takes the gate's default. */
+  grant?: string;
+  /** How long approving an expiry keeps the environment alive. Zero or unset
+   * is one more full window of the reaper that was due. */
+  extendSeconds?: number;
 }
 
 /** Body for interventions.reject. */
@@ -151,13 +160,23 @@ export class InterventionsService {
     return { entries: out.entries ?? [], nextCursor: out.next_cursor };
   }
 
+  /** Fetch a takeover session's recording (an AuditEntry's recording_id) as
+   * asciinema v2 cast text. Needs the hitl:read scope. */
+  async getRecording(recordingId: string, opts: CallOptions = {}): Promise<string> {
+    requireArg(recordingId, "recording id");
+    return this.t.text("GET", `/v1/hitl/recordings/${encodeURIComponent(recordingId)}`, {
+      signal: opts.signal,
+    });
+  }
+
   /** Fetch one intervention without waiting. */
   async get(id: string, opts: CallOptions = {}): Promise<Intervention> {
     return getIntervention(this.t, id, undefined, opts);
   }
 
   /**
-   * Block until the intervention resolves. Every intervention has a deadline,
+   * Block until the intervention settles: resolved, and for an approved gated
+   * action, performed, with the outcome on result. Every intervention has a deadline,
    * so this always returns eventually. A dropped connection or an
    * orchestrator restart is survived by polling again; the server, not the
    * connection, holds the state. Pass `opts.signal` to stop early.
@@ -166,7 +185,10 @@ export class InterventionsService {
     return waitIntervention(this.t, id, opts);
   }
 
-  /** Resolve a pending intervention as approved. Requires the master token. */
+  /** Resolve a pending intervention as approved. For a held exec or
+   * lifecycle action, the orchestrator then performs it (optionally with
+   * body.editedArgv, or granting repeats with body.grant); wait on the id for
+   * its result. Requires the master token. */
   async approve(
     id: string,
     body: ApproveOptions = {},
@@ -184,6 +206,24 @@ export class InterventionsService {
     return this.decide(id, "reject", { reason: body.reason }, opts);
   }
 
+  /**
+   * Answer a pending secret request. The value is written into the guest at
+   * the declared target and dropped; fuse never stores, logs or returns it.
+   * Needs the hitl:secret scope.
+   */
+  async answerSecret(
+    id: string,
+    value: string,
+    opts: CallOptions = {},
+  ): Promise<Intervention> {
+    requireArg(id, "intervention id");
+    return this.t.json<Intervention>(
+      "POST",
+      `/v1/interventions/${encodeURIComponent(id)}`,
+      { query: { action: "secret" }, body: { value }, signal: opts.signal },
+    );
+  }
+
   private async decide(
     id: string,
     action: string,
@@ -196,14 +236,22 @@ export class InterventionsService {
       `/v1/interventions/${encodeURIComponent(id)}`,
       {
         query: { action },
-        body: { answer: body.answer || undefined, reason: body.reason || undefined },
+        body: {
+          answer: body.answer || undefined,
+          reason: body.reason || undefined,
+          edited_argv: body.editedArgv?.length ? body.editedArgv : undefined,
+          grant: body.grant || undefined,
+          extend_seconds: body.extendSeconds || undefined,
+        },
         signal: opts.signal,
       },
     );
   }
 }
 
-/** waitIntervention long-polls until the intervention is terminal. */
+/** waitIntervention long-polls until the intervention is settled. A wait can
+ * time out on an approved gated action that has not run yet, so the loop
+ * checks settled, not terminal. */
 export async function waitIntervention(
   t: Transport,
   id: string,
@@ -211,7 +259,7 @@ export async function waitIntervention(
 ): Promise<Intervention> {
   for (;;) {
     const i = await getIntervention(t, id, WAIT_POLL, opts);
-    if (isInterventionTerminal(i)) return i;
+    if (isInterventionSettled(i)) return i;
     opts.signal?.throwIfAborted();
   }
 }

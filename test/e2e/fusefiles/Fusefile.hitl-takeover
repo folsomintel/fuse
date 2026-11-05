@@ -1,0 +1,28 @@
+version: 1
+
+# hitl secrets, takeover and signals (#312). idle_timeout is the 60s
+# minimum and the expiry gate warns 1m ahead, so an expiry is raised as soon
+# as the environment is up; the expiry cases rely on that.
+resources:
+  cpus: 1
+  memory: 512MB
+  storage: 2GB
+  max_runtime: 20m
+  idle_timeout: 1m
+
+run: 'echo ready > /tmp/ready'
+
+hitl:
+  timeout: 5m
+  on_timeout: reject
+  requests:
+    ask: {}
+    takeover: { via: [terminal] }
+    secret:
+      targets:
+        - { env: E2E_TOKEN, label: "e2e token for the deploy bot" }
+        - { file: /root/.e2e-netrc, label: "e2e netrc" }
+  gates:
+    - name: flailing
+      on: stall
+      match: { failures: 3 }

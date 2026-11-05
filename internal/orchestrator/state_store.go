@@ -411,6 +411,39 @@ type StateStore interface {
 
 	// ListHitlAudit returns audit rows matching the filter, oldest first.
 	ListHitlAudit(ctx context.Context, filter AuditFilter) ([]hitl.AuditEntry, error)
+
+	// InsertHitlGrant stores a grant an approval created.
+	InsertHitlGrant(ctx context.Context, g hitl.Grant) error
+
+	// ListHitlGrants returns an environment's grants, expired ones included.
+	ListHitlGrants(ctx context.Context, envID string) ([]hitl.Grant, error)
+
+	// MoveHitlGrants re-homes an environment's grants (a migrate).
+	MoveHitlGrants(ctx context.Context, fromEnvID, toEnvID string) error
+
+	// DeleteHitlGrants drops an environment's grants (a destroy).
+	DeleteHitlGrants(ctx context.Context, envID string) error
+	// SaveHitlRecording stores one takeover session's cast.
+	SaveHitlRecording(ctx context.Context, rec RecordingRecord) error
+
+	// GetHitlRecording returns one cast, or an error wrapping
+	// ErrRecordingNotFound.
+	GetHitlRecording(ctx context.Context, id string) (RecordingRecord, error)
+}
+
+// RecordingRecord is one recorded takeover shell session. Data is the
+// asciinema v2 cast, sealed by the fleet manager when Sealed is set.
+type RecordingRecord struct {
+	ID             string
+	InterventionID string
+	EnvID          string
+	Actor          json.RawMessage
+	StartedAt      time.Time
+	EndedAt        time.Time
+	Size           int64
+	Truncated      bool
+	Sealed         bool
+	Data           []byte
 }
 
 // MemoryStateStore is a process-local store useful for tests/default behavior.
@@ -424,6 +457,8 @@ type MemoryStateStore struct {
 	hosts       map[string]HostRecord
 	hitl        map[string]InterventionRecord
 	audit       []hitl.AuditEntry
+	grants      []hitl.Grant
+	recordings  map[string]RecordingRecord
 	nextID      int64
 	nextDLQID   int64
 }
@@ -437,6 +472,7 @@ func NewMemoryStateStore() *MemoryStateStore {
 		deadLetters: make(map[string]DeadLetterRecord),
 		hosts:       make(map[string]HostRecord),
 		hitl:        make(map[string]InterventionRecord),
+		recordings:  make(map[string]RecordingRecord),
 	}
 }
 
@@ -829,6 +865,23 @@ func (s *MemoryStateStore) AppendHitlAudit(_ context.Context, e hitl.AuditEntry)
 	return e, nil
 }
 
+func (s *MemoryStateStore) SaveHitlRecording(_ context.Context, rec RecordingRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordings[rec.ID] = rec
+	return nil
+}
+
+func (s *MemoryStateStore) GetHitlRecording(_ context.Context, id string) (RecordingRecord, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rec, ok := s.recordings[id]
+	if !ok {
+		return RecordingRecord{}, fmt.Errorf("%w: %s", ErrRecordingNotFound, id)
+	}
+	return rec, nil
+}
+
 func (s *MemoryStateStore) ListHitlAudit(_ context.Context, f AuditFilter) ([]hitl.AuditEntry, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -846,4 +899,41 @@ func (s *MemoryStateStore) ListHitlAudit(_ context.Context, f AuditFilter) ([]hi
 		}
 	}
 	return out, nil
+}
+
+func (s *MemoryStateStore) InsertHitlGrant(_ context.Context, g hitl.Grant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.grants = append(s.grants, g)
+	return nil
+}
+
+func (s *MemoryStateStore) ListHitlGrants(_ context.Context, envID string) ([]hitl.Grant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]hitl.Grant, 0)
+	for _, g := range s.grants {
+		if g.EnvID == envID {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+func (s *MemoryStateStore) MoveHitlGrants(_ context.Context, fromEnvID, toEnvID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.grants {
+		if s.grants[i].EnvID == fromEnvID {
+			s.grants[i].EnvID = toEnvID
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStateStore) DeleteHitlGrants(_ context.Context, envID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.grants = slices.DeleteFunc(s.grants, func(g hitl.Grant) bool { return g.EnvID == envID })
+	return nil
 }

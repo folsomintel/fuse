@@ -95,9 +95,9 @@ The simplest topology co-locates the orchestrator on a Firecracker host and talk
 
 ```bash
 cd host-agent/firecracker
-./fc-install.sh                     # firecracker + kernel + rootfs
-./fc-agent.sh install-service       # host agent (systemd, :8090)
-./fc-agent.sh install-orchestrator  # orchestrator (systemd, :8080), co-located
+./scripts/fc-install.sh                     # firecracker + kernel + rootfs
+./scripts/fc-agent.sh install-service       # host agent (systemd, :8090)
+./scripts/fc-agent.sh install-orchestrator  # orchestrator (systemd, :8080), co-located
 sudoedit /etc/default/orchestrator  # set DATABASE_URL (postgres)
 sudo systemctl start orchestrator
 ```
@@ -117,7 +117,7 @@ service until you fill it in; the schema is created automatically on first boot.
 It then prints the `FUSE_BASE_URL` and `FUSE_TOKEN` values for connecting a
 dashboard, if you're running one. `FUSE_TOKEN` must match the orchestrator's
 `ORCH_AUTH_TOKEN`. Open `8080/tcp` (or terminate TLS at a reverse proxy and point
-clients there). Remove the service with `./fc-agent.sh uninstall-orchestrator`.
+clients there). Remove the service with `./scripts/fc-agent.sh uninstall-orchestrator`.
 
 ## One script: dedicated control-plane host
 
@@ -142,7 +142,7 @@ orchestrator installed and listening on :8080
 
 When the binary comes from a GitHub release, the installer downloads
 `checksums.txt` for that exact tag and verifies the archive's SHA-256 before
-extracting or installing anything. `host-agent/firecracker/fc-update.sh` and
+extracting or installing anything. `host-agent/firecracker/scripts/fc-update.sh` and
 `fc-agent.sh install-orchestrator` do the same for every asset they fetch. A
 missing `checksums.txt`, a missing entry for the asset, or a mismatch aborts
 the install, leaving the existing binary in place and the service unrestarted.

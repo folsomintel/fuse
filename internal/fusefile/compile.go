@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -104,8 +105,47 @@ type HitlSpec struct {
 	TimeoutSeconds int64
 	OnTimeout      string
 	Ask            bool
-	RequireActor   bool
-	Notify         []HitlWebhook
+	// Secret is non-nil when secret requests are declared.
+	Secret *HitlSecretSpec
+	// Takeover is non-nil when takeover requests are declared.
+	Takeover     *HitlTakeoverSpec
+	RequireActor bool
+	Notify       []HitlWebhook
+	Gates        []HitlGateSpec
+	Exec         *HitlExecPolicy
+}
+
+// HitlSecretSpec is a compiled hitl.requests.secret block.
+type HitlSecretSpec struct {
+	Targets []HitlSecretTarget
+}
+
+// HitlTakeoverSpec is a compiled hitl.requests.takeover block.
+type HitlTakeoverSpec struct {
+	Via []string
+}
+
+// HitlGateSpec is a compiled hitl.gates entry, with its timeout in seconds.
+type HitlGateSpec struct {
+	Name           string
+	On             string
+	Program        []string
+	Args           []string
+	Shell          bool
+	Action         []string
+	Failures       int
+	QuietSeconds   int64
+	BeforeSeconds  int64
+	Mode           string
+	Grant          string
+	TimeoutSeconds int64
+	Reason         string
+}
+
+// HitlExecPolicy is the compiled hitl.exec block.
+type HitlExecPolicy struct {
+	Default string
+	Allow   []string
 }
 
 // HitlWebhook is a compiled hitl.notify entry.
@@ -1120,6 +1160,12 @@ func compileHitl(f *Fusefile) *HitlSpec {
 	for _, n := range f.Hitl.Notify {
 		spec.Notify = append(spec.Notify, HitlWebhook{URL: n.Webhook, Secret: n.Secret})
 	}
+	if s := f.Hitl.Requests.Secret; s != nil {
+		spec.Secret = &HitlSecretSpec{Targets: slices.Clone(s.Targets)}
+	}
+	if t := f.Hitl.Requests.Takeover; t != nil {
+		spec.Takeover = &HitlTakeoverSpec{Via: slices.Clone(t.Via)}
+	}
 	if spec.OnTimeout == "" {
 		spec.OnTimeout = "reject"
 	}
@@ -1127,6 +1173,28 @@ func compileHitl(f *Fusefile) *HitlSpec {
 		if d, err := time.ParseDuration(f.Hitl.Timeout); err == nil {
 			spec.TimeoutSeconds = int64(d / time.Second)
 		}
+	}
+	for _, g := range f.Hitl.Gates {
+		gate := HitlGateSpec{
+			Name: g.Name, On: g.On, Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell,
+			Action: g.Match.Action, Mode: g.Mode, Grant: g.Grant, Reason: g.Reason,
+		}
+		if g.Timeout != "" {
+			if d, err := time.ParseDuration(g.Timeout); err == nil {
+				gate.TimeoutSeconds = int64(d / time.Second)
+			}
+		}
+		gate.Failures = g.Match.Failures
+		if d, err := time.ParseDuration(g.Match.Quiet); err == nil {
+			gate.QuietSeconds = int64(d / time.Second)
+		}
+		if d, err := time.ParseDuration(g.Match.Before); err == nil {
+			gate.BeforeSeconds = int64(d / time.Second)
+		}
+		spec.Gates = append(spec.Gates, gate)
+	}
+	if e := f.Hitl.Exec; e != nil {
+		spec.Exec = &HitlExecPolicy{Default: e.Default, Allow: e.Allow}
 	}
 	return spec
 }

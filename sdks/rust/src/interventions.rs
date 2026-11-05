@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
-use crate::types::{AuditEntry, HitlKind, Intervention, InterventionState};
+use crate::types::{AuditEntry, HitlKind, Intervention, InterventionState, TakeoverVia};
 
 // how long one long-poll asks the server to hold. the server caps it at 50s.
 const WAIT_POLL: Duration = Duration::from_secs(30);
@@ -24,13 +24,30 @@ const WAIT_HTTP_OVERHEAD: Duration = Duration::from_secs(30);
 ///
 /// let request = HumanRequest::ask("deploy to prod?").choices(["yes", "no"]).timeout_seconds(300);
 /// let handle_only = HumanRequest::ask("anything to add?").no_wait();
+/// let secret = HumanRequest::secret("GH_TOKEN").message("need push access to the fork");
+/// let takeover = HumanRequest::takeover().reason("captcha on the login page");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HumanRequest {
     pub kind: HitlKind,
+    /// What the human is asked (ask).
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub question: String,
+    /// Restricts the answer to one of these (ask).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
+    /// A declared secret target's env name or file path (secret).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// The agent's text, shown under the target's label (secret).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// How the human takes over (takeover).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<TakeoverVia>,
+    /// Why the agent wants a human to take over (takeover).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     /// Shortens the policy's deadline. It can never extend it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
@@ -48,9 +65,51 @@ impl HumanRequest {
             kind: HitlKind::Ask,
             question: question.into(),
             choices: Vec::new(),
+            target: None,
+            message: None,
+            via: None,
+            reason: None,
             timeout_seconds: None,
             wait: true,
         }
+    }
+
+    /// A secret request for the declared target `target` (its env name or
+    /// file path). A human types the value into the guest; the resolved
+    /// intervention's answer is `done`, never the value.
+    pub fn secret(target: impl Into<String>) -> Self {
+        Self {
+            kind: HitlKind::Secret,
+            target: Some(target.into()),
+            ..Self::ask("")
+        }
+    }
+
+    /// A request for a human to take over the terminal. On release the
+    /// resolved intervention's answer is the human's note.
+    pub fn takeover() -> Self {
+        Self {
+            kind: HitlKind::Takeover,
+            via: Some(TakeoverVia::Terminal),
+            ..Self::ask("")
+        }
+    }
+
+    /// The agent's text shown with a secret request.
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    pub fn via(mut self, via: TakeoverVia) -> Self {
+        self.via = Some(via);
+        self
+    }
+
+    /// Why the agent wants a takeover.
+    pub fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
     }
 
     /// Restricts the answer to one of `choices`.
@@ -73,6 +132,78 @@ impl HumanRequest {
         self.wait = false;
         self
     }
+}
+
+/// The body of [`Interventions::approve_with`]: an approval of a held
+/// action or an answer to an ask.
+///
+/// ```
+/// use fuse::ApproveOptions;
+///
+/// let edit = ApproveOptions::new().edited_argv(["git", "push"]);
+/// let repeat = ApproveOptions::new().grant("ttl:30m").reason("ok for the next half hour");
+/// let keep_alive = ApproveOptions::new().extend_seconds(1800);
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct ApproveOptions {
+    /// Required to approve an ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Replaces a held exec's argv. It is re-checked against the deny
+    /// gates, and cannot be combined with `grant`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edited_argv: Vec<String>,
+    /// `once`, `env` or `ttl:<duration>`; `None` takes the gate's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
+    /// How long approving an expiry keeps the environment alive. `None` is
+    /// one more full window of the reaper that was due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extend_seconds: Option<u64>,
+}
+
+impl ApproveOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn answer(mut self, answer: impl Into<String>) -> Self {
+        self.answer = Some(answer.into());
+        self
+    }
+
+    pub fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    pub fn edited_argv<I, S>(mut self, argv: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.edited_argv = argv.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn grant(mut self, grant: impl Into<String>) -> Self {
+        self.grant = Some(grant.into());
+        self
+    }
+
+    pub fn extend_seconds(mut self, seconds: u64) -> Self {
+        self.extend_seconds = Some(seconds);
+        self
+    }
+}
+
+// non_empty maps the empty string of the positional approve and reject
+// arguments to an absent field.
+fn non_empty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 /// Filters and pagination for [`Interventions::list`] and
@@ -291,9 +422,10 @@ impl Interventions {
         self.t.send_json(request).await
     }
 
-    /// Waits until the intervention resolves. Every intervention has a
-    /// deadline, so this always returns eventually; drop the future to stop
-    /// early. Each poll is independent, so a dropped connection or an
+    /// Waits until the intervention settles: resolved, and for an approved
+    /// gated action, performed, with the outcome on
+    /// [`Intervention::result`]. Every intervention has a deadline, so this
+    /// always returns eventually; drop the future to stop early. Each poll is independent, so a dropped connection or an
     /// orchestrator restart only costs one poll.
     pub async fn wait(&self, id: &str) -> Result<Intervention, Error> {
         wait_intervention(&self.t, id).await
@@ -308,41 +440,92 @@ impl Interventions {
         answer: &str,
         reason: &str,
     ) -> Result<Intervention, Error> {
-        self.decide(id, "approve", answer, reason).await
+        let options = ApproveOptions {
+            answer: non_empty(answer),
+            reason: non_empty(reason),
+            ..ApproveOptions::default()
+        };
+        self.decide(id, "approve", &options).await
+    }
+
+    /// Approves a held exec or lifecycle action, optionally editing the
+    /// exec's argv or granting repeats (`env`, `ttl:30m`). The orchestrator
+    /// then performs the action; [`Interventions::wait`] on the id for its
+    /// result.
+    /// [`ApproveOptions::extend_seconds`] sets how long approving an expiry
+    /// keeps the environment alive.
+    pub async fn approve_with(
+        &self,
+        id: &str,
+        options: ApproveOptions,
+    ) -> Result<Intervention, Error> {
+        self.decide(id, "approve", &options).await
     }
 
     /// Resolves a pending intervention as rejected. The reason is fed back
     /// to the agent; the server fills one in when it is empty. Requires the
     /// master token or a key with `hitl:decide`.
     pub async fn reject(&self, id: &str, reason: &str) -> Result<Intervention, Error> {
-        self.decide(id, "reject", "", reason).await
+        let options = ApproveOptions {
+            reason: non_empty(reason),
+            ..ApproveOptions::default()
+        };
+        self.decide(id, "reject", &options).await
     }
 
     async fn decide(
         &self,
         id: &str,
         action: &str,
-        answer: &str,
-        reason: &str,
+        body: &ApproveOptions,
     ) -> Result<Intervention, Error> {
         require(id, "intervention id")?;
-        #[derive(Serialize)]
-        struct Body<'a> {
-            #[serde(skip_serializing_if = "str::is_empty")]
-            answer: &'a str,
-            #[serde(skip_serializing_if = "str::is_empty")]
-            reason: &'a str,
-        }
         let request = self
             .t
             .request(Method::POST, &["v1", "interventions", id])
             .query(&[("action", action)])
-            .json(&Body { answer, reason });
+            .json(body);
         self.t.send_json(request).await
     }
 }
 
-// wait_intervention long-polls until the intervention is terminal. each poll
+// secret answers and takeover recordings (issue #312).
+impl Interventions {
+    /// Answers a pending secret request: the server writes `value` into the
+    /// declared target in the guest and drops it, so it is never stored,
+    /// logged or returned. Requires the master token or a key with
+    /// `hitl:secret`.
+    pub async fn answer_secret(&self, id: &str, value: &str) -> Result<Intervention, Error> {
+        require(id, "intervention id")?;
+        require(value, "secret value")?;
+        #[derive(Serialize)]
+        struct Body<'a> {
+            value: &'a str,
+        }
+        let request = self
+            .t
+            .request(Method::POST, &["v1", "interventions", id])
+            .query(&[("action", "secret")])
+            .json(&Body { value });
+        self.t.send_json(request).await
+    }
+
+    /// Returns a recorded takeover session as asciinema v2 cast text. The id
+    /// is on the `takeover_session` audit row's
+    /// [`AuditEntry::recording_id`](crate::AuditEntry::recording_id).
+    /// Requires the master token or a key with `hitl:read`.
+    pub async fn recording(&self, recording_id: &str) -> Result<String, Error> {
+        require(recording_id, "recording id")?;
+        let request = self
+            .t
+            .request(Method::GET, &["v1", "hitl", "recordings", recording_id]);
+        let response = Transport::check(request.send().await?).await?;
+        Ok(response.text().await?)
+    }
+}
+
+// wait_intervention long-polls until the intervention is settled, not just
+// terminal: an approved gated action keeps polling until its result lands. each poll
 // runs on the no-timeout stream client with its own deadline, so a short
 // client timeout cannot cut a held poll short.
 pub(crate) async fn wait_intervention(t: &Transport, id: &str) -> Result<Intervention, Error> {
@@ -354,7 +537,7 @@ pub(crate) async fn wait_intervention(t: &Transport, id: &str) -> Result<Interve
             .query(&[("wait", wait.as_str())])
             .timeout(WAIT_POLL + WAIT_HTTP_OVERHEAD);
         let intervention: Intervention = t.send_json(request).await?;
-        if intervention.is_terminal() {
+        if intervention.is_settled() {
             return Ok(intervention);
         }
     }
