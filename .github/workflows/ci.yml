@@ -115,7 +115,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Checksum verification tests
-        run: ./host-agent/firecracker/test-verify-checksum.sh
+        run: ./host-agent/firecracker/tests/test-verify-checksum.sh
 
   # Validate the GoReleaser config on every PR so a CD-breaking change is caught
   # here instead of only when a release tag is pushed.
@@ -207,10 +207,10 @@ jobs:
         with:
           python-version: "3.13"
       - name: Test QEMU agent
-        working-directory: host-agent/qemu
+        working-directory: host-agent/qemu/tests
         run: python -m unittest test_qemu_agent -v
       - name: Test Firecracker agent
-        working-directory: host-agent/firecracker
+        working-directory: host-agent/firecracker/tests
         run: python -m unittest test_fc_agent_public_host test_fc_agent_sock_path test_fc_agent_egress test_fc_agent_live_artifact test_fc_agent_tunnel test_fc_agent_lazy_mem test_fc_agent_delta -v
 
   # Rust SDK (sdks/rust): fmt, clippy, test. Independent of the Go, TS, and

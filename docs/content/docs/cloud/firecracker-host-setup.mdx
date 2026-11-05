@@ -25,7 +25,7 @@ Firecracker needs hardware virtualization (KVM). The host must expose `/dev/kvm`
   (the agent itself), `podman` (the bake extracts the iptables bundle with it),
   `curl`, `tar`, `ssh`, `iptables`, and `e2fsck`/`resize2fs`/`truncate` from
   `e2fsprogs` and `util-linux`.
-- Rather than installing that list by hand, run `./fc-deps.sh` first, it installs
+- Rather than installing that list by hand, run `./scripts/fc-deps.sh` first, it installs
   the whole set on apt or dnf and then verifies every tool the scripts shell out
   to.
 
@@ -39,7 +39,7 @@ laptop.
 
 ```bash
 git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
-sudo ./fc-agent.sh bootstrap
+sudo ./scripts/fc-agent.sh bootstrap
 ```
 
 It's idempotent, safe to re-run. Flags: `--no-updater` (skip the auto-update
@@ -52,10 +52,10 @@ step-by-step equivalent, use it when you want to run or skip individual stages.
 git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
 
 # 0. Install host dependencies (podman, python3, e2fsprogs, ...) and verify them.
-./fc-deps.sh
+./scripts/fc-deps.sh
 
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
-./fc-install.sh
+./scripts/fc-install.sh
 
 # 2. Build the reference in-guest agent (produces host-agent/firecracker/fused). Needs Go.
 #    To run your own agent instead, drop your binary here as `fused` and skip this.
@@ -63,13 +63,13 @@ git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
 
 # 3. Bake the guest rootfs (rootfs-fused.ext4). Bakes in `fused` + fused.service.
 #    Re-run whenever the agent binary changes -- the agent is baked into the image.
-./fc-bake-rootfs.sh
+./scripts/fc-bake-rootfs.sh
 
 # 4. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
-./fc-agent.sh start
+./scripts/fc-agent.sh start
 
 # 5. Smoke-test the contract end to end.
-./fc-agent-test.sh
+./tests/fc-agent-test.sh
 ```
 
 Point Fuse at the printed values:
@@ -150,19 +150,19 @@ the agent's environment.
 ## Operating
 
 ```bash
-./fc-agent.sh start               # launch agent on :8090, print env
-./fc-agent.sh stop                 # stop
-./fc-agent.sh restart              # stop+start; re-attaches to running VMs
-./fc-agent.sh log                  # tail agent log
-./fc-agent.sh env                  # print env keys for an already-running agent
-./fc-agent-test.sh                 # contract smoke test
+./scripts/fc-agent.sh start               # launch agent on :8090, print env
+./scripts/fc-agent.sh stop                 # stop
+./scripts/fc-agent.sh restart              # stop+start; re-attaches to running VMs
+./scripts/fc-agent.sh log                  # tail agent log
+./scripts/fc-agent.sh env                  # print env keys for an already-running agent
+./tests/fc-agent-test.sh                 # contract smoke test
 
 # systemd integration (optional, for long-lived hosts)
-./fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
-./fc-agent.sh uninstall-service
+./scripts/fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
+./scripts/fc-agent.sh uninstall-service
 ```
 
-To pick up a new agent binary: re-run `./fc-bake-rootfs.sh` then `./fc-agent.sh restart`.
+To pick up a new agent binary: re-run `./scripts/fc-bake-rootfs.sh` then `./scripts/fc-agent.sh restart`.
 
 On startup, the agent walks its state directory and for each VM either reuses it (if
 the process and socket are alive) or transparently recreates the TAP/DNAT and
@@ -180,9 +180,9 @@ release also triggers an update, and `FC_FORCE=1` re-applies the current one. It
 never shells out to `fused --version` to make that decision:
 
 ```bash
-./fc-update.sh                 # one-shot: update if the marker != the latest tag
-./fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
-./fc-agent.sh uninstall-updater
+./scripts/fc-update.sh                 # one-shot: update if the marker != the latest tag
+./scripts/fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
+./scripts/fc-agent.sh uninstall-updater
 ```
 
 No token needed (public repo). Optional `host-agent/firecracker/.fc-updater.env` can set

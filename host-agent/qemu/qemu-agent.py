@@ -94,7 +94,7 @@ MIG_INVENTORY = Path(os.environ.get("MIG_INVENTORY", str(QEMU_DIR / "mig-invento
 # agent never touches the card layout on destroy (the instance is simply
 # released from the in-memory allocation set).
 MIG_LIFECYCLE_MANAGED = os.environ.get("MIG_LIFECYCLE_MANAGED", "") not in ("", "0", "false")
-MIG_SETUP_SCRIPT = Path(os.environ.get("MIG_SETUP_SCRIPT", str(Path(__file__).with_name("qemu-mig-setup.sh"))))
+MIG_SETUP_SCRIPT = Path(os.environ.get("MIG_SETUP_SCRIPT", str(Path(__file__).parent / "scripts" / "qemu-mig-setup.sh")))
 # Port the in-guest agent listens on; per-VM host ports DNAT to this.
 FUSED_PORT = int(os.environ.get("FUSED_PORT", "9550"))
 # Guest ports that must never be published: the agent's own management API

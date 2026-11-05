@@ -31,14 +31,25 @@ shared/              # fc-build-agent.sh, the guest-agent build step used by bot
 
 ```
 firecracker/
-  fc-agent.py         # the agent — one firecracker process per VM, SSH for guest ops
-  fc-agent.sh         # start/stop/restart/log/env
-  fc-agent-test.sh    # end-to-end smoke test against the contract
+  fc-agent.py         # the agent: one firecracker process per VM, SSH for guest ops
+  fc-uffd.py          # lazy-memory page server used by fc-agent.py
+  fuse-display-run    # guest runners baked into the desktop image
+  fuse-wm-run
+  scripts/            # operator shell: fc-agent.sh (start/stop/bootstrap/services),
+                      # fc-install.sh, fc-deps.sh, fc-bake-rootfs.sh, fc-update.sh, fc-warp.sh,
+                      # and the single-VM debug helpers (fc-up/down/ssh/status/expose.sh)
+  tests/              # python unit tests (test_fc_agent_*.py) and shell smoke/e2e tests
+                      # (fc-agent-test.sh, fc-test.sh, fc-e2e.sh, test-verify-checksum.sh)
 
-  fc-install.sh       # fetch firecracker binary, kernel, base rootfs, SSH key
-  fc-up.sh / fc-down.sh / fc-ssh.sh / fc-status.sh / fc-test.sh / fc-expose.sh
-                      # manual helpers for a single VM (pre-agent; still useful for debugging)
+qemu/
+  qemu-agent.py       # the agent: one qemu process per VM, VFIO/MIG GPU passthrough
+  scripts/            # qemu-install.sh, qemu-bake-cuda-rootfs.sh, qemu-vfio-bind.sh, qemu-mig-setup.sh
+  tests/              # test_qemu_agent.py and shell smoke/e2e tests
 ```
+
+Scripts resolve the backend directory (`firecracker/` or `qemu/`) as their parent, so
+runtime files still land there, not in `scripts/`. Run the python tests from `tests/`:
+`cd firecracker/tests && python3 -m unittest test_fc_agent_pin -v`.
 
 Runtime-only (ignored in git), written into whichever of `firecracker/` or `qemu/` you're
 working in:
@@ -62,7 +73,7 @@ self-registers the host. Then it prints the token and the exact connect line.
 
 ```bash
 git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
-sudo ./fc-agent.sh bootstrap
+sudo ./scripts/fc-agent.sh bootstrap
 ```
 
 It is idempotent - safe to re-run. Flags: `--no-updater` (skip the auto-update
@@ -80,7 +91,7 @@ On a host that meets the requirements above:
 git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
 
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
-./fc-install.sh
+./scripts/fc-install.sh
 
 # 2. Build the reference in-guest agent (produces ./fused). Needs Go.
 #    To run your own agent instead, drop your binary here as `fused` and skip this.
@@ -88,13 +99,13 @@ git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
 
 # 3. Bake the guest rootfs (rootfs-fused.ext4). Bakes in `fused` + fused.service.
 #    Re-run whenever the agent binary changes — the agent is baked into the image.
-./fc-bake-rootfs.sh
+./scripts/fc-bake-rootfs.sh
 
 # 4. Start the agent. Prints FIRECRACKER_BASE_URL + FIRECRACKER_TOKEN.
-./fc-agent.sh start
+./scripts/fc-agent.sh start
 
 # 5. Smoke-test the contract end to end.
-./fc-agent-test.sh
+./tests/fc-agent-test.sh
 ```
 
 Point Fuse at the printed values:
@@ -114,15 +125,15 @@ detached from its host driver. GPU environments do not support snapshots or fork
 cd host-agent/qemu
 
 # install qemu, ovmf, a base cloud image, and the ssh keypair
-./qemu-install.sh
+./scripts/qemu-install.sh
 
 # build the in-guest agent and bake a cuda image with an explicit driver branch
 ../shared/fc-build-agent.sh
-./qemu-bake-cuda-rootfs.sh 550
+./scripts/qemu-bake-cuda-rootfs.sh 550
 
 # inspect groups, then bind every member of each gpu group to vfio-pci
-./qemu-vfio-bind.sh --list
-sudo ./qemu-vfio-bind.sh
+./scripts/qemu-vfio-bind.sh --list
+sudo ./scripts/qemu-vfio-bind.sh
 
 # install and start the host agent
 sudo cp qemu-agent.service /etc/systemd/system/
@@ -173,8 +184,8 @@ key as root's `authorized_keys`, and extracts `vmlinuz.bin` for QEMU.
 Hardware validation is explicit:
 
 ```bash
-./qemu-agent-test.sh
-FUSE_GPU_E2E=1 FUSE_GPU_KIND=a100 ./qemu-e2e.sh
+./tests/qemu-agent-test.sh
+FUSE_GPU_E2E=1 FUSE_GPU_KIND=a100 ./tests/qemu-e2e.sh
 ```
 
 The e2e registers a QEMU host, creates a GPU environment, runs `nvidia-smi` in
@@ -222,7 +233,7 @@ agent startup rather than emitting a URL nobody can reach.
 
 ## Baking the rootfs (`rootfs-fused.ext4`)
 
-`./fc-bake-rootfs.sh` builds the guest image. **The in-guest agent is baked into the
+`./scripts/fc-bake-rootfs.sh` builds the guest image. **The in-guest agent is baked into the
 image**, so you must (re-)bake before first start and whenever the agent binary changes.
 The reference agent is `fused`, built from this repo's [`fused`](../fused) by
 `../shared/fc-build-agent.sh` (output: `host-agent/firecracker/fused`); its systemd unit
@@ -270,7 +281,7 @@ Built on top of the Firecracker CI Ubuntu 22.04 rootfs. Contents injected:
 
 ## Baking the desktop rootfs (`rootfs-desktop.ext4`)
 
-`./fc-bake-desktop-rootfs.sh` layers a graphical session onto `rootfs-fused.ext4`
+`./scripts/fc-bake-desktop-rootfs.sh` layers a graphical session onto `rootfs-fused.ext4`
 (bake that first). It exists so a Fuse environment can be driven by a computer-use
 agent: something has to render pixels, take clicks, and answer screenshots.
 
@@ -314,7 +325,7 @@ resources:
 
 ## Re-baking
 
-Re-run `./fc-bake-rootfs.sh` — it rebuilds `rootfs-fused.ext4` idempotently from
+Re-run `./scripts/fc-bake-rootfs.sh` — it rebuilds `rootfs-fused.ext4` idempotently from
 `rootfs.ext4` + your `fused` binary + podman-static + the iptables bundle. New VMs pick up
 the new image on their next `create`; existing VMs keep their per-VM copy until recreated.
 
@@ -361,20 +372,20 @@ sudo umount /tmp/fcroot
 The commands below run from `host-agent/firecracker/`.
 
 ```bash
-./fc-agent.sh start               # launch agent on :8090, print env
-./fc-agent.sh stop                 # stop
-./fc-agent.sh restart              # stop+start; re-attaches to running VMs
-./fc-agent.sh log                  # tail agent log
-./fc-agent.sh env                  # print env keys for an already-running agent
-./fc-agent-test.sh                 # contract smoke test
+./scripts/fc-agent.sh start               # launch agent on :8090, print env
+./scripts/fc-agent.sh stop                 # stop
+./scripts/fc-agent.sh restart              # stop+start; re-attaches to running VMs
+./scripts/fc-agent.sh log                  # tail agent log
+./scripts/fc-agent.sh env                  # print env keys for an already-running agent
+./tests/fc-agent-test.sh                 # contract smoke test
 
 # systemd integration (optional, for long-lived hosts)
-./fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
-./fc-agent.sh uninstall-service
-./fc-agent.sh install-orchestrator # co-locate the orchestrator here (see below)
+./scripts/fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
+./scripts/fc-agent.sh uninstall-service
+./scripts/fc-agent.sh install-orchestrator # co-locate the orchestrator here (see below)
 ```
 
-To pick up a new agent binary, re-run `./fc-bake-rootfs.sh` and `./fc-agent.sh restart`.
+To pick up a new agent binary, re-run `./scripts/fc-bake-rootfs.sh` and `./scripts/fc-agent.sh restart`.
 
 ## Co-locating the orchestrator (control plane)
 
@@ -383,7 +394,7 @@ this agent, so the simplest production setup runs it on the same host and talks 
 over loopback. One command installs it as a systemd service next to the agent:
 
 ```bash
-./fc-agent.sh install-orchestrator
+./scripts/fc-agent.sh install-orchestrator
 ```
 
 It resolves the `orchestrator` binary (from `ORCH_BIN_SRC=/path`, a local `./orchestrator`,
@@ -405,11 +416,11 @@ sudo systemctl start orchestrator    # the schema is created on first boot
 It then prints the `FUSE_BASE_URL` + `FUSE_TOKEN` for the dashboard
 ([`fuse-frontend`](../../fuse-frontend)); the dashboard's `FUSE_TOKEN` must match the
 orchestrator's `ORCH_AUTH_TOKEN`. Open `8080/tcp` (or terminate TLS at a proxy and point the
-dashboard there). Remove it with `./fc-agent.sh uninstall-orchestrator`.
+dashboard there). Remove it with `./scripts/fc-agent.sh uninstall-orchestrator`.
 
 To run the orchestrator somewhere else instead (one control plane scheduling across many
 hosts), skip this and point its `FIRECRACKER_BASE_URL` at each host's agent URL from
-`./fc-agent.sh env`.
+`./scripts/fc-agent.sh env`.
 
 ## Re-attach on restart
 
@@ -430,9 +441,9 @@ is installed).
 repo, downloads the new `fused`, re-bakes the rootfs, and restarts the agent:
 
 ```bash
-./fc-update.sh                 # one-shot: update now if a newer release exists (no-op if current)
-./fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC ±30m)
-./fc-agent.sh uninstall-updater
+./scripts/fc-update.sh                 # one-shot: update now if a newer release exists (no-op if current)
+./scripts/fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC ±30m)
+./scripts/fc-agent.sh uninstall-updater
 ```
 
 Public repo — no token needed. Optional `host-agent/firecracker/.fc-updater.env` is sourced if present, e.g.
@@ -447,11 +458,11 @@ destroy), asserting each step:
 
 ```bash
 # hermetic (no host needed) — uses the in-memory stub provider
-./fc-e2e.sh
+./tests/fc-e2e.sh
 
 # against a real Firecracker host (network + a Fuse-compatible host required).
 # reads FIRECRACKER_BASE_URL / FIRECRACKER_TOKEN from ../../.env
-FUSE_E2E_REMOTE=1 ./fc-e2e.sh
+FUSE_E2E_REMOTE=1 ./tests/fc-e2e.sh
 ```
 
 Exit 0 means everything works; any failed assertion exits non-zero. For GPU
