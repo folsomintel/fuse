@@ -6,7 +6,12 @@ export { VERSION } from "./version.js";
 
 // Services and their option types.
 export { EnvironmentsService } from "./environments.js";
-export type { ListEnvironmentsOptions, HumanRequest } from "./environments.js";
+export type {
+  ListEnvironmentsOptions,
+  HumanRequest,
+  ReviewRequest,
+  ReviewResult,
+} from "./environments.js";
 export type { LockedCallOptions, TakeoverOptions, ReleaseOptions } from "./takeover.js";
 export { SnapshotsService } from "./snapshots.js";
 export type { ListSnapshotsOptions } from "./snapshots.js";
@@ -70,6 +75,7 @@ export type {
   HitlSecretRequests,
   HitlSecretTarget,
   HitlTakeoverRequests,
+  HitlReviewRequests,
   InterventionSecret,
   InterventionTakeover,
   InterventionSignal,
@@ -79,8 +85,12 @@ export type {
   Intervention,
   HitlGate,
   HitlGateMatch,
+  HitlDecider,
   HitlExecPolicy,
   ExecPayload,
+  ComputerPayload,
+  DeciderNote,
+  InterventionReview,
   LifecyclePayload,
   InterventionResult,
 } from "./types.js";
@@ -99,6 +109,10 @@ export {
   GateMode,
   LifecycleAction,
   ALLOWLIST_GATE,
+  DeciderVerdict,
+  ACTOR_SOURCE_DECIDER,
+  ReviewFormat,
+  TakeoverVia,
 } from "./types.js";
 
 // Errors and code helpers.

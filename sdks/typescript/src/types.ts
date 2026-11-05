@@ -706,7 +706,8 @@ export interface HitlSpec {
   require_actor?: boolean;
   /** Webhooks told about every intervention and audit event. */
   notify?: HitlWebhook[];
-  /** Gates hold, record or deny exec and lifecycle actions. */
+  /** Gates hold, record or deny exec, lifecycle and computer actions, and
+   * raise stall and expiry signals. */
   gates?: HitlGate[];
   /** Allowlist mode for exec. */
   exec?: HitlExecPolicy;
@@ -715,7 +716,8 @@ export interface HitlSpec {
 /** HitlGate is one enforced gate. */
 export interface HitlGate {
   name: string;
-  /** HitlKind.Exec or HitlKind.Lifecycle. */
+  /** HitlKind.Exec, HitlKind.Lifecycle, HitlKind.Computer, HitlKind.Stall
+   * or HitlKind.Expiry. */
   on: string;
   match: HitlGateMatch;
   /** One of GateMode; ask is the default. */
@@ -725,6 +727,16 @@ export interface HitlGate {
   timeout_seconds?: number;
   /** Returned on a deny and shown to the human on an ask. */
   reason?: string;
+  /** A webhook asked allow, deny or ask before a human sees an ask gate's
+   * action. A failure or timeout means ask. */
+  decide?: HitlDecider;
+}
+
+/** HitlDecider is a gate's decider. secret names an entry in the create
+ * request's secrets; its value signs each call (Fuse-Signature). */
+export interface HitlDecider {
+  url: string;
+  secret: string;
 }
 
 /** HitlGateMatch selects the actions a gate applies to. Every field set must
@@ -737,8 +749,12 @@ export interface HitlGateMatch {
   args?: string[];
   /** Matches any opaque shell exec. */
   shell?: boolean;
-  /** Matches lifecycle actions (one of LifecycleAction). */
+  /** Matches lifecycle actions (one of LifecycleAction) or, on a computer
+   * gate, computer action names ("type", "key", "left_click", ...). */
   action?: string[];
+  /** Matches a computer "type" whose text contains any entry, ignoring
+   * case. */
+  text_contains?: string[];
   /** Raises a stall after this many consecutive non-zero exec exits
    * (on: "stall"). */
   failures?: number;
@@ -764,6 +780,33 @@ export interface ExecPayload {
   timeout_ms?: number;
 }
 
+/** ComputerPayload is a held computer action. input is the body as sent. */
+export interface ComputerPayload {
+  action: string;
+  text?: string;
+  input: unknown;
+}
+
+/** DeciderNote is what a gate's decider said when it sent an action on to a
+ * human: verdict "ask" with its reason, or the error fuse fell through on. */
+export interface DeciderNote {
+  /** One of DeciderVerdict. */
+  verdict: string;
+  reason?: string;
+  error?: string;
+}
+
+/** InterventionReview is a review request. content is the file as fuse read
+ * it at request time when path is set. */
+export interface InterventionReview {
+  path?: string;
+  content: string;
+  /** One of ReviewFormat. */
+  format: string;
+  message?: string;
+  truncated?: boolean;
+}
+
 /** LifecyclePayload is a held environment action. */
 export interface LifecyclePayload {
   /** One of LifecycleAction. */
@@ -773,6 +816,7 @@ export interface LifecyclePayload {
 /** InterventionResult is what running an approved gated action produced. */
 export interface InterventionResult {
   exec?: ExecResult;
+  computer?: ComputerResult;
   env_id?: string;
   snapshot_id?: string;
   error?: string;
@@ -794,7 +838,11 @@ export interface HitlRequests {
   ask?: HitlAskRequests;
   secret?: HitlSecretRequests;
   takeover?: HitlTakeoverRequests;
+  review?: HitlReviewRequests;
 }
+
+/** HitlReviewRequests configures review requests. Present means allowed. */
+export type HitlReviewRequests = Record<string, never>;
 
 /** HitlSecretRequests declares where a secret may land. The agent names one
  * of these targets; it can never choose a path or variable of its own. */
@@ -811,8 +859,8 @@ export interface HitlSecretTarget {
   label: string;
 }
 
-/** HitlTakeoverRequests declares the ways a human may take over. Only
- * "terminal" exists today; empty means terminal. */
+/** HitlTakeoverRequests declares the ways a human may take over: "terminal"
+ * and "desktop" (which needs a desktop block). Empty means terminal. */
 export interface HitlTakeoverRequests {
   via?: string[];
 }
@@ -825,7 +873,7 @@ export type HitlAskRequests = Record<string, never>;
 export interface Actor {
   id: string;
   name?: string;
-  /** "key" or "system". */
+  /** "key", "system" or "decider". */
   source: string;
   key_id?: string;
 }
@@ -844,6 +892,12 @@ export interface InterventionPayload {
   takeover?: InterventionTakeover;
   /** What fuse saw, for a stall or expiry. */
   signal?: InterventionSignal;
+  /** The held computer action. */
+  computer?: ComputerPayload;
+  /** What is up for review. */
+  review?: InterventionReview;
+  /** The gate decider's note on an action it escalated. */
+  decider?: DeciderNote;
 }
 
 /** InterventionSecret is a secret request. label comes from the Fusefile and
@@ -892,6 +946,8 @@ export interface InterventionDecision {
   decided_at: string;
   /** The argv the approver replaced a held exec's with. */
   edited_argv?: string[];
+  /** The text the approver replaced a held type's with. */
+  edited_text?: string;
   /** How far an approval of a gated action reaches. */
   grant?: string;
 }
@@ -964,6 +1020,8 @@ export const HitlKind = {
   Ask: "ask",
   Exec: "exec",
   Lifecycle: "lifecycle",
+  Computer: "computer",
+  Review: "review",
   Secret: "secret",
   Takeover: "takeover",
   Stall: "stall",
@@ -980,6 +1038,35 @@ export const GateMode = {
 } as const;
 
 export type GateMode = (typeof GateMode)[keyof typeof GateMode];
+
+/** Decider verdicts. */
+export const DeciderVerdict = {
+  Allow: "allow",
+  Deny: "deny",
+  Ask: "ask",
+} as const;
+
+export type DeciderVerdict = (typeof DeciderVerdict)[keyof typeof DeciderVerdict];
+
+/** The actor source a decider's decision records. */
+export const ACTOR_SOURCE_DECIDER = "decider";
+
+/** Review formats. */
+export const ReviewFormat = {
+  Text: "text",
+  Diff: "diff",
+} as const;
+
+export type ReviewFormat = (typeof ReviewFormat)[keyof typeof ReviewFormat];
+
+/** Takeover modes: terminal gives the human a shell, desktop the live
+ * desktop view (it needs a desktop block). */
+export const TakeoverVia = {
+  Terminal: "terminal",
+  Desktop: "desktop",
+} as const;
+
+export type TakeoverVia = (typeof TakeoverVia)[keyof typeof TakeoverVia];
 
 /** Lifecycle actions a gate can hold. */
 export const LifecycleAction = {
@@ -1033,6 +1120,10 @@ export function isInterventionApproved(i: Intervention | undefined): boolean {
  * (with the outcome on result). */
 export function isInterventionSettled(i: Intervention | undefined): boolean {
   if (!i || !isInterventionTerminal(i)) return false;
-  const runs = i.mode === GateMode.Ask && (!!i.payload?.exec || !!i.payload?.lifecycle);
+  // a decider's allow lets the caller perform the action itself.
+  if (i.decision?.decided_by?.source === ACTOR_SOURCE_DECIDER) return true;
+  const runs =
+    i.mode === GateMode.Ask &&
+    (!!i.payload?.exec || !!i.payload?.lifecycle || !!i.payload?.computer);
   return !runs || !isInterventionApproved(i) || !!i.result;
 }

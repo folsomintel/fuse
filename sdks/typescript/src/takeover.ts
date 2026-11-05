@@ -4,19 +4,26 @@
 // intervention to settle and retries, so agent code needs no changes.
 
 import type { CallOptions, Transport } from "./transport.js";
+import type { Intervention } from "./types.js";
 import { isLocked } from "./errors.js";
 import { waitIntervention } from "./interventions.js";
 
-/** Per-call options for calls a takeover can lock (computer actions). */
+/** Per-call options for calls a takeover can lock or a gate can hold
+ * (computer actions). */
 export interface LockedCallOptions extends CallOptions {
-  /** Wait out a takeover or a pending stall (the default). false throws a
-   * LockedError at once instead. */
+  /** Wait out a takeover or a pending stall, and a gate's hold (the
+   * default). false throws a LockedError or a PendingInterventionError at
+   * once instead. */
   wait?: boolean;
+  /** Called with the pending intervention when a gate holds the action,
+   * before waiting on it. It overrides the client's onHeld. */
+  onHeld?: (held: Intervention) => void;
 }
 
 /** Body for environments.takeover. */
 export interface TakeoverOptions {
-  /** How to take over; "terminal" (the default). */
+  /** How to take over: TakeoverVia.Terminal (the default) or
+   * TakeoverVia.Desktop. */
   via?: string;
   /** Recorded when no agent request is pending to claim. */
   reason?: string;
