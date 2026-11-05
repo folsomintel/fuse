@@ -37,7 +37,7 @@ STARTUP_TIMEOUT="${WG_STARTUP_TIMEOUT:-30}"
 # bridge but its own.
 BRIDGE_NET=10.202.0.0/16
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OPS_SYSTEMD="$(cd "$HERE/../../ops/systemd" 2>/dev/null && pwd || true)"
 
 log() { printf '[wireguard] %s\n' "$*"; }

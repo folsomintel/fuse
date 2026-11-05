@@ -33,7 +33,7 @@ real traffic. Expect operational details to be refined once it has.
 ## Install
 
 ```bash
-FUSE_WITH_WIREGUARD=1 ./host-agent/firecracker/fc-deps.sh
+FUSE_WITH_WIREGUARD=1 ./host-agent/firecracker/scripts/fc-deps.sh
 ```
 
 This installs a pinned wireproxy release to `/usr/local/bin/wireproxy` and
@@ -150,7 +150,7 @@ fails closed with no egress rather than sharing the key.
 ls /home/ubuntu/fc/agent-state/wireguard/*/refs
 
 # one bridge's state: unit, peer endpoint, last handshake, bytes
-sudo ./host-agent/firecracker/fc-wireguard.sh status <fp> <slot>
+sudo ./host-agent/firecracker/scripts/fc-wireguard.sh status <fp> <slot>
 
 # wireproxy's own log
 journalctl -u fuse-wireguard@<fp>

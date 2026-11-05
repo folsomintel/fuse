@@ -687,7 +687,7 @@ EGRESS_PROVIDERS[WARP_PROVIDER] = (warp_provision, warp_destroy)
 # keeps the refcount.
 
 WG_PROVIDER = "wireguard"
-WG_SCRIPT = FC_DIR / "fc-wireguard.sh"
+WG_SCRIPT = FC_DIR / "scripts" / "fc-wireguard.sh"
 WG_DIR = STATE_DIR / "wireguard"
 WG_GUEST_PORT = int(os.environ.get("FUSE_WG_GUEST_PORT", "1080"))
 # the bridge speaks both protocols at once, so vms asking for either can share
