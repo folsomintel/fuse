@@ -22,8 +22,8 @@ the host:
 
 ```bash
 cd host-agent/firecracker
-./fc-bake-rootfs.sh           # the base image, if you have not baked it yet
-./fc-bake-desktop-rootfs.sh   # layers the desktop on top -> rootfs-desktop.ext4
+./scripts/fc-bake-rootfs.sh           # the base image, if you have not baked it yet
+./scripts/fc-bake-desktop-rootfs.sh   # layers the desktop on top -> rootfs-desktop.ext4
 mkdir -p images && cp rootfs-desktop.ext4 images/desktop.ext4
 ```
 
@@ -57,7 +57,7 @@ space-separated list whose first entry is the default. A leaner image can carry
 just one:
 
 ```bash
-FC_DESKTOP_WMS=openbox ./fc-bake-desktop-rootfs.sh
+FC_DESKTOP_WMS=openbox ./scripts/fc-bake-desktop-rootfs.sh
 cp rootfs-desktop.ext4 images/desktop-openbox.ext4
 ```
 
@@ -78,7 +78,7 @@ resources:
 ```
 
 The display geometry defaults to 1024x768. It can be changed at bake time with
-`FC_DESKTOP_GEOMETRY=1280x800x24 ./fc-bake-desktop-rootfs.sh`.
+`FC_DESKTOP_GEOMETRY=1280x800x24 ./scripts/fc-bake-desktop-rootfs.sh`.
 
 ## Sizing and cost
 

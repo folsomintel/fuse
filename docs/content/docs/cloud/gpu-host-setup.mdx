@@ -21,17 +21,17 @@ be checkpointed. See [Providers](/docs/concepts/providers) and
 cd host-agent
 
 # install qemu, ovmf, a base cloud image, and the ssh keypair
-./qemu-install.sh
+./scripts/qemu-install.sh
 
 # build the in-guest agent and bake a cuda image with an explicit driver branch
 ./fc-build-agent.sh
-./qemu-bake-cuda-rootfs.sh 550
+./scripts/qemu-bake-cuda-rootfs.sh 550
 
 # inspect IOMMU groups and bind every member of each gpu group to vfio-pci.
 # bind also snapshots nvidia-smi into vfio-inventory.txt -- see "IOMMU groups"
 # below for why the snapshot must happen before the bind.
-./qemu-vfio-bind.sh --list
-sudo ./qemu-vfio-bind.sh
+./scripts/qemu-vfio-bind.sh --list
+sudo ./scripts/qemu-vfio-bind.sh
 
 # install and start the host agent
 sudo cp qemu-agent.service /etc/systemd/system/
@@ -48,9 +48,9 @@ extracted for QEMU.
 NVIDIA driver no longer owns the device. So the probe **must** run before the
 bind:
 
-1. `./qemu-vfio-bind.sh --list` (or any `nvidia-smi` invocation) while devices
+1. `./scripts/qemu-vfio-bind.sh --list` (or any `nvidia-smi` invocation) while devices
    are still on `nvidia`.
-2. `sudo ./qemu-vfio-bind.sh` to move them to `vfio-pci`.
+2. `sudo ./scripts/qemu-vfio-bind.sh` to move them to `vfio-pci`.
 
 `qemu-vfio-bind.sh` enforces this internally: `do_bind` calls
 `snapshot_smi` *before* it touches any `/sys/bus/pci/.../driver_override`, and
@@ -164,7 +164,7 @@ not a hard failure**, because zero GPUs is a legitimate configuration. If the
 host agent is unreachable or its `/v1/capacity` errors, the host still
 registers with `gpus=0` and the warning is attached to the host record. A
 QEMU host that *should* have GPUs but probes zero usually means the inventory
-file is empty or stale — re-run `sudo ./qemu-vfio-bind.sh` and check
+file is empty or stale — re-run `sudo ./scripts/qemu-vfio-bind.sh` and check
 `vfio-inventory.txt` before re-registering.
 
 ## Fractional GPUs with MIG
@@ -183,7 +183,7 @@ inventory the agent reports to the orchestrator. Apply a layout with one
 `--profile profile=count` flag per profile:
 
 ```bash
-sudo ./qemu-mig-setup.sh --profile 1g.10gb=4 --profile 2g.20gb=2
+sudo ./scripts/qemu-mig-setup.sh --profile 1g.10gb=4 --profile 2g.20gb=2
 ```
 
 The layout is persisted to `$QEMU_DIR/mig-layout.conf` so a reboot re-applies it
@@ -191,7 +191,7 @@ The layout is persisted to `$QEMU_DIR/mig-layout.conf` so a reboot re-applies it
 `MIG_LIFECYCLE_MANAGED` is set). List the live instances with `--list`:
 
 ```bash
-./qemu-mig-setup.sh --list
+./scripts/qemu-mig-setup.sh --list
 ```
 
 The inventory format is four fields, the last one optional:
@@ -273,8 +273,8 @@ See [Fusefile](/docs/concepts/fusefile) for the full field reference.
 ## Validating the setup
 
 ```bash
-./qemu-agent-test.sh
-FUSE_GPU_E2E=1 FUSE_GPU_KIND=a100 ./qemu-e2e.sh
+./tests/qemu-agent-test.sh
+FUSE_GPU_E2E=1 FUSE_GPU_KIND=a100 ./tests/qemu-e2e.sh
 ```
 
 The end-to-end test registers a QEMU host, creates a GPU environment, runs
