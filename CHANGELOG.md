@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.38.0](https://github.com/folsomintel/fuse/compare/v0.37.1...v0.38.0) (2026-11-05)
+
+
+### Features
+
+* add hitl exec and lifecycle gates across api, cli and all four sdks ([#324](https://github.com/folsomintel/fuse/issues/324)) ([d994a79](https://github.com/folsomintel/fuse/commit/d994a79b7a99c2ff8329b7cdccbe9c719eb8e0b8))
+* add hitl intervention core with ask requests across api, cli and all four sdks ([#318](https://github.com/folsomintel/fuse/issues/318)) ([8e571a8](https://github.com/folsomintel/fuse/commit/8e571a817757433a59ce7455a0e4676b562fca8c))
+* add hitl scoped keys, actors, audit log and webhooks across api, cli and all four sdks ([#319](https://github.com/folsomintel/fuse/issues/319)) ([4e5bf09](https://github.com/folsomintel/fuse/commit/4e5bf090b463532e144a5be25868dcc989d6aa54))
+* add hitl secret requests, terminal takeover and stall/expiry signals across api, cli and all four sdks ([#325](https://github.com/folsomintel/fuse/issues/325)) ([343ccc1](https://github.com/folsomintel/fuse/commit/343ccc1c3fa9593ad0cddb0ae9d72f24cdafe645))
+
 ## [0.37.1](https://github.com/folsomintel/fuse/compare/v0.37.0...v0.37.1) (2026-10-23)
 
 
