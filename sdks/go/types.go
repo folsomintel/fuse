@@ -187,6 +187,13 @@ type ComputerActionRequest struct {
 	Duration        float64 `json:"duration,omitempty"`
 	ScrollDirection string  `json:"scroll_direction,omitempty"`
 	ScrollAmount    int     `json:"scroll_amount,omitempty"`
+	// NoWait returns a *PendingInterventionError at once when a computer
+	// gate holds the action, instead of waiting for the human, and a
+	// *LockedError instead of waiting out a takeover.
+	NoWait bool `json:"-"`
+	// OnHeld is called with the pending intervention when a gate holds the
+	// action, before Computer waits on it.
+	OnHeld func(*Intervention) `json:"-"`
 }
 
 // ComputerActionResponse is the guest's answer to one action. Screenshot is

@@ -107,7 +107,9 @@ type HitlSpec struct {
 	// Secret is non-nil when secret requests are declared.
 	Secret *HitlSecretSpec
 	// Takeover is non-nil when takeover requests are declared.
-	Takeover     *HitlTakeoverSpec
+	Takeover *HitlTakeoverSpec
+	// Review is true when review requests are declared.
+	Review       bool
 	RequireActor bool
 	Notify       []HitlWebhook
 	Gates        []HitlGateSpec
@@ -132,6 +134,7 @@ type HitlGateSpec struct {
 	Args           []string
 	Shell          bool
 	Action         []string
+	TextContains   []string
 	Failures       int
 	QuietSeconds   int64
 	BeforeSeconds  int64
@@ -139,6 +142,14 @@ type HitlGateSpec struct {
 	Grant          string
 	TimeoutSeconds int64
 	Reason         string
+	// Decide is the gate's decider, nil when it has none.
+	Decide *HitlDecider
+}
+
+// HitlDecider is a compiled gate decider.
+type HitlDecider struct {
+	URL    string
+	Secret string
 }
 
 // HitlExecPolicy is the compiled hitl.exec block.
@@ -1150,7 +1161,7 @@ func compileHitl(f *Fusefile) *HitlSpec {
 	if f.Hitl == nil {
 		return nil
 	}
-	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil, RequireActor: f.Hitl.RequireActor}
+	spec := &HitlSpec{OnTimeout: f.Hitl.OnTimeout, Ask: f.Hitl.Requests.Ask != nil, Review: f.Hitl.Requests.Review != nil, RequireActor: f.Hitl.RequireActor}
 	for _, n := range f.Hitl.Notify {
 		spec.Notify = append(spec.Notify, HitlWebhook{URL: n.Webhook, Secret: n.Secret})
 	}
@@ -1171,7 +1182,10 @@ func compileHitl(f *Fusefile) *HitlSpec {
 	for _, g := range f.Hitl.Gates {
 		gate := HitlGateSpec{
 			Name: g.Name, On: g.On, Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell,
-			Action: g.Match.Action, Mode: g.Mode, Grant: g.Grant, Reason: g.Reason,
+			Action: g.Match.Action, TextContains: g.Match.TextContains, Mode: g.Mode, Grant: g.Grant, Reason: g.Reason,
+		}
+		if g.Decide != nil {
+			gate.Decide = &HitlDecider{URL: g.Decide.URL, Secret: g.Decide.Secret}
 		}
 		if g.Timeout != "" {
 			if d, err := time.ParseDuration(g.Timeout); err == nil {

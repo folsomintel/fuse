@@ -84,8 +84,9 @@ func (s *EnvironmentsService) ComputerToolResult(ctx context.Context, vmID strin
 	if err := CheckResponse(resp); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) {
-			switch apiErr.Status {
-			case http.StatusBadRequest, http.StatusConflict, http.StatusServiceUnavailable:
+			switch {
+			case apiErr.Status == http.StatusBadRequest, apiErr.Status == http.StatusConflict, apiErr.Status == http.StatusServiceUnavailable,
+				IsHitlDenied(err):
 				// the model asked for something the environment refused;
 				// telling the model is the fix, not failing the loop.
 				return toolError(apiErr.Message), nil
@@ -93,11 +94,25 @@ func (s *EnvironmentsService) ComputerToolResult(ctx context.Context, vmID strin
 		}
 		return nil, err
 	}
-	defer func() { _ = resp.Body.Close() }()
-
 	var res ComputerActionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, fmt.Errorf("decode computer response: %w", err)
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		out, err := s.settleComputer(ctx, held, heldOptions{})
+		var rejected *InterventionRejectedError
+		if errors.As(err, &rejected) {
+			return toolError("a human rejected this action: " + err.Error()), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		res = *out
+	} else {
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			return nil, fmt.Errorf("decode computer response: %w", err)
+		}
 	}
 
 	var blocks []ToolResultBlock

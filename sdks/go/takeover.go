@@ -23,6 +23,10 @@ const (
 // shell on the attach path.
 const TakeoverViaTerminal = "terminal"
 
+// TakeoverViaDesktop gives the human the live desktop view, recorded as an
+// input-action log plus periodic screenshots. It needs a desktop block.
+const TakeoverViaDesktop = "desktop"
+
 // SecretAnswer is what an agent's secret request resolves to. The value
 // itself never comes back.
 const SecretAnswer = "done"
@@ -171,8 +175,10 @@ func (s *InterventionsService) AnswerSecret(ctx context.Context, id, value strin
 	return &in, nil
 }
 
-// Recording returns one recorded takeover session as an asciinema v2 cast,
-// decrypted by the orchestrator. takeover_session audit rows name it.
+// Recording returns one recorded takeover session, decrypted by the
+// orchestrator: an asciinema v2 cast for a terminal session, json (an
+// input-action log plus screenshots) for a desktop one.
+// takeover_session audit rows name it.
 // Needs hitl:read.
 func (s *InterventionsService) Recording(ctx context.Context, recordingID string) ([]byte, error) {
 	if s == nil || s.t == nil {
@@ -198,7 +204,7 @@ func (s *InterventionsService) Recording(ctx context.Context, recordingID string
 
 // TakeoverOptions starts a takeover.
 type TakeoverOptions struct {
-	// Via is TakeoverViaTerminal (the default).
+	// Via is TakeoverViaTerminal (the default) or TakeoverViaDesktop.
 	Via string `json:"via,omitempty"`
 	// Reason is recorded when there is no agent request to claim.
 	Reason string `json:"reason,omitempty"`
@@ -263,4 +269,24 @@ func (s *EnvironmentsService) TakeoverAttach(ctx context.Context, interventionID
 		return nil, err
 	}
 	return &AttachStream{conn: conn, r: br}, nil
+}
+
+// TakeoverDesktop opens the takeover holder's live desktop: the computer
+// stream on the takeover's own route, recorded as an input-action log plus
+// periodic screenshots. The plain ComputerStream answers 423 while the
+// takeover is held. The takeover must have been started with
+// TakeoverViaDesktop.
+func (s *EnvironmentsService) TakeoverDesktop(ctx context.Context, interventionID string) (*ComputerStream, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("environments service is not configured")
+	}
+	if interventionID == "" {
+		return nil, errors.New("intervention id is required")
+	}
+	path := "/v1/interventions/" + url.PathEscape(interventionID) + "/desktop"
+	conn, br, err := s.t.dialUpgrade(ctx, path, url.Values{}, VNCProto, "takeover desktop")
+	if err != nil {
+		return nil, err
+	}
+	return &ComputerStream{conn: conn, r: br}, nil
 }

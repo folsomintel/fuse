@@ -409,7 +409,7 @@
     },
     "hitl": {
       "type": "object",
-      "description": "Human-in-the-loop policy: what the agent may ask a human for, which exec and lifecycle actions are held, recorded or refused, and how long a human has to answer. Declare at least one of requests.ask, gates or exec. Omit the block and hitl is off. Enforced by the orchestrator; nothing of it goes into the guest.",
+      "description": "Human-in-the-loop policy: what the agent may ask a human for, which exec, lifecycle and computer actions are held, recorded or refused, and how long a human has to answer. Declare at least one request kind, gates or exec. Omit the block and hitl is off. Enforced by the orchestrator; nothing of it goes into the guest.",
       "additionalProperties": false,
       "properties": {
         "timeout": {
@@ -469,7 +469,11 @@
                 }
               }
             },
-            "review": { "not": {}, "description": "Not yet supported; refused at validation." },
+            "review": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Let the agent submit a guest file or a text/diff blob for review. The human approves or rejects it with comments, which reach the agent either way."
+            },
             "takeover": {
               "type": "object",
               "additionalProperties": false,
@@ -477,8 +481,8 @@
               "properties": {
                 "via": {
                   "type": "array",
-                  "items": { "type": "string", "enum": ["terminal"] },
-                  "description": "Allowed ways in. Only terminal exists so far; empty means terminal."
+                  "items": { "type": "string", "enum": ["terminal", "desktop"] },
+                  "description": "Allowed ways in: terminal (a recorded shell) and desktop (the recorded live desktop view, which needs a desktop block). Empty means terminal."
                 }
               }
             }
@@ -518,23 +522,24 @@
         "gates": {
           "type": "array",
           "maxItems": 64,
-          "description": "Enforced gates on the actions fuse relays: sdk/cli exec and environment lifecycle actions. When several match, deny beats ask beats notify.",
+          "description": "Enforced gates on the actions fuse relays: sdk/cli exec, environment lifecycle actions and computer actions. When several match, deny beats ask beats notify.",
           "items": {
             "type": "object",
             "additionalProperties": false,
             "required": ["name", "on", "match"],
             "properties": {
               "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,63}$", "description": "Names the gate on interventions and grants." },
-              "on": { "type": "string", "enum": ["exec", "lifecycle", "stall", "expiry"], "description": "The surface the gate watches: exec and lifecycle hold actions; stall and expiry are signals fuse raises on its own." },
+              "on": { "type": "string", "enum": ["exec", "lifecycle", "computer", "stall", "expiry"], "description": "The surface the gate watches: exec, lifecycle and computer hold actions; stall and expiry are signals fuse raises on its own." },
               "match": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Every field set must match. exec gates take program, args or shell; lifecycle gates take action; stall gates take failures and/or quiet; expiry gates take before.",
+                "description": "Every field set must match. exec gates take program, args or shell; lifecycle gates take action; computer gates take action and/or text_contains (never coordinates); stall gates take failures and/or quiet; expiry gates take before.",
                 "properties": {
                   "program": { "type": ["string", "array"], "items": { "type": "string" }, "description": "argv[0] basename, or a list of them, after env, sudo, nice, timeout, xargs, nohup and stdbuf are stripped." },
                   "args": { "type": "array", "items": { "type": "string" }, "description": "Arguments that must appear in argv in this order, not necessarily adjacent." },
                   "shell": { "type": "boolean", "description": "Match any opaque shell exec (shell:, or sh/bash -c). Cannot be combined with program or args." },
-                  "action": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Lifecycle action, or a list: destroy, fork, migrate, drain, snapshot, rotate-token." },
+                  "action": { "type": ["string", "array"], "items": { "type": "string" }, "description": "Lifecycle action, or a list: destroy, fork, migrate, drain, snapshot, rotate-token. On a computer gate, a computer action or a list: left_click, type, key, left_click_drag, scroll and the rest of the computer action names." },
+                  "text_contains": { "type": ["string", "array"], "items": { "type": "string", "minLength": 1 }, "description": "Computer gates only: match a type action whose text contains any of these, ignoring case. Implies action: type." },
                   "failures": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Raise a stall after this many consecutive failing execs." },
                   "quiet": { "$ref": "#/$defs/duration", "description": "Raise a stall after this long with no exec or computer call, at least 1m." },
                   "before": { "$ref": "#/$defs/duration", "description": "Raise an expiry this long before the idle_timeout or max_runtime reap, at least 1m. Approving extends the environment; nobody answering lets the reap go ahead." }
@@ -543,7 +548,17 @@
               "mode": { "type": "string", "enum": ["ask", "notify", "deny"], "default": "ask", "description": "ask holds until a human decides; notify lets it through and records it; deny refuses it with reason." },
               "grant": { "type": "string", "pattern": "^(once|env|ttl:.+)$", "description": "Default reach of an approval: once, env (the environment's lifetime) or ttl:<duration>. Only for ask gates." },
               "timeout": { "$ref": "#/$defs/duration", "description": "Deadline for this gate's interventions, overriding hitl.timeout." },
-              "reason": { "type": "string", "maxLength": 1024, "description": "Returned to the caller on deny, shown to the human on ask." }
+              "reason": { "type": "string", "maxLength": 1024, "description": "Returned to the caller on deny, shown to the human on ask." },
+              "decide": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["url", "secret"],
+                "description": "A decider asked before a human, on an ask gate. Fuse POSTs the action (plus a screenshot for computer) signed with HMAC-SHA256 in the Fuse-Signature header; the endpoint answers {\"decision\": \"allow\" | \"deny\" | \"ask\"}. A failure or a 5s timeout means ask.",
+                "properties": {
+                  "url": { "type": "string", "format": "uri", "description": "An http or https url that receives a POST per held action." },
+                  "secret": { "type": "string", "description": "Name of the secret, also listed under secrets:, whose value signs each call." }
+                }
+              }
             }
           }
         },

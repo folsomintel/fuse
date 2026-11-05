@@ -359,7 +359,7 @@ func validate(f *Fusefile) error {
 	errs = append(errs, validateExposeHealthcheck(f)...)
 	errs = append(errs, validateDesktop(f.Desktop)...)
 	errs = append(errs, validateEgress(f.Egress)...)
-	errs = append(errs, validateHitl(f.Hitl, f.Secrets)...)
+	errs = append(errs, validateHitl(f.Hitl, f.Secrets, f.Desktop != nil)...)
 
 	// an empty secret name is a requirement no `--secret` flag can satisfy, and
 	// the server's ExtractRequiredSecrets skips empty refs, so the two sides
@@ -577,7 +577,7 @@ const (
 // validateHitl checks the hitl block. It mirrors internal/hitl.Spec.Validate
 // so a Fusefile the CLI accepts is one the orchestrator accepts too, and it
 // refuses the parts of the design that are not built yet by name.
-func validateHitl(h *Hitl, secrets []string) []error {
+func validateHitl(h *Hitl, secrets []string, desktop bool) []error {
 	if h == nil {
 		return nil
 	}
@@ -613,15 +613,29 @@ func validateHitl(h *Hitl, secrets []string) []error {
 		}
 	}
 	errs = append(errs, validateHitlGates(h)...)
-	for name, node := range map[string]yaml.Node{
-		"hitl.requests.review": h.Requests.Review,
-	} {
-		if !node.IsZero() {
-			errs = append(errs, fmt.Errorf("%s: not yet supported", name))
+	for i, g := range h.Gates {
+		if g.Decide == nil {
+			continue
+		}
+		at := fmt.Sprintf("hitl.gates[%d].decide", i)
+		if u, err := url.Parse(g.Decide.URL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil {
+			errs = append(errs, fmt.Errorf("%s.url: must be an http or https url with a host and no credentials, got %q", at, g.Decide.URL))
+		}
+		switch {
+		case g.Decide.Secret == "":
+			errs = append(errs, fmt.Errorf("%s.secret: name the secret that signs decider calls", at))
+		case !slices.Contains(secrets, g.Decide.Secret):
+			errs = append(errs, fmt.Errorf("%s.secret: %q must also be listed under the top-level secrets", at, g.Decide.Secret))
+		}
+		switch {
+		case g.On == "stall" || g.On == "expiry":
+			errs = append(errs, fmt.Errorf("%s: a %s signal has no action for a decider to judge", at, g.On))
+		case g.Mode != "" && g.Mode != "ask":
+			errs = append(errs, fmt.Errorf("%s: only an ask gate can have a decider", at))
 		}
 	}
-	if h.Requests.Ask == nil && h.Requests.Secret == nil && h.Requests.Takeover == nil && len(h.Gates) == 0 && h.Exec == nil {
-		errs = append(errs, errors.New("hitl: declare at least one of requests (ask, secret or takeover), gates or exec"))
+	if h.Requests.Ask == nil && h.Requests.Secret == nil && h.Requests.Takeover == nil && h.Requests.Review == nil && len(h.Gates) == 0 && h.Exec == nil {
+		errs = append(errs, errors.New("hitl: declare at least one of requests (ask, secret, review or takeover), gates or exec"))
 	}
 	if s := h.Requests.Secret; s != nil {
 		errs = append(errs, validateHitlSecret(s)...)
@@ -630,10 +644,14 @@ func validateHitl(h *Hitl, secrets []string) []error {
 		for i, v := range t.Via {
 			switch v {
 			case "terminal":
-			case "desktop", "port":
+			case "desktop":
+				if !desktop {
+					errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: desktop needs a desktop block", i))
+				}
+			case "port":
 				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: %q is not yet supported", i, v))
 			default:
-				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: must be \"terminal\", got %q", i, v))
+				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: must be \"terminal\" or \"desktop\", got %q", i, v))
 			}
 		}
 	}
@@ -646,6 +664,12 @@ func validateHitl(h *Hitl, secrets []string) []error {
 var (
 	hitlGateName         = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 	hitlLifecycleActions = []string{"destroy", "fork", "migrate", "drain", "snapshot", "rotate-token"}
+	hitlComputerActions  = []string{
+		"screenshot", "cursor_position", "mouse_move",
+		"left_click", "right_click", "middle_click", "double_click", "triple_click",
+		"left_click_drag", "left_mouse_down", "left_mouse_up",
+		"type", "key", "hold_key", "scroll", "wait", "zoom",
+	}
 )
 
 const (
@@ -703,7 +727,7 @@ func validateHitlGates(h *Hitl) []error {
 				}
 			}
 		case "lifecycle":
-			if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 {
+			if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 || len(m.TextContains) > 0 {
 				errs = append(errs, fmt.Errorf("%s.match: a lifecycle gate matches only action", at))
 			}
 			if len(m.Action) == 0 {
@@ -714,12 +738,38 @@ func validateHitlGates(h *Hitl) []error {
 					errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, strings.Join(hitlLifecycleActions, ", "), a))
 				}
 			}
+		case "computer":
+			if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 {
+				errs = append(errs, fmt.Errorf("%s.match: a computer gate matches only action and text_contains", at))
+			}
+			if len(m.Action) == 0 && len(m.TextContains) == 0 {
+				errs = append(errs, fmt.Errorf("%s.match: a computer gate needs action or text_contains", at))
+			}
+			for j, a := range m.Action {
+				if !slices.Contains(hitlComputerActions, a) {
+					errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, strings.Join(hitlComputerActions, ", "), a))
+				}
+			}
+			if len(m.TextContains) > 0 && len(m.Action) > 0 && !slices.Equal([]string(m.Action), []string{"type"}) {
+				errs = append(errs, fmt.Errorf("%s.match.text_contains: only applies to the type action; drop the other actions or split the gate", at))
+			}
+			if len(m.TextContains) > maxHitlMatches {
+				errs = append(errs, fmt.Errorf("%s.match.text_contains: at most %d entries", at, maxHitlMatches))
+			}
+			for j, t := range m.TextContains {
+				if t == "" {
+					errs = append(errs, fmt.Errorf("%s.match.text_contains[%d]: must not be empty", at, j))
+				}
+			}
 		case "stall", "expiry":
 			errs = append(errs, validateHitlSignal(at, g)...)
-		case "attach", "computer", "egress":
+		case "attach", "egress":
 			errs = append(errs, fmt.Errorf("%s.on: %q is not yet supported", at, g.On))
 		default:
-			errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, stall or expiry, got %q", at, g.On))
+			errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, computer, stall or expiry, got %q", at, g.On))
+		}
+		if g.On != "computer" && len(m.TextContains) > 0 {
+			errs = append(errs, fmt.Errorf("%s.match.text_contains: only applies to on: computer", at))
 		}
 		if g.On != "stall" && g.On != "expiry" && (m.Failures != 0 || m.Quiet != "" || m.Before != "") {
 			errs = append(errs, fmt.Errorf("%s.match: failures, quiet and before only apply to on: stall or expiry", at))

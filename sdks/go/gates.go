@@ -12,6 +12,15 @@ import (
 const (
 	HitlKindExec      = "exec"
 	HitlKindLifecycle = "lifecycle"
+	HitlKindComputer  = "computer"
+)
+
+// Decider verdicts, and the actor source a decider's decision records.
+const (
+	DeciderAllow       = "allow"
+	DeciderDeny        = "deny"
+	DeciderAsk         = "ask"
+	ActorSourceDecider = "decider"
 )
 
 // Gate modes.
@@ -45,7 +54,8 @@ func IsHitlDenied(err error) bool { return ForbiddenReason(err) == ForbiddenHitl
 // HitlGate is one enforced gate.
 type HitlGate struct {
 	Name string `json:"name"`
-	// On is HitlKindExec or HitlKindLifecycle.
+	// On is HitlKindExec, HitlKindLifecycle, HitlKindComputer,
+	// HitlKindStall or HitlKindExpiry.
 	On    string        `json:"on"`
 	Match HitlGateMatch `json:"match"`
 	// Mode is GateModeAsk (the default), GateModeNotify or GateModeDeny.
@@ -56,6 +66,16 @@ type HitlGate struct {
 	TimeoutSeconds int64  `json:"timeout_seconds,omitempty"`
 	// Reason is returned on a deny and shown to the human on an ask.
 	Reason string `json:"reason,omitempty"`
+	// Decide is a webhook asked allow, deny or ask before a human sees an
+	// ask gate's action. A failure or timeout means ask.
+	Decide *HitlDecider `json:"decide,omitempty"`
+}
+
+// HitlDecider is a gate's decider. Secret names an entry in the create
+// request's secrets map; its value signs each call (Fuse-Signature).
+type HitlDecider struct {
+	URL    string `json:"url"`
+	Secret string `json:"secret"`
 }
 
 // HitlGateMatch selects the actions a gate applies to. Every field set must
@@ -68,8 +88,12 @@ type HitlGateMatch struct {
 	Args []string `json:"args,omitempty"`
 	// Shell matches any opaque shell exec.
 	Shell bool `json:"shell,omitempty"`
-	// Action matches lifecycle actions (the Lifecycle constants).
+	// Action matches lifecycle actions (the Lifecycle constants) or, on a
+	// computer gate, computer action names ("type", "key", "left_click", ...).
 	Action []string `json:"action,omitempty"`
+	// TextContains matches a computer "type" whose text contains any entry,
+	// ignoring case.
+	TextContains []string `json:"text_contains,omitempty"`
 	// Failures raises a stall after this many consecutive non-zero exec
 	// exits (On HitlKindStall).
 	Failures int `json:"failures,omitempty"`
@@ -95,6 +119,21 @@ type ExecPayload struct {
 	TimeoutMS int64    `json:"timeout_ms,omitempty"`
 }
 
+// ComputerPayload is a held computer action. Input is the body as sent.
+type ComputerPayload struct {
+	Action string          `json:"action"`
+	Text   string          `json:"text,omitempty"`
+	Input  json.RawMessage `json:"input"`
+}
+
+// DeciderNote is what a gate's decider said when it sent an action on to
+// a human: Verdict "ask" with its Reason, or the Error fuse fell through on.
+type DeciderNote struct {
+	Verdict string `json:"verdict"`
+	Reason  string `json:"reason,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 // LifecyclePayload is a held environment action.
 type LifecyclePayload struct {
 	Action string `json:"action"`
@@ -102,11 +141,12 @@ type LifecyclePayload struct {
 
 // InterventionResult is what running an approved gated action produced.
 type InterventionResult struct {
-	Exec       *ExecResult `json:"exec,omitempty"`
-	EnvID      string      `json:"env_id,omitempty"`
-	SnapshotID string      `json:"snapshot_id,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	FinishedAt time.Time   `json:"finished_at"`
+	Exec       *ExecResult             `json:"exec,omitempty"`
+	Computer   *ComputerActionResponse `json:"computer,omitempty"`
+	EnvID      string                  `json:"env_id,omitempty"`
+	SnapshotID string                  `json:"snapshot_id,omitempty"`
+	Error      string                  `json:"error,omitempty"`
+	FinishedAt time.Time               `json:"finished_at"`
 }
 
 // Settled reports whether a caller has its final answer: resolved, and for
@@ -115,7 +155,11 @@ func (in *Intervention) Settled() bool {
 	if !in.Terminal() {
 		return false
 	}
-	runs := in.Mode == GateModeAsk && (in.Payload.Exec != nil || in.Payload.Lifecycle != nil)
+	// a decider's allow lets the caller perform the action itself.
+	if in.Decision != nil && in.Decision.DecidedBy.Source == ActorSourceDecider {
+		return true
+	}
+	runs := in.Mode == GateModeAsk && (in.Payload.Exec != nil || in.Payload.Lifecycle != nil || in.Payload.Computer != nil)
 	return !runs || !in.Approved() || in.Result != nil
 }
 
@@ -233,6 +277,9 @@ type ApproveOptions struct {
 	// EditedArgv replaces a held exec's argv. It is re-checked against the
 	// deny gates, and cannot be combined with Grant.
 	EditedArgv []string `json:"edited_argv,omitempty"`
+	// EditedText replaces a held computer "type" action's text. It is
+	// re-checked against the deny gates, and cannot be combined with Grant.
+	EditedText *string `json:"edited_text,omitempty"`
 	// Grant is "once", "env" or "ttl:<duration>"; empty takes the gate's
 	// default.
 	Grant string `json:"grant,omitempty"`

@@ -56,32 +56,39 @@ func TestHitlAbsentStaysNil(t *testing.T) {
 
 func TestHitlRejects(t *testing.T) {
 	cases := map[string]string{
-		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                                                                   "hitl.timeout",
-		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                                     "between",
-		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                                                 "between",
-		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                                               "hitl.on_timeout",
-		"hitl:\n  timeout: 5m\n":                                                                                               "declare at least one of requests (ask, secret or takeover), gates or exec",
-		"hitl:\n  requests:\n    secret: {targets: []}\n":                                                                      "declare at least one target",
-		"hitl:\n  requests:\n    secret: {targets: [{env: GH_TOKEN}]}\n":                                                       "label is required",
-		"hitl:\n  requests:\n    secret: {targets: [{env: 1BAD, label: x}]}\n":                                                 "not a valid variable name",
-		"hitl:\n  requests:\n    secret: {targets: [{file: rel/path, label: x}]}\n":                                            "absolute path",
-		"hitl:\n  requests:\n    secret: {targets: [{file: /fuse/env, label: x}]}\n":                                           "reserves",
-		"hitl:\n  requests:\n    secret: {targets: [{env: A, file: /a, label: x}]}\n":                                          "not both",
-		"hitl:\n  requests:\n    secret: {targets: [{env: A, label: x}, {env: A, label: y}]}\n":                                "declared twice",
-		"hitl:\n  requests:\n    takeover: {via: [desktop]}\n":                                                                 "not yet supported",
-		"hitl:\n  requests:\n    review: {}\n":                                                                                 "hitl.requests.review: not yet supported",
-		"hitl:\n  gates:\n    - {name: x, on: computer, match: {}}\n":                                                          "hitl.gates[0].on: \"computer\" is not yet supported",
-		"hitl:\n  gates:\n    - {name: x, on: exec, match: {}}\n":                                                              "needs program, args or shell",
-		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: /bin/git}}\n":                                             "not a path",
-		"hitl:\n  gates:\n    - {name: x, on: lifecycle, match: {action: reboot}}\n":                                           "must be one of destroy",
-		"hitl:\n  gates:\n    - {name: x, on: exec, mode: deny, grant: env, match: {program: git}}\n":                          "only an ask gate can grant",
-		"hitl:\n  gates:\n    - {name: x, on: exec, grant: forever, match: {program: git}}\n":                                  "must be once, env or ttl",
-		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: git}}\n    - {name: x, on: exec, match: {program: rm}}\n": "duplicate",
-		"hitl:\n  exec: {default: notify, allow: [git]}\n":                                                                     "hitl.exec.default",
-		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n":                                               "hitl.notify[0].secret: name the secret",
-		"hitl:\n  notify:\n    - {webhook: https://x, secret: S}\n  requests:\n    ask: {}\n":                                  "must also be listed under the top-level secrets",
-		"secrets: [S]\nhitl:\n  notify:\n    - {webhook: ftp://x, secret: S}\n  requests:\n    ask: {}\n":                      "hitl.notify[0].webhook",
-		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                                                                      "poll",
+		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                                                                                     "hitl.timeout",
+		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                                                       "between",
+		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                                                                   "between",
+		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                                                                 "hitl.on_timeout",
+		"hitl:\n  timeout: 5m\n":                                                                                                                 "declare at least one of requests (ask, secret, review or takeover), gates or exec",
+		"hitl:\n  requests:\n    secret: {targets: []}\n":                                                                                        "declare at least one target",
+		"hitl:\n  requests:\n    secret: {targets: [{env: GH_TOKEN}]}\n":                                                                         "label is required",
+		"hitl:\n  requests:\n    secret: {targets: [{env: 1BAD, label: x}]}\n":                                                                   "not a valid variable name",
+		"hitl:\n  requests:\n    secret: {targets: [{file: rel/path, label: x}]}\n":                                                              "absolute path",
+		"hitl:\n  requests:\n    secret: {targets: [{file: /fuse/env, label: x}]}\n":                                                             "reserves",
+		"hitl:\n  requests:\n    secret: {targets: [{env: A, file: /a, label: x}]}\n":                                                            "not both",
+		"hitl:\n  requests:\n    secret: {targets: [{env: A, label: x}, {env: A, label: y}]}\n":                                                  "declared twice",
+		"hitl:\n  requests:\n    takeover: {via: [desktop]}\n":                                                                                   "desktop needs a desktop block",
+		"hitl:\n  requests:\n    takeover: {via: [port]}\n":                                                                                      "not yet supported",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {}}\n":                                                                            "a computer gate needs action or text_contains",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {action: pay}}\n":                                                                 "must be one of screenshot",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {action: key, text_contains: pw}}\n":                                              "only applies to the type action",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: git, text_contains: pw}}\n":                                                 "only applies to on: computer",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {action: type}, decide: {url: https://d}}\n":                                      "decide.secret: name the secret",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {action: type}, decide: {url: https://d, secret: S}}\n":                           "must also be listed under the top-level secrets",
+		"secrets: [S]\nhitl:\n  gates:\n    - {name: x, on: computer, mode: deny, match: {action: type}, decide: {url: https://d, secret: S}}\n": "only an ask gate can have a decider",
+		"secrets: [S]\nhitl:\n  gates:\n    - {name: x, on: stall, match: {failures: 2}, decide: {url: https://d, secret: S}}\n":                 "no action for a decider",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {}}\n":                                                                                "needs program, args or shell",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: /bin/git}}\n":                                                               "not a path",
+		"hitl:\n  gates:\n    - {name: x, on: lifecycle, match: {action: reboot}}\n":                                                             "must be one of destroy",
+		"hitl:\n  gates:\n    - {name: x, on: exec, mode: deny, grant: env, match: {program: git}}\n":                                            "only an ask gate can grant",
+		"hitl:\n  gates:\n    - {name: x, on: exec, grant: forever, match: {program: git}}\n":                                                    "must be once, env or ttl",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: git}}\n    - {name: x, on: exec, match: {program: rm}}\n":                   "duplicate",
+		"hitl:\n  exec: {default: notify, allow: [git]}\n":                                                                                       "hitl.exec.default",
+		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n":                                                                 "hitl.notify[0].secret: name the secret",
+		"hitl:\n  notify:\n    - {webhook: https://x, secret: S}\n  requests:\n    ask: {}\n":                                                    "must also be listed under the top-level secrets",
+		"secrets: [S]\nhitl:\n  notify:\n    - {webhook: ftp://x, secret: S}\n  requests:\n    ask: {}\n":                                        "hitl.notify[0].webhook",
+		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                                                                                        "poll",
 	}
 	for body, want := range cases {
 		_, err := parseHitl(t, body)
@@ -229,5 +236,42 @@ func TestHitlSignalGatesReject(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err = %v, want %q", gate, err, want)
 		}
+	}
+}
+
+func TestHitlComputerReviewAndDeciderCompile(t *testing.T) {
+	f, err := parseHitl(t, `secrets: [DECIDE_KEY]
+desktop: {width: 1280, height: 800}
+hitl:
+  requests:
+    review: {}
+    takeover: {via: [terminal, desktop]}
+  gates:
+    - name: checkout
+      on: computer
+      match: {action: [type, key]}
+      decide: {url: "https://policy.example.com/fuse", secret: DECIDE_KEY}
+    - name: passwords
+      on: computer
+      match: {text_contains: password}
+      mode: deny
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	h := c.Hitl
+	if !h.Review || !slices.Equal(h.Takeover.Via, []string{"terminal", "desktop"}) || len(h.Gates) != 2 {
+		t.Fatalf("hitl = %+v", h)
+	}
+	g := h.Gates[0]
+	if g.On != "computer" || !slices.Equal(g.Action, []string{"type", "key"}) || g.Decide == nil || g.Decide.Secret != "DECIDE_KEY" {
+		t.Fatalf("gate 0 = %+v", g)
+	}
+	if !slices.Equal(h.Gates[1].TextContains, []string{"password"}) {
+		t.Fatalf("gate 1 = %+v", h.Gates[1])
 	}
 }
