@@ -116,7 +116,7 @@ func ValidateSecretFile(p string) error {
 	}
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
-			return fmt.Errorf("file %q must not contain ..", p)
+			return fmt.Errorf("file %q must not contain %q segments", p, "..")
 		}
 	}
 	clean := path.Clean(p)
