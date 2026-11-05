@@ -47,7 +47,7 @@ regenerated, or `TOKEN_ENCRYPTION_KEY` changing (which leaves the stored token
 undecryptable). The two are stored separately, so re-running the agent never
 updates the orchestrator's copy on its own.
 
-Fix: print the current value with `./fc-agent.sh env` on the host, then re-register
+Fix: print the current value with `./scripts/fc-agent.sh env` on the host, then re-register
 the host with it, `fuse host register <id> --token <FIRECRACKER_TOKEN> ...`.
 Registration overwrites the stored token.
 
@@ -62,7 +62,7 @@ iptables, the CA bundle, the systemd unit), and unmounts. If any step in that
 sequence is interrupted, the resulting `rootfs-fused.ext4` can be missing pieces
 silently; new VMs will boot but the agent won't be reachable.
 
-Fix: re-run `./fc-bake-rootfs.sh` from a clean `rootfs.ext4` (re-run `./fc-install.sh`
+Fix: re-run `./scripts/fc-bake-rootfs.sh` from a clean `rootfs.ext4` (re-run `./scripts/fc-install.sh`
 first if you're unsure the base rootfs itself is intact), and check its output for
 every step completing rather than assuming success. See
 [Firecracker host setup](/docs/cloud/firecracker-host-setup#what-gets-baked-into-the-rootfs)

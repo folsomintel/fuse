@@ -1,6 +1,6 @@
 # /etc/default/orchestrator - Fuse orchestrator (control plane) configuration.
 #
-# Reference template. `./fc-agent.sh install-orchestrator` writes a real copy to
+# Reference template. `./scripts/fc-agent.sh install-orchestrator` writes a real copy to
 # /etc/default/orchestrator with FIRECRACKER_TOKEN + the auth/encryption keys
 # already filled in; you only need to set DATABASE_URL. Edit, then:
 #   sudo systemctl restart orchestrator
