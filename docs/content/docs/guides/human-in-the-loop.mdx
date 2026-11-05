@@ -12,12 +12,13 @@ it from the CLI or the API, and the answer goes back to the agent. Every
 request has a deadline, so whatever the human does (or does not do), the
 agent always gets an outcome and carries on.
 
-This page covers the core loop and the three request kinds an agent can
-raise: `ask` for a decision, `secret` for a credential, and `takeover` to
-hand a human the shell. Then gates that hold exec and lifecycle actions
-until a human decides, the stall and expiry signals Fuse raises on its own,
-and the access model around all of it: who may answer, how a person is
-named, the audit log and webhooks.
+This page covers the core loop and the four request kinds an agent can
+raise: `ask` for a decision, `review` for a verdict on a file or a diff,
+`secret` for a credential, and `takeover` to hand a human the shell or the
+desktop. Then gates that hold exec, lifecycle and computer actions until a
+human decides, deciders that answer for the human when they can, the stall
+and expiry signals Fuse raises on its own, and the access model around all
+of it: who may answer, how a person is named, the audit log and webhooks.
 
 ## Concepts
 
@@ -155,11 +156,87 @@ full-access API key can raise a request but cannot answer one, so an agent
 driving Fuse with its own key cannot approve itself. Give the human a scoped
 key instead, as below.
 
+## Reviews
+
+A `review` asks a human for a verdict on something the agent produced: a
+patch, a migration, a config file, a draft. The human approves or rejects
+it, and their comments go back to the agent either way.
+
+```yaml
+hitl:
+  requests:
+    review: {}
+```
+
+The agent sends exactly one of:
+
+- **`path`**: an absolute, clean guest path. Fuse reads the file at request
+  time, up to 1 MiB, so the human reviews what the agent submitted even if
+  the file changes afterwards. A longer file is cut at 1 MiB and the review
+  is marked `truncated`. A file Fuse cannot read is a 400.
+- **`content`**: the text inline, at most 1 MiB.
+
+`format` is `text` or `diff`. Left empty, Fuse guesses: `diff` when the
+content starts like a unified diff (`diff --git`, or `---` followed by a
+`+++` line) or the path ends in `.diff` or `.patch`, else `text`. `message`
+is the agent's note to the reviewer.
+
+```go
+r, err := client.Environments.RequestReview(ctx, envID, fuse.ReviewRequest{
+	Path:    "/work/migrations/0042_add_index.sql",
+	Message: "adds the index the slow query log asked for; safe to run online?",
+})
+if err != nil {
+	return err
+}
+if !r.Approved {
+	return fmt.Errorf("review rejected: %s", r.Comments)
+}
+log.Printf("approved, reviewer says: %s", r.Comments)
+```
+
+TypeScript has the same call as `requestReview`, Python and Rust as
+`request_review`. From the API it is the
+ordinary request:
+
+```bash
+curl -X POST "$FUSE/v1/environments/$ENV?action=request" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"kind":"review","path":"/work/migrations/0042_add_index.sql","message":"safe to run online?"}'
+```
+
+The intervention's `payload.review` holds what is up for review:
+
+```json
+"payload": {
+  "review": {
+    "path": "/work/migrations/0042_add_index.sql",
+    "content": "CREATE INDEX CONCURRENTLY ...",
+    "format": "text",
+    "message": "safe to run online?"
+  }
+}
+```
+
+The human reads it with `fuse hitl show`, which prints the content under the
+details, and decides with a reason as the comments:
+
+```bash
+fuse hitl show int_0187...
+fuse hitl approve int_0187... --reason "fine, but run it outside business hours"
+fuse hitl reject int_0187... --reason "CONCURRENTLY cannot run inside a transaction; split it out"
+```
+
+The comments are `decision.reason` on both outcomes. A review takes no
+`answer`, `edited_argv`, `edited_text` or `grant`. Like every intervention
+payload, the content is encrypted at rest with `TOKEN_ENCRYPTION_KEY`.
+
 ## Gates
 
 A **gate** holds an action Fuse relays until a human decides, records it, or
-refuses it. Two surfaces have gates today: `exec` (SDK and CLI exec) and
-`lifecycle` (environment API actions).
+refuses it. Three surfaces have gates: `exec` (SDK and CLI exec),
+`lifecycle` (environment API actions) and `computer` (the
+[computer actions](#computer-gates) a computer-use agent sends).
 
 ```yaml
 hitl:
@@ -188,15 +265,17 @@ hitl:
 | Field | Meaning |
 | --- | --- |
 | `name` | Names the gate on interventions, grants and webhooks. 1-64 of `a-z 0-9 - _ .` |
-| `on` | `exec` or `lifecycle`; `stall` and `expiry` are [signals](#signals). |
+| `on` | `exec`, `lifecycle` or `computer`; `stall` and `expiry` are [signals](#signals). |
 | `match.program` | `exec`: the basename of `argv[0]`, one name or a list, after known wrappers are stripped. |
 | `match.args` | `exec`: arguments that appear in argv in this order, not necessarily next to each other. |
 | `match.shell` | `exec`: any opaque shell exec, a `shell:` string or `sh`/`bash -c`. Cannot be combined with `program` or `args`. |
-| `match.action` | `lifecycle`: `destroy`, `fork`, `migrate`, `drain`, `snapshot`, `rotate-token`. |
+| `match.action` | `lifecycle`: `destroy`, `fork`, `migrate`, `drain`, `snapshot`, `rotate-token`. `computer`: a computer action name, or a list. |
+| `match.text_contains` | `computer`: a `type` action whose text contains any entry, ignoring case. |
 | `mode` | `ask` (default) holds until decided; `notify` lets it through and records it; `deny` refuses it with `reason`. |
 | `grant` | Default reach of an approval: `once` (default), `env` or `ttl:<duration>`. Only for `ask`. |
 | `timeout` | Deadline for this gate, overriding `hitl.timeout`. |
 | `reason` | Returned to the caller on `deny`, shown to the human on `ask`. |
+| `decide` | A [decider](#deciders) asked before a human: `url` and `secret`. Only for `ask`. |
 
 Every field set in `match` must match. When several gates match one action,
 `deny` beats `ask` beats `notify`; each matching `notify` gate still leaves a
@@ -212,14 +291,16 @@ tighten it to `ask`.
 `{"intervention_id", "intervention"}`. When a human approves, the
 orchestrator performs the action itself, exactly as approved, and stores the
 outcome on the intervention's `result`: `result.exec` for an exec,
-`result.env_id` for a fork or migrate, `result.snapshot_id` for a snapshot,
-`result.error` when the approved action failed. `GET
+`result.computer` for a computer action, `result.env_id` for a fork or
+migrate, `result.snapshot_id` for a snapshot, `result.error` when the
+approved action failed. `GET
 /v1/interventions/{id}?wait=` returns once that result is in. A `deny`
 answers `403` with `details.reason: hitl_denied`, the gate in
 `details.gate`, and the gate's `reason` as the message.
 
 The SDKs wait on a `202` for you: `exec` returns the approved command's
-result, `fork` the new environment, and so on. A rejection raises
+result, `computer` the action's output and screenshot, `fork` the new
+environment, and so on. A rejection raises
 `InterventionRejectedError` with the reason; `wait: false` (or the client
 option) raises `PendingInterventionError` with the handle instead of
 waiting. The CLI prints the intervention it is waiting on:
@@ -235,18 +316,234 @@ fuse environment exec vm-1 -- git push --force origin main
 fuse hitl approve int_...                                  # run it as asked
 fuse hitl approve int_... --edit -- git push --force-with-lease origin main
 fuse hitl approve int_... --edit                           # edit argv in $EDITOR
+fuse hitl approve int_... --text "staging.example.com"     # retype a held computer type
 fuse hitl approve int_... --grant env                      # and don't ask again
 fuse hitl reject  int_... --reason "push to a branch instead"
 ```
 
 An edited argv is checked against the `deny` gates again before it is
 accepted. A **grant** lets identical repeats through without a prompt: the
-same gate and the exact same argv (or the same lifecycle action), for the
+same gate and the exact same argv (or the same lifecycle action, or the
+exact same computer action body), for the
 environment's lifetime (`env`) or a duration (`ttl:30m`). A different argv
 still prompts. Grants follow a migrate, are not copied to a fork, are
 dropped on destroy, and are audited (`grant_created`, and `grant_used` each
 time one lets an action through). An edit cannot carry a grant, since the
 grant would cover the original argv the human did not approve as written.
+
+### Computer gates
+
+A computer-use agent drives the desktop one action at a time through
+`POST /v1/environments/{id}/computer`. A `computer` gate holds, records or
+refuses those actions by their name, and a `type` action by its text:
+
+```yaml
+hitl:
+  gates:
+    - name: watch-typing
+      on: computer
+      match: { action: type }
+      mode: notify              # record everything the agent types
+
+    - name: prod-host
+      on: computer
+      match: { text_contains: [prod.example.com] }   # implies action: type
+      timeout: 5m
+
+    - name: no-drag
+      on: computer
+      match: { action: [left_click_drag, left_mouse_down] }
+      mode: deny
+      reason: drag and drop is off on this desktop
+```
+
+`match.action` takes the computer action names: `screenshot`,
+`cursor_position`, `mouse_move`, `left_click`, `right_click`,
+`middle_click`, `double_click`, `triple_click`, `left_click_drag`,
+`left_mouse_down`, `left_mouse_up`, `type`, `key`, `hold_key`, `scroll`,
+`wait` and `zoom`. `match.text_contains` matches a `type` action whose text
+contains any entry, ignoring case. It implies `action: type`, so it can only
+be combined with `action: [type]`; a gate that lists other actions as well
+is refused, and should be split in two.
+
+`ask`, `notify` and `deny` work as they do for exec. A held action answers
+`202` with the intervention, and the SDKs wait on it. The human sees the
+action in `payload.computer`: its `action`, the `text` of a `type`, and
+`input`, the whole body the agent sent.
+
+```json
+"payload": {
+  "computer": {
+    "action": "type",
+    "text": "ssh deploy@prod.example.com",
+    "input": { "action": "type", "text": "ssh deploy@prod.example.com" }
+  }
+}
+```
+
+On approval the orchestrator performs the action itself, with the body the
+agent sent, and stores what the guest answered (`output` and `screenshot`)
+in `result.computer`. The SDK returns that as the action's result, so the
+agent's loop carries on with a screenshot taken after the approved action,
+not before it.
+
+The human can retype a held `type` before it runs:
+
+```bash
+fuse hitl approve int_0187... --text "ssh deploy@staging.example.com"
+```
+
+From the API that is `{"edited_text": "..."}` on `?action=approve`, and in
+Go `ApproveOptions.EditedText`. It applies only to a `type`, cannot be
+empty (reject the action instead), and is checked against the `deny` gates
+again before it is accepted. Like an edited argv it cannot carry a grant:
+an explicit `grant` with it is a 400, and a gate's default grant drops to
+`once`.
+
+**Why there are no coordinate rules.** A gate cannot say "never click at
+(812, 430)". Coordinates name a spot on the screen, not a thing: a window
+that moves, a banner that pushes the page down or a different resolution
+puts something else under the same pixel. Action types do not shift, so
+gates match those. To hold "clicking the Pay button", gate `left_click`
+with a [decider](#deciders): it gets a screenshot of the display with the
+action, and can tell what is under the pointer.
+
+### Deciders
+
+A gate in `ask` mode can put a **decider** in front of the human: a webhook
+Fuse asks first. It answers `allow`, `deny` or `ask`, and only `ask` reaches
+a person. Classifiers, model judges and business rules live there, so the
+human sees only what a rule could not settle.
+
+```yaml
+version: 1
+run: ./agent.sh
+
+secrets:
+  - decider_secret
+
+hitl:
+  gates:
+    - name: push
+      on: exec
+      match: { program: git, args: [push] }
+      decide:
+        url: https://decider.example.com/fuse
+        secret: decider_secret
+```
+
+```bash
+fuse up --secret decider_secret="$(openssl rand -hex 32)"
+```
+
+`decide` goes on an `ask` gate on `exec`, `lifecycle` or `computer`. A
+`notify` or `deny` gate has nothing to decide, and a `stall` or `expiry`
+signal has no action to judge, so `decide` on any of those is refused.
+`secret` names an entry of the top-level `secrets:` list (in the create
+request, a key of `secrets`), and the create is a 400 without it. Its value
+signs each call the same way as [webhook](#webhooks) deliveries, and is
+sealed and kept the same way.
+
+For each held action Fuse sends a `POST` with this JSON body (`hitl.DeciderRequest`):
+
+```json
+{
+  "env_id": "fuse-agent",
+  "gate": "push",
+  "on": "exec",
+  "triggered_by": { "id": "key:ak_123", "source": "key", "key_id": "ak_123" },
+  "exec": { "argv": ["git", "push", "origin", "agent/fix-flaky-test"] },
+  "deadline": "2026-11-04T15:14:05Z"
+}
+```
+
+Unlike a webhook delivery it carries the action itself, since judging it is
+the point: `exec` for an exec gate, `lifecycle` for a lifecycle gate, or
+`computer` (the same `action`, `text` and `input` as `payload.computer`)
+for a computer gate. A computer call also carries `screenshot`, a base64
+PNG of the display as it is before the action, or nothing when one could
+not be taken within 5 seconds. `deadline` is when the intervention would
+expire if it went to a human.
+
+The decider answers `200` with:
+
+```json
+{ "decision": "deny", "reason": "push to main; open a pull request instead" }
+```
+
+| `decision` | What happens |
+| --- | --- |
+| `allow` | The action goes on as if this gate had not matched. Fuse records an intervention born approved, decided by `{"id": "decider:push", "source": "decider"}`. Another matching `ask` gate still applies. |
+| `deny` | The call gets `403` with `details.reason: hitl_denied`, the gate in `details.gate`, and the decider's `reason` as the message. The intervention is born rejected. |
+| `ask` | The action is held for a human as usual. `payload.decider` carries `{"verdict": "ask", "reason": "..."}`, so the human sees why it was sent on. |
+
+**Any failure is `ask`.** The call has a fixed 5 second timeout (a computer
+call first spends up to 5 more taking the screenshot), and it is not
+retried. A timeout, a transport error, a non-2xx answer, a redirect (which
+is not followed), a body that is not JSON or names any other decision, and
+a signing secret the orchestrator no longer holds all hold the action for a
+human, with the error in `payload.decider.error`. A broken decider can only
+send more work to a person, never let an action through. The decider is
+asked only when no grant already covers the action, and an `allow` creates
+no grant.
+
+#### Writing a decider
+
+Verify the signature against the raw body before anything else, and answer
+quickly: the agent's call is waiting. A minimal decider in Python, with the
+standard library only:
+
+```python
+import hashlib
+import hmac
+import json
+import os
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+SECRET = os.environ["DECIDER_SECRET"].encode()
+
+
+def verify(header: str, body: bytes, tolerance: int = 300) -> bool:
+    parts = dict(p.strip().split("=", 1) for p in header.split(",") if "=" in p)
+    t, v1 = parts.get("t"), parts.get("v1")
+    if not t or not t.isdigit() or not v1 or abs(time.time() - int(t)) > tolerance:
+        return False
+    want = hmac.new(SECRET, t.encode() + b"." + body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(want, v1)
+
+
+def decide(req: dict) -> dict:
+    argv = (req.get("exec") or {}).get("argv", [])
+    if "main" in argv or "--force" in argv:
+        return {"decision": "deny", "reason": "push a branch and open a pull request instead"}
+    if argv and argv[-1].startswith("agent/"):
+        return {"decision": "allow"}
+    return {"decision": "ask", "reason": "not an agent/ branch"}
+
+
+class Decider(BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        if not verify(self.headers.get("Fuse-Signature", ""), body):
+            # a non-2xx answer holds the action for a human
+            self.send_response(401)
+            self.end_headers()
+            return
+        out = json.dumps(decide(json.loads(body))).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
+
+
+HTTPServer(("0.0.0.0", 8080), Decider).serve_forever()
+```
+
+`decision` is read case-insensitively, `reason` is optional (an empty one
+becomes `allowed by the decider of gate <name>` or `denied by the decider of
+gate <name>`), and the answer is read up to 64 KiB.
 
 ### Allowlist mode
 
@@ -269,16 +566,17 @@ allowed while `git push --force` stays gated.
 
 ### A guardrail, not a boundary
 
-Gates see what Fuse relays: API exec and the environment actions. They do
-not see what happens inside the guest. A process the agent starts there (a
+Gates see what Fuse relays: API exec, the environment actions and API
+computer actions. They do not see what happens inside the guest. A process the agent starts there (a
 `run:` agent, a script, a shell it already holds through `fuse environment
 shell`) can do anything root can, with no gate involved. So:
 
 - Gate the agent's **API** access. When the agent runs outside the VM and
   only reaches it through exec, gates are enforced on everything it does.
 - When the agent runs **inside** the guest, exec gates do not apply to its
-  own commands. Lifecycle gates still do, since those actions only exist on
-  the API.
+  own commands, and computer gates do not see input it sends to the display
+  itself (with `xdotool`, say). Lifecycle gates still do, since those
+  actions only exist on the API.
 - Gates match structure (argv), not strings. They cannot see inside a shell
   string, which is why `shell` is its own match and why allowlist mode holds
   shells.
@@ -403,8 +701,12 @@ hitl:
   timeout: 30m          # how long a takeover may hold the environment
   requests:
     takeover:
-      via: [terminal]   # the only way in today, and the default
+      via: [terminal]   # the default; add desktop for the live desktop
 ```
+
+`via` lists the ways in: `terminal`, a recorded shell, and `desktop`, the
+[recorded live desktop](#the-recorded-desktop). An empty list means
+`terminal`.
 
 A takeover starts one of two ways. The agent asks for one, and its call
 waits:
@@ -426,12 +728,13 @@ human's behalf:
 
 ```bash
 fuse hitl takeover fuse-agent      # take control and open a recorded shell
+fuse hitl takeover fuse-agent --via desktop   # or the recorded desktop
 fuse hitl takeover fuse-agent --no-shell   # only take the lock
 fuse hitl release fuse-agent --note "killed the stale psql session holding the lock; rerun 0042"
 ```
 
 From the API, `POST /v1/environments/{id}?action=takeover` (body
-`{"reason": "..."}`, optional) and `?action=release` with
+`{"via": "desktop", "reason": "..."}`, both optional) and `?action=release` with
 `{"note": "..."}`. The SDKs expose `environments.takeover` and
 `environments.release`. Both need the `hitl:takeover` scope, which a
 full-access key never holds: mint one for the human, for example with
@@ -504,6 +807,91 @@ asciinema play session.cast
 
 The SDKs fetch the same thing with `interventions.getRecording` in
 TypeScript, `Recording` in Go and `get_recording` in Python.
+
+### The recorded desktop
+
+A takeover via `desktop` hands the human the environment's live desktop,
+for the cases a shell cannot fix: a login page with a captcha, a dialog the
+agent keeps misreading, a drag it cannot get right. It needs a top-level
+`desktop:` block; a Fusefile (or a create request) that allows
+`via: [desktop]` without one is refused.
+
+```yaml
+desktop:
+  width: 1280
+  height: 800
+
+hitl:
+  requests:
+    takeover:
+      via: [terminal, desktop]
+```
+
+`fuse hitl takeover fuse-agent --via desktop` takes the lock and opens the
+same browser viewer as `fuse desktop` (`--no-open` prints its URL instead,
+`--listen` picks where it listens). Closing the viewer keeps the takeover
+held, as closing the shell does; release it with `fuse hitl release`.
+
+The viewer streams from `GET /v1/interventions/{id}/desktop` with
+`Upgrade: fuse-vnc/1`: the computer stream (raw RFB) with a recording on
+it. It needs `hitl:takeover`, only the takeover's holder
+(or the master token) may open it, and the takeover must have been started
+with `via: desktop`. When the human claims an agent's pending request, the
+`via` the human names wins over the one the agent asked for. In Go,
+`Environments.TakeoverDesktop` opens it.
+
+While the takeover is held, the agent's computer actions get the 423 above,
+and so does the plain `GET /v1/environments/{id}/computer/stream`, since
+input sent on it would get past the lock. `fuse desktop` therefore fails
+during a takeover; the holder's viewer is the one way in.
+
+The session is recorded as:
+
+- **an input-action log**: each change of the pointer buttons, with its
+  coordinates; named keys such as `Return`, `Tab`, `Escape`, the arrows and
+  `F1`-`F12`, and chords such as `ctrl+c`; the number of printable keys
+  typed, never which ones; and the size of each clipboard paste, never its
+  content.
+- **a screenshot** when the session starts and every 10 seconds after.
+
+Like the terminal cast, it never holds what the human typed. The screenshots
+are what shows the work, so whatever is on the screen when one is taken is
+in the recording: ask for credentials through a [secret request](#secrets),
+not by typing them into the desktop. The recording is sealed with `TOKEN_ENCRYPTION_KEY`
+when the viewer closes, linked from a `takeover_session` audit row by
+`recording_id`, and stops taking screenshots at 32 MiB (the log is capped at
+50,000 entries), marked truncated; the view keeps working.
+
+`GET /v1/hitl/recordings/{id}` returns a desktop recording as
+`application/json` with `Fuse-Recording-Kind: desktop`; a terminal cast
+stays `application/x-asciicast` with `Fuse-Recording-Kind: terminal`. The
+JSON looks like this, with `t` in seconds since the session started:
+
+```json
+{
+  "version": 1,
+  "kind": "desktop",
+  "intervention_id": "int_0187...",
+  "env_id": "fuse-agent",
+  "actor": "alice",
+  "started_at": "2026-11-04T15:04:05Z",
+  "ended_at": "2026-11-04T15:09:41Z",
+  "events": [
+    { "t": 3.2, "type": "pointer", "x": 640, "y": 412, "buttons": 1 },
+    { "t": 3.3, "type": "pointer", "x": 640, "y": 412, "buttons": 0 },
+    { "t": 4.1, "type": "text", "chars": 12 },
+    { "t": 5.0, "type": "key", "key": "Return" },
+    { "t": 9.7, "type": "clipboard", "bytes": 38 }
+  ],
+  "screenshots": [
+    { "t": 0.0, "png": "iVBORw0KGgo..." }
+  ]
+}
+```
+
+`truncated` is set when a cap was hit. `input_log_incomplete` is set when
+the viewer sent something the log does not understand, after which no more
+input was logged; the screenshots carry on.
 
 ## Signals
 
@@ -592,7 +980,7 @@ API key with **scopes**.
 | `hitl:read` | List and read interventions and the audit log. |
 | `hitl:decide` | Approve and reject interventions. Implies `hitl:read`. |
 | `hitl:secret` | Answer [secret requests](#secrets). Implies `hitl:read`. |
-| `hitl:takeover` | [Take over](#takeover) and release the environment, and open the takeover shell. This is shell access to the VM, so it is its own scope. |
+| `hitl:takeover` | [Take over](#takeover) and release the environment, and open the takeover shell or desktop. This is shell access to the VM, so it is its own scope. |
 | `hitl:act-as` | Name the actor the key acts for with the `Fuse-Actor` header. |
 
 A key minted without scopes is a **full-access key**, exactly as every key
@@ -747,7 +1135,7 @@ Every hitl action appends a row to an append-only audit log in Postgres:
 | `secret_answered` | A secret request was answered. Who and when, never the value. |
 | `takeover_started` | A human took control of the environment. |
 | `takeover_ended` | The takeover was released. |
-| `takeover_session` | A recorded takeover shell closed. Carries `recording_id`. |
+| `takeover_session` | A recorded takeover shell or desktop view closed. Carries `recording_id`. |
 
 A row records the actor, its source, the key id, the remote address, the
 time and the intervention id, and for a `takeover_session` the id of its
@@ -890,12 +1278,14 @@ intervention, never as the record.
 
 ## Where the content lives
 
-The question, the answer and the reason are encrypted at rest with the
+The payload (a question, a held argv or computer action, a review's
+content), the answer and the reason are encrypted at rest with the
 orchestrator's `TOKEN_ENCRYPTION_KEY` before they reach Postgres. Ids,
 states and timestamps stay plaintext so the deadline sweep and list filters
 work without decrypting. Without the key (dev mode) the content is stored in
 the clear.
 
 Two things are different. A secret's value is never stored at all, with or
-without the key: it goes into the guest and is dropped. Takeover recordings
-are sealed with the same key, and stored in the clear without it.
+without the key: it goes into the guest and is dropped. Takeover recordings,
+terminal and desktop, are sealed with the same key, and stored in the clear
+without it. The screenshot sent to a decider is not stored at all.
