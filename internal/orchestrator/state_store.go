@@ -431,12 +431,14 @@ type StateStore interface {
 	GetHitlRecording(ctx context.Context, id string) (RecordingRecord, error)
 }
 
-// RecordingRecord is one recorded takeover shell session. Data is the
-// asciinema v2 cast, sealed by the fleet manager when Sealed is set.
+// RecordingRecord is one recorded takeover session. Data is the asciinema
+// v2 cast of a terminal session or the json log of a desktop one (Kind),
+// sealed by the fleet manager when Sealed is set.
 type RecordingRecord struct {
 	ID             string
 	InterventionID string
 	EnvID          string
+	Kind           string
 	Actor          json.RawMessage
 	StartedAt      time.Time
 	EndedAt        time.Time

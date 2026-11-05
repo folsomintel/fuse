@@ -17,15 +17,19 @@ import (
 
 func newHitlApproveCmd() *cobra.Command {
 	var (
-		reason, actor, grant string
-		edit                 bool
-		extend               time.Duration
+		reason, actor, grant, text string
+		edit                       bool
+		extend                     time.Duration
 	)
 	cmd := &cobra.Command{
-		Use:   "approve <id> [--edit [-- <argv>...]] [--grant env|ttl:30m]",
-		Short: "Approve a held exec or lifecycle action",
-		Long: "approves an exec or lifecycle action a hitl gate is holding. the\n" +
+		Use:   "approve <id> [--edit [-- <argv>...]] [--text <text>] [--grant env|ttl:30m]",
+		Short: "Approve a held exec, lifecycle or computer action, or a review",
+		Long: "approves an exec, lifecycle or computer action a hitl gate is holding. the\n" +
 			"orchestrator then performs it and the waiting agent gets the result.\n\n" +
+			"--text replaces the text of a held computer type action before it is\n" +
+			"typed. it is re-checked against the deny gates.\n\n" +
+			"    fuse hitl approve int_1 --text \"ls -la\"\n\n" +
+			"a review is approved the same way; --reason carries your comments.\n\n" +
 			"--edit replaces a held exec's argv before it runs. pass the new argv after\n" +
 			"`--`, or give no argv to edit the current one in $EDITOR, one argument per\n" +
 			"line. the edit is re-checked against the deny gates.\n\n" +
@@ -69,6 +73,12 @@ func newHitlApproveCmd() *cobra.Command {
 					}
 				}
 			}
+			if cmd.Flags().Changed("text") {
+				if edit {
+					return errors.New("--text edits a computer type, --edit an exec; pass one")
+				}
+				opts.EditedText = &text
+			}
 			in, err := cl.Interventions.ApproveWith(cmd.Context(), id, opts)
 			if err != nil {
 				return friendly(err)
@@ -79,6 +89,9 @@ func newHitlApproveCmd() *cobra.Command {
 			msg := "approved " + in.ID
 			if in.Decision != nil && in.Decision.EditedArgv != nil {
 				msg += ", running " + renderArgv(in.Decision.EditedArgv)
+			}
+			if in.Decision != nil && in.Decision.EditedText != nil {
+				msg += ", typing " + strconv.Quote(*in.Decision.EditedText)
 			}
 			if in.Decision != nil && in.Decision.Grant != "" && in.Decision.Grant != "once" {
 				msg += " (grant " + in.Decision.Grant + ")"
@@ -91,6 +104,7 @@ func newHitlApproveCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&edit, "edit", false, "replace the held exec's argv (after `--`, or in $EDITOR)")
+	cmd.Flags().StringVar(&text, "text", "", "replace the text of a held computer type action")
 	cmd.Flags().StringVar(&grant, "grant", "", "let identical repeats through: env or ttl:<duration> (default: the gate's)")
 	cmd.Flags().StringVar(&reason, "reason", "", "optional note passed back to the agent")
 	cmd.Flags().DurationVar(&extend, "extend", 0, "for an expiry: keep the environment alive this long, like 30m")
@@ -150,6 +164,8 @@ func printHeld(in *fuse.Intervention) {
 		what = "exec " + renderArgv(in.Payload.Exec.Argv)
 	case in.Payload.Lifecycle != nil:
 		what = in.Payload.Lifecycle.Action
+	case in.Payload.Computer != nil:
+		what = "computer " + in.Payload.Computer.Action
 	}
 	fmt.Fprintf(os.Stderr, "held by hitl gate %s: waiting on intervention %s (%s)\n", in.Gate, in.ID, what)
 	fmt.Fprintf(os.Stderr, "  decide with: fuse hitl approve %s   or   fuse hitl reject %s --reason ...\n", in.ID, in.ID)

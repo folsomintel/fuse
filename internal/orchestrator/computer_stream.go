@@ -37,7 +37,19 @@ const streamHandshakeTimeout = 15 * time.Second
 // The caller owns the returned stream and must Close it. Like attach, an
 // open stream counts as activity for as long as it is open: a human watching
 // a quiet desktop produces zero bytes and is still using the environment.
+//
+// While a human holds a takeover the stream answers 423 like the agent's
+// clicks do: input on it would bypass the lock. The holder's own view goes
+// through TakeoverDesktop.
 func (fm *FleetManager) ComputerStream(ctx context.Context, vmID string) (io.ReadWriteCloser, error) {
+	if err := fm.checkAgentLock(vmID); err != nil {
+		return nil, err
+	}
+	return fm.openComputerStream(ctx, vmID)
+}
+
+// openComputerStream dials the guest's desktop stream with no lock check.
+func (fm *FleetManager) openComputerStream(ctx context.Context, vmID string) (io.ReadWriteCloser, error) {
 	env, err := fm.guestEnvironment(ctx, vmID)
 	if err != nil {
 		return nil, err

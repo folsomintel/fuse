@@ -73,6 +73,29 @@ func (fm *FleetManager) GateLifecycle(ctx context.Context, envID string, action 
 	})
 }
 
+// GateComputer runs a computer action through the environment's computer
+// gates, the same way GateExec does. body is the action as the caller sent
+// it; on approval the orchestrator replays it, with the text a human
+// edited when there is one.
+func (fm *FleetManager) GateComputer(ctx context.Context, envID string, body []byte, c GateCaller) (*hitl.Intervention, error) {
+	if err := fm.checkAgentLock(envID); err != nil {
+		return nil, err
+	}
+	spec := fm.hitlSpec(envID)
+	if spec == nil {
+		return nil, nil
+	}
+	p, err := hitl.ParseComputerInput(body)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+	}
+	v := spec.EvaluateComputer(hitl.ComputerCall{Action: p.Action, Text: p.Text})
+	return fm.applyVerdict(ctx, envID, *spec, v, c, p.Input, func(in *hitl.Intervention) {
+		in.Kind = hitl.KindComputer
+		in.Computer = &p
+	})
+}
+
 // hitlSpec returns an environment's hitl policy, nil when it has none or is
 // unknown (the action itself then reports the 404).
 func (fm *FleetManager) hitlSpec(envID string) *hitl.Spec {
@@ -87,7 +110,9 @@ func (fm *FleetManager) hitlSpec(envID string) *hitl.Spec {
 
 // applyVerdict acts on the gates that matched one action: a deny refuses it,
 // each notify gate leaves a terminal record, and the first ask gate not
-// covered by a grant holds it.
+// covered by a grant holds it. an ask gate with a decider asks it first:
+// allow lets the action past that gate, deny refuses it, and ask (or any
+// failure) holds it for a human as usual.
 func (fm *FleetManager) applyVerdict(ctx context.Context, envID string, spec hitl.Spec, v hitl.Verdict, c GateCaller, call any, set func(*hitl.Intervention)) (*hitl.Intervention, error) {
 	if v.Mode() == "" {
 		return nil, nil
@@ -138,6 +163,31 @@ func (fm *FleetManager) applyVerdict(ctx context.Context, envID string, spec hit
 			continue
 		}
 		in := open(g)
+		if g.Decide != nil {
+			res, err := fm.askDecider(ctx, g, in)
+			switch {
+			case err != nil:
+				fm.logger.Warn("hitl decider failed; holding for a human", "vm", envID, "gate", g.Name, "err", err)
+				in.Decider = &hitl.DeciderNote{Verdict: hitl.DeciderAsk, Error: err.Error()}
+			case res.Decision == hitl.DeciderAllow:
+				in.State = hitl.StateApproved
+				in.Decision = &hitl.Decision{Outcome: hitl.OutcomeApprove, Reason: orDefault(res.Reason, "allowed by the decider of gate "+g.Name), DecidedBy: hitl.DeciderActor(g.Name), DecidedAt: time.Now()}
+				if err := fm.recordGateIntervention(ctx, in, c.RemoteAddr); err != nil {
+					fm.logger.Warn("record decider allow failed", "vm", envID, "gate", g.Name, "err", err)
+				}
+				continue
+			case res.Decision == hitl.DeciderDeny:
+				reason := orDefault(res.Reason, "denied by the decider of gate "+g.Name)
+				in.State = hitl.StateRejected
+				in.Decision = &hitl.Decision{Outcome: hitl.OutcomeReject, Reason: reason, DecidedBy: hitl.DeciderActor(g.Name), DecidedAt: time.Now()}
+				if err := fm.recordGateIntervention(ctx, in, c.RemoteAddr); err != nil {
+					fm.logger.Warn("record decider deny failed", "vm", envID, "gate", g.Name, "err", err)
+				}
+				return nil, &GateDeniedError{Gate: g.Name, Reason: reason, InterventionID: in.ID}
+			default:
+				in.Decider = &hitl.DeciderNote{Verdict: hitl.DeciderAsk, Reason: res.Reason}
+			}
+		}
 		if err := fm.recordGateIntervention(ctx, in, c.RemoteAddr); err != nil {
 			return nil, err
 		}
@@ -145,6 +195,13 @@ func (fm *FleetManager) applyVerdict(ctx context.Context, envID string, spec hit
 		return &in, nil
 	}
 	return nil, nil
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 // recordGateIntervention stores an intervention a gate raised and announces
@@ -190,37 +247,58 @@ func (fm *FleetManager) activeGrant(ctx context.Context, envID, gate, key string
 // maxEditedArgvBytes bounds an edited argv.
 const maxEditedArgvBytes = 64 << 10
 
-// applyGateDecision fills in the gate parts of an approval: the edited
-// argv, re-checked against the deny gates, and the grant. an edit cannot
-// carry a grant: the grant would cover the original argv, which the human
-// did not approve as-is.
-func applyGateDecision(in *hitl.Intervention, spec *hitl.Spec, editedArgv []string, grant string) error {
-	if in.Kind == hitl.KindAsk {
-		if editedArgv != nil || grant != "" {
-			return fmt.Errorf("%w: edited_argv and grant only apply to a gated action", ErrInvalidIntervention)
+// gateEdit is what a human changed about a held action before approving
+// it: the argv of an exec or the text of a type.
+type gateEdit struct {
+	argv []string
+	text *string
+}
+
+func (e gateEdit) set() bool { return e.argv != nil || e.text != nil }
+
+// applyGateDecision fills in the gate parts of an approval: the edit,
+// re-checked against the deny gates, and the grant. an edit cannot carry a
+// grant: the grant would cover the original action, which the human did
+// not approve as-is.
+func applyGateDecision(in *hitl.Intervention, spec *hitl.Spec, edit gateEdit, grant string) error {
+	if in.Kind == hitl.KindAsk || in.Kind == hitl.KindReview {
+		if edit.set() || grant != "" {
+			return fmt.Errorf("%w: edited_argv, edited_text and grant only apply to a gated action", ErrInvalidIntervention)
 		}
 		return nil
 	}
-	if editedArgv != nil {
+	if edit.argv != nil {
 		if in.Kind != hitl.KindExec {
 			return fmt.Errorf("%w: edited_argv only applies to an exec", ErrInvalidIntervention)
 		}
-		if len(editedArgv) == 0 || editedArgv[0] == "" {
+		if len(edit.argv) == 0 || edit.argv[0] == "" {
 			return fmt.Errorf("%w: edited_argv must not be empty", ErrInvalidIntervention)
 		}
 		n := 0
-		for _, a := range editedArgv {
+		for _, a := range edit.argv {
 			n += len(a)
 		}
 		if n > maxEditedArgvBytes {
 			return fmt.Errorf("%w: edited_argv must be at most %d bytes", ErrInvalidIntervention, maxEditedArgvBytes)
 		}
 		if spec != nil {
-			if v := spec.EvaluateExec(hitl.ExecCall{Argv: editedArgv}); v.Deny != nil {
+			if v := spec.EvaluateExec(hitl.ExecCall{Argv: edit.argv}); v.Deny != nil {
 				return &GateDeniedError{Gate: v.Deny.Name, Reason: "the edited argv matches deny gate " + v.Deny.Name + ": " + v.Deny.DenyReason()}
 			}
 		}
-		in.Decision.EditedArgv = editedArgv
+		in.Decision.EditedArgv = edit.argv
+	}
+	if edit.text != nil {
+		if err := hitl.ValidateEditedText(*in, *edit.text); err != nil {
+			return fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
+		}
+		if spec != nil {
+			if v := spec.EvaluateComputer(hitl.ComputerCall{Action: "type", Text: *edit.text}); v.Deny != nil {
+				return &GateDeniedError{Gate: v.Deny.Name, Reason: "the edited text matches deny gate " + v.Deny.Name + ": " + v.Deny.DenyReason()}
+			}
+		}
+		text := *edit.text
+		in.Decision.EditedText = &text
 	}
 	explicit := grant != ""
 	if !explicit && spec != nil {
@@ -232,9 +310,9 @@ func applyGateDecision(in *hitl.Intervention, spec *hitl.Spec, editedArgv []stri
 	if err != nil {
 		return fmt.Errorf("%w: grant %w", ErrInvalidIntervention, err)
 	}
-	if editedArgv != nil && gs.Scope != hitl.GrantOnce {
+	if edit.set() && gs.Scope != hitl.GrantOnce {
 		if explicit {
-			return fmt.Errorf("%w: a grant cannot be combined with an edit; it would cover the original argv", ErrInvalidIntervention)
+			return fmt.Errorf("%w: a grant cannot be combined with an edit; it would cover the original action", ErrInvalidIntervention)
 		}
 		gs = hitl.GrantSpec{Scope: hitl.GrantOnce}
 	}
@@ -257,6 +335,8 @@ func (fm *FleetManager) storeGrant(ctx context.Context, in hitl.Intervention, re
 		call = in.Exec.Argv
 	case in.Lifecycle != nil:
 		call = string(in.Lifecycle.Action)
+	case in.Computer != nil:
+		call = in.Computer.Input
 	default:
 		return
 	}

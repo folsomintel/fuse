@@ -5,9 +5,10 @@ from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from .._transport import Transport
-from ..errors import ApiError
+from ..errors import ApiError, InterventionRejectedError, is_hitl_denied
 from ..types import (
     HITL_KIND_ASK,
+    HITL_KIND_REVIEW,
     ComputerAction,
     ComputerDisplay,
     ComputerResult,
@@ -23,6 +24,7 @@ from ..types import (
     Intervention,
     MigrateOptions,
     ReleaseRequest,
+    ReviewResult,
     TakeoverRequest,
 )
 from .events import stream_events
@@ -120,12 +122,25 @@ class EnvironmentsService:
             return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
-    def computer(self, vm_id: str, action: ComputerAction, *, wait: bool = True) -> ComputerResult:
+    def computer(
+        self,
+        vm_id: str,
+        action: ComputerAction,
+        *,
+        wait: bool = True,
+        on_held: Optional[Callable[[Intervention], None]] = None,
+    ) -> ComputerResult:
         # relays one computer-use action to the environment's desktop and
         # returns the result, usually carrying a base64 png screenshot.
         # requires an environment booted from a desktop image; on any other
         # image the server answers 503 with a reason.
         #
+        # when a computer gate holds the action, this waits for the decision
+        # like exec does; the orchestrator performs the approved action (with
+        # the human's edited text, if any) and its result is returned. on_held
+        # is called with the pending intervention first. wait=False raises
+        # PendingInterventionError at once instead, and a rejection raises
+        # InterventionRejectedError.
         # while a human holds the environment this waits for them to finish
         # and then sends the action; wait=False raises LockedError instead.
         if not vm_id:
@@ -134,6 +149,9 @@ class EnvironmentsService:
             raise ValueError("action is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}/computer"
         resp = call_unlocked(self._t, lambda: self._t.request("POST", path, body=action), wait=wait)
+        held = read_held(resp)
+        if held is not None:
+            return self._held_computer(held, wait=wait, on_held=on_held)
         return ComputerResult.model_validate(resp.json())
 
     def computer_tool_result(
@@ -149,10 +167,13 @@ class EnvironmentsService:
         # display that is not up) comes back as is_error content rather than
         # raising: the agent loop should feed it to the model, which is the
         # party that can correct it. a raise is reserved for failures the
-        # model cannot fix - transport, auth, an unknown environment.
+        # model cannot fix - transport, auth, an unknown environment. a hitl
+        # gate's deny, or a human rejecting a held action, is also is_error
+        # content: the model should hear why and try something else.
         #
-        # like computer, this waits out a human takeover unless wait=False,
-        # which raises LockedError.
+        # like computer, this waits out a human takeover and a held action
+        # unless wait=False, which raises LockedError or
+        # PendingInterventionError.
         if not vm_id:
             raise ValueError("vm id is required")
         if not tool_input.get("action"):
@@ -166,29 +187,28 @@ class EnvironmentsService:
                 self._t, lambda: self._t.request("POST", path, body=tool_input), wait=wait
             )
         except ApiError as err:
-            if err.status in (400, 409, 503):
-                return ComputerToolResult(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": err.message or "the computer action failed",
-                        }
-                    ],
-                    is_error=True,
-                )
+            if err.status in (400, 409, 503) or is_hitl_denied(err):
+                return _tool_error(err.message or "the computer action failed")
             raise
-        data = resp.json()
+        held = read_held(resp)
+        if held is not None:
+            try:
+                data = self._held_computer(held, wait=wait)
+            except InterventionRejectedError as err:
+                return _tool_error(f"a human rejected this action: {err}")
+        else:
+            data = ComputerResult.model_validate(resp.json())
         content: list[dict[str, Any]] = []
-        if data.get("output"):
-            content.append({"type": "text", "text": data["output"]})
-        if data.get("screenshot"):
+        if data.output:
+            content.append({"type": "text", "text": data.output})
+        if data.screenshot:
             content.append(
                 {
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": "image/png",
-                        "data": data["screenshot"],
+                        "data": data.screenshot,
                     },
                 }
             )
@@ -261,6 +281,9 @@ class EnvironmentsService:
         message: Optional[str] = None,
         via: Optional[str] = None,
         reason: Optional[str] = None,
+        path: Optional[str] = None,
+        content: Optional[str] = None,
+        format: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         wait: bool = True,
     ) -> Intervention:
@@ -275,7 +298,8 @@ class EnvironmentsService:
         # declared env name or file path) and an optional message; once a
         # human answers, the value is in the guest and decision.answer is
         # "done". kind="takeover" takes via and reason; on release
-        # decision.answer is the human's note.
+        # decision.answer is the human's note. kind="review" takes path or
+        # content, format and message; see request_review.
         if not vm_id:
             raise ValueError("vm id is required")
         request = HumanRequest(
@@ -286,14 +310,49 @@ class EnvironmentsService:
             message=message or None,
             via=via or None,
             reason=reason or None,
+            path=path or None,
+            content=content or None,
+            format=format or None,
             timeout_seconds=timeout_seconds,
         )
-        path = f"/v1/environments/{quote(vm_id, safe='')}"
-        resp = self._t.request("POST", path, params={"action": "request"}, body=request)
+        env_path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request("POST", env_path, params={"action": "request"}, body=request)
         intervention = Intervention.model_validate(resp.json())
         if not wait:
             return intervention
         return wait_intervention(self._t, intervention.id)
+
+    def request_review(
+        self,
+        vm_id: str,
+        *,
+        path: Optional[str] = None,
+        content: Optional[str] = None,
+        format: Optional[str] = None,
+        message: Optional[str] = None,
+        timeout_seconds: Optional[int] = None,
+        wait: bool = True,
+    ) -> ReviewResult:
+        # submits a guest file (path, absolute) or a text/diff blob (content)
+        # for a human to approve or reject with comments, and waits for the
+        # verdict. exactly one of path and content. format is "text" or
+        # "diff", none to guess. it needs hitl.requests.review. wait=False
+        # returns at once with the pending intervention and approved false.
+        intervention = self.request_human(
+            vm_id,
+            kind=HITL_KIND_REVIEW,
+            path=path,
+            content=content,
+            format=format,
+            message=message,
+            timeout_seconds=timeout_seconds,
+            wait=wait,
+        )
+        return ReviewResult(
+            approved=intervention.approved,
+            comments=intervention.decision.reason if intervention.decision else "",
+            intervention=intervention,
+        )
 
     def takeover(
         self, vm_id: str, *, via: Optional[str] = None, reason: Optional[str] = None
@@ -361,6 +420,20 @@ class EnvironmentsService:
             return self.get(vm_id)
         return EnvironmentInfo.model_validate(resp.json())
 
+    def _held_computer(
+        self,
+        held: Intervention,
+        *,
+        wait: bool = True,
+        on_held: Optional[Callable[[Intervention], None]] = None,
+    ) -> ComputerResult:
+        # waits out a held computer action and returns what the orchestrator
+        # got performing it.
+        settled = settle_held(self._t, held, wait=wait, on_held=on_held)
+        if settled.result is None or settled.result.computer is None:
+            raise RuntimeError(f"intervention {settled.id} settled without a computer result")
+        return settled.result.computer
+
     def _held_environment(self, held: Intervention) -> EnvironmentInfo:
         # waits out a held fork or migrate and returns the environment it
         # produced.
@@ -368,3 +441,8 @@ class EnvironmentsService:
         if settled.result is None or not settled.result.env_id:
             raise RuntimeError(f"intervention {settled.id} settled without an environment")
         return self.get(settled.result.env_id)
+
+
+def _tool_error(text: str) -> ComputerToolResult:
+    # one is_error text block for the model.
+    return ComputerToolResult(content=[{"type": "text", "text": text}], is_error=True)

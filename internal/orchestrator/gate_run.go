@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/hitl"
@@ -41,8 +42,11 @@ func (fm *FleetManager) launchRun(in hitl.Intervention) {
 			fm.hitlMu.Unlock()
 		}()
 		timeout := lifecycleRunTimeout
-		if in.Exec != nil {
+		switch {
+		case in.Exec != nil:
 			timeout = execTimeout(in.Exec.TimeoutMS) + time.Minute
+		case in.Computer != nil:
+			timeout = guestComputerTimeout + time.Minute
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -73,6 +77,9 @@ func (fm *FleetManager) runApproved(ctx context.Context, in hitl.Intervention) h
 			return fail(err)
 		}
 		return hitl.Result{Exec: &hitl.ExecResult{ExitCode: r.ExitCode, Stdout: string(r.Stdout), Stderr: string(r.Stderr)}}
+	}
+	if in.Computer != nil {
+		return fm.runApprovedComputer(ctx, in)
 	}
 	if in.Lifecycle == nil {
 		return fail(fmt.Errorf("intervention %s has no action to run", in.ID))
@@ -183,7 +190,7 @@ func (fm *FleetManager) recoverOrphanRuns(ctx context.Context) {
 			return
 		}
 		for _, rec := range recs {
-			if rec.Kind != string(hitl.KindExec) && rec.Kind != string(hitl.KindLifecycle) {
+			if rec.Kind != string(hitl.KindExec) && rec.Kind != string(hitl.KindLifecycle) && rec.Kind != string(hitl.KindComputer) {
 				continue
 			}
 			if rec.Outcome != string(hitl.OutcomeApprove) || len(rec.Result) > 0 {
@@ -208,4 +215,27 @@ func (fm *FleetManager) recoverOrphanRuns(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// runApprovedComputer performs an approved computer action: the body the
+// agent sent, with the text a human edited. it skips the agent lock like
+// an approved exec does; the approval is the permission.
+func (fm *FleetManager) runApprovedComputer(ctx context.Context, in hitl.Intervention) hitl.Result {
+	body, err := in.ComputerInput()
+	if err != nil {
+		return hitl.Result{Error: err.Error()}
+	}
+	fm.noteAgentCall(in.EnvID)
+	res, err := fm.guestComputer(ctx, in.EnvID, http.MethodPost, "/v1/computer/action", body)
+	if err != nil {
+		return hitl.Result{Error: err.Error()}
+	}
+	if res.Status < 200 || res.Status > 299 {
+		return hitl.Result{Error: fmt.Sprintf("guest answered %d: %s", res.Status, guestStreamError(res.Body))}
+	}
+	var out hitl.ComputerResult
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		return hitl.Result{Error: "malformed guest answer: " + err.Error()}
+	}
+	return hitl.Result{Computer: &out}
 }

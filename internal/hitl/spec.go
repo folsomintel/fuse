@@ -53,10 +53,22 @@ type Spec struct {
 	RequireActor bool `json:"require_actor,omitempty"`
 	// Notify are webhooks told about every intervention and audit event.
 	Notify []Webhook `json:"notify,omitempty"`
-	// Gates are the enforced exec and lifecycle gates.
+	// Gates are the enforced exec, lifecycle, computer and signal gates.
 	Gates []Gate `json:"gates,omitempty"`
 	// Exec is allowlist mode for exec, nil when off.
 	Exec *ExecPolicy `json:"exec,omitempty"`
+}
+
+// Deciders returns every decider the gates name, for resolving their
+// signing secrets.
+func (s Spec) Deciders() []Decider {
+	var out []Decider
+	for _, g := range s.Gates {
+		if g.Decide != nil {
+			out = append(out, *g.Decide)
+		}
+	}
+	return out
 }
 
 // Webhook is one notification target. Secret names an entry of the
@@ -76,6 +88,7 @@ type Requests struct {
 	Ask      *AskRequests      `json:"ask,omitempty"`
 	Secret   *SecretRequests   `json:"secret,omitempty"`
 	Takeover *TakeoverRequests `json:"takeover,omitempty"`
+	Review   *ReviewRequests   `json:"review,omitempty"`
 }
 
 // AskRequests configures `ask` requests. it has no fields yet; declaring
@@ -107,6 +120,8 @@ func (s Spec) Allows(k Kind) bool {
 		return s.Requests.Secret != nil
 	case KindTakeover:
 		return s.Requests.Takeover != nil
+	case KindReview:
+		return s.Requests.Review != nil
 	}
 	return false
 }
@@ -127,7 +142,7 @@ func (s Spec) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("hitl.on_timeout: must be %q or %q, got %q", OnTimeoutReject, OnTimeoutAllow, s.OnTimeout))
 	}
-	if s.Requests.Ask == nil && s.Requests.Secret == nil && s.Requests.Takeover == nil && len(s.Gates) == 0 && s.Exec == nil {
+	if s.Requests.Ask == nil && s.Requests.Secret == nil && s.Requests.Takeover == nil && s.Requests.Review == nil && len(s.Gates) == 0 && s.Exec == nil {
 		errs = append(errs, errNoPolicy)
 	}
 	if s.Requests.Secret != nil {

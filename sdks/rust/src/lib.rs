@@ -78,21 +78,23 @@ pub use gates::OnHeld;
 pub use hosts::{HostPage, Hosts, ListHostsOptions};
 pub use interventions::{
     ApproveOptions, AuditOptions, AuditPage, HumanRequest, InterventionPage, Interventions,
-    ListInterventionsOptions,
+    ListInterventionsOptions, ReviewRequest, ReviewResult,
 };
 pub use snapshots::{ListSnapshotsOptions, SnapshotPage, Snapshots};
 pub use takeover::{LockedError, ReleaseOptions, TakeoverOptions};
 pub use types::{
-    Actor, ActorLabel, ActorSource, ApiKey, Arch, AuditEntry, AuditEvent, CreateRequest,
-    CreatedApiKey, DesktopSpec, DesktopWm, EgressHealth, EgressHealthState, EgressMode,
-    EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event,
-    EventKind, ExecPayload, ExposeSpec, ForkOptions, GateMode, GpuDevice, Health, HealthState,
-    HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, HitlAskRequests, HitlExecPolicy, HitlGate,
-    HitlGateMatch, HitlKind, HitlOnTimeout, HitlRequests, HitlScope, HitlSecretRequests,
+    Actor, ActorLabel, ActorSource, ApiKey, Arch, AuditEntry, AuditEvent, ComputerPayload,
+    CreateRequest, CreatedApiKey, DeciderNote, DeciderVerdict, DesktopSpec, DesktopWm,
+    EgressHealth, EgressHealthState, EgressMode, EgressProtocol, EgressSpec, EgressStatus,
+    Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind, ExecPayload, ExposeSpec,
+    ForkOptions, GateMode, GpuDevice, Health, HealthState, HealthcheckHttp, HealthcheckProbe,
+    HealthcheckSpec, HitlAskRequests, HitlDecider, HitlExecPolicy, HitlGate, HitlGateMatch,
+    HitlKind, HitlOnTimeout, HitlRequests, HitlReviewRequests, HitlScope, HitlSecretRequests,
     HitlSecretTarget, HitlSpec, HitlTakeoverRequests, HitlWebhook, Host, HostBackend, HostCapacity,
     HostState, Intervention, InterventionDecision, InterventionOutcome, InterventionPayload,
     InterventionResult, InterventionSecret, InterventionSignal, InterventionState,
     InterventionTakeover, LifecycleAction, LifecyclePayload, MigInstance, MigrateOptions,
-    MissReason, Protocol, Reaper, RegisterHostRequest, Snapshot, SnapshotExport, SnapshotKind,
-    SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia, VersionInfo, ALLOWLIST_GATE,
+    MissReason, Protocol, Reaper, RegisterHostRequest, ReviewFormat, ReviewPayload, Snapshot,
+    SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia,
+    VersionInfo, ALLOWLIST_GATE,
 };

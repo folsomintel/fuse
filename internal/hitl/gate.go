@@ -14,6 +14,8 @@ const (
 	KindExec Kind = "exec"
 	// KindLifecycle is an environment api action held by a lifecycle gate.
 	KindLifecycle Kind = "lifecycle"
+	// KindComputer is a computer action held by a computer gate.
+	KindComputer Kind = "computer"
 )
 
 // Mode is what a gate does when it matches.
@@ -43,6 +45,16 @@ const (
 // LifecycleActions is every gateable action, in display order.
 var LifecycleActions = []LifecycleAction{ActionDestroy, ActionFork, ActionMigrate, ActionDrain, ActionSnapshot, ActionRotateToken}
 
+// ComputerActions is fused's computer action enum (fused/computer.go). a
+// computer gate matches on these names, never on coordinates: a layout
+// shifts, an action type does not.
+var ComputerActions = []string{
+	"screenshot", "cursor_position", "mouse_move",
+	"left_click", "right_click", "middle_click", "double_click", "triple_click",
+	"left_click_drag", "left_mouse_down", "left_mouse_up",
+	"type", "key", "hold_key", "scroll", "wait", "zoom",
+}
+
 // Gate is one enforced gate from the fusefile.
 type Gate struct {
 	// Name identifies the gate on interventions and grants.
@@ -60,6 +72,9 @@ type Gate struct {
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// Reason is the text a deny returns, and is shown to the human on ask.
 	Reason string `json:"reason,omitempty"`
+	// Decide is a webhook asked before a human: it answers allow, deny or
+	// ask. only for an ask gate on exec, lifecycle or computer.
+	Decide *Decider `json:"decide,omitempty"`
 }
 
 // GateMatch is the structured match. every field set must match.
@@ -72,8 +87,12 @@ type GateMatch struct {
 	Args []string `json:"args,omitempty"`
 	// Shell matches any opaque shell exec.
 	Shell bool `json:"shell,omitempty"`
-	// Action matches lifecycle actions.
-	Action []LifecycleAction `json:"action,omitempty"`
+	// Action matches lifecycle actions (on: lifecycle) or fused's computer
+	// actions (on: computer).
+	Action []string `json:"action,omitempty"`
+	// TextContains matches a computer type action whose text contains any
+	// entry, ignoring case.
+	TextContains []string `json:"text_contains,omitempty"`
 	// Failures fires a stall after this many consecutive non-zero exec
 	// exits.
 	Failures int `json:"failures,omitempty"`
@@ -195,6 +214,12 @@ func validateGates(gates []Gate, exec *ExecPolicy) []error {
 		if len(g.Reason) > maxGateReason {
 			errs = append(errs, fmt.Errorf("%s.reason: must be at most %d bytes", at, maxGateReason))
 		}
+		if g.Decide != nil {
+			if g.EffectiveMode() != ModeAsk {
+				errs = append(errs, fmt.Errorf("%s.decide: only an ask gate can have a decider", at))
+			}
+			errs = append(errs, g.Decide.validate(at+".decide")...)
+		}
 	}
 	if exec != nil {
 		if exec.Default != ModeAsk && exec.Default != ModeDeny {
@@ -228,23 +253,49 @@ func validateMatch(at string, on Kind, m GateMatch) []error {
 			}
 		}
 	case KindLifecycle:
-		if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 {
+		if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 || len(m.TextContains) > 0 {
 			errs = append(errs, fmt.Errorf("%s.match: a lifecycle gate matches only action", at))
 		}
 		if len(m.Action) == 0 {
 			errs = append(errs, fmt.Errorf("%s.match.action: list at least one of %s", at, joinActions()))
 		}
 		for j, a := range m.Action {
-			if !slices.Contains(LifecycleActions, a) {
+			if !slices.Contains(LifecycleActions, LifecycleAction(a)) {
 				errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, joinActions(), a))
+			}
+		}
+	case KindComputer:
+		if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 {
+			errs = append(errs, fmt.Errorf("%s.match: a computer gate matches only action and text_contains", at))
+		}
+		if len(m.Action) == 0 && len(m.TextContains) == 0 {
+			errs = append(errs, fmt.Errorf("%s.match: a computer gate needs action or text_contains", at))
+		}
+		for j, a := range m.Action {
+			if !slices.Contains(ComputerActions, a) {
+				errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, strings.Join(ComputerActions, ", "), a))
+			}
+		}
+		if len(m.TextContains) > 0 && len(m.Action) > 0 && !slices.Equal(m.Action, []string{"type"}) {
+			errs = append(errs, fmt.Errorf("%s.match.text_contains: only applies to the type action; drop the other actions or split the gate", at))
+		}
+		if len(m.TextContains) > maxMatchItems {
+			errs = append(errs, fmt.Errorf("%s.match.text_contains: at most %d entries", at, maxMatchItems))
+		}
+		for j, t := range m.TextContains {
+			if t == "" {
+				errs = append(errs, fmt.Errorf("%s.match.text_contains[%d]: must not be empty", at, j))
 			}
 		}
 	case KindStall, KindExpiry:
 		// validated with the rest of the gate in validateSignal.
-	case "attach", "computer", "egress":
+	case "attach", "egress":
 		errs = append(errs, fmt.Errorf("%s.on: %q is not yet supported", at, on))
 	default:
-		errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, stall or expiry, got %q", at, on))
+		errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, computer, stall or expiry, got %q", at, on))
+	}
+	if on != KindComputer && len(m.TextContains) > 0 {
+		errs = append(errs, fmt.Errorf("%s.match.text_contains: only applies to on: computer", at))
 	}
 	return errs
 }
@@ -271,4 +322,4 @@ func joinActions() string {
 }
 
 // errNoPolicy is returned when a spec declares nothing at all.
-var errNoPolicy = errors.New("hitl: declare at least one of requests (ask, secret or takeover), gates or exec")
+var errNoPolicy = errors.New("hitl: declare at least one of requests (ask, secret, review or takeover), gates or exec")

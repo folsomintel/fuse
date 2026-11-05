@@ -2,9 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/hitl"
@@ -131,6 +133,13 @@ func (fm *FleetManager) startTakeoverLocked(ctx context.Context, envID string, s
 			return *claim, false, err
 		}
 		in = *claim
+		// the human picks the way in when they name one: an agent asking
+		// for help does not know whether a shell or the desktop fits.
+		if req.Via != "" && in.Takeover.Via != via {
+			t := *in.Takeover
+			t.Via = via
+			in.Takeover = &t
+		}
 	} else {
 		in = hitl.Intervention{
 			ID:          hitl.NewID(now),
@@ -228,6 +237,59 @@ func (fm *FleetManager) TakeoverAttach(ctx context.Context, id string, spec Atta
 		return nil, err
 	}
 	return newRecordedStream(stream, in, by, spec, func(c cast) {
-		fm.saveRecording(context.WithoutCancel(ctx), in, by, remoteAddr, c)
+		fm.saveRecording(context.WithoutCancel(ctx), in, by, remoteAddr, recordingTerminal, c)
+	}), nil
+}
+
+// TakeoverDesktop opens the takeover holder's live desktop: the computer
+// stream plus a recording, an input-action log and a screenshot every
+// desktopShotInterval, saved sealed when the view closes and linked from a
+// takeover_session audit row. it is the one desktop stream a held
+// environment still serves; the plain one answers 423 like the agent's
+// clicks do.
+func (fm *FleetManager) TakeoverDesktop(ctx context.Context, id string, by hitl.Actor, master bool, remoteAddr string) (io.ReadWriteCloser, error) {
+	in, err := fm.GetIntervention(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if in.Kind != hitl.KindTakeover {
+		return nil, fmt.Errorf("%w: intervention %s is a %s, not a takeover", ErrInvalidIntervention, id, in.Kind)
+	}
+	if !in.Locks() {
+		return nil, fmt.Errorf("%w: takeover %s is not held (state %s); start it with ?action=takeover first", ErrNoTakeover, id, in.State)
+	}
+	if in.Takeover.Via != hitl.ViaDesktop {
+		return nil, fmt.Errorf("%w: takeover %s is via %s; start one with via desktop", ErrInvalidIntervention, id, in.Takeover.Via)
+	}
+	if !master && in.Takeover.Holder.ID != by.ID {
+		return nil, fmt.Errorf("%w: takeover %s is held by %s", ErrNotTakeoverHolder, id, in.Takeover.Holder.ID)
+	}
+	stream, err := fm.openComputerStream(ctx, in.EnvID)
+	if err != nil {
+		return nil, err
+	}
+	shoot := func(ctx context.Context) (string, error) {
+		res, err := fm.guestComputer(ctx, in.EnvID, http.MethodGet, "/v1/computer/screenshot", nil)
+		if err != nil {
+			return "", err
+		}
+		if res.Status != http.StatusOK {
+			return "", fmt.Errorf("screenshot: guest answered %d", res.Status)
+		}
+		var shot hitl.ComputerResult
+		if err := json.Unmarshal(res.Body, &shot); err != nil {
+			return "", err
+		}
+		return shot.Screenshot, nil
+	}
+	start := desktopRecording{InterventionID: in.ID, EnvID: in.EnvID, Actor: by.ID}
+	return newDesktopRecorder(stream, start, desktopShotInterval, shoot, func(r desktopRecording) {
+		data, err := json.Marshal(r)
+		if err != nil {
+			fm.logger.Error("encode desktop recording failed", "intervention", in.ID, "err", err)
+			return
+		}
+		fm.saveRecording(context.WithoutCancel(ctx), in, by, remoteAddr, recordingDesktop,
+			cast{data: data, startedAt: r.StartedAt, endedAt: r.EndedAt, truncated: r.Truncated})
 	}), nil
 }

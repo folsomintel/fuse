@@ -483,7 +483,7 @@ func (s *EnvironmentsService) Computer(ctx context.Context, vmID string, action 
 	if s != nil {
 		t = s.t
 	}
-	return retryLocked(ctx, t, false, func() (*ComputerActionResponse, error) { return s.computerOnce(ctx, vmID, action) })
+	return retryLocked(ctx, t, action.NoWait, func() (*ComputerActionResponse, error) { return s.computerOnce(ctx, vmID, action) })
 }
 
 func (s *EnvironmentsService) computerOnce(ctx context.Context, vmID string, action ComputerActionRequest) (*ComputerActionResponse, error) {
@@ -508,12 +508,31 @@ func (s *EnvironmentsService) computerOnce(ctx context.Context, vmID string, act
 	if err := CheckResponse(resp); err != nil {
 		return nil, err
 	}
+	if held, err := readHeld(resp); err != nil || held != nil {
+		if err != nil {
+			return nil, err
+		}
+		return s.settleComputer(ctx, held, heldOptions{noWait: action.NoWait, onHeld: action.OnHeld})
+	}
 	defer func() { _ = resp.Body.Close() }()
 	var res ComputerActionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return nil, fmt.Errorf("decode computer response: %w", err)
 	}
 	return &res, nil
+}
+
+// settleComputer waits out a held computer action and returns what the
+// orchestrator got performing it, with the human's edited text if any.
+func (s *EnvironmentsService) settleComputer(ctx context.Context, held *Intervention, o heldOptions) (*ComputerActionResponse, error) {
+	settled, err := s.t.settleHeld(ctx, held, o)
+	if err != nil {
+		return nil, err
+	}
+	if settled.Result == nil || settled.Result.Computer == nil {
+		return nil, fmt.Errorf("intervention %s settled without a computer result", settled.ID)
+	}
+	return settled.Result.Computer, nil
 }
 
 // ComputerDisplay reports whether the environment has a live display and at

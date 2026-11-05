@@ -56,6 +56,18 @@ func (h *Handler) computerAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// the hold point, as for exec: a computer gate can hold the action for
+	// a human (202) or deny it (403) before the guest sees it.
+	held, err := h.Fleet.GateComputer(r.Context(), vmID, body, gateCaller(r))
+	if err != nil {
+		writeHitlError(w, err)
+		return
+	}
+	if held != nil {
+		writeHeld(w, held)
+		return
+	}
+
 	// A hold_key or wait action can legitimately outlive the server's
 	// WriteTimeout, and every response carries a screenshot worth of bytes;
 	// clear the write deadline the way exec does so the flush cannot be cut
@@ -83,6 +95,8 @@ func (h *Handler) computerDisplay(w http.ResponseWriter, r *http.Request) {
 
 // computerStream upgrades the connection and relays a fuse-vnc/1 stream —
 // raw RFB bytes — between the client and the vnc server inside the guest.
+// While a human holds a takeover it answers 423; the holder's view is
+// takeoverDesktop.
 //
 // Like attach, the orchestrator is a byte pump here and nothing more. Unlike
 // attach it is not master-token only, for the reason documented at the top
@@ -107,6 +121,12 @@ func (h *Handler) computerStream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = guest.Close() }()
 
+	serveVNC(w, guest)
+}
+
+// serveVNC hijacks the connection, answers 101 and relays the guest
+// stream until either side closes.
+func serveVNC(w http.ResponseWriter, guest io.ReadWriteCloser) {
 	// ResponseController, not a direct w.(http.Hijacker) assertion: the
 	// metrics middleware wraps the ResponseWriter, and only the controller
 	// walks the Unwrap chain to find the transport underneath.

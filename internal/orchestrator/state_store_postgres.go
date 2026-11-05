@@ -1336,10 +1336,10 @@ func (s *PostgresStateStore) DeleteHitlGrants(ctx context.Context, envID string)
 func (s *PostgresStateStore) SaveHitlRecording(ctx context.Context, rec RecordingRecord) error {
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO orchestrator_hitl_recordings
-			(id, intervention_id, env_id, actor_json, started_at, ended_at, size_bytes, truncated, sealed, data)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+			(id, intervention_id, env_id, actor_json, started_at, ended_at, size_bytes, truncated, sealed, data, kind)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 		rec.ID, rec.InterventionID, rec.EnvID, []byte(rec.Actor), rec.StartedAt.UTC(), rec.EndedAt.UTC(),
-		rec.Size, rec.Truncated, rec.Sealed, rec.Data); err != nil {
+		rec.Size, rec.Truncated, rec.Sealed, rec.Data, recordingKind(rec.Kind)); err != nil {
 		return fmt.Errorf("insert hitl recording: %w", err)
 	}
 	return nil
@@ -1351,10 +1351,10 @@ func (s *PostgresStateStore) GetHitlRecording(ctx context.Context, id string) (R
 		actor []byte
 	)
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, intervention_id, env_id, actor_json, started_at, ended_at, size_bytes, truncated, sealed, data
+		SELECT id, intervention_id, env_id, actor_json, started_at, ended_at, size_bytes, truncated, sealed, data, kind
 		FROM orchestrator_hitl_recordings WHERE id = $1`, id).
 		Scan(&rec.ID, &rec.InterventionID, &rec.EnvID, &actor, &rec.StartedAt, &rec.EndedAt,
-			&rec.Size, &rec.Truncated, &rec.Sealed, &rec.Data)
+			&rec.Size, &rec.Truncated, &rec.Sealed, &rec.Data, &rec.Kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RecordingRecord{}, fmt.Errorf("%w: %s", ErrRecordingNotFound, id)
 	}
@@ -1364,4 +1364,13 @@ func (s *PostgresStateStore) GetHitlRecording(ctx context.Context, id string) (R
 	rec.Actor = actor
 	rec.StartedAt, rec.EndedAt = rec.StartedAt.UTC(), rec.EndedAt.UTC()
 	return rec, nil
+}
+
+// recordingKind defaults a recording's kind to terminal, the only kind
+// written before desktop takeovers.
+func recordingKind(k string) string {
+	if k == "" {
+		return recordingTerminal
+	}
+	return k
 }

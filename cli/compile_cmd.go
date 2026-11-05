@@ -105,6 +105,7 @@ type compiledGate struct {
 	Grant          string            `json:"grant,omitempty" yaml:"grant,omitempty"`
 	TimeoutSeconds int64             `json:"timeout_seconds,omitempty" yaml:"timeout_seconds,omitempty"`
 	Reason         string            `json:"reason,omitempty" yaml:"reason,omitempty"`
+	Decide         *compiledWebhook  `json:"decide,omitempty" yaml:"decide,omitempty"`
 }
 
 // compiledGateMatch mirrors fuse.HitlGateMatch.
@@ -113,6 +114,7 @@ type compiledGateMatch struct {
 	Args          []string `json:"args,omitempty" yaml:"args,omitempty"`
 	Shell         bool     `json:"shell,omitempty" yaml:"shell,omitempty"`
 	Action        []string `json:"action,omitempty" yaml:"action,omitempty"`
+	TextContains  []string `json:"text_contains,omitempty" yaml:"text_contains,omitempty"`
 	Failures      int      `json:"failures,omitempty" yaml:"failures,omitempty"`
 	QuietSeconds  int64    `json:"quiet_seconds,omitempty" yaml:"quiet_seconds,omitempty"`
 	BeforeSeconds int64    `json:"before_seconds,omitempty" yaml:"before_seconds,omitempty"`
@@ -135,6 +137,7 @@ type compiledHitlAllow struct {
 	Ask      *struct{}               `json:"ask,omitempty" yaml:"ask,omitempty"`
 	Secret   *compiledSecretRequests `json:"secret,omitempty" yaml:"secret,omitempty"`
 	Takeover *compiledTakeover       `json:"takeover,omitempty" yaml:"takeover,omitempty"`
+	Review   *struct{}               `json:"review,omitempty" yaml:"review,omitempty"`
 }
 
 // compiledSecretRequests mirrors fuse.HitlSecretRequests.
@@ -357,6 +360,9 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		if h.Ask {
 			req.Hitl.Requests.Ask = &struct{}{}
 		}
+		if h.Review {
+			req.Hitl.Requests.Review = &struct{}{}
+		}
 		if s := h.Secret; s != nil {
 			req.Hitl.Requests.Secret = &compiledSecretRequests{}
 			for _, t := range s.Targets {
@@ -370,13 +376,17 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 			req.Hitl.Notify = append(req.Hitl.Notify, compiledWebhook{URL: w.URL, Secret: w.Secret})
 		}
 		for _, g := range h.Gates {
-			req.Hitl.Gates = append(req.Hitl.Gates, compiledGate{
+			gate := compiledGate{
 				Name: g.Name, On: g.On, Mode: g.Mode, Grant: g.Grant, TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
 				Match: compiledGateMatch{
-					Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action,
+					Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action, TextContains: g.TextContains,
 					Failures: g.Failures, QuietSeconds: g.QuietSeconds, BeforeSeconds: g.BeforeSeconds,
 				},
-			})
+			}
+			if d := g.Decide; d != nil {
+				gate.Decide = &compiledWebhook{URL: d.URL, Secret: d.Secret}
+			}
+			req.Hitl.Gates = append(req.Hitl.Gates, gate)
 		}
 		if e := h.Exec; e != nil {
 			req.Hitl.Exec = &compiledExec{Default: e.Default, Allow: e.Allow}

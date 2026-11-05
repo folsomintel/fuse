@@ -12,7 +12,14 @@ import (
 
 // Hitl request kinds.
 const (
-	HitlKindAsk = "ask"
+	HitlKindAsk    = "ask"
+	HitlKindReview = "review"
+)
+
+// Review formats.
+const (
+	ReviewFormatText = "text"
+	ReviewFormatDiff = "diff"
 )
 
 // Intervention states. pending is the only non-terminal one.
@@ -44,7 +51,8 @@ type HitlSpec struct {
 	RequireActor bool `json:"require_actor,omitempty"`
 	// Notify are webhooks told about every intervention and audit event.
 	Notify []HitlWebhook `json:"notify,omitempty"`
-	// Gates hold, record or deny exec and lifecycle actions.
+	// Gates hold, record or deny exec, lifecycle and computer actions, and
+	// raise stall and expiry signals.
 	Gates []HitlGate `json:"gates,omitempty"`
 	// Exec is allowlist mode for exec.
 	Exec *HitlExecPolicy `json:"exec,omitempty"`
@@ -57,13 +65,17 @@ type HitlWebhook struct {
 	Secret string `json:"secret"`
 }
 
-// HitlRequests declares the allowed request kinds. Only Ask exists today;
-// set it to a non-nil value to allow asks.
+// HitlRequests declares the allowed request kinds; a non-nil entry allows
+// that kind.
 type HitlRequests struct {
 	Ask      *HitlAskRequests      `json:"ask,omitempty"`
 	Secret   *HitlSecretRequests   `json:"secret,omitempty"`
 	Takeover *HitlTakeoverRequests `json:"takeover,omitempty"`
+	Review   *HitlReviewRequests   `json:"review,omitempty"`
 }
+
+// HitlReviewRequests configures review requests. Present means allowed.
+type HitlReviewRequests struct{}
 
 // HitlAskRequests configures ask requests. Present means allowed.
 type HitlAskRequests struct{}
@@ -88,6 +100,22 @@ type InterventionPayload struct {
 	Secret   *SecretPayload   `json:"secret,omitempty"`
 	Takeover *TakeoverPayload `json:"takeover,omitempty"`
 	Signal   *SignalPayload   `json:"signal,omitempty"`
+	// Computer is a held computer action.
+	Computer *ComputerPayload `json:"computer,omitempty"`
+	// Review is what is up for review.
+	Review *ReviewPayload `json:"review,omitempty"`
+	// Decider is the gate decider's note on an action it escalated.
+	Decider *DeciderNote `json:"decider,omitempty"`
+}
+
+// ReviewPayload is a review request. Content is the file as fuse read it
+// at request time when Path is set.
+type ReviewPayload struct {
+	Path      string `json:"path,omitempty"`
+	Content   string `json:"content"`
+	Format    string `json:"format"`
+	Message   string `json:"message,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // InterventionDecision is how an intervention resolved. An expired one
@@ -100,6 +128,8 @@ type InterventionDecision struct {
 	DecidedAt time.Time `json:"decided_at"`
 	// EditedArgv is the argv the approver replaced a held exec's with.
 	EditedArgv []string `json:"edited_argv,omitempty"`
+	// EditedText is the text the approver replaced a held type's with.
+	EditedText *string `json:"edited_text,omitempty"`
 	// Grant is how far an approval of a gated action reaches.
 	Grant string `json:"grant,omitempty"`
 }
@@ -147,9 +177,16 @@ type HumanRequest struct {
 	// target's label.
 	Target  string `json:"target,omitempty"`
 	Message string `json:"message,omitempty"`
-	// Via ("terminal") and Reason describe a takeover (HitlKindTakeover).
+	// Via ("terminal" or "desktop") and Reason describe a takeover
+	// (HitlKindTakeover).
 	Via    string `json:"via,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// Path (an absolute guest file) or Content (inline text or a diff) is
+	// what is up for review (HitlKindReview); Format is "text" or "diff",
+	// empty to guess. Message goes with it.
+	Path    string `json:"path,omitempty"`
+	Content string `json:"content,omitempty"`
+	Format  string `json:"format,omitempty"`
 	// TimeoutSeconds shortens the policy's deadline. It can never extend it.
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// NoWait returns the pending intervention at once instead of waiting
@@ -463,4 +500,43 @@ func doJSON(ctx context.Context, t *transport, method, path string, query url.Va
 		return fmt.Errorf("decode %s: %w", path, err)
 	}
 	return nil
+}
+
+// ReviewRequest is what RequestReview sends: exactly one of Path and
+// Content.
+type ReviewRequest struct {
+	Path    string
+	Content string
+	// Format is ReviewFormatText or ReviewFormatDiff; empty guesses.
+	Format         string
+	Message        string
+	TimeoutSeconds int64
+	NoWait         bool
+}
+
+// ReviewResult is a finished review. Comments are the reviewer's, on
+// either outcome.
+type ReviewResult struct {
+	Approved     bool
+	Comments     string
+	Intervention *Intervention
+}
+
+// RequestReview submits a guest file or a text/diff blob for a human to
+// approve or reject with comments, and waits for the verdict. It needs
+// hitl.requests.review. With NoWait it returns at once with the pending
+// intervention and Approved false.
+func (s *EnvironmentsService) RequestReview(ctx context.Context, vmID string, r ReviewRequest) (*ReviewResult, error) {
+	in, err := s.RequestHuman(ctx, vmID, HumanRequest{
+		Kind: HitlKindReview, Path: r.Path, Content: r.Content, Format: r.Format, Message: r.Message,
+		TimeoutSeconds: r.TimeoutSeconds, NoWait: r.NoWait,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := &ReviewResult{Approved: in.Approved(), Intervention: in}
+	if in.Decision != nil {
+		out.Comments = in.Decision.Reason
+	}
+	return out, nil
 }

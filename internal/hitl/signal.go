@@ -83,6 +83,9 @@ func validateSignal(at string, g Gate) []error {
 	if g.Grant != "" {
 		errs = append(errs, fmt.Errorf("%s.grant: a %s signal cannot grant", at, g.On))
 	}
+	if g.Decide != nil {
+		errs = append(errs, fmt.Errorf("%s.decide: a %s signal has no action for a decider to judge", at, g.On))
+	}
 	return errs
 }
 

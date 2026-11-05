@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -219,6 +220,7 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/hitl/audit", h.listHitlAudit)
 	r.Get("/v1/hitl/recordings/{recordingId}", h.getRecording)
 	r.Get("/v1/interventions/{interventionId}/attach", h.takeoverAttach)
+	r.Get("/v1/interventions/{interventionId}/desktop", h.takeoverDesktop)
 
 	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
 	r.Get("/v1/snapshots", h.listSnapshots)
@@ -330,6 +332,19 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 					fmt.Sprintf("hitl.notify[%d].secret: %q is not in secrets", i, wh.Secret), nil)
 				return
 			}
+		}
+		for i, g := range req.Hitl.Gates {
+			if g.Decide != nil && req.Secrets[g.Decide.Secret] == "" {
+				writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+					fmt.Sprintf("hitl.gates[%d].decide.secret: %q is not in secrets", i, g.Decide.Secret), nil)
+				return
+			}
+		}
+		// a desktop takeover needs a desktop to take over.
+		if t := req.Hitl.Requests.Takeover; t != nil && slices.Contains(t.Via, string(hitl.ViaDesktop)) && req.Desktop == nil {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+				"hitl.requests.takeover.via: desktop needs a desktop block", nil)
+			return
 		}
 	}
 	// A negative bound would reach the fleet as "unset" and quietly restore

@@ -66,7 +66,7 @@ func gatesSpec() Spec {
 		{Name: "force-push", On: KindExec, Match: GateMatch{Program: []string{"git"}, Args: []string{"push", "--force"}}},
 		{Name: "shell", On: KindExec, Match: GateMatch{Shell: true}, Mode: ModeNotify},
 		{Name: "rm", On: KindExec, Match: GateMatch{Program: []string{"rm"}}, Mode: ModeDeny, Reason: "no rm"},
-		{Name: "destroy", On: KindLifecycle, Match: GateMatch{Action: []LifecycleAction{ActionDestroy, ActionMigrate}}, Mode: ModeDeny},
+		{Name: "destroy", On: KindLifecycle, Match: GateMatch{Action: []string{"destroy", "migrate"}}, Mode: ModeDeny},
 	}}
 }
 
@@ -161,7 +161,7 @@ func TestValidateGates(t *testing.T) {
 		{Name: "x", On: KindExec, Match: GateMatch{}},
 		{Name: "x", On: KindExec, Match: GateMatch{Shell: true, Program: []string{"git"}}},
 		{Name: "x", On: KindExec, Match: GateMatch{Program: []string{"/usr/bin/git"}}},
-		{Name: "x", On: KindLifecycle, Match: GateMatch{Action: []LifecycleAction{"reboot"}}},
+		{Name: "x", On: KindLifecycle, Match: GateMatch{Action: []string{"reboot"}}},
 		{Name: "x", On: KindLifecycle, Match: GateMatch{}},
 		{Name: "x", On: KindExec, Match: GateMatch{Program: []string{"git"}}, Mode: "block"},
 		{Name: "x", On: KindExec, Match: GateMatch{Program: []string{"git"}}, Mode: ModeDeny, Grant: "env"},

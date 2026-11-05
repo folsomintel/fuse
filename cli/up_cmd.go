@@ -491,6 +491,9 @@ func toSDKHitl(in *fusefile.HitlSpec) *fuse.HitlSpec {
 	if in.Ask {
 		out.Requests.Ask = &fuse.HitlAskRequests{}
 	}
+	if in.Review {
+		out.Requests.Review = &fuse.HitlReviewRequests{}
+	}
 	if s := in.Secret; s != nil {
 		out.Requests.Secret = &fuse.HitlSecretRequests{}
 		for _, t := range s.Targets {
@@ -504,13 +507,17 @@ func toSDKHitl(in *fusefile.HitlSpec) *fuse.HitlSpec {
 		out.Notify = append(out.Notify, fuse.HitlWebhook{URL: w.URL, Secret: w.Secret})
 	}
 	for _, g := range in.Gates {
-		out.Gates = append(out.Gates, fuse.HitlGate{
+		gate := fuse.HitlGate{
 			Name: g.Name, On: g.On, Mode: g.Mode, Grant: g.Grant, TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
 			Match: fuse.HitlGateMatch{
-				Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action,
+				Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action, TextContains: g.TextContains,
 				Failures: g.Failures, QuietSeconds: g.QuietSeconds, BeforeSeconds: g.BeforeSeconds,
 			},
-		})
+		}
+		if d := g.Decide; d != nil {
+			gate.Decide = &fuse.HitlDecider{URL: d.URL, Secret: d.Secret}
+		}
+		out.Gates = append(out.Gates, gate)
 	}
 	if e := in.Exec; e != nil {
 		out.Exec = &fuse.HitlExecPolicy{Default: e.Default, Allow: e.Allow}

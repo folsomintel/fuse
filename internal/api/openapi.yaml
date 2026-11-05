@@ -865,6 +865,21 @@ paths:
         stall is waiting to be acked, an action is refused with 423
         `locked` before it reaches the guest, exactly as exec is. Wait on
         `details.intervention_id`, then send the action again.
+
+        **Hitl gates.** When the environment's `hitl.gates` include
+        `computer` gates, the action is checked against them before the
+        guest sees it, by its `action` name and, for `type`, its `text`
+        (`text_contains`). A gate in `ask` mode answers 202 with a
+        HeldResponse; once a human approves, the orchestrator performs
+        the action itself, with the body as sent (or the approver's
+        `edited_text` for a `type`), and stores the guest's answer in the
+        intervention's `result.computer`. `notify` lets it through and
+        records a terminal intervention; `deny` answers 403 `forbidden`
+        with `details.reason` `hitl_denied`. A gate with a `decide`
+        webhook asks it first: `allow` lets the action through, `deny`
+        is the same 403 with the decider's reason, and `ask` or any
+        failure holds it for a human. A grant from an earlier approval
+        lets the exact same action body through without a prompt.
       requestBody:
         required: true
         content:
@@ -878,8 +893,36 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ComputerActionResponse"
+        "202":
+          description: |
+            A `computer` hitl gate holds the action. Nothing reached the
+            guest yet. The body is a HeldResponse naming the pending
+            intervention, and `Location` points at it. Wait on it with
+            GET /v1/interventions/{interventionId}?wait=; once approved the
+            orchestrator performs the action and stores the guest's answer
+            in the intervention's `result.computer`.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/interventions/{interventionId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeldResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          description: |
+            A `computer` hitl gate in `deny` mode, or a gate's decider,
+            refused the action (code `forbidden`, `details.reason`
+            `hitl_denied`, `details.gate` the gate's name,
+            `details.intervention_id` the terminal record; the message is
+            the gate's or the decider's reason).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -961,6 +1004,11 @@ paths:
 
         An open stream counts as environment activity for as long as it is
         open, so a watched-but-idle desktop is not reaped.
+
+        While a human holds a takeover (or an `ask` stall waits to be
+        acked) the stream answers 423 `locked`, like the agent's computer
+        actions: input sent on it would get past the lock. A takeover
+        holder's view is GET /v1/interventions/{interventionId}/desktop.
       responses:
         "101":
           description: |
@@ -990,6 +1038,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "423":
+          $ref: "#/components/responses/Locked"
         "501":
           $ref: "#/components/responses/Unimplemented"
         "503":
@@ -1612,8 +1662,19 @@ paths:
         `answer` reads `extended until <time>` and
         `payload.signal.extended_until` holds the time. Rejecting an
         expiry lets the reap go ahead. `extend_seconds` on anything but
-        an expiry approval is 400, and so are `edited_argv` and `grant`
-        on a signal.
+        an expiry approval is 400, and so are `edited_argv`,
+        `edited_text` and `grant` on a signal.
+
+        **Gated actions.** `edited_argv` (a held exec) and `edited_text`
+        (a held computer `type`) replace the action before the
+        orchestrator performs it. Either is re-checked against the
+        `deny` gates, a match being 403 `hitl_denied`. An edit cannot be
+        combined with an explicit `grant` (400), and a gate's default
+        grant drops to `once` with one. Both are 400 on a reject.
+
+        **Reviews.** A `review` is approved or rejected with the
+        reviewer's comments in `reason`, which the agent reads on both
+        outcomes. It takes no `answer`, edit or `grant`.
 
         **Secrets.** `?action=secret` answers a `secret` request with an
         AnswerSecretRequest body instead of deciding it. It needs
@@ -1779,6 +1840,97 @@ paths:
         "501":
           $ref: "#/components/responses/Unimplemented"
 
+  /v1/interventions/{interventionId}/desktop:
+    parameters:
+      - name: interventionId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: A held takeover started with `via` `desktop`.
+      - $ref: "#/components/parameters/FuseActor"
+      - $ref: "#/components/parameters/FuseActorName"
+    get:
+      tags: [interventions]
+      operationId: takeoverDesktop
+      summary: Open a takeover desktop
+      description: |
+        Opens the takeover holder's live desktop. This is the computer
+        stream (see computerStream for the `fuse-vnc/1` handshake; the
+        stream is raw RFB) with a recording on it. While the takeover is
+        held this is the only desktop stream the environment serves: the
+        plain computer stream and the agent's computer actions answer
+        423. The Go SDK (`Environments.TakeoverDesktop`) and the CLI
+        (`fuse hitl takeover --via desktop`) speak it.
+
+        It needs `hitl:takeover`, and the caller must be the takeover's
+        holder (the master token skips the holder check). Start the
+        takeover first with POST /v1/environments/{vmId}?action=takeover
+        and `via` `desktop`; a human claiming an agent's pending request
+        keeps the `via` the agent asked for.
+
+        **Recorded.** The session is kept as an input-action log read
+        off the viewer's half of the stream (each pointer button change
+        with its coordinates, named keys and chords such as `Return` or
+        `ctrl+c`, a count of printable keys typed but never the keys
+        themselves, and the byte size of each clipboard paste but never
+        its text) plus a screenshot at the start and every 10 seconds.
+        When the stream closes the recording is sealed with
+        `TOKEN_ENCRYPTION_KEY` (stored unencrypted, with a warning, when
+        the orchestrator has none) and linked from a `takeover_session`
+        audit row by `recording_id`. Screenshots stop at 32 MiB and the
+        log at 50,000 entries, and the recording is marked truncated;
+        the view keeps working.
+      responses:
+        "101":
+          description: |
+            Upgrade accepted. The connection leaves HTTP and carries raw
+            RFB bytes in both directions until either end closes it.
+          headers:
+            Upgrade:
+              schema:
+                type: string
+                enum: [fuse-vnc/1]
+            Connection:
+              schema:
+                type: string
+                enum: [Upgrade]
+        "400":
+          description: |
+            No `Upgrade: fuse-vnc/1`, the intervention is not a takeover,
+            or the takeover is not via `desktop`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: |
+            The key lacks `hitl:takeover` (`details.reason`
+            `missing_scope`), or the caller is not the takeover's holder
+            (code `forbidden`, no reason).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The takeover is not held (never started, or already resolved).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
+        "503":
+          description: The guest has nothing to stream (not a desktop image, or the vnc unit is down).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /v1/hitl/audit:
     get:
       tags: [interventions]
@@ -1861,30 +2013,48 @@ paths:
       summary: Get a takeover recording
       description: |
         Returns one recorded takeover session, decrypted with the
-        orchestrator key, as an asciinema v2 cast: a JSON header line,
-        then one `[seconds, "o" | "r", data]` line per output chunk or
-        resize. It holds what the guest printed, never what the human
-        typed. Play it with `asciinema play`.
+        orchestrator key. `Fuse-Recording-Kind` says which kind it is.
+
+        A `terminal` session is an asciinema v2 cast
+        (`application/x-asciicast`): a JSON header line, then one
+        `[seconds, "o" | "r", data]` line per output chunk or resize. It
+        holds what the guest printed, never what the human typed. Play
+        it with `asciinema play`.
+
+        A `desktop` session is a DesktopRecording (`application/json`):
+        the input-action log plus the screenshots. It never holds the
+        keys the human typed or the text they pasted.
 
         Requires `hitl:read`. A recording of an environment the caller's
         key does not cover is 404, the same as one that does not exist.
       responses:
         "200":
-          description: The cast.
+          description: The recording.
           headers:
             Fuse-Intervention-Id:
               schema:
                 type: string
               description: The takeover the session belongs to.
+            Fuse-Recording-Kind:
+              schema:
+                type: string
+                enum: [terminal, desktop]
+              description: The kind of session, and so of body.
             Fuse-Recording-Truncated:
               schema:
                 type: string
                 enum: ["true"]
-              description: Present when the session ran past 8 MiB and the cast was cut off.
+              description: |
+                Present when the recording hit its cap and was cut off: 8
+                MiB for a terminal cast, 32 MiB of screenshots or 50,000
+                log entries for a desktop session.
           content:
             application/x-asciicast:
               schema:
                 type: string
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesktopRecording"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -2171,8 +2341,9 @@ components:
           actor.
         - `actor_not_allowed`: `Fuse-Actor` sent by a key without
           `hitl:act-as`.
-        - `hitl_denied`: a hitl gate in `deny` mode refused an exec or
-          lifecycle action. `details.gate` names the gate and
+        - `hitl_denied`: a hitl gate in `deny` mode, or a gate's decider,
+          refused an exec, lifecycle or computer action, or an edit
+          matched a `deny` gate. `details.gate` names the gate and
           `details.intervention_id` the terminal record; the message is
           the gate's `reason`.
         - `mint_escalation`: a scoped key tried to mint a key wider than
@@ -3570,6 +3741,12 @@ components:
               $ref: "#/components/schemas/HitlSecretRequests"
             takeover:
               $ref: "#/components/schemas/HitlTakeoverRequests"
+            review:
+              type: object
+              description: |
+                Allows review requests: the agent submits a guest file or
+                a text/diff blob, and a human approves or rejects it with
+                comments. It has no fields.
         require_actor:
           type: boolean
           description: |
@@ -3593,8 +3770,10 @@ components:
           items:
             $ref: "#/components/schemas/HitlGate"
           description: |
-            Gates that hold, record or deny exec and lifecycle actions, and
-            the `stall` and `expiry` signals.
+            Gates that hold, record or deny exec, lifecycle and computer
+            actions, and the `stall` and `expiry` signals. A gate's
+            `decide.secret` must name an entry of the create request's
+            `secrets`, or the create is 400.
         exec:
           $ref: "#/components/schemas/HitlExecPolicy"
 
@@ -3643,8 +3822,12 @@ components:
           type: array
           items:
             type: string
-            enum: [terminal]
-          description: Allowed ways to take over. Omitted or empty means `terminal`.
+            enum: [terminal, desktop]
+          description: |
+            Allowed ways to take over: `terminal` (a recorded shell) and
+            `desktop` (the recorded live desktop). Omitted or empty means
+            `terminal`. `desktop` needs the create request's `desktop`
+            block, or the create is 400.
 
     TakeoverRequest:
       type: object
@@ -3652,8 +3835,11 @@ components:
       properties:
         via:
           type: string
-          enum: [terminal]
-          description: How to take over. Defaults to `terminal`.
+          enum: [terminal, desktop]
+          description: |
+            How to take over. Defaults to `terminal`. Must be declared in
+            `hitl.requests.takeover.via`. Claiming an agent's pending
+            request keeps the `via` the agent asked for.
         reason:
           type: string
           description: Recorded when no agent request is pending to claim.
@@ -3690,9 +3876,10 @@ components:
           description: Identifies the gate on interventions and grants.
         "on":
           type: string
-          enum: [exec, lifecycle, stall, expiry]
+          enum: [exec, lifecycle, computer, stall, expiry]
           description: |
-            `stall` and `expiry` are signals fuse raises on its own: a
+            `exec`, `lifecycle` and `computer` hold the actions fuse
+            relays. `stall` and `expiry` are signals fuse raises on its own: a
             stall when the agent looks stuck, an expiry ahead of an
             `idle_timeout` or `max_runtime` reap. They take only the
             matching signal fields of `match`, are `ask` or `notify`
@@ -3720,6 +3907,98 @@ components:
         reason:
           type: string
           description: Returned on a deny and shown to the human on an ask.
+        decide:
+          $ref: "#/components/schemas/HitlDecider"
+
+    HitlDecider:
+      type: object
+      required: [url, secret]
+      description: |
+        A webhook asked before a human, on an `ask` gate on `exec`,
+        `lifecycle` or `computer` (refused on `notify`, `deny`, `stall`
+        and `expiry`). Before the gate holds an action, fuse POSTs a
+        HitlDeciderRequest to `url`, signed with a `Fuse-Signature`
+        header exactly like a HitlWebhook delivery, and reads a
+        HitlDeciderResponse back.
+
+        - `allow`: the action goes on as if this gate had not matched
+          (another matching `ask` gate still applies). It is recorded as
+          an intervention born approved, decided by actor
+          `decider:<gate>` with source `decider`. No grant is created.
+        - `deny`: the call gets 403 `hitl_denied` with the decider's
+          reason; the intervention is born rejected.
+        - `ask`: the action is held for a human as usual, with the
+          verdict in `payload.decider`.
+
+        The call has a fixed 5s timeout (a computer action first spends
+        up to 5s more taking the screenshot) and is not retried. Any
+        failure (timeout, transport error, non-2xx, a redirect, which is
+        not followed, a body that is not JSON or names an unknown
+        decision, or a signing secret the orchestrator no longer holds)
+        falls through to `ask`, with the error in
+        `payload.decider.error`. The decider is not asked when a grant
+        already covers the action.
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Absolute http or https url with a host and no userinfo credentials.
+        secret:
+          type: string
+          description: |
+            Name of an entry in the create request's `secrets` whose value
+            keys the HMAC-SHA256 signature, sealed and kept like a
+            HitlWebhook secret.
+
+    HitlDeciderRequest:
+      type: object
+      required: [env_id, gate, "on", triggered_by, deadline]
+      description: |
+        The body fuse POSTs to a decider. Unlike a webhook delivery it
+        carries the action, since judging it is the point: exactly one
+        of `exec`, `lifecycle` and `computer` is set, matching `on`.
+      properties:
+        env_id:
+          type: string
+        gate:
+          type: string
+        "on":
+          type: string
+          enum: [exec, lifecycle, computer]
+        triggered_by:
+          $ref: "#/components/schemas/Actor"
+        exec:
+          $ref: "#/components/schemas/ExecPayload"
+        lifecycle:
+          $ref: "#/components/schemas/LifecyclePayload"
+        computer:
+          $ref: "#/components/schemas/ComputerPayload"
+        screenshot:
+          type: string
+          description: |
+            Computer only: a base64 PNG of the display before the action.
+            Omitted when one could not be taken within 5s.
+        deadline:
+          type: string
+          format: date-time
+          description: When the intervention expires if it goes to a human.
+
+    HitlDeciderResponse:
+      type: object
+      required: [decision]
+      description: A decider's answer, read up to 64 KiB.
+      properties:
+        decision:
+          type: string
+          enum: [allow, deny, ask]
+          description: Read case-insensitively. Anything else falls through to `ask`.
+        reason:
+          type: string
+          maxLength: 4096
+          description: |
+            Goes back to the agent on a deny and to the human on an ask.
+            Empty becomes `allowed by the decider of gate <name>` or
+            `denied by the decider of gate <name>`.
 
     HitlGateMatch:
       type: object
@@ -3744,8 +4023,24 @@ components:
           type: array
           items:
             type: string
-            enum: [destroy, fork, migrate, drain, snapshot, rotate-token]
-          description: Lifecycle actions matched.
+          description: |
+            `lifecycle`: `destroy`, `fork`, `migrate`, `drain`,
+            `snapshot`, `rotate-token`. `computer`: `screenshot`,
+            `cursor_position`, `mouse_move`, `left_click`,
+            `right_click`, `middle_click`, `double_click`,
+            `triple_click`, `left_click_drag`, `left_mouse_down`,
+            `left_mouse_up`, `type`, `key`, `hold_key`, `scroll`,
+            `wait`, `zoom`. Computer gates match action names, never
+            coordinates.
+        text_contains:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: |
+            `computer`: matches a `type` action whose text contains any
+            entry, ignoring case. It implies `action` `type`, so it can be
+            combined only with `action: [type]`.
         failures:
           type: integer
           minimum: 1
@@ -3790,7 +4085,7 @@ components:
       type: object
       required: [intervention_id, intervention]
       description: |
-        The 202 body of an exec or lifecycle action a gate holds. Wait on
+        The 202 body of an exec, lifecycle or computer action a gate holds. Wait on
         the intervention with GET /v1/interventions/{interventionId}?wait=;
         once it is approved the orchestrator performs the action and
         stores the outcome in `result`.
@@ -3832,6 +4127,8 @@ components:
       properties:
         exec:
           $ref: "#/components/schemas/ExecEnvironmentResponse"
+        computer:
+          $ref: "#/components/schemas/ComputerActionResponse"
         env_id:
           type: string
           description: The environment a fork or migrate produced.
@@ -3898,7 +4195,7 @@ components:
           description: Gate name. The gate that raised the intervention; empty for a request.
         "on":
           type: string
-          description: The intervention's kind (`ask`, `secret`, `takeover`, `exec`, `lifecycle`, `stall` or `expiry`). Empty for invite events.
+          description: The intervention's kind (`ask`, `secret`, `takeover`, `review`, `exec`, `lifecycle`, `computer`, `stall` or `expiry`). Empty for invite events.
         deadline:
           type: string
           format: date-time
@@ -3913,11 +4210,12 @@ components:
       type: object
       description: |
         `ask` takes `question` and `choices`; `secret` takes `target` and
-        `message`; `takeover` takes `via` and `reason`.
+        `message`; `takeover` takes `via` and `reason`; `review` takes
+        exactly one of `path` and `content`, plus `format` and `message`.
       properties:
         kind:
           type: string
-          enum: [ask, secret, takeover]
+          enum: [ask, secret, takeover, review]
           description: Request kind. Defaults to ask.
         question:
           type: string
@@ -3935,10 +4233,31 @@ components:
             gets back `decision.answer` `"done"`, never the value.
         message:
           type: string
-          description: The agent's text, shown to the human under the target's label (secret).
+          maxLength: 4096
+          description: |
+            The agent's text, shown to the human under the target's label
+            (secret), or with the content up for review (review).
+        path:
+          type: string
+          description: |
+            An absolute, clean guest path to review (review). Fuse reads
+            it at request time, up to 1 MiB; a longer file is cut off and
+            `payload.review.truncated` is set. A file fuse cannot read is
+            400. Exclusive with `content`.
+        content:
+          type: string
+          maxLength: 1048576
+          description: Inline text or a diff to review (review). Exclusive with `path`.
+        format:
+          type: string
+          enum: [text, diff]
+          description: |
+            How to show the review (review). Empty guesses: `diff` when
+            the content starts like a unified diff or the path ends in
+            `.diff` or `.patch`, else `text`.
         via:
           type: string
-          enum: [terminal]
+          enum: [terminal, desktop]
           description: How the human should take over. Defaults to `terminal` (takeover).
         reason:
           type: string
@@ -3958,7 +4277,7 @@ components:
           description: Required to approve an ask.
         reason:
           type: string
-          description: Text fed back to the agent.
+          description: Text fed back to the agent. For a review, the reviewer's comments.
         edited_argv:
           type: array
           items:
@@ -3966,12 +4285,20 @@ components:
           description: |
             Replaces a held exec's argv on approval. It is re-checked
             against the deny gates.
+        edited_text:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: |
+            Replaces a held computer `type` action's text on approval. 400
+            on anything but a held `type`. It is re-checked against the
+            deny gates.
         grant:
           type: string
           description: |
             How far an approval of a gated action reaches: `once`, `env` or
             `ttl:<duration>`. Empty takes the gate's default. Cannot be
-            combined with `edited_argv`.
+            combined with `edited_argv` or `edited_text`.
         extend_seconds:
           type: integer
           format: int64
@@ -3987,18 +4314,20 @@ components:
         id:
           type: string
           description: |
-            A pinned or asserted actor id, `key:<key_id>`, `master`, or
-            `system` for fuse itself.
+            A pinned or asserted actor id, `key:<key_id>`, `master`,
+            `system` for fuse itself, or `decider:<gate>`.
         name:
           type: string
         source:
           type: string
-          enum: [pinned, asserted, key, system]
+          enum: [pinned, asserted, key, system, decider]
           description: |
             `pinned`: fixed on the key at mint time. `asserted`: named in
             `Fuse-Actor` by a `hitl:act-as` key or the master token, and only
             as true as that caller's own auth. `key`: derived from the
-            credential. `system`: expiry and cancellation.
+            credential. `system`: expiry and cancellation. `decider`: a
+            gate's decider allowed or denied the action; the id is
+            `decider:<gate>`.
         key_id:
           type: string
           description: |
@@ -4021,8 +4350,8 @@ components:
             `secret_answered` is a secret request answered (it records who
             and when, never the value). `takeover_started` and
             `takeover_ended` bracket a takeover; `takeover_ended` is its
-            release. `takeover_session` closes one recorded shell session
-            and carries `recording_id`.
+            release. `takeover_session` closes one recorded shell or
+            desktop session and carries `recording_id`.
         intervention_id:
           type: string
           description: Omitted for invite events.
@@ -4036,7 +4365,7 @@ components:
         recording_id:
           type: string
           description: |
-            Set on `takeover_session` rows: the cast at
+            Set on `takeover_session` rows: the recording at
             GET /v1/hitl/recordings/{recordingId}. Included in `hash` only
             when set, so older rows hash as before.
         at:
@@ -4070,7 +4399,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [ask, secret, takeover, exec, lifecycle, stall, expiry]
+          enum: [ask, secret, takeover, review, exec, lifecycle, computer, stall, expiry]
         gate:
           type: string
           description: The gate that raised it. Empty for a request.
@@ -4084,9 +4413,11 @@ components:
         payload:
           type: object
           description: |
-            What was asked or attempted: `question` for an ask, `secret`
-            or `takeover` for those requests, `exec` or `lifecycle` for a
-            gate, `signal` for a stall or expiry.
+            What was asked or attempted: `question` for an ask, `secret`,
+            `takeover` or `review` for those requests, `exec`, `lifecycle`
+            or `computer` for a gate, `signal` for a stall or expiry.
+            `decider` is set when a gate's decider sent the action on to
+            a human.
           properties:
             question:
               type: string
@@ -4104,6 +4435,12 @@ components:
               $ref: "#/components/schemas/InterventionTakeover"
             signal:
               $ref: "#/components/schemas/InterventionSignal"
+            computer:
+              $ref: "#/components/schemas/ComputerPayload"
+            review:
+              $ref: "#/components/schemas/InterventionReview"
+            decider:
+              $ref: "#/components/schemas/InterventionDecider"
         triggered_by:
           $ref: "#/components/schemas/Actor"
         deadline:
@@ -4137,6 +4474,9 @@ components:
               items:
                 type: string
               description: The argv the approver replaced a held exec's with.
+            edited_text:
+              type: string
+              description: The text the approver replaced a held `type` action's with.
             grant:
               type: string
               description: How far an approval of a gated action reaches.
@@ -4177,7 +4517,7 @@ components:
       properties:
         via:
           type: string
-          enum: [terminal]
+          enum: [terminal, desktop]
         reason:
           type: string
         holder:
@@ -4185,6 +4525,141 @@ components:
         started_at:
           type: string
           format: date-time
+
+    ComputerPayload:
+      type: object
+      required: [action, input]
+      description: |
+        A held computer action. On approval the orchestrator replays
+        `input` to the guest, with the approver's `edited_text` in place
+        of `text` when there is one.
+      properties:
+        action:
+          type: string
+          description: The computer action name.
+        text:
+          type: string
+          description: The text of a `type` (or the keys of a `key`), as sent.
+        input:
+          type: object
+          additionalProperties: true
+          description: The whole action body as the caller sent it (a ComputerActionRequest).
+
+    InterventionReview:
+      type: object
+      required: [content, format]
+      description: |
+        A review request. When `path` is set, `content` is that file as
+        fuse read it at request time, so the human reviews what the
+        agent submitted even if the file changed afterwards.
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        format:
+          type: string
+          enum: [text, diff]
+        message:
+          type: string
+          description: The agent's note to the reviewer.
+        truncated:
+          type: boolean
+          description: Set when the file was longer than 1 MiB and was cut off.
+
+    InterventionDecider:
+      type: object
+      required: [verdict]
+      description: |
+        What a gate's decider said about an action it sent on to a
+        human: `verdict` `ask` with its `reason`, or the `error` that
+        made fuse fall through to a human.
+      properties:
+        verdict:
+          type: string
+          enum: [ask]
+        reason:
+          type: string
+        error:
+          type: string
+          description: Set when the decider call failed.
+
+    DesktopRecording:
+      type: object
+      required: [version, kind, intervention_id, env_id, actor, started_at, ended_at, events, screenshots]
+      description: A recorded desktop takeover, as GET /v1/hitl/recordings/{recordingId} returns it.
+      properties:
+        version:
+          type: integer
+          enum: [1]
+        kind:
+          type: string
+          enum: [desktop]
+        intervention_id:
+          type: string
+        env_id:
+          type: string
+        actor:
+          type: string
+          description: The id of the actor who held the view.
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        truncated:
+          type: boolean
+          description: Set when screenshots passed 32 MiB or the log 50,000 entries.
+        input_log_incomplete:
+          type: boolean
+          description: |
+            Set when the viewer sent something the log does not
+            understand, after which no more input was logged. The
+            screenshots carry on.
+        events:
+          type: array
+          items:
+            type: object
+            required: [t, type]
+            description: |
+              One input action. `pointer` carries `x`, `y` and the new
+              `buttons` mask, logged when the buttons change. `key` carries
+              `key`, a named key or a chord such as `Return` or `ctrl+c`.
+              `text` carries `chars`, how many printable keys were typed
+              in a row, never which. `clipboard` carries `bytes`, the size
+              of a paste, never its text.
+            properties:
+              t:
+                type: number
+                description: Seconds since the session started.
+              type:
+                type: string
+                enum: [pointer, key, text, clipboard]
+              x:
+                type: integer
+              "y":
+                type: integer
+              buttons:
+                type: integer
+              key:
+                type: string
+              chars:
+                type: integer
+              bytes:
+                type: integer
+        screenshots:
+          type: array
+          items:
+            type: object
+            required: [t, png]
+            properties:
+              t:
+                type: number
+                description: Seconds since the session started.
+              png:
+                type: string
+                description: Base64 PNG.
 
     InterventionSignal:
       type: object

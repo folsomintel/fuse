@@ -608,11 +608,10 @@ func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// Hitl is the human-in-the-loop block. timeout, on_timeout, require_actor,
-// notify, the ask, secret and takeover requests, exec, and exec, lifecycle,
-// stall and expiry gates are supported so far. The review request is
-// accepted by the decoder only so it can be refused with a "not yet
-// supported" error instead of a generic unknown-field one.
+// Hitl is the human-in-the-loop block: timeout, on_timeout, require_actor,
+// notify, the ask, secret, review and takeover requests, exec, and exec,
+// lifecycle, computer, stall and expiry gates, each optionally fronted by
+// a decider.
 type Hitl struct {
 	// Timeout is the default deadline for every intervention, as a go
 	// duration between 10s and 24h. Empty means 10m.
@@ -636,8 +635,8 @@ type Hitl struct {
 	// (default: ask) or refused (default: deny), interpreters included.
 	Exec *HitlExec `yaml:"exec,omitempty"`
 
-	// Gates hold (ask), record (notify) or refuse (deny) the exec and
-	// lifecycle actions they match.
+	// Gates hold (ask), record (notify) or refuse (deny) the exec,
+	// lifecycle and computer actions they match.
 	Gates []HitlGate `yaml:"gates,omitempty"`
 }
 
@@ -660,6 +659,16 @@ type HitlGate struct {
 	Timeout string `yaml:"timeout,omitempty"`
 	// Reason is returned on a deny and shown to the human on an ask.
 	Reason string `yaml:"reason,omitempty"`
+	// Decide is a webhook asked allow, deny or ask before a human sees an
+	// ask gate's action. A failure or timeout means ask.
+	Decide *HitlDecide `yaml:"decide,omitempty"`
+}
+
+// HitlDecide is a gate's decider. Secret names an entry of the top-level
+// secrets list; its value signs each call.
+type HitlDecide struct {
+	URL    string `yaml:"url"`
+	Secret string `yaml:"secret"`
 }
 
 // HitlMatch is a gate's match. program and action take one name or a
@@ -669,6 +678,9 @@ type HitlMatch struct {
 	Args    []string   `yaml:"args,omitempty"`
 	Shell   bool       `yaml:"shell,omitempty"`
 	Action  StringList `yaml:"action,omitempty"`
+	// TextContains matches a computer type whose text contains any entry,
+	// ignoring case.
+	TextContains StringList `yaml:"text_contains,omitempty"`
 	// Failures raises a stall after this many consecutive failing execs.
 	Failures int `yaml:"failures,omitempty"`
 	// Quiet raises a stall after this long with no exec or computer call.
@@ -707,9 +719,11 @@ type HitlRequests struct {
 	Ask      *HitlAsk      `yaml:"ask,omitempty"`
 	Secret   *HitlSecret   `yaml:"secret,omitempty"`
 	Takeover *HitlTakeover `yaml:"takeover,omitempty"`
-
-	Review yaml.Node `yaml:"review,omitempty"`
+	Review   *HitlReview   `yaml:"review,omitempty"`
 }
+
+// HitlReview configures review requests. It has no fields yet.
+type HitlReview struct{}
 
 // HitlAsk configures ask requests. It has no fields yet.
 type HitlAsk struct{}
@@ -729,8 +743,8 @@ type HitlSecretTarget struct {
 	Label string `yaml:"label"`
 }
 
-// HitlTakeover configures takeover requests. Via lists the allowed ways in;
-// only terminal exists so far, and empty means terminal.
+// HitlTakeover configures takeover requests. Via lists the allowed ways in,
+// terminal and desktop (which needs a desktop block); empty means terminal.
 type HitlTakeover struct {
 	Via []string `yaml:"via,omitempty"`
 }

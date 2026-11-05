@@ -14,7 +14,13 @@ import type {
   MigrateOptions,
   ToolResultBlock,
 } from "./types.js";
-import { FuseError, isFuseApiError } from "./errors.js";
+import { HitlKind, isInterventionApproved } from "./types.js";
+import {
+  FuseError,
+  InterventionRejectedError,
+  isFuseApiError,
+  isHitlDenied,
+} from "./errors.js";
 import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
 import { waitIntervention } from "./interventions.js";
@@ -57,7 +63,8 @@ export interface EnvironmentPage {
 
 /** What environments.requestHuman sends. */
 export interface HumanRequest {
-  /** The request kind: "ask" (the default), "secret" or "takeover". */
+  /** The request kind: "ask" (the default), "secret", "takeover" or
+   * "review". */
   kind?: string;
   /** What the human is asked (ask). */
   question?: string;
@@ -65,17 +72,47 @@ export interface HumanRequest {
   choices?: string[];
   /** A declared secret target: its env name or file path (secret). */
   target?: string;
-  /** The agent's text shown under the target's label (secret). */
+  /** The agent's text shown under the target's label (secret), or with the
+   * content up for review (review). */
   message?: string;
-  /** How the human takes over; "terminal" (takeover). */
+  /** How the human takes over: "terminal" or "desktop" (takeover). */
   via?: string;
   /** Why the agent wants a human to take over (takeover). */
   reason?: string;
+  /** An absolute guest file to review; exclusive with content (review). */
+  path?: string;
+  /** Inline text or a diff to review (review). */
+  content?: string;
+  /** ReviewFormat.Text or ReviewFormat.Diff; unset guesses (review). */
+  format?: string;
   /** Shortens the policy's deadline. It can never extend it. */
   timeoutSeconds?: number;
   /** Wait for a decision (the default). false returns the pending
    * intervention at once; wait on it later with interventions.wait. */
   wait?: boolean;
+}
+
+/** What environments.requestReview sends: exactly one of path and content. */
+export interface ReviewRequest {
+  /** An absolute guest file; fuse reads it at request time. */
+  path?: string;
+  /** Inline text or a diff. */
+  content?: string;
+  /** ReviewFormat.Text or ReviewFormat.Diff; unset guesses. */
+  format?: string;
+  message?: string;
+  timeoutSeconds?: number;
+  /** Wait for the verdict (the default). false returns at once with the
+   * pending intervention and approved false. */
+  wait?: boolean;
+}
+
+/** ReviewResult is a finished review. comments are the reviewer's, on
+ * either outcome. */
+export interface ReviewResult {
+  approved: boolean;
+  comments: string;
+  intervention: Intervention;
 }
 
 /** EnvironmentsService manages microVM lifecycle. */
@@ -255,7 +292,11 @@ export class EnvironmentsService {
    * with a reason.
    *
    * Like exec, it waits out a takeover or a pending stall (a 423) and then
-   * acts; `opts.wait: false` throws a LockedError at once instead.
+   * acts; `opts.wait: false` throws a LockedError at once instead. When a
+   * computer gate holds the action (a 202), it waits for the decision and
+   * returns what the orchestrator got performing it (with the human's edited
+   * text, if any); a rejection throws an InterventionRejectedError, and
+   * `opts.wait: false` throws a PendingInterventionError at once instead.
    *
    * @example
    * const res = await client.environments.computer(id, {
@@ -282,7 +323,7 @@ export class EnvironmentsService {
    * An action the environment refuses (a malformed coordinate, a display
    * that is not up) resolves to `is_error` content rather than throwing: the
    * agent loop should feed it to the model, which is the party that can
-   * correct it. A throw is reserved for failures the model cannot fix —
+   * correct it. So does a hitl deny gate or a human rejecting a held action. A throw is reserved for failures the model cannot fix —
    * transport, auth, an unknown environment.
    *
    * @example
@@ -312,11 +353,22 @@ export class EnvironmentsService {
     } catch (err) {
       if (
         isFuseApiError(err) &&
-        (err.status === 400 || err.status === 409 || err.status === 503)
+        (err.status === 400 ||
+          err.status === 409 ||
+          err.status === 503 ||
+          isHitlDenied(err))
       ) {
         return {
           is_error: true,
           content: [{ type: "text", text: err.message || "the computer action failed" }],
+        };
+      }
+      if (err instanceof InterventionRejectedError) {
+        return {
+          is_error: true,
+          content: [
+            { type: "text", text: `a human rejected this action: ${err.message}` },
+          ],
         };
       }
       throw err;
@@ -337,15 +389,17 @@ export class EnvironmentsService {
     return { content };
   }
 
-  private postComputer(
+  private async postComputer(
     vmId: string,
     body: unknown,
     opts: LockedCallOptions,
   ): Promise<ComputerResult> {
-    return retryLocked(
+    // a 423 (a human holds the environment) waits and retries; a 202 (a gate
+    // holds this action) waits for the decision and its run.
+    const out = await retryLocked(
       this.t,
       () =>
-        this.t.json<ComputerResult>(
+        this.t.gated<ComputerResult>(
           "POST",
           `/v1/environments/${encodeURIComponent(vmId)}/computer`,
           { body, signal: opts.signal },
@@ -353,6 +407,17 @@ export class EnvironmentsService {
       opts.wait,
       opts,
     );
+    if (!out.held) return out.value;
+    const i = await settleHeld(
+      this.t,
+      out.held,
+      { wait: opts.wait, onHeld: opts.onHeld },
+      opts,
+    );
+    if (!i.result?.computer) {
+      throw new FuseError(`intervention ${i.id} settled without a computer result`);
+    }
+    return i.result.computer;
   }
 
   /**
@@ -388,6 +453,9 @@ export class EnvironmentsService {
           message: req.message || undefined,
           via: req.via || undefined,
           reason: req.reason || undefined,
+          path: req.path || undefined,
+          content: req.content || undefined,
+          format: req.format || undefined,
           timeout_seconds: req.timeoutSeconds || undefined,
         },
         signal: opts.signal,
@@ -395,6 +463,44 @@ export class EnvironmentsService {
     );
     if (req.wait === false) return pending;
     return waitIntervention(this.t, pending.id, opts);
+  }
+
+  /**
+   * Submit a guest file or a text/diff blob for a human to approve or reject
+   * with comments, and wait for the verdict. Needs hitl.requests.review.
+   * With `wait: false` it returns at once with the pending intervention and
+   * approved false.
+   *
+   * @example
+   * const r = await client.environments.requestReview(id, {
+   *   content: diff,
+   *   format: ReviewFormat.Diff,
+   * });
+   * if (!r.approved) console.log(r.comments);
+   */
+  async requestReview(
+    vmId: string,
+    req: ReviewRequest,
+    opts: CallOptions = {},
+  ): Promise<ReviewResult> {
+    const i = await this.requestHuman(
+      vmId,
+      {
+        kind: HitlKind.Review,
+        path: req.path,
+        content: req.content,
+        format: req.format,
+        message: req.message,
+        timeoutSeconds: req.timeoutSeconds,
+        wait: req.wait,
+      },
+      opts,
+    );
+    return {
+      approved: isInterventionApproved(i),
+      comments: i.decision?.reason ?? "",
+      intervention: i,
+    };
   }
 
   /**

@@ -70,6 +70,9 @@ export interface ApproveOptions {
   /** Replaces a held exec's argv. It is re-checked against the deny gates,
    * and cannot be combined with grant. */
   editedArgv?: string[];
+  /** Replaces a held computer "type" action's text. It is re-checked against
+   * the deny gates, and cannot be combined with grant. */
+  editedText?: string;
   /** "once", "env" or "ttl:<duration>"; unset takes the gate's default. */
   grant?: string;
   /** How long approving an expiry keeps the environment alive. Zero or unset
@@ -160,8 +163,9 @@ export class InterventionsService {
     return { entries: out.entries ?? [], nextCursor: out.next_cursor };
   }
 
-  /** Fetch a takeover session's recording (an AuditEntry's recording_id) as
-   * asciinema v2 cast text. Needs the hitl:read scope. */
+  /** Fetch a takeover session's recording (an AuditEntry's recording_id):
+   * asciinema v2 cast text for a terminal session, json (an input-action log
+   * plus screenshots) for a desktop one. Needs the hitl:read scope. */
   async getRecording(recordingId: string, opts: CallOptions = {}): Promise<string> {
     requireArg(recordingId, "recording id");
     return this.t.text("GET", `/v1/hitl/recordings/${encodeURIComponent(recordingId)}`, {
@@ -240,6 +244,7 @@ export class InterventionsService {
           answer: body.answer || undefined,
           reason: body.reason || undefined,
           edited_argv: body.editedArgv?.length ? body.editedArgv : undefined,
+          edited_text: body.editedText,
           grant: body.grant || undefined,
           extend_seconds: body.extendSeconds || undefined,
         },

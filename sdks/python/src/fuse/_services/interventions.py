@@ -132,6 +132,7 @@ class InterventionsService:
         reason: Optional[str] = None,
         *,
         edited_argv: Optional[Sequence[str]] = None,
+        edited_text: Optional[str] = None,
         grant: Optional[str] = None,
         extend_seconds: Optional[int] = None,
     ) -> Intervention:
@@ -142,8 +143,9 @@ class InterventionsService:
         #
         # for a held exec or lifecycle action, the orchestrator then performs
         # it; wait on the id for its result. edited_argv replaces a held
-        # exec's argv (re-checked against the deny gates, and not combinable
-        # with grant). grant is "once", "env" or "ttl:<duration>"; none takes
+        # exec's argv and edited_text a held computer "type" action's text
+        # (each re-checked against the deny gates, and not combinable with
+        # grant). grant is "once", "env" or "ttl:<duration>"; none takes
         # the gate's default. extend_seconds is how long approving an expiry
         # keeps the environment alive; none is one more window of the reaper
         # that was due.
@@ -154,6 +156,8 @@ class InterventionsService:
             body["reason"] = reason
         if edited_argv:
             body["edited_argv"] = list(edited_argv)
+        if edited_text is not None:
+            body["edited_text"] = edited_text
         if grant:
             body["grant"] = grant
         if extend_seconds:

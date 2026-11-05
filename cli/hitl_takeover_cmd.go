@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -90,8 +91,8 @@ func readSecretValue(target string) (string, error) {
 }
 
 func newHitlTakeoverCmd() *cobra.Command {
-	var actor, reason string
-	var noShell bool
+	var actor, reason, via, listen string
+	var noShell, noOpen bool
 	cmd := &cobra.Command{
 		Use:   "takeover <env>",
 		Short: "Take over an environment from its agent",
@@ -99,7 +100,10 @@ func newHitlTakeoverCmd() *cobra.Command {
 			"the agent's pending takeover request if there is one. while you hold it,\n" +
 			"the agent's exec and computer calls wait. the shell is recorded; ask for\n" +
 			"credentials through a secret request instead of typing them here.\n" +
-			"leaving the shell keeps the takeover held; end it with `fuse hitl release`.\n" +
+			"leaving the shell keeps the takeover held; end it with `fuse hitl release`.\n\n" +
+			"--via desktop opens the live desktop in the browser instead, like `fuse\n" +
+			"desktop`. it is recorded as an input log (clicks and named keys; typed\n" +
+			"text is counted, never kept) plus a screenshot every few seconds.\n" +
 			"needs the master token or a key with hitl:takeover.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -107,7 +111,10 @@ func newHitlTakeoverCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			in, err := cl.Environments.Takeover(cmd.Context(), args[0], fuse.TakeoverOptions{Via: fuse.TakeoverViaTerminal, Reason: reason})
+			if via != fuse.TakeoverViaTerminal && via != fuse.TakeoverViaDesktop {
+				return fmt.Errorf("--via must be terminal or desktop, got %q", via)
+			}
+			in, err := cl.Environments.Takeover(cmd.Context(), args[0], fuse.TakeoverOptions{Via: via, Reason: reason})
 			if err != nil {
 				return friendly(err)
 			}
@@ -116,6 +123,17 @@ func newHitlTakeoverCmd() *cobra.Command {
 					return printJSON(in)
 				}
 				successf("holding %s (takeover %s, until %s)", in.EnvID, in.ID, shortTime(in.Deadline))
+				return nil
+			}
+			if via == fuse.TakeoverViaDesktop {
+				infof("holding %s (takeover %s, until %s). the agent is paused; this view is recorded.", in.EnvID, in.ID, shortTime(in.Deadline))
+				open := func(ctx context.Context) (io.ReadWriteCloser, error) {
+					return cl.Environments.TakeoverDesktop(ctx, in.ID)
+				}
+				if err := runDesktop(cmd.Context(), in.EnvID, open, listen, false, noOpen); err != nil {
+					return err
+				}
+				infof("viewer closed; %s is still held. release it with: fuse hitl release %s --note \"...\"", in.EnvID, in.EnvID)
 				return nil
 			}
 			if !isInteractive() {
@@ -135,7 +153,10 @@ func newHitlTakeoverCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reason, "reason", "", "why, recorded when no agent request is pending")
-	cmd.Flags().BoolVar(&noShell, "no-shell", false, "take the lock without opening a shell")
+	cmd.Flags().BoolVar(&noShell, "no-shell", false, "take the lock without opening a shell or viewer")
+	cmd.Flags().StringVar(&via, "via", fuse.TakeoverViaTerminal, "terminal (your own shell) or desktop (the live desktop view)")
+	cmd.Flags().StringVar(&listen, "listen", "127.0.0.1:0", "with --via desktop: where the local viewer listens")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "with --via desktop: print the viewer url instead of opening a browser")
 	addActorFlag(cmd, &actor)
 	return cmd
 }

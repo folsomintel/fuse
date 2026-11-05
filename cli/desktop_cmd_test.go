@@ -52,7 +52,7 @@ func TestDesktopBridgeSplicesViewerToStream(t *testing.T) {
 	}
 
 	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveDesktopBridge(w, r, cl, "fuse-1")
+		serveDesktopBridge(w, r, computerStreamOpener(cl, "fuse-1"))
 	}))
 	defer bridge.Close()
 
@@ -100,7 +100,7 @@ func TestDesktopBridgeStreamErrorIsHTTP(t *testing.T) {
 	}
 
 	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serveDesktopBridge(w, r, cl, "fuse-1")
+		serveDesktopBridge(w, r, computerStreamOpener(cl, "fuse-1"))
 	}))
 	defer bridge.Close()
 
