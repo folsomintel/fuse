@@ -28,6 +28,11 @@ func (fm *FleetManager) Exec(ctx context.Context, vmID string, cmd []string, opt
 	if err != nil {
 		return ExecResult{}, err
 	}
+	// a human holding the environment keeps the agent out until release.
+	if err := fm.checkAgentLock(vmID); err != nil {
+		return ExecResult{}, err
+	}
+	fm.noteAgentCall(vmID)
 
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultExecTimeout
@@ -40,10 +45,12 @@ func (fm *FleetManager) Exec(ctx context.Context, vmID string, cmd []string, opt
 	// caller is clearly still using the environment.
 	fm.touchActivity(vmID)
 
-	res, err := env.Exec(ctx, cmd, opts)
+	res, err := env.Exec(ctx, fm.withSecretEnv(vmID, cmd), opts)
 	if err != nil {
 		return ExecResult{}, fmt.Errorf("exec in vm %s: %w", vmID, err)
 	}
+	// a run of failing commands may mean the agent is stuck.
+	fm.noteExecExit(ctx, vmID, res.ExitCode)
 	return res, nil
 }
 

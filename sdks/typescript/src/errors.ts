@@ -15,6 +15,7 @@ export const ErrorCode = {
   Internal: "internal",
   Unauthorized: "unauthorized",
   Forbidden: "forbidden",
+  Locked: "locked",
 } as const;
 
 export type ErrorCode = (typeof ErrorCode)[keyof typeof ErrorCode];
@@ -25,6 +26,7 @@ const STATUS_TEXT: Record<number, string> = {
   403: "forbidden",
   404: "not found",
   409: "conflict",
+  423: "locked",
   500: "internal server error",
   502: "bad gateway",
   503: "service unavailable",
@@ -106,6 +108,31 @@ export class ForbiddenError extends FuseApiError {
     this.scope = init.details?.scope;
     Object.setPrototypeOf(this, ForbiddenError.prototype);
   }
+}
+
+/**
+ * LockedError is a 423 locked response: a human holds the environment (a
+ * takeover) or an ask-mode stall is pending, so agent exec and computer calls
+ * are refused. exec and computer wait it out by default; this surfaces only
+ * when waiting is off. Wait on `interventionId` with interventions.wait.
+ */
+export class LockedError extends FuseApiError {
+  readonly interventionId: string;
+  /** "takeover" or "stall". */
+  readonly kind: string;
+
+  constructor(init: FuseApiErrorInit) {
+    super(init);
+    this.name = "LockedError";
+    this.interventionId = init.details?.intervention_id ?? "";
+    this.kind = init.details?.kind ?? "";
+    Object.setPrototypeOf(this, LockedError.prototype);
+  }
+}
+
+/** isLocked reports whether err is a 423 locked api error. */
+export function isLocked(err: unknown): err is LockedError {
+  return err instanceof LockedError;
 }
 
 /** FuseError is a transport, configuration, or decoding failure (not an API error). */
@@ -239,6 +266,7 @@ function parseApiError(
           body,
         };
         if (e.code === ErrorCode.Forbidden) return new ForbiddenError(init);
+        if (e.code === ErrorCode.Locked) return new LockedError(init);
         return new FuseApiError(init);
       }
     } catch {

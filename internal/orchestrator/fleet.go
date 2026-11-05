@@ -558,6 +558,14 @@ type FleetManager struct {
 	hitlRuns map[string]bool
 	// hitlOrphans runs the orphaned-run pass once per process.
 	hitlOrphans sync.Once
+	// hitlLocks are the environments a human holds right now, keyed by env
+	// id, and hitlAnswering the secret requests whose value is on its way
+	// into the guest. both are guarded by hitlMu. see hitl_lock.go.
+	hitlLocks     map[string]agentLock
+	hitlAnswering map[string]bool
+	// hitlSignals is the stall and expiry detectors' per-env state, also
+	// guarded by hitlMu. see hitl_signals.go.
+	hitlSignals map[string]*signalState
 
 	// envKeys revokes and rebinds scoped api keys with their environment;
 	// nil when there is no key store. publicURL is the base url webhook
@@ -1897,6 +1905,10 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		fm.appendEvent(ctx, "task", task.TaskID, "task.failed", map[string]any{"vm_id": task.VMID, "error": task.LastError})
 	}
 
+	// a takeover held across the restart still holds, and so does an
+	// extension a human approved.
+	fm.syncLocks(ctx)
+	fm.recoverExtensions(ctx)
 	return nil
 }
 

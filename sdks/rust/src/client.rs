@@ -206,7 +206,9 @@ impl ClientBuilder {
     }
 
     /// Makes every gated call return [`Error::InterventionPending`] at once
-    /// when a hitl gate holds it, instead of waiting for the human.
+    /// when a hitl gate holds it, and exec and computer calls return
+    /// [`Error::Locked`] at once when a human holds the environment, instead
+    /// of waiting for the human.
     /// [`ExecRequest::no_wait`](crate::ExecRequest::no_wait) does the same
     /// for one exec.
     pub fn hitl_no_wait(mut self) -> Self {

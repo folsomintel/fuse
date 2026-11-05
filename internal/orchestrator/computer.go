@@ -76,6 +76,10 @@ var guestComputerClient = &http.Client{
 // versioned separately from the control plane, and a proxy that re-encoded
 // the request would silently drop fields it had not learned yet.
 func (fm *FleetManager) ComputerAction(ctx context.Context, vmID string, action []byte) (GuestHTTPResponse, error) {
+	if err := fm.checkAgentLock(vmID); err != nil {
+		return GuestHTTPResponse{}, err
+	}
+	fm.noteAgentCall(vmID)
 	return fm.guestComputer(ctx, vmID, http.MethodPost, "/v1/computer/action", action)
 }
 

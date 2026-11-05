@@ -614,16 +614,28 @@ func validateHitl(h *Hitl, secrets []string) []error {
 	}
 	errs = append(errs, validateHitlGates(h)...)
 	for name, node := range map[string]yaml.Node{
-		"hitl.requests.secret":   h.Requests.Secret,
-		"hitl.requests.review":   h.Requests.Review,
-		"hitl.requests.takeover": h.Requests.Takeover,
+		"hitl.requests.review": h.Requests.Review,
 	} {
 		if !node.IsZero() {
 			errs = append(errs, fmt.Errorf("%s: not yet supported", name))
 		}
 	}
-	if h.Requests.Ask == nil && len(h.Gates) == 0 && h.Exec == nil {
-		errs = append(errs, errors.New("hitl: declare at least one of requests.ask, gates or exec"))
+	if h.Requests.Ask == nil && h.Requests.Secret == nil && h.Requests.Takeover == nil && len(h.Gates) == 0 && h.Exec == nil {
+		errs = append(errs, errors.New("hitl: declare at least one of requests (ask, secret or takeover), gates or exec"))
+	}
+	if s := h.Requests.Secret; s != nil {
+		errs = append(errs, validateHitlSecret(s)...)
+	}
+	if t := h.Requests.Takeover; t != nil {
+		for i, v := range t.Via {
+			switch v {
+			case "terminal":
+			case "desktop", "port":
+				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: %q is not yet supported", i, v))
+			default:
+				errs = append(errs, fmt.Errorf("hitl.requests.takeover.via[%d]: must be \"terminal\", got %q", i, v))
+			}
+		}
 	}
 	// map iteration order is random; keep the report stable.
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
@@ -702,10 +714,15 @@ func validateHitlGates(h *Hitl) []error {
 					errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, strings.Join(hitlLifecycleActions, ", "), a))
 				}
 			}
-		case "attach", "computer", "egress", "stall", "expiry":
+		case "stall", "expiry":
+			errs = append(errs, validateHitlSignal(at, g)...)
+		case "attach", "computer", "egress":
 			errs = append(errs, fmt.Errorf("%s.on: %q is not yet supported", at, g.On))
 		default:
-			errs = append(errs, fmt.Errorf("%s.on: must be exec or lifecycle, got %q", at, g.On))
+			errs = append(errs, fmt.Errorf("%s.on: must be exec, lifecycle, stall or expiry, got %q", at, g.On))
+		}
+		if g.On != "stall" && g.On != "expiry" && (m.Failures != 0 || m.Quiet != "" || m.Before != "") {
+			errs = append(errs, fmt.Errorf("%s.match: failures, quiet and before only apply to on: stall or expiry", at))
 		}
 		mode := g.Mode
 		switch mode {
@@ -736,6 +753,111 @@ func validateHitlGates(h *Hitl) []error {
 		if len(g.Reason) > maxHitlReason {
 			errs = append(errs, fmt.Errorf("%s.reason: must be at most %d bytes", at, maxHitlReason))
 		}
+	}
+	return errs
+}
+
+// minHitlSignalWindow mirrors internal/hitl: quiet and before stay above
+// the reconcile cadence that checks them.
+const minHitlSignalWindow = time.Minute
+
+// validateHitlSignal checks a stall or expiry gate. It mirrors
+// internal/hitl validateSignal.
+func validateHitlSignal(at string, g HitlGate) []error {
+	var errs []error
+	m := g.Match
+	if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 || len(m.Action) > 0 {
+		errs = append(errs, fmt.Errorf("%s.match: a %s gate matches only %s", at, g.On, map[string]string{"stall": "failures and quiet", "expiry": "before"}[g.On]))
+	}
+	window := func(field, raw string) {
+		d, err := time.ParseDuration(raw)
+		switch {
+		case err != nil:
+			errs = append(errs, fmt.Errorf("%s.match.%s: %q is not a duration like 15m", at, field, raw))
+		case d < minHitlSignalWindow || d > maxHitlTimeout:
+			errs = append(errs, fmt.Errorf("%s.match.%s: must be between %s and %s, got %s", at, field, minHitlSignalWindow, maxHitlTimeout, d))
+		}
+	}
+	if g.On == "stall" {
+		if m.Before != "" {
+			errs = append(errs, fmt.Errorf("%s.match.before: only applies to on: expiry", at))
+		}
+		if m.Failures == 0 && m.Quiet == "" {
+			errs = append(errs, fmt.Errorf("%s.match: a stall gate needs failures or quiet", at))
+		}
+		if m.Failures < 0 || m.Failures > 100 {
+			errs = append(errs, fmt.Errorf("%s.match.failures: must be between 1 and 100", at))
+		}
+		if m.Quiet != "" {
+			window("quiet", m.Quiet)
+		}
+	} else {
+		if m.Failures != 0 || m.Quiet != "" {
+			errs = append(errs, fmt.Errorf("%s.match: an expiry gate matches only before", at))
+		}
+		if m.Before == "" {
+			errs = append(errs, fmt.Errorf("%s.match.before: an expiry gate needs before", at))
+		} else {
+			window("before", m.Before)
+		}
+	}
+	if g.Mode == "deny" {
+		errs = append(errs, fmt.Errorf("%s.mode: a %s signal is ask or notify; there is no action to deny", at, g.On))
+	}
+	if g.Grant != "" {
+		errs = append(errs, fmt.Errorf("%s.grant: a %s signal cannot grant", at, g.On))
+	}
+	return errs
+}
+
+// hitlEnvName is a valid secret env target. it mirrors internal/hitl.
+var hitlEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+const maxHitlSecretTargets = 20
+
+// validateHitlSecret checks the declared secret targets. It mirrors
+// internal/hitl.SecretRequests.Validate.
+func validateHitlSecret(s *HitlSecret) []error {
+	var errs []error
+	if len(s.Targets) == 0 {
+		errs = append(errs, errors.New("hitl.requests.secret.targets: declare at least one target"))
+	}
+	if len(s.Targets) > maxHitlSecretTargets {
+		errs = append(errs, fmt.Errorf("hitl.requests.secret.targets: at most %d targets are allowed", maxHitlSecretTargets))
+	}
+	seen := make(map[string]bool, len(s.Targets))
+	for i, t := range s.Targets {
+		at := fmt.Sprintf("hitl.requests.secret.targets[%d]", i)
+		name := t.Env
+		switch {
+		case t.Env != "" && t.File != "":
+			errs = append(errs, fmt.Errorf("%s: set one of env or file, not both", at))
+			continue
+		case t.Env == "" && t.File == "":
+			errs = append(errs, fmt.Errorf("%s: set one of env or file", at))
+			continue
+		case t.Env != "" && !hitlEnvName.MatchString(t.Env):
+			errs = append(errs, fmt.Errorf("%s: env %q is not a valid variable name", at, t.Env))
+		case t.File != "":
+			name = t.File
+			switch {
+			case !strings.HasPrefix(t.File, "/"):
+				errs = append(errs, fmt.Errorf("%s: file %q must be an absolute path", at, t.File))
+			case containsDotDot(t.File) || path.Clean(t.File) != t.File:
+				errs = append(errs, fmt.Errorf("%s: file %q must be a clean path to a file", at, t.File))
+			case t.File == "/fuse" || strings.HasPrefix(t.File, "/fuse/"):
+				errs = append(errs, fmt.Errorf("%s: file %q is under /fuse, which fuse reserves for its own credentials", at, t.File))
+			}
+		}
+		if strings.TrimSpace(t.Label) == "" {
+			errs = append(errs, fmt.Errorf("%s: label is required; it is what the human sees", at))
+		} else if len(t.Label) > 200 {
+			errs = append(errs, fmt.Errorf("%s: label must be at most 200 bytes", at))
+		}
+		if seen[name] {
+			errs = append(errs, fmt.Errorf("%s: %q is declared twice", at, name))
+		}
+		seen[name] = true
 	}
 	return errs
 }

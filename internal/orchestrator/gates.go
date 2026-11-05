@@ -35,6 +35,11 @@ type GateCaller struct {
 // is held (the orchestrator runs it on approval); or a *GateDeniedError.
 // it never touches the host agent, so a held exec holds no vm lock.
 func (fm *FleetManager) GateExec(ctx context.Context, envID string, p hitl.ExecPayload, c GateCaller) (*hitl.Intervention, error) {
+	// a held environment answers 423 before any gate opens an intervention
+	// the human holding it would then have to decide.
+	if err := fm.checkAgentLock(envID); err != nil {
+		return nil, err
+	}
 	spec := fm.hitlSpec(envID)
 	if spec == nil {
 		return nil, nil

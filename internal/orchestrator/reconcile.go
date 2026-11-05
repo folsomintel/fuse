@@ -112,13 +112,21 @@ func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *Reconc
 		needFail bool
 	}
 
+	// a human deciding an expiry, or an extension they approved, holds the
+	// runtime ceiling the same way it holds the idle reaper.
+	pendingExpiry, ok := fm.pendingExpiryEnvs(ctx)
+	if !ok {
+		return
+	}
+	extended := fm.extendedEnvs(now)
+
 	fm.mu.Lock()
 	candidates := make([]stuckCandidate, 0)
 	live := make(map[string]bool, len(fm.vms))
 	for id, v := range fm.vms {
 		live[id] = true
 
-		if v.state != VMStateRunning || v.taskID == "" {
+		if v.state != VMStateRunning || v.taskID == "" || pendingExpiry[id] || extended[id] {
 			// Reset any strike history — the VM either transitioned or no
 			// longer carries a task, so past staleness is no longer meaningful.
 			delete(fm.stuckStrikes, id)
@@ -211,6 +219,8 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 	if !ok {
 		return
 	}
+	// an approved expiry keeps the reaper away until its extension ends.
+	extended := fm.extendedEnvs(now)
 
 	fm.mu.Lock()
 	candidates := make([]idleCandidate, 0)
@@ -218,7 +228,7 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 	for id, v := range fm.vms {
 		live[id] = true
 
-		if v.state != VMStateRunning || v.attachSessions > 0 || waiting[id] {
+		if v.state != VMStateRunning || v.attachSessions > 0 || waiting[id] || extended[id] {
 			// Not eligible: the VM is not running, somebody is attached
 			// right now, or a human is deciding one of its interventions. Reset any strike history so it starts from a
 			// clean slate once it becomes eligible again.

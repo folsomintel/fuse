@@ -111,8 +111,10 @@ pub struct ExecRequest {
     /// Bounds the command inside the guest, in milliseconds. `None` takes
     /// the server default; the server clamps anything above its ceiling.
     pub timeout_ms: Option<u64>,
-    /// Waits for a human when a hitl gate holds the exec. Default true;
-    /// when false the call returns [`Error::InterventionPending`] at once.
+    /// Waits for a human when a hitl gate holds the exec (202), or when a
+    /// human holds the environment (423, a takeover or a pending stall).
+    /// Default true; when false the call returns
+    /// [`Error::InterventionPending`] or [`Error::Locked`] at once.
     pub wait: bool,
     /// Called with the pending intervention when a gate holds the exec,
     /// before waiting on it. Overrides the client's
@@ -158,7 +160,8 @@ impl ExecRequest {
     }
 
     /// Returns [`Error::InterventionPending`] at once when a hitl gate holds
-    /// the exec, instead of waiting for a human to decide.
+    /// the exec, and [`Error::Locked`] when a human holds the environment,
+    /// instead of waiting.
     pub fn no_wait(mut self) -> Self {
         self.wait = false;
         self
@@ -352,6 +355,10 @@ impl Environments {
     /// orchestrator runs the approved (possibly edited) argv and this
     /// returns its result. A rejection is [`Error::InterventionRejected`], a
     /// deny gate an error [`Error::is_hitl_denied`] matches.
+    ///
+    /// While a human holds the environment (a takeover) or a stall is
+    /// pending, the call waits for it to end and then runs the command; see
+    /// [`ExecRequest::no_wait`] to get [`Error::Locked`] instead.
     pub async fn exec(&self, vm_id: &str, request: ExecRequest) -> Result<ExecResult, Error> {
         require(vm_id, "vm id")?;
         match &request.command {
@@ -374,17 +381,21 @@ impl Environments {
             .filter(|&ms| ms > 0)
             .map(Duration::from_millis)
             .unwrap_or(DEFAULT_EXEC_SERVER_TIMEOUT);
-        let http_request = self
-            .t
-            .stream_request(Method::POST, &["v1", "environments", vm_id])
-            .query(&[("action", "exec")])
-            .timeout(guest + EXEC_HTTP_OVERHEAD)
-            .json(&request);
-        // the guest-timeout deadline above bounds only this request. the
-        // wait for a human polls with its own per-request deadlines.
-        let held = match self.t.send_gated(http_request).await? {
-            Gated::Done(response) => return decode(response).await,
-            Gated::Held(held) => held,
+        // a 423 (a human holds the environment) waits and retries; a 202 (a
+        // gate holds this exec) waits for the decision and its run. the
+        // guest-timeout deadline bounds only each request.
+        let held = loop {
+            let http_request = self
+                .t
+                .stream_request(Method::POST, &["v1", "environments", vm_id])
+                .query(&[("action", "exec")])
+                .timeout(guest + EXEC_HTTP_OVERHEAD)
+                .json(&request);
+            match self.t.send_gated(http_request).await {
+                Ok(Gated::Done(response)) => return decode(response).await,
+                Ok(Gated::Held(held)) => break held,
+                Err(err) => self.t.wait_unlocked(err, !request.wait).await?,
+            }
         };
         let settled = self
             .t

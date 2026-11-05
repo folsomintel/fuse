@@ -17,7 +17,9 @@ __all__ = [
     "CODE_INTERNAL",
     "CODE_UNAUTHORIZED",
     "CODE_FORBIDDEN",
+    "CODE_LOCKED",
     "ForbiddenError",
+    "LockedError",
     "FORBIDDEN_MISSING_SCOPE",
     "FORBIDDEN_ENV_SCOPE",
     "FORBIDDEN_SELF_APPROVAL",
@@ -34,6 +36,7 @@ __all__ = [
     "is_conflict",
     "is_unauthorized",
     "is_forbidden",
+    "is_locked",
     "is_invalid_argument",
     "is_unavailable",
     "is_hitl_denied",
@@ -50,6 +53,9 @@ CODE_UNAVAILABLE = "unavailable"
 CODE_INTERNAL = "internal"
 CODE_UNAUTHORIZED = "unauthorized"
 CODE_FORBIDDEN = "forbidden"
+# a 423: a human holds the environment (a takeover, or an ask-mode stall
+# pending), so agent exec and computer calls are refused until it ends.
+CODE_LOCKED = "locked"
 
 # why a 403 forbidden was refused, carried in ForbiddenError.reason.
 FORBIDDEN_MISSING_SCOPE = "missing_scope"
@@ -66,15 +72,14 @@ FORBIDDEN_HITL_DENIED = "hitl_denied"
 
 class ApiError(Exception):
     def __init__(
-            self,
-            status: int,
-            *,
-            code: str = "",
-            message: str = "",
-            details: Optional[dict[str, str]] = None,
-            request_id: str = "",
-            body: bytes = b"",
-
+        self,
+        status: int,
+        *,
+        code: str = "",
+        message: str = "",
+        details: Optional[dict[str, str]] = None,
+        request_id: str = "",
+        body: bytes = b"",
     ) -> None:
         self.status = status
         self.code = code
@@ -123,8 +128,7 @@ class PendingInterventionError(Exception):
     def __init__(self, intervention: Intervention) -> None:
         self.intervention = intervention
         super().__init__(
-            f"held by hitl gate {intervention.gate}: "
-            f"waiting on intervention {intervention.id}"
+            f"held by hitl gate {intervention.gate}: waiting on intervention {intervention.id}"
         )
 
 
@@ -145,11 +149,26 @@ class HeldActionError(Exception):
         super().__init__(f"approved action of intervention {intervention.id} failed: {error}")
 
 
+class LockedError(ApiError):
+    # a 423 with code "locked": a human holds the environment. raised by exec
+    # and computer calls only when waiting is off (wait=False); by default
+    # they wait for the intervention to end and retry. kind is "takeover" or
+    # "stall".
+    @property
+    def intervention_id(self) -> str:
+        return self.details.get("intervention_id", "")
+
+    @property
+    def kind(self) -> str:
+        return self.details.get("kind", "")
+
+
 def _status_text(status: int) -> str:
     try:
         return http.HTTPStatus(status).phrase.lower()
     except ValueError:
         return ""
+
 
 def as_api_error(err: object) -> Optional[ApiError]:
     """Return the ApiError carried by ``err``, walking the exception chain.
@@ -165,32 +184,45 @@ def as_api_error(err: object) -> Optional[ApiError]:
         cur = cur.__cause__ or cur.__context__
     return None
 
+
 def _is_api_error_code(err: object, code: str) -> bool:
     api_err = as_api_error(err)
     return api_err is not None and api_err.code == code
 
+
 def is_not_found(err: object) -> bool:
     return _is_api_error_code(err, CODE_NOT_FOUND)
+
 
 def is_conflict(err: object) -> bool:
     return _is_api_error_code(err, CODE_CONFLICT)
 
+
 def is_unauthorized(err: object) -> bool:
     return _is_api_error_code(err, CODE_UNAUTHORIZED)
+
 
 def is_forbidden(err: object) -> bool:
     return _is_api_error_code(err, CODE_FORBIDDEN)
 
+
 def is_invalid_argument(err: object) -> bool:
     return _is_api_error_code(err, CODE_INVALID_ARGUMENT)
 
+
 def is_unavailable(err: object) -> bool:
     return _is_api_error_code(err, CODE_UNAVAILABLE)
+
 
 def is_hitl_denied(err: object) -> bool:
     # reports whether err is an action a hitl gate denied.
     api_err = as_api_error(err)
     return isinstance(api_err, ForbiddenError) and api_err.reason == FORBIDDEN_HITL_DENIED
+
+
+def is_locked(err: object) -> bool:
+    return _is_api_error_code(err, CODE_LOCKED)
+
 
 def check_response(response: httpx.Response) -> None:
     if 200 <= response.status_code < 300:
@@ -200,6 +232,7 @@ def check_response(response: httpx.Response) -> None:
     except httpx.ResponseNotRead:
         body = b""
     raise parse_api_error(response.status_code, response.headers, body)
+
 
 def parse_api_error(
     status: int,
@@ -230,7 +263,11 @@ def parse_api_error(
                     )
                     # older servers refused master-only routes with 403
                     # "unauthorized"; those stay a plain ApiError.
-                    cls = ForbiddenError if code == CODE_FORBIDDEN else ApiError
+                    cls: type[ApiError] = ApiError
+                    if code == CODE_FORBIDDEN:
+                        cls = ForbiddenError
+                    elif code == CODE_LOCKED:
+                        cls = LockedError
                     return cls(
                         status,
                         code=str(code),

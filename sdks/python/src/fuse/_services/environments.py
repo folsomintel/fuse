@@ -22,9 +22,12 @@ from ..types import (
     HumanRequest,
     Intervention,
     MigrateOptions,
+    ReleaseRequest,
+    TakeoverRequest,
 )
 from .events import stream_events
 from .interventions import read_held, settle_held, wait_intervention
+from .locks import call_unlocked
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -91,9 +94,7 @@ class EnvironmentsService:
         # a drained vm left undestroyed keeps running (and billing) forever.
         return self._action(vm_id, "drain")
 
-    def fork(
-        self, vm_id: str, options: ForkOptions | None = None
-    ) -> EnvironmentInfo:
+    def fork(self, vm_id: str, options: ForkOptions | None = None) -> EnvironmentInfo:
         if not vm_id:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
@@ -105,9 +106,7 @@ class EnvironmentsService:
             return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
-    def migrate(
-        self, vm_id: str, options: MigrateOptions | None = None
-    ) -> EnvironmentInfo:
+    def migrate(self, vm_id: str, options: MigrateOptions | None = None) -> EnvironmentInfo:
         # moves the environment to another host and returns the new one. the
         # source is drained and destroyed once the new one is running.
         if not vm_id:
@@ -121,21 +120,24 @@ class EnvironmentsService:
             return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
-    def computer(self, vm_id: str, action: ComputerAction) -> ComputerResult:
+    def computer(self, vm_id: str, action: ComputerAction, *, wait: bool = True) -> ComputerResult:
         # relays one computer-use action to the environment's desktop and
         # returns the result, usually carrying a base64 png screenshot.
         # requires an environment booted from a desktop image; on any other
         # image the server answers 503 with a reason.
+        #
+        # while a human holds the environment this waits for them to finish
+        # and then sends the action; wait=False raises LockedError instead.
         if not vm_id:
             raise ValueError("vm id is required")
         if not action.action:
             raise ValueError("action is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}/computer"
-        resp = self._t.request("POST", path, body=action)
+        resp = call_unlocked(self._t, lambda: self._t.request("POST", path, body=action), wait=wait)
         return ComputerResult.model_validate(resp.json())
 
     def computer_tool_result(
-        self, vm_id: str, tool_input: dict[str, Any]
+        self, vm_id: str, tool_input: dict[str, Any], *, wait: bool = True
     ) -> ComputerToolResult:
         # executes one computer tool_use against the environment and shapes
         # the answer for the messages api. tool_input is the tool_use block's
@@ -148,6 +150,9 @@ class EnvironmentsService:
         # raising: the agent loop should feed it to the model, which is the
         # party that can correct it. a raise is reserved for failures the
         # model cannot fix - transport, auth, an unknown environment.
+        #
+        # like computer, this waits out a human takeover unless wait=False,
+        # which raises LockedError.
         if not vm_id:
             raise ValueError("vm id is required")
         if not tool_input.get("action"):
@@ -157,7 +162,9 @@ class EnvironmentsService:
             )
         path = f"/v1/environments/{quote(vm_id, safe='')}/computer"
         try:
-            resp = self._t.request("POST", path, body=tool_input)
+            resp = call_unlocked(
+                self._t, lambda: self._t.request("POST", path, body=tool_input), wait=wait
+            )
         except ApiError as err:
             if err.status in (400, 409, 503):
                 return ComputerToolResult(
@@ -218,6 +225,9 @@ class EnvironmentsService:
         # overriding the client's. wait=False raises PendingInterventionError
         # at once instead. a rejection raises InterventionRejectedError and a
         # deny gate a ForbiddenError that is_hitl_denied matches.
+        # while a human holds the environment (a takeover, or a pending
+        # stall) this waits for them to finish and then runs the command, so
+        # agent code needs no changes. wait=False raises LockedError instead.
         if not vm_id:
             raise ValueError("vm id is required")
         has_cmd = bool(request.cmd)
@@ -227,7 +237,11 @@ class EnvironmentsService:
         if has_cmd and has_shell:
             raise ValueError("cmd and shell are mutually exclusive")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
-        resp = self._t.request("POST", path, params={"action": "exec"}, body=request)
+        resp = call_unlocked(
+            self._t,
+            lambda: self._t.request("POST", path, params={"action": "exec"}, body=request),
+            wait=wait,
+        )
         held = read_held(resp)
         if held is not None:
             settled = settle_held(self._t, held, wait=wait, on_held=on_held)
@@ -239,10 +253,14 @@ class EnvironmentsService:
     def request_human(
         self,
         vm_id: str,
-        question: str,
+        question: str = "",
         *,
         kind: str = HITL_KIND_ASK,
         choices: Optional[Sequence[str]] = None,
+        target: Optional[str] = None,
+        message: Optional[str] = None,
+        via: Optional[str] = None,
+        reason: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
         wait: bool = True,
     ) -> Intervention:
@@ -252,12 +270,22 @@ class EnvironmentsService:
         # intervention's decision. wait=False returns the pending handle at
         # once; wait on it later with client.interventions.wait.
         # timeout_seconds shortens the policy's deadline, never extends it.
+        #
+        # an ask takes question and choices. kind="secret" takes target (a
+        # declared env name or file path) and an optional message; once a
+        # human answers, the value is in the guest and decision.answer is
+        # "done". kind="takeover" takes via and reason; on release
+        # decision.answer is the human's note.
         if not vm_id:
             raise ValueError("vm id is required")
         request = HumanRequest(
             kind=kind or HITL_KIND_ASK,
-            question=question,
+            question=question or None,
             choices=list(choices) if choices is not None else None,
+            target=target or None,
+            message=message or None,
+            via=via or None,
+            reason=reason or None,
             timeout_seconds=timeout_seconds,
         )
         path = f"/v1/environments/{quote(vm_id, safe='')}"
@@ -266,6 +294,36 @@ class EnvironmentsService:
         if not wait:
             return intervention
         return wait_intervention(self._t, intervention.id)
+
+    def takeover(
+        self, vm_id: str, *, via: Optional[str] = None, reason: Optional[str] = None
+    ) -> Intervention:
+        # a human takes over the environment and returns the held takeover.
+        # it claims the agent's pending takeover request if there is one, else
+        # opens a new one. while held, agent exec and computer calls wait.
+        # needs hitl:takeover; a conflict if someone else holds it.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request(
+            "POST",
+            path,
+            params={"action": "takeover"},
+            body=TakeoverRequest(via=via or None, reason=reason or None),
+        )
+        return Intervention.model_validate(resp.json())
+
+    def release(self, vm_id: str, *, note: Optional[str] = None) -> Intervention:
+        # ends a takeover and returns it, approved with note as its answer.
+        # the agent's waiting calls then go through. a conflict if nothing is
+        # held.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        path = f"/v1/environments/{quote(vm_id, safe='')}"
+        resp = self._t.request(
+            "POST", path, params={"action": "release"}, body=ReleaseRequest(note=note or None)
+        )
+        return Intervention.model_validate(resp.json())
 
     def rotate_token(self, vm_id: str) -> None:
         if not vm_id:

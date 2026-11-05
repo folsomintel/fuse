@@ -109,10 +109,13 @@ type compiledGate struct {
 
 // compiledGateMatch mirrors fuse.HitlGateMatch.
 type compiledGateMatch struct {
-	Program []string `json:"program,omitempty" yaml:"program,omitempty"`
-	Args    []string `json:"args,omitempty" yaml:"args,omitempty"`
-	Shell   bool     `json:"shell,omitempty" yaml:"shell,omitempty"`
-	Action  []string `json:"action,omitempty" yaml:"action,omitempty"`
+	Program       []string `json:"program,omitempty" yaml:"program,omitempty"`
+	Args          []string `json:"args,omitempty" yaml:"args,omitempty"`
+	Shell         bool     `json:"shell,omitempty" yaml:"shell,omitempty"`
+	Action        []string `json:"action,omitempty" yaml:"action,omitempty"`
+	Failures      int      `json:"failures,omitempty" yaml:"failures,omitempty"`
+	QuietSeconds  int64    `json:"quiet_seconds,omitempty" yaml:"quiet_seconds,omitempty"`
+	BeforeSeconds int64    `json:"before_seconds,omitempty" yaml:"before_seconds,omitempty"`
 }
 
 // compiledExec mirrors fuse.HitlExecPolicy.
@@ -129,7 +132,26 @@ type compiledWebhook struct {
 
 // compiledHitlAllow mirrors fuse.HitlRequests.
 type compiledHitlAllow struct {
-	Ask *struct{} `json:"ask,omitempty" yaml:"ask,omitempty"`
+	Ask      *struct{}               `json:"ask,omitempty" yaml:"ask,omitempty"`
+	Secret   *compiledSecretRequests `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Takeover *compiledTakeover       `json:"takeover,omitempty" yaml:"takeover,omitempty"`
+}
+
+// compiledSecretRequests mirrors fuse.HitlSecretRequests.
+type compiledSecretRequests struct {
+	Targets []compiledSecretTarget `json:"targets" yaml:"targets"`
+}
+
+// compiledSecretTarget mirrors fuse.HitlSecretTarget.
+type compiledSecretTarget struct {
+	Env   string `json:"env,omitempty" yaml:"env,omitempty"`
+	File  string `json:"file,omitempty" yaml:"file,omitempty"`
+	Label string `json:"label" yaml:"label"`
+}
+
+// compiledTakeover mirrors fuse.HitlTakeoverRequests.
+type compiledTakeover struct {
+	Via []string `json:"via,omitempty" yaml:"via,omitempty"`
 }
 
 // compiledDesktop mirrors fuse.DesktopSpec with yaml tags added.
@@ -335,13 +357,25 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		if h.Ask {
 			req.Hitl.Requests.Ask = &struct{}{}
 		}
+		if s := h.Secret; s != nil {
+			req.Hitl.Requests.Secret = &compiledSecretRequests{}
+			for _, t := range s.Targets {
+				req.Hitl.Requests.Secret.Targets = append(req.Hitl.Requests.Secret.Targets, compiledSecretTarget{Env: t.Env, File: t.File, Label: t.Label})
+			}
+		}
+		if t := h.Takeover; t != nil {
+			req.Hitl.Requests.Takeover = &compiledTakeover{Via: t.Via}
+		}
 		for _, w := range h.Notify {
 			req.Hitl.Notify = append(req.Hitl.Notify, compiledWebhook{URL: w.URL, Secret: w.Secret})
 		}
 		for _, g := range h.Gates {
 			req.Hitl.Gates = append(req.Hitl.Gates, compiledGate{
 				Name: g.Name, On: g.On, Mode: g.Mode, Grant: g.Grant, TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
-				Match: compiledGateMatch{Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action},
+				Match: compiledGateMatch{
+					Program: g.Program, Args: g.Args, Shell: g.Shell, Action: g.Action,
+					Failures: g.Failures, QuietSeconds: g.QuietSeconds, BeforeSeconds: g.BeforeSeconds,
+				},
 			})
 		}
 		if e := h.Exec; e != nil {

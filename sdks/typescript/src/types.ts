@@ -371,8 +371,10 @@ export interface ExecRequest {
   timeout_ms?: number;
 
   /**
-   * Wait for a human when a hitl gate holds the exec (the default). false
-   * throws a PendingInterventionError at once instead. Not sent on the wire.
+   * Wait for a human when a hitl gate holds the exec (202), or when a
+   * human holds the environment (423, a takeover or a pending stall), then
+   * run (the default). false throws a PendingInterventionError or a
+   * LockedError at once instead. Not sent on the wire.
    */
   wait?: boolean;
 
@@ -737,6 +739,15 @@ export interface HitlGateMatch {
   shell?: boolean;
   /** Matches lifecycle actions (one of LifecycleAction). */
   action?: string[];
+  /** Raises a stall after this many consecutive non-zero exec exits
+   * (on: "stall"). */
+  failures?: number;
+  /** Raises a stall after this long with no exec or computer call
+   * (on: "stall"). */
+  quiet_seconds?: number;
+  /** Raises an expiry this long before the idle_timeout or max_runtime reap
+   * (on: "expiry"). */
+  before_seconds?: number;
 }
 
 /** HitlExecPolicy is allowlist mode for exec: a program not in allow is held
@@ -777,10 +788,33 @@ export interface HitlWebhook {
   secret: string;
 }
 
-/** HitlRequests declares the allowed request kinds. Only ask exists today;
- * set it (to {}) to allow asks. */
+/** HitlRequests declares the allowed request kinds. Present means allowed;
+ * set ask (to {}) to allow asks. */
 export interface HitlRequests {
   ask?: HitlAskRequests;
+  secret?: HitlSecretRequests;
+  takeover?: HitlTakeoverRequests;
+}
+
+/** HitlSecretRequests declares where a secret may land. The agent names one
+ * of these targets; it can never choose a path or variable of its own. */
+export interface HitlSecretRequests {
+  targets: HitlSecretTarget[];
+}
+
+/** HitlSecretTarget is one declared destination: exactly one of env (a
+ * variable later execs see) or file (an absolute guest path, written 0600).
+ * label is what the human is shown first. */
+export interface HitlSecretTarget {
+  env?: string;
+  file?: string;
+  label: string;
+}
+
+/** HitlTakeoverRequests declares the ways a human may take over. Only
+ * "terminal" exists today; empty means terminal. */
+export interface HitlTakeoverRequests {
+  via?: string[];
 }
 
 /** HitlAskRequests configures ask requests. Present means allowed. */
@@ -796,13 +830,55 @@ export interface Actor {
   key_id?: string;
 }
 
-/** InterventionPayload is what was asked or attempted: a question for an
- * ask, the held exec or lifecycle action for a gate. */
+/** InterventionPayload is what was asked, attempted or noticed: a question
+ * for an ask, the held exec or lifecycle action for a gate, a secret or
+ * takeover request, or a signal. */
 export interface InterventionPayload {
   question?: string;
   choices?: string[];
   exec?: ExecPayload;
   lifecycle?: LifecyclePayload;
+  /** Set for a secret request only. */
+  secret?: InterventionSecret;
+  /** Set for a takeover only. */
+  takeover?: InterventionTakeover;
+  /** What fuse saw, for a stall or expiry. */
+  signal?: InterventionSignal;
+}
+
+/** InterventionSecret is a secret request. label comes from the Fusefile and
+ * is what a human should read first; message is the agent's own text. The
+ * value is never part of any intervention. */
+export interface InterventionSecret {
+  target: string;
+  label: string;
+  message?: string;
+}
+
+/** InterventionTakeover is a takeover. holder and started_at are set while a
+ * human holds the environment, which is also when the agent's exec and
+ * computer calls get 423. */
+export interface InterventionTakeover {
+  via: string;
+  reason?: string;
+  holder?: Actor;
+  /** RFC 3339 timestamp. */
+  started_at?: string;
+}
+
+/** InterventionSignal is what fuse noticed on its own. A stall carries the
+ * failure run or the quiet time; an expiry carries the reaper due and when,
+ * and once approved the time the environment is kept until. */
+export interface InterventionSignal {
+  failures?: number;
+  last_exit_code?: number;
+  quiet_seconds?: number;
+  /** "idle_timeout" or "max_runtime". */
+  reaper?: string;
+  /** RFC 3339 timestamp. */
+  reap_at?: string;
+  /** RFC 3339 timestamp. */
+  extended_until?: string;
 }
 
 /** InterventionDecision is how an intervention resolved. An expired one
@@ -855,6 +931,9 @@ export interface AuditEntry {
   env_id?: string;
   actor: Actor;
   remote_addr?: string;
+  /** Links a takeover_session row to its cast; fetch it with
+   * interventions.getRecording. */
+  recording_id?: string;
   /** RFC 3339 timestamp. */
   at: string;
   prev_hash: string;
@@ -871,6 +950,10 @@ export const AuditEvent = {
   InviteUsed: "invite_used",
   GrantCreated: "grant_created",
   GrantUsed: "grant_used",
+  SecretAnswered: "secret_answered",
+  TakeoverStarted: "takeover_started",
+  TakeoverEnded: "takeover_ended",
+  TakeoverSession: "takeover_session",
 } as const;
 
 export type AuditEvent = (typeof AuditEvent)[keyof typeof AuditEvent];
@@ -881,6 +964,10 @@ export const HitlKind = {
   Ask: "ask",
   Exec: "exec",
   Lifecycle: "lifecycle",
+  Secret: "secret",
+  Takeover: "takeover",
+  Stall: "stall",
+  Expiry: "expiry",
 } as const;
 
 export type HitlKind = (typeof HitlKind)[keyof typeof HitlKind];

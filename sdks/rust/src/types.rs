@@ -661,6 +661,23 @@ impl HitlSpec {
         self
     }
 
+    /// Declares a place a human-supplied secret may land, and allows secret
+    /// requests naming it.
+    pub fn secret_target(mut self, target: HitlSecretTarget) -> Self {
+        self.requests
+            .secret
+            .get_or_insert_with(HitlSecretRequests::default)
+            .targets
+            .push(target);
+        self
+    }
+
+    /// Allows a human to take over the environment's terminal.
+    pub fn takeover(mut self) -> Self {
+        self.requests.takeover = Some(HitlTakeoverRequests::default());
+        self
+    }
+
     pub fn timeout_seconds(mut self, seconds: u64) -> Self {
         self.timeout_seconds = Some(seconds);
         self
@@ -709,12 +726,16 @@ pub struct HitlWebhook {
     pub secret: String,
 }
 
-/// The allowed request kinds. Only ask exists today.
+/// The allowed request kinds. Present means allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct HitlRequests {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ask: Option<HitlAskRequests>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secret: Option<HitlSecretRequests>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub takeover: Option<HitlTakeoverRequests>,
 }
 
 /// Configures ask requests. Present means allowed.
@@ -730,6 +751,14 @@ string_enum! {
         Exec => "exec",
         /// An environment action a gate held.
         Lifecycle => "lifecycle",
+        /// A secret a human types into a declared target.
+        Secret => "secret",
+        /// A human holding the environment's terminal.
+        Takeover => "takeover",
+        /// Fuse noticed the agent failing or going quiet.
+        Stall => "stall",
+        /// Fuse is about to reap the environment.
+        Expiry => "expiry",
     }
 }
 
@@ -853,11 +882,38 @@ pub struct HitlGateMatch {
     /// Matches lifecycle actions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub action: Vec<LifecycleAction>,
+    /// Raises a stall after this many consecutive non-zero exec exits
+    /// (`on: stall`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failures: Option<u32>,
+    /// Raises a stall after this long with no exec or computer call
+    /// (`on: stall`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quiet_seconds: Option<u64>,
+    /// Raises an expiry this long before the idle_timeout or max_runtime
+    /// reap (`on: expiry`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_seconds: Option<u64>,
 }
 
 impl HitlGateMatch {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn failures(mut self, n: u32) -> Self {
+        self.failures = Some(n);
+        self
+    }
+
+    pub fn quiet_seconds(mut self, seconds: u64) -> Self {
+        self.quiet_seconds = Some(seconds);
+        self
+    }
+
+    pub fn before_seconds(mut self, seconds: u64) -> Self {
+        self.before_seconds = Some(seconds);
+        self
     }
 
     pub fn program<I, S>(mut self, program: I) -> Self
@@ -1053,6 +1109,11 @@ string_enum! {
         InviteUsed => "invite_used",
         GrantCreated => "grant_created",
         GrantUsed => "grant_used",
+        SecretAnswered => "secret_answered",
+        TakeoverStarted => "takeover_started",
+        TakeoverEnded => "takeover_ended",
+        /// A recorded takeover session; see [`AuditEntry::recording_id`].
+        TakeoverSession => "takeover_session",
     }
 }
 
@@ -1069,14 +1130,19 @@ pub struct AuditEntry {
     pub actor: Actor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_addr: Option<String>,
+    /// Set on a `takeover_session` row: fetch the cast with
+    /// [`Interventions::recording`](crate::Interventions::recording).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_id: Option<String>,
     pub at: DateTime<Utc>,
     #[serde(default)]
     pub prev_hash: String,
     pub hash: String,
 }
 
-/// What was asked or attempted: a question for an ask, the held exec or
-/// lifecycle action for a gate.
+/// What was asked, attempted or noticed: a question for an ask, the held
+/// exec or lifecycle action for a gate, a secret or takeover request, or a
+/// signal.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterventionPayload {
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -1087,6 +1153,15 @@ pub struct InterventionPayload {
     pub exec: Option<ExecPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle: Option<LifecyclePayload>,
+    /// Set for a secret request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<InterventionSecret>,
+    /// Set for a takeover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover: Option<InterventionTakeover>,
+    /// What fuse saw, for a stall or expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<InterventionSignal>,
 }
 
 /// How an intervention resolved. An expired one carries the on_timeout
@@ -1163,6 +1238,131 @@ impl Intervention {
             && (self.payload.exec.is_some() || self.payload.lifecycle.is_some());
         !runs || !self.is_approved() || self.result.is_some()
     }
+}
+
+// hitl secret requests, terminal takeover, and stall and expiry signals
+// (issue #312).
+
+/// Where secret requests may land, on [`HitlRequests::secret`]. The agent
+/// names one of these targets; it can never choose a path or variable of
+/// its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlSecretRequests {
+    #[serde(default)]
+    pub targets: Vec<HitlSecretTarget>,
+}
+
+/// One declared secret destination: exactly one of `env` (a variable later
+/// execs see) or `file` (an absolute guest path, written 0600). `label` is
+/// what the human is shown first.
+///
+/// ```
+/// use fuse::{HitlSecretTarget, HitlSpec};
+///
+/// let spec = HitlSpec::new()
+///     .secret_target(HitlSecretTarget::env("GH_TOKEN", "GitHub token with repo scope"))
+///     .secret_target(HitlSecretTarget::file("/root/.netrc", "netrc for the mirror"));
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlSecretTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub label: String,
+}
+
+impl HitlSecretTarget {
+    /// A target that sets the environment variable `name`.
+    pub fn env(name: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            env: Some(name.into()),
+            file: None,
+            label: label.into(),
+        }
+    }
+
+    /// A target that writes the absolute guest path `path`.
+    pub fn file(path: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            env: None,
+            file: Some(path.into()),
+            label: label.into(),
+        }
+    }
+}
+
+string_enum! {
+    /// How a human takes over an environment.
+    pub enum TakeoverVia {
+        Terminal => "terminal",
+    }
+}
+
+/// The ways a human may take over, on [`HitlRequests::takeover`]. Empty
+/// means terminal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HitlTakeoverRequests {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub via: Vec<TakeoverVia>,
+}
+
+/// A secret request, on [`InterventionPayload::secret`]. The value is never
+/// part of any intervention.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterventionSecret {
+    /// The declared target's env name or file path.
+    pub target: String,
+    /// From the policy; what a human should read first.
+    pub label: String,
+    /// The agent's own text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// A takeover, on [`InterventionPayload::takeover`]. `holder` and
+/// `started_at` are set while a human holds the environment, which is also
+/// when the agent's exec and computer calls wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterventionTakeover {
+    pub via: TakeoverVia,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+string_enum! {
+    /// The reaper an expiry warns about.
+    pub enum Reaper {
+        IdleTimeout => "idle_timeout",
+        MaxRuntime => "max_runtime",
+    }
+}
+
+/// What fuse noticed on its own, on [`InterventionPayload::signal`]. A stall
+/// carries the failure run or the quiet time; an expiry carries the reaper
+/// due and when, and once approved the time the environment is kept until.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterventionSignal {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failures: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_exit_code: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quiet_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reaper: Option<Reaper>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reap_at: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extended_until: Option<DateTime<Utc>>,
 }
 
 /// The body of [`Environments::create`](crate::Environments::create).

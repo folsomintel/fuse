@@ -16,6 +16,11 @@ import (
 // in the create request's secrets.
 var ErrHitlSecretMissing = errors.New("hitl webhook secret missing")
 
+// ErrHitlNeedsKey is a hitl block declaring secret requests on an
+// orchestrator with no TOKEN_ENCRYPTION_KEY: there would be nothing to keep
+// those interventions sealed with.
+var ErrHitlNeedsKey = errors.New("hitl secret requests need TOKEN_ENCRYPTION_KEY")
+
 // EnvKeyStore is the part of the api key store the fleet needs: scoped keys
 // die with their environment and follow it across a migrate. it is an
 // interface so the orchestrator does not import the key store.
@@ -98,6 +103,9 @@ func (fm *FleetManager) EnvsCoveredBy(keyEnv string) []string {
 // key they are kept in memory only, so deliveries stop being sent after a
 // restart rather than having their key stored in the clear.
 func (fm *FleetManager) hitlKeysFor(spec *hitl.Spec, secretMap map[string]string) (map[string]string, []byte, error) {
+	if spec != nil && spec.Requests.Secret != nil && len(fm.tokenEncryptionKey) != 32 {
+		return nil, nil, fmt.Errorf("%w: set it on the orchestrator or drop hitl.requests.secret", ErrHitlNeedsKey)
+	}
 	if spec == nil || len(spec.Notify) == 0 {
 		return nil, nil, nil
 	}

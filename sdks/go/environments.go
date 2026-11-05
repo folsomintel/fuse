@@ -474,7 +474,19 @@ func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (
 // environment booted from a desktop image; on any other image the server
 // answers 503 with a reason. Screenshots ride back base64-encoded, so the
 // stream client with no overall timeout carries the call.
+//
+// While a human holds the environment the server answers 423; Computer
+// waits for that intervention to end and sends the action then, unless the
+// client was built WithHitlNoWait, in which case it returns a *LockedError.
 func (s *EnvironmentsService) Computer(ctx context.Context, vmID string, action ComputerActionRequest) (*ComputerActionResponse, error) {
+	var t *transport
+	if s != nil {
+		t = s.t
+	}
+	return retryLocked(ctx, t, false, func() (*ComputerActionResponse, error) { return s.computerOnce(ctx, vmID, action) })
+}
+
+func (s *EnvironmentsService) computerOnce(ctx context.Context, vmID string, action ComputerActionRequest) (*ComputerActionResponse, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}

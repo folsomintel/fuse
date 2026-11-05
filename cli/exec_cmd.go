@@ -123,6 +123,12 @@ func runShell(ctx context.Context, vmID string, argv []string) error {
 	if err != nil {
 		return friendly(err)
 	}
+	return pumpShell(stream)
+}
+
+// pumpShell wires the local terminal to an open attach stream until the
+// guest process exits or the stream ends. it owns the stream.
+func pumpShell(stream *fuse.AttachStream) error {
 	defer func() { _ = stream.Close() }()
 
 	fd := int(os.Stdin.Fd())

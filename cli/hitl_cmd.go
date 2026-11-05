@@ -20,7 +20,7 @@ func newHitlCmd() *cobra.Command {
 			"invite`), and never the key or actor that raised the request.",
 	}
 	cmd.AddCommand(newHitlListCmd(), newHitlShowCmd(), newHitlAnswerCmd(), newHitlApproveCmd(), newHitlRejectCmd(),
-		newHitlInviteCmd(), newHitlAuditCmd())
+		newHitlInviteCmd(), newHitlAuditCmd(), newHitlSecretCmd(), newHitlTakeoverCmd(), newHitlReleaseCmd())
 	return cmd
 }
 
@@ -151,6 +151,36 @@ func renderIntervention(in *fuse.Intervention) error {
 		{"env", in.EnvID},
 		{"kind", in.Kind},
 		{"state", renderInterventionState(*in)},
+	}
+	// a secret's fusefile label comes first: the agent wrote the message,
+	// so it is the part a human should trust least.
+	if p := in.Payload.Secret; p != nil {
+		pairs = append(pairs, [2]string{"secret for", p.Label}, [2]string{"target", p.Target})
+		if p.Message != "" {
+			pairs = append(pairs, [2]string{"agent says", p.Message})
+		}
+	}
+	if p := in.Payload.Takeover; p != nil {
+		pairs = append(pairs, [2]string{"via", p.Via})
+		if p.Reason != "" {
+			pairs = append(pairs, [2]string{"reason", p.Reason})
+		}
+		if p.Holder != nil {
+			pairs = append(pairs, [2]string{"held by", renderActor(*p.Holder)})
+		}
+	}
+	if p := in.Payload.Signal; p != nil {
+		switch {
+		case p.Failures > 0:
+			pairs = append(pairs, [2]string{"signal", fmt.Sprintf("%d failing execs in a row (last exit %d)", p.Failures, p.LastExitCode)})
+		case p.QuietSeconds > 0:
+			pairs = append(pairs, [2]string{"signal", fmt.Sprintf("no exec or computer call for %s", time.Duration(p.QuietSeconds)*time.Second)})
+		case p.ReapAt != nil:
+			pairs = append(pairs, [2]string{"signal", p.Reaper + " reap at " + shortTime(*p.ReapAt)})
+		}
+		if p.ExtendedUntil != nil {
+			pairs = append(pairs, [2]string{"extended until", shortTime(*p.ExtendedUntil)})
+		}
 	}
 	if in.Gate != "" {
 		pairs = append(pairs, [2]string{"gate", in.Gate + " (" + in.Mode + ")"})

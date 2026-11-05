@@ -72,6 +72,9 @@ export interface ApproveOptions {
   editedArgv?: string[];
   /** "once", "env" or "ttl:<duration>"; unset takes the gate's default. */
   grant?: string;
+  /** How long approving an expiry keeps the environment alive. Zero or unset
+   * is one more full window of the reaper that was due. */
+  extendSeconds?: number;
 }
 
 /** Body for interventions.reject. */
@@ -157,6 +160,15 @@ export class InterventionsService {
     return { entries: out.entries ?? [], nextCursor: out.next_cursor };
   }
 
+  /** Fetch a takeover session's recording (an AuditEntry's recording_id) as
+   * asciinema v2 cast text. Needs the hitl:read scope. */
+  async getRecording(recordingId: string, opts: CallOptions = {}): Promise<string> {
+    requireArg(recordingId, "recording id");
+    return this.t.text("GET", `/v1/hitl/recordings/${encodeURIComponent(recordingId)}`, {
+      signal: opts.signal,
+    });
+  }
+
   /** Fetch one intervention without waiting. */
   async get(id: string, opts: CallOptions = {}): Promise<Intervention> {
     return getIntervention(this.t, id, undefined, opts);
@@ -194,6 +206,24 @@ export class InterventionsService {
     return this.decide(id, "reject", { reason: body.reason }, opts);
   }
 
+  /**
+   * Answer a pending secret request. The value is written into the guest at
+   * the declared target and dropped; fuse never stores, logs or returns it.
+   * Needs the hitl:secret scope.
+   */
+  async answerSecret(
+    id: string,
+    value: string,
+    opts: CallOptions = {},
+  ): Promise<Intervention> {
+    requireArg(id, "intervention id");
+    return this.t.json<Intervention>(
+      "POST",
+      `/v1/interventions/${encodeURIComponent(id)}`,
+      { query: { action: "secret" }, body: { value }, signal: opts.signal },
+    );
+  }
+
   private async decide(
     id: string,
     action: string,
@@ -211,6 +241,7 @@ export class InterventionsService {
           reason: body.reason || undefined,
           edited_argv: body.editedArgv?.length ? body.editedArgv : undefined,
           grant: body.grant || undefined,
+          extend_seconds: body.extendSeconds || undefined,
         },
         signal: opts.signal,
       },

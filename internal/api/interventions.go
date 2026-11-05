@@ -29,13 +29,17 @@ func (h *Handler) requestHuman(w http.ResponseWriter, r *http.Request) {
 	if kind == "" {
 		kind = hitl.KindAsk
 	}
-	if kind != hitl.KindAsk {
-		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "kind must be \"ask\", got \""+req.Kind+"\"", nil)
+	switch kind {
+	case hitl.KindAsk, hitl.KindSecret, hitl.KindTakeover:
+	default:
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "kind must be \"ask\", \"secret\" or \"takeover\", got \""+req.Kind+"\"", nil)
 		return
 	}
 	in, err := h.Fleet.RequestHuman(r.Context(), vmID, orchestrator.HumanRequest{
 		Kind:       kind,
 		Ask:        hitl.AskPayload{Question: req.Question, Choices: req.Choices},
+		Secret:     hitl.SecretPayload{Target: req.Target, Message: req.Message},
+		Takeover:   hitl.TakeoverPayload{Via: hitl.TakeoverVia(req.Via), Reason: req.Reason},
 		Timeout:    time.Duration(req.TimeoutSeconds) * time.Second,
 		By:         principal(r).Actor,
 		RemoteAddr: r.RemoteAddr,
@@ -158,7 +162,8 @@ func (h *Handler) interventionVisible(w http.ResponseWriter, r *http.Request, id
 	return true
 }
 
-// interventionAction decides an intervention: ?action=approve or reject.
+// interventionAction decides an intervention: ?action=approve or reject, or
+// ?action=secret to answer a secret request with its value (answerSecret).
 // deciding needs the hitl:decide scope (or the master token), which
 // full-access keys do not hold, and is never allowed to the key or actor
 // that raised the intervention.
@@ -169,7 +174,7 @@ func (h *Handler) interventionVisible(w http.ResponseWriter, r *http.Request, id
 //	@Accept			json
 //	@Produce		json
 //	@Param			interventionId	path		string						true	"Intervention id"
-//	@Param			action			query		string						true	"Decision"	Enums(approve, reject)
+//	@Param			action			query		string						true	"Decision"	Enums(approve, reject, secret)
 //	@Param			body			body		DecideInterventionRequest	false	"Answer and reason"
 //	@Success		200				{object}	Intervention
 //	@Failure		400				{object}	Error
@@ -181,6 +186,9 @@ func (h *Handler) interventionVisible(w http.ResponseWriter, r *http.Request, id
 func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 	var outcome hitl.Outcome
 	switch r.URL.Query().Get("action") {
+	case "secret":
+		h.answerSecret(w, r)
+		return
 	case "approve":
 		outcome = hitl.OutcomeApprove
 	case "reject":
@@ -209,6 +217,7 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 		Reason:     req.Reason,
 		EditedArgv: req.EditedArgv,
 		Grant:      req.Grant,
+		Extend:     time.Duration(req.ExtendSeconds) * time.Second,
 		By:         principal(r).Actor,
 		RemoteAddr: r.RemoteAddr,
 	})
@@ -298,6 +307,7 @@ func (h *Handler) listHitlAudit(w http.ResponseWriter, r *http.Request) {
 			EnvID:          e.EnvID,
 			Actor:          toAPIActor(e.Actor),
 			RemoteAddr:     e.RemoteAddr,
+			RecordingID:    e.RecordingID,
 			At:             e.At,
 			PrevHash:       hex.EncodeToString(e.PrevHash),
 			Hash:           hex.EncodeToString(e.Hash),
@@ -317,6 +327,18 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 	if s.Requests.Ask != nil {
 		out.Requests.Ask = &hitl.AskRequests{}
 	}
+	if s.Requests.Secret != nil {
+		out.Requests.Secret = &hitl.SecretRequests{}
+		for _, t := range s.Requests.Secret.Targets {
+			out.Requests.Secret.Targets = append(out.Requests.Secret.Targets, hitl.SecretTarget{Env: t.Env, File: t.File, Label: t.Label})
+		}
+	}
+	if s.Requests.Takeover != nil {
+		out.Requests.Takeover = &hitl.TakeoverRequests{}
+		for _, v := range s.Requests.Takeover.Via {
+			out.Requests.Takeover.Via = append(out.Requests.Takeover.Via, hitl.TakeoverVia(v))
+		}
+	}
 	for _, w := range s.Notify {
 		out.Notify = append(out.Notify, hitl.Webhook{URL: w.URL, Secret: w.Secret})
 	}
@@ -324,7 +346,10 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 		gate := hitl.Gate{
 			Name: g.Name, On: hitl.Kind(g.On), Mode: hitl.Mode(g.Mode), Grant: g.Grant,
 			TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
-			Match: hitl.GateMatch{Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell},
+			Match: hitl.GateMatch{
+				Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell,
+				Failures: g.Match.Failures, QuietSeconds: g.Match.QuietSeconds, BeforeSeconds: g.Match.BeforeSeconds,
+			},
 		}
 		for _, a := range g.Match.Action {
 			gate.Match.Action = append(gate.Match.Action, hitl.LifecycleAction(a))
@@ -355,6 +380,23 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 		OnTimeout:   string(in.OnTimeout),
 		CreatedAt:   in.CreatedAt,
 		UpdatedAt:   in.UpdatedAt,
+	}
+	if p := in.Secret; p != nil {
+		out.Payload.Secret = &InterventionSecret{Target: p.Target, Label: p.Label, Message: p.Message}
+	}
+	if p := in.Signal; p != nil {
+		out.Payload.Signal = &InterventionSignal{
+			Failures: p.Failures, LastExitCode: p.LastExitCode, QuietSeconds: p.QuietSeconds,
+			Reaper: string(p.Reaper), ReapAt: p.ReapAt, ExtendedUntil: p.ExtendedUntil,
+		}
+	}
+	if p := in.Takeover; p != nil {
+		t := &InterventionTakeover{Via: string(p.Via), Reason: p.Reason, StartedAt: p.StartedAt}
+		if p.Holder != nil {
+			a := toAPIActor(*p.Holder)
+			t.Holder = &a
+		}
+		out.Payload.Takeover = t
 	}
 	if d := in.Decision; d != nil {
 		out.Decision = &InterventionDecision{

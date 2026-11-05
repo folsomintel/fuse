@@ -7,6 +7,7 @@ export { VERSION } from "./version.js";
 // Services and their option types.
 export { EnvironmentsService } from "./environments.js";
 export type { ListEnvironmentsOptions, HumanRequest } from "./environments.js";
+export type { LockedCallOptions, TakeoverOptions, ReleaseOptions } from "./takeover.js";
 export { SnapshotsService } from "./snapshots.js";
 export type { ListSnapshotsOptions } from "./snapshots.js";
 export { HostsService } from "./hosts.js";
@@ -66,6 +67,12 @@ export type {
   AuditEntry,
   HitlRequests,
   HitlAskRequests,
+  HitlSecretRequests,
+  HitlSecretTarget,
+  HitlTakeoverRequests,
+  InterventionSecret,
+  InterventionTakeover,
+  InterventionSignal,
   Actor,
   InterventionPayload,
   InterventionDecision,
@@ -100,6 +107,8 @@ export {
   FuseError,
   ForbiddenError,
   ForbiddenReason,
+  LockedError,
+  isLocked,
   ErrorCode,
   isFuseApiError,
   isNotFound,

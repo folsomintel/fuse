@@ -59,7 +59,12 @@ type Intervention struct {
 	// Exec is the held exec, for KindExec.
 	Exec *ExecPayload
 	// Lifecycle is the held environment action, for KindLifecycle.
-	Lifecycle   *LifecyclePayload
+	Lifecycle *LifecyclePayload
+	// Secret and Takeover are the payloads of those kinds; nil otherwise.
+	Secret   *SecretPayload
+	Takeover *TakeoverPayload
+	// Signal is what fuse saw, for KindStall and KindExpiry.
+	Signal      *SignalPayload
 	TriggeredBy Actor
 	Deadline    time.Time
 	OnTimeout   OnTimeout
@@ -270,6 +275,12 @@ func Decide(in Intervention, outcome Outcome, answer, reason string, by Actor, n
 		return in, err
 	}
 	if outcome == OutcomeApprove {
+		switch in.Kind {
+		case KindSecret:
+			return in, errors.New("a secret request is approved by answering it with the value (fuse hitl secret)")
+		case KindTakeover:
+			return in, errors.New("a takeover is approved by taking over and releasing (fuse hitl takeover)")
+		}
 		if in.Kind == KindAsk {
 			if err := in.Payload.ValidateAnswer(answer); err != nil {
 				return in, err

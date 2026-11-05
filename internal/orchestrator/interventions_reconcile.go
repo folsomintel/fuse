@@ -45,6 +45,8 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 			}
 		}
 	}
+	fm.syncLocks(ctx)
+	fm.reconcileSignals(ctx)
 }
 
 // pendingInterventionEnvs returns the environments holding at least one

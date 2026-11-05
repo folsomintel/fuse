@@ -171,6 +171,17 @@ export class Transport {
     }
   }
 
+  /** Perform a request and return the response body as text. */
+  async text(method: string, path: string, spec: RequestSpec = {}): Promise<string> {
+    const { signal: combined, cleanup } = this.withTimeout(spec.signal);
+    try {
+      const res = await this.execute(method, path, spec, combined);
+      if (!res.ok) throw await errorFromResponse(res);
+      return await res.text();
+    } finally {
+      cleanup();
+    }
+  }
   private async decodeHeld(res: Response): Promise<Intervention> {
     const body = await this.decodeJson<{ intervention?: Intervention }>(res);
     if (!body?.intervention?.id) throw new FuseError("decode held response");

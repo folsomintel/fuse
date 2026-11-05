@@ -12,11 +12,12 @@ it from the CLI or the API, and the answer goes back to the agent. Every
 request has a deadline, so whatever the human does (or does not do), the
 agent always gets an outcome and carries on.
 
-This page covers the core loop, the one request kind that exists today
-(`ask`), gates that hold exec and lifecycle actions until a human decides,
-and the access model around it: who may answer, how a person is named, the
-audit log and webhooks. Secrets and takeover build on the same object and
-come later.
+This page covers the core loop and the three request kinds an agent can
+raise: `ask` for a decision, `secret` for a credential, and `takeover` to
+hand a human the shell. Then gates that hold exec and lifecycle actions
+until a human decides, the stall and expiry signals Fuse raises on its own,
+and the access model around all of it: who may answer, how a person is
+named, the audit log and webhooks.
 
 ## Concepts
 
@@ -187,7 +188,7 @@ hitl:
 | Field | Meaning |
 | --- | --- |
 | `name` | Names the gate on interventions, grants and webhooks. 1-64 of `a-z 0-9 - _ .` |
-| `on` | `exec` or `lifecycle`. |
+| `on` | `exec` or `lifecycle`; `stall` and `expiry` are [signals](#signals). |
 | `match.program` | `exec`: the basename of `argv[0]`, one name or a list, after known wrappers are stripped. |
 | `match.args` | `exec`: arguments that appear in argv in this order, not necessarily next to each other. |
 | `match.shell` | `exec`: any opaque shell exec, a `shell:` string or `sh`/`bash -c`. Cannot be combined with `program` or `args`. |
@@ -289,6 +290,297 @@ shell`) can do anything root can, with no gate involved. So:
 - A `deny` on `destroy` also stops you: the environment is then removed by
   its `max_runtime` or `idle_timeout`, which are not gated.
 
+## Secrets
+
+Sometimes the agent needs a credential nobody gave it: a token to push a
+branch, a login for a private package mirror. A `secret` request carries it
+from a human into the guest without the value passing through the agent,
+an API response, Postgres or the logs.
+
+**Ask for credentials through `secret`, never during a takeover.** A
+takeover shell is recorded, and whatever the guest prints, including a token
+pasted into a command line or typed at a prompt that echoes, ends up in the
+recording. A secret request writes the value to one declared place and
+nothing else ever sees it.
+
+Declare every place a value may land. The agent names one of these targets
+when it asks; it can never pick a path or a variable of its own.
+
+```yaml
+hitl:
+  requests:
+    secret:
+      targets:
+        - env: GH_TOKEN
+          label: GitHub token with repo scope on acme/api
+        - file: /root/.netrc
+          label: netrc for the internal package mirror
+```
+
+Each target sets exactly one of `env` (a variable name) or `file` (an
+absolute guest path outside `/fuse`, which Fuse keeps for its own
+credentials), and a `label`. Up to 20 targets are allowed.
+
+The agent raises the request with a target and, optionally, a message:
+
+```go
+in, err := client.Environments.RequestHuman(ctx, envID, fuse.HumanRequest{
+	Kind:    fuse.HitlKindSecret,
+	Target:  "GH_TOKEN",
+	Message: "git push to acme/api got a 403; need a token to open the PR",
+})
+if err != nil {
+	return err
+}
+if !in.Approved() {
+	return fmt.Errorf("no token: %s", in.Decision.Reason)
+}
+// in.Decision.Answer is "done". the value is in the guest, never here.
+```
+
+A target that is not declared is a 400. The agent gets back
+`decision.answer: "done"` and nothing more: the value is never stored,
+logged, returned or put on the event stream, and the intervention and its
+`secret_answered` audit row record only who answered and when.
+
+**Read the label first.** The agent writes the message, so a confused or
+prompt-injected agent can write anything there, including "paste the AWS
+root key". The label comes from the Fusefile, and the intervention's
+`payload.secret` carries it apart from the agent's text, so show it first:
+
+```json
+"payload": {
+  "secret": {
+    "target": "GH_TOKEN",
+    "label": "GitHub token with repo scope on acme/api",
+    "message": "git push to acme/api got a 403; need a token to open the PR"
+  }
+}
+```
+
+The human answers from the CLI, which prints the label first, then the
+agent's message, and reads the value without echoing it (or from stdin when
+it is not a terminal):
+
+```bash
+fuse hitl secret int_0187...
+```
+
+or from the API with `POST /v1/interventions/{id}?action=secret` and
+`{"value": "..."}`. The SDKs expose this as `interventions.answerSecret` in
+TypeScript, `AnswerSecret` in Go and `answer_secret` in Python and Rust:
+
+```ts
+await fuse.interventions.answerSecret(id, value);
+```
+
+Answering needs the `hitl:secret` scope, which a full-access key never
+holds (`fuse hitl invite fuse-agent --scopes secret` mints one), and the same [no self-approval](#no-self-approval) and
+`require_actor` rules as deciding. Two humans answering the same request at
+once get one write and one 409.
+
+Where the value lands:
+
+- **`env`**: every exec call the agent makes after the answer sees the
+  variable. It is read per call, so a process that was already running, or
+  an attach shell, does not.
+- **`file`**: the file is created (with its parent directories) with mode
+  0600 before the value is written, replacing what was there.
+
+Secret requests need `TOKEN_ENCRYPTION_KEY` on the orchestrator. Without
+it, creating an environment that declares `hitl.requests.secret` is a 400,
+and so is raising or answering a secret request.
+
+## Takeover
+
+Sometimes the fastest fix is a person at the keyboard: a process wedged on
+a lock, a merge the agent keeps getting wrong, a tool that only works
+interactively. A **takeover** hands the environment to a human and keeps the
+agent out until they hand it back.
+
+```yaml
+hitl:
+  timeout: 30m          # how long a takeover may hold the environment
+  requests:
+    takeover:
+      via: [terminal]   # the only way in today, and the default
+```
+
+A takeover starts one of two ways. The agent asks for one, and its call
+waits:
+
+```go
+in, err := client.Environments.RequestHuman(ctx, envID, fuse.HumanRequest{
+	Kind:   fuse.HitlKindTakeover,
+	Reason: "migration 0042 hangs on a lock and I cannot find the holder",
+})
+if err != nil {
+	return err
+}
+log.Printf("human says: %s", in.Decision.Answer)
+```
+
+Or a human starts it. If the agent has a takeover request pending, this
+claims it (the agent may not claim its own); otherwise Fuse opens one on the
+human's behalf:
+
+```bash
+fuse hitl takeover fuse-agent      # take control and open a recorded shell
+fuse hitl takeover fuse-agent --no-shell   # only take the lock
+fuse hitl release fuse-agent --note "killed the stale psql session holding the lock; rerun 0042"
+```
+
+From the API, `POST /v1/environments/{id}?action=takeover` (body
+`{"reason": "..."}`, optional) and `?action=release` with
+`{"note": "..."}`. The SDKs expose `environments.takeover` and
+`environments.release`. Both need the `hitl:takeover` scope, which a
+full-access key never holds: mint one for the human, for example with
+`fuse hitl invite fuse-agent --scopes takeover`, or use the master token.
+
+**While a human holds the environment, the agent waits.** Its exec calls
+and computer actions get a 423 before they reach the guest:
+
+```json
+{
+  "error": {
+    "code": "locked",
+    "message": "environment fuse-agent is locked by takeover intervention int_0187...; wait for it to resolve",
+    "details": { "intervention_id": "int_0187...", "kind": "takeover" }
+  }
+}
+```
+
+The SDKs handle this for you: on a 423 they wait on that intervention until
+it is no longer pending, then send the call again, so an agent's
+`exec` simply takes longer. Pass the same no-wait option as for a
+[held gate](#gates) to get a `LockedError` with the intervention id and kind
+instead. Raw API callers do the same loop with
+`GET /v1/interventions/{id}?wait=50s`.
+
+**The deadline bounds the lock.** A takeover is an intervention like any
+other, so it has a deadline: `hitl.timeout`, or the agent's shorter
+`timeout_seconds`. When it passes the lock lifts and the takeover expires.
+Set `hitl.timeout` to the longest takeover you want, since a request can
+only shorten it.
+
+**Release hands the note to the agent.** It becomes the takeover's
+`decision.answer`, so write it for the agent: what you changed and what it
+should do next. An empty note becomes `released by <actor>`. Anyone with
+`hitl:takeover` can release, not only the holder, so a takeover whose holder
+walked away does not have to wait out its deadline. A second human taking
+over an environment someone holds gets a 409; the holder taking over again
+gets the same takeover back.
+
+### The recorded shell
+
+`fuse hitl takeover` opens the shell with
+`GET /v1/interventions/{id}/attach`, the attach stream with a recording on
+it. Only the takeover's holder (or the master token) may open it, and only
+the Go SDK and the CLI speak it. Closing the shell ends that recorded session, not the takeover:
+the agent stays locked out until a release or the deadline.
+
+The first thing the human sees is a banner:
+
+```
+[fuse] this session is recorded (takeover int_0187..., environment fuse-agent, as alice).
+[fuse] ask for credentials through a secret request, never type them here.
+```
+
+The session is saved as an [asciinema](https://asciinema.org) v2 cast: what
+the guest printed and each window resize, never the keystrokes. A password
+typed at a prompt that does not echo is not in it; anything the guest echoes
+back is. The cast is encrypted with `TOKEN_ENCRYPTION_KEY` (and stored in
+the clear, with a warning in the orchestrator log, without it), stops
+growing at 8 MiB, and is linked from a `takeover_session` audit row by its
+`recording_id`. Fetch it with `hitl:read`:
+
+```bash
+curl "$FUSE/v1/hitl/audit?env=fuse-agent" -H "Authorization: Bearer $TOKEN" \
+  | jq -r '.entries[] | select(.event == "takeover_session") | .recording_id'
+
+curl "$FUSE/v1/hitl/recordings/rec_0187..." -H "Authorization: Bearer $TOKEN" > session.cast
+asciinema play session.cast
+```
+
+The SDKs fetch the same thing with `interventions.getRecording` in
+TypeScript, `Recording` in Go and `get_recording` in Python.
+
+## Signals
+
+Gates fire when the agent does something. **Signals** fire when Fuse
+notices something on its own: the agent looks stuck (`stall`), or the
+environment is about to be reaped (`expiry`). They are declared as gates:
+
+```yaml
+hitl:
+  gates:
+    - name: failing-loop
+      on: stall
+      match: { failures: 3 }   # three non-zero exec exits in a row
+
+    - name: gone-quiet
+      on: stall
+      match: { quiet: 15m }    # no exec or computer call for 15m
+      mode: notify
+
+    - name: about-to-reap
+      on: expiry
+      match: { before: 5m }    # 5m before idle_timeout or max_runtime
+```
+
+In the create request the durations are seconds: `quiet_seconds` and
+`before_seconds`. A signal gate is `ask` (the default) or `notify`, never
+`deny`, takes no `grant`, and matches only its own fields.
+
+### Stall
+
+| Match | Raised when |
+| --- | --- |
+| `failures` | This many exec calls in a row exited non-zero, 1 to 100. A zero exit resets the count, and so does raising the stall. |
+| `quiet` | The agent made no exec or computer call for this long, 1m to 24h, counted from creation until its first call. One quiet spell raises one stall. |
+
+A gate can set both. In `ask` mode a stall **pauses the agent**: its exec
+and computer calls get the same 423 as a takeover, with `kind: "stall"`, and
+the SDKs wait the same way. A human acks it with a plain approve or reject;
+either one lifts the lock and the agent's waiting call goes through. In
+`notify` mode the stall is only recorded, born resolved, and nothing pauses.
+No stall is raised while the environment is already locked, and the lock
+lifts at the stall's deadline (`timeout` on the gate, else `hitl.timeout`)
+like any other.
+
+```bash
+fuse hitl show int_0187...      # payload.signal: failures and last_exit_code, or quiet_seconds
+fuse hitl approve int_0187...   # let the agent carry on
+```
+
+### Expiry
+
+`before` raises an expiry this long ahead of the reaper that is due first:
+`resources.idle_timeout`, or `max_runtime` for an environment running a
+task. It is 1m to 24h. `payload.signal` names the `reaper` and its
+`reap_at`.
+
+In `ask` mode **the reaper waits while the expiry is pending**. What happens
+next is up to the human:
+
+- **Approve** keeps the environment alive. With no duration that is one more
+  full window of the reaper that was due (at most 24h); `--extend` picks
+  one, 1m to 24h. The decision's answer reads `extended until <time>`, and
+  `payload.signal.extended_until` holds it. The extension survives an
+  orchestrator restart, and the gate fires again ahead of the next reap.
+- **Reject** lets the reap go ahead.
+- **Nobody answering** does too. An expiry's deadline is capped at the reap
+  time, and it always times out as a reject, whatever `on_timeout` says.
+
+```bash
+fuse hitl approve int_0187... --extend 30m
+```
+
+From the API, approve with `{"extend_seconds": 1800}`; in the SDKs,
+`extendSeconds` in TypeScript and `ExtendSeconds` in Go's `ApproveWith`.
+`extend_seconds` on anything other than an expiry approval is a 400. A
+`notify` expiry only records the warning; the reaper does not wait for it.
+
 ## Access
 
 Fuse has no users or roles. What a human needs to handle one environment's
@@ -299,15 +591,16 @@ API key with **scopes**.
 | --- | --- |
 | `hitl:read` | List and read interventions and the audit log. |
 | `hitl:decide` | Approve and reject interventions. Implies `hitl:read`. |
-| `hitl:secret` | Answer secret requests (reserved for a later release). Implies `hitl:read`. |
-| `hitl:takeover` | Take over the environment (reserved for a later release). This is shell access to the VM, so it is its own scope. |
+| `hitl:secret` | Answer [secret requests](#secrets). Implies `hitl:read`. |
+| `hitl:takeover` | [Take over](#takeover) and release the environment, and open the takeover shell. This is shell access to the VM, so it is its own scope. |
 | `hitl:act-as` | Name the actor the key acts for with the `Fuse-Actor` header. |
 
 A key minted without scopes is a **full-access key**, exactly as every key
-was before scopes existed. It holds `hitl:read` and `hitl:takeover`, but
-never `hitl:decide`, `hitl:secret` or `hitl:act-as`: those are only ever
-minted on purpose. That is what keeps an agent's own key from approving its
-own requests.
+was before scopes existed. It holds `hitl:read`, but never `hitl:decide`,
+`hitl:secret`, `hitl:takeover` or `hitl:act-as`: those are only ever minted
+on purpose. That is what keeps an agent's own key from approving its own
+requests, and keeps a takeover shell as rare as attach, which is
+master-only.
 
 A key minted with scopes:
 
@@ -451,11 +744,15 @@ Every hitl action appends a row to an append-only audit log in Postgres:
 | `cancelled` | Its environment was destroyed while it was pending. |
 | `invite_minted` | A scoped key was minted. |
 | `invite_used` | A scoped key authenticated for the first time. |
+| `secret_answered` | A secret request was answered. Who and when, never the value. |
+| `takeover_started` | A human took control of the environment. |
+| `takeover_ended` | The takeover was released. |
+| `takeover_session` | A recorded takeover shell closed. Carries `recording_id`. |
 
 A row records the actor, its source, the key id, the remote address, the
-time and the intervention id. It never holds the question, the answer or the
-reason; those stay on the encrypted intervention row, so the audit log is
-safe to export.
+time and the intervention id, and for a `takeover_session` the id of its
+recording. It never holds the question, the answer or the reason; those stay
+on the encrypted intervention row, so the audit log is safe to export.
 
 ```bash
 fuse hitl audit                              # every row, oldest first
@@ -598,3 +895,7 @@ orchestrator's `TOKEN_ENCRYPTION_KEY` before they reach Postgres. Ids,
 states and timestamps stay plaintext so the deadline sweep and list filters
 work without decrypting. Without the key (dev mode) the content is stored in
 the clear.
+
+Two things are different. A secret's value is never stored at all, with or
+without the key: it goes into the guest and is dropped. Takeover recordings
+are sealed with the same key, and stored in the clear without it.

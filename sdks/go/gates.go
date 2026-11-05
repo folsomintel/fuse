@@ -70,6 +70,15 @@ type HitlGateMatch struct {
 	Shell bool `json:"shell,omitempty"`
 	// Action matches lifecycle actions (the Lifecycle constants).
 	Action []string `json:"action,omitempty"`
+	// Failures raises a stall after this many consecutive non-zero exec
+	// exits (On HitlKindStall).
+	Failures int `json:"failures,omitempty"`
+	// QuietSeconds raises a stall after this long with no exec or computer
+	// call (On HitlKindStall).
+	QuietSeconds int64 `json:"quiet_seconds,omitempty"`
+	// BeforeSeconds raises an expiry this long before the idle_timeout or
+	// max_runtime reap (On HitlKindExpiry).
+	BeforeSeconds int64 `json:"before_seconds,omitempty"`
 }
 
 // HitlExecPolicy is allowlist mode for exec: a program not in Allow is held
@@ -227,4 +236,7 @@ type ApproveOptions struct {
 	// Grant is "once", "env" or "ttl:<duration>"; empty takes the gate's
 	// default.
 	Grant string `json:"grant,omitempty"`
+	// ExtendSeconds is how long approving an expiry keeps the environment
+	// alive. Zero is one more full window of the reaper that was due.
+	ExtendSeconds int64 `json:"extend_seconds,omitempty"`
 }
