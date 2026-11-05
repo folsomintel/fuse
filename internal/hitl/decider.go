@@ -65,12 +65,27 @@ type DeciderRequest struct {
 	On          Kind              `json:"on"`
 	TriggeredBy Actor             `json:"triggered_by"`
 	Exec        *ExecPayload      `json:"exec,omitempty"`
-	Lifecycle   *LifecyclePayload `json:"lifecycle,omitempty"`
+	Lifecycle   *DeciderLifecycle `json:"lifecycle,omitempty"`
 	Computer    *ComputerPayload  `json:"computer,omitempty"`
 	// Screenshot is a base64 png of the display, for a computer action. it
 	// is empty when one could not be taken in time.
 	Screenshot string    `json:"screenshot,omitempty"`
 	Deadline   time.Time `json:"deadline"`
+}
+
+// DeciderLifecycle is a held lifecycle action as a decider sees it: the
+// params as json, not the base64 a []byte would marshal to.
+type DeciderLifecycle struct {
+	Action LifecycleAction `json:"action"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+// NewDeciderLifecycle converts a held lifecycle payload for a decider.
+func NewDeciderLifecycle(p *LifecyclePayload) *DeciderLifecycle {
+	if p == nil {
+		return nil
+	}
+	return &DeciderLifecycle{Action: p.Action, Params: json.RawMessage(p.Params)}
 }
 
 // DeciderResponse is what a decider answers.

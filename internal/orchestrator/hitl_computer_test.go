@@ -408,3 +408,20 @@ func TestDesktopTakeoverLocksTheStreamAndNeedsDesktopVia(t *testing.T) {
 		t.Fatalf("desktop on a terminal takeover: err = %v", err)
 	}
 }
+
+func TestClaimingATakeoverTakesTheHumansVia(t *testing.T) {
+	spec := &hitl.Spec{TimeoutSeconds: 600, Requests: hitl.Requests{Takeover: &hitl.TakeoverRequests{Via: []hitl.TakeoverVia{hitl.ViaTerminal, hitl.ViaDesktop}}}}
+	fm, vmID := hitlFleet(t, FleetConfig{}, spec)
+	ctx := context.Background()
+	req, err := fm.RequestHuman(ctx, vmID, HumanRequest{Kind: hitl.KindTakeover, By: testActor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := fm.StartTakeover(ctx, vmID, TakeoverRequest{Via: hitl.ViaDesktop, By: approver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.ID != req.ID || in.Takeover.Via != hitl.ViaDesktop {
+		t.Fatalf("claimed takeover = %s via %s, want %s via desktop", in.ID, in.Takeover.Via, req.ID)
+	}
+}

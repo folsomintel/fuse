@@ -133,6 +133,13 @@ func (fm *FleetManager) startTakeoverLocked(ctx context.Context, envID string, s
 			return *claim, false, err
 		}
 		in = *claim
+		// the human picks the way in when they name one: an agent asking
+		// for help does not know whether a shell or the desktop fits.
+		if req.Via != "" && in.Takeover.Via != via {
+			t := *in.Takeover
+			t.Via = via
+			in.Takeover = &t
+		}
 	} else {
 		in = hitl.Intervention{
 			ID:          hitl.NewID(now),

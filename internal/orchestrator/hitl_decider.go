@@ -41,7 +41,7 @@ func (fm *FleetManager) askDecider(ctx context.Context, g hitl.Gate, in hitl.Int
 
 	req := hitl.DeciderRequest{
 		EnvID: in.EnvID, Gate: g.Name, On: in.Kind, TriggeredBy: in.TriggeredBy,
-		Exec: in.Exec, Lifecycle: in.Lifecycle, Computer: in.Computer, Deadline: in.Deadline,
+		Exec: in.Exec, Lifecycle: hitl.NewDeciderLifecycle(in.Lifecycle), Computer: in.Computer, Deadline: in.Deadline,
 	}
 	if in.Computer != nil {
 		req.Screenshot = fm.deciderScreenshot(ctx, in.EnvID)
