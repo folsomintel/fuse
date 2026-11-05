@@ -18,6 +18,7 @@ import { FuseError, isFuseApiError } from "./errors.js";
 import { requireArg } from "./validate.js";
 import { streamEvents } from "./events.js";
 import { waitIntervention } from "./interventions.js";
+import { settleHeld } from "./gates.js";
 
 /** The server's max page size; list() requests this internally so it walks
  * every page in as few round trips as possible. */
@@ -122,18 +123,22 @@ export class EnvironmentsService {
     });
   }
 
-  /** Fork an environment into a new one; returns the new environment. */
+  /** Fork an environment into a new one; returns the new environment. When a
+   * hitl gate holds the fork, it waits for the decision and returns the
+   * environment the orchestrator then forked. */
   async fork(
     vmId: string,
     body: ForkOptions = {},
     opts: CallOptions = {},
   ): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
-    return this.t.json<EnvironmentInfo>(
+    const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       { query: { action: "fork" }, body, signal: opts.signal },
     );
+    if (!out.held) return out.value;
+    return this.heldEnvironment(out.held, opts);
   }
 
   /**
@@ -146,11 +151,26 @@ export class EnvironmentsService {
     opts: CallOptions = {},
   ): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
-    return this.t.json<EnvironmentInfo>(
+    const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       { query: { action: "migrate" }, body, signal: opts.signal },
     );
+    if (!out.held) return out.value;
+    return this.heldEnvironment(out.held, opts);
+  }
+
+  /** heldEnvironment waits out a held fork or migrate and returns the
+   * environment it produced. */
+  private async heldEnvironment(
+    held: Intervention,
+    opts: CallOptions,
+  ): Promise<EnvironmentInfo> {
+    const i = await settleHeld(this.t, held, {}, opts);
+    if (!i.result?.env_id) {
+      throw new FuseError(`intervention ${i.id} settled without an environment`);
+    }
+    return this.get(i.result.env_id, opts);
   }
 
   /**
@@ -161,6 +181,12 @@ export class EnvironmentsService {
    * A thrown error means the command could not be run at all.
    *
    * Exec requires the master token.
+   *
+   * When a hitl gate holds the exec, exec waits for the decision (bounded
+   * only by `opts.signal`); the orchestrator runs the approved (possibly
+   * edited) argv and exec returns its result. A rejection throws an
+   * InterventionRejectedError, a deny gate an error isHitlDenied matches.
+   * `wait: false` throws a PendingInterventionError at once instead.
    *
    * @example
    * const out = await client.environments.exec(id, { cmd: ["ls", "-l"] });
@@ -180,11 +206,18 @@ export class EnvironmentsService {
     if (hasCmd && hasShell) {
       throw new FuseError("cmd and shell are mutually exclusive");
     }
-    return this.t.json<ExecResult>(
+    const { wait, onHeld, ...wire } = body;
+    const out = await this.t.gated<ExecResult>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
-      { query: { action: "exec" }, body, signal: opts.signal },
+      { query: { action: "exec" }, body: wire, signal: opts.signal },
     );
+    if (!out.held) return out.value;
+    const i = await settleHeld(this.t, out.held, { wait, onHeld }, opts);
+    if (!i.result?.exec) {
+      throw new FuseError(`intervention ${i.id} settled without an exec result`);
+    }
+    return i.result.exec;
   }
 
   /**
@@ -338,28 +371,37 @@ export class EnvironmentsService {
    */
   async drain(vmId: string, opts: CallOptions = {}): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
-    return this.t.json<EnvironmentInfo>(
+    const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       { query: { action: "drain" }, signal: opts.signal },
     );
+    if (!out.held) return out.value;
+    await settleHeld(this.t, out.held, {}, opts);
+    return this.get(vmId, opts);
   }
 
   /** Rotate the per-VM credentials and push them to the guest. */
   async rotateToken(vmId: string, opts: CallOptions = {}): Promise<void> {
     requireArg(vmId, "vm id");
-    await this.t.noContent("POST", `/v1/environments/${encodeURIComponent(vmId)}`, {
-      query: { action: "rotate-token" },
-      signal: opts.signal,
-    });
+    const held = await this.t.gatedNoContent(
+      "POST",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      { query: { action: "rotate-token" }, signal: opts.signal },
+    );
+    if (held) await settleHeld(this.t, held, {}, opts);
   }
 
-  /** Forcefully destroy an environment. Idempotent. */
+  /** Forcefully destroy an environment. Idempotent. When a hitl gate holds
+   * the destroy, it waits for the decision. */
   async destroy(vmId: string, opts: CallOptions = {}): Promise<void> {
     requireArg(vmId, "vm id");
-    await this.t.noContent("DELETE", `/v1/environments/${encodeURIComponent(vmId)}`, {
-      signal: opts.signal,
-    });
+    const held = await this.t.gatedNoContent(
+      "DELETE",
+      `/v1/environments/${encodeURIComponent(vmId)}`,
+      { signal: opts.signal },
+    );
+    if (held) await settleHeld(this.t, held, {}, opts);
   }
 
   /**

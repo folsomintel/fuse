@@ -11,7 +11,7 @@ from ._services.hosts import HostsService
 from ._services.interventions import InterventionsService
 from ._services.snapshots import SnapshotsService
 from ._transport import Transport
-from .types import ActorLabel
+from .types import ActorLabel, Intervention
 
 
 class Client:
@@ -19,6 +19,11 @@ class Client:
     # single transport. token is sent as a bearer token and may be empty for
     # endpoints that do not require auth. actor, when set, is sent as the
     # Fuse-Actor headers on every request.
+    #
+    # when a hitl gate holds a call, the call waits for the human's decision.
+    # hitl_wait=False makes every gated call raise PendingInterventionError at
+    # once instead. on_held is called with the pending intervention whenever
+    # a gate holds a call, before it waits.
     def __init__(
         self,
         base_url: str,
@@ -29,6 +34,8 @@ class Client:
         request_id: Optional[Callable[[], str]] = None,
         timeout: float = DEFAULT_TIMEOUT,
         actor: Optional[ActorLabel] = None,
+        hitl_wait: bool = True,
+        on_held: Optional[Callable[[Intervention], None]] = None,
     ) -> None:
         if not base_url:
             raise ValueError("base url is required")
@@ -44,6 +51,8 @@ class Client:
             request_id=request_id,
             timeout=timeout,
             actor=actor,
+            hitl_wait=hitl_wait,
+            on_held=on_held,
         )
         self._bind()
 

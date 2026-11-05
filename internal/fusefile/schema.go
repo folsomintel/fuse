@@ -609,10 +609,10 @@ func (e *Expose) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // Hitl is the human-in-the-loop block. timeout, on_timeout, require_actor,
-// notify and requests.ask are supported so far. The other keys the design
-// names (gates and the secret, review and takeover requests) are accepted by
-// the decoder only so they can be refused with a "not yet supported" error
-// instead of a generic unknown-field one.
+// notify, requests.ask, exec and exec/lifecycle gates are supported so far.
+// The secret, review and takeover requests are accepted by the decoder only
+// so they can be refused with a "not yet supported" error instead of a
+// generic unknown-field one.
 type Hitl struct {
 	// Timeout is the default deadline for every intervention, as a go
 	// duration between 10s and 24h. Empty means 10m.
@@ -632,7 +632,59 @@ type Hitl struct {
 	// delivery is content-free and signed with the named secret.
 	Notify []HitlNotify `yaml:"notify,omitempty"`
 
-	Gates yaml.Node `yaml:"gates,omitempty"`
+	// Exec is allowlist mode: an exec whose program is not in allow is held
+	// (default: ask) or refused (default: deny), interpreters included.
+	Exec *HitlExec `yaml:"exec,omitempty"`
+
+	// Gates hold (ask), record (notify) or refuse (deny) the exec and
+	// lifecycle actions they match.
+	Gates []HitlGate `yaml:"gates,omitempty"`
+}
+
+// HitlExec is hitl.exec, allowlist mode for exec.
+type HitlExec struct {
+	Default string   `yaml:"default"`
+	Allow   []string `yaml:"allow"`
+}
+
+// HitlGate is one entry of hitl.gates.
+type HitlGate struct {
+	Name  string    `yaml:"name"`
+	On    string    `yaml:"on"`
+	Match HitlMatch `yaml:"match"`
+	// Mode is ask (the default), notify or deny.
+	Mode string `yaml:"mode,omitempty"`
+	// Grant is the default reach of an approval: once, env or ttl:<dur>.
+	Grant string `yaml:"grant,omitempty"`
+	// Timeout overrides hitl.timeout for this gate.
+	Timeout string `yaml:"timeout,omitempty"`
+	// Reason is returned on a deny and shown to the human on an ask.
+	Reason string `yaml:"reason,omitempty"`
+}
+
+// HitlMatch is a gate's match. program and action take one name or a
+// list of them.
+type HitlMatch struct {
+	Program StringList `yaml:"program,omitempty"`
+	Args    []string   `yaml:"args,omitempty"`
+	Shell   bool       `yaml:"shell,omitempty"`
+	Action  StringList `yaml:"action,omitempty"`
+}
+
+// StringList decodes either a single string or a list of strings.
+type StringList []string
+
+func (l *StringList) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*l = StringList{node.Value}
+		return nil
+	}
+	var raw []string
+	if err := node.Decode(&raw); err != nil {
+		return err
+	}
+	*l = raw
+	return nil
 }
 
 // HitlNotify is one hitl.notify webhook. Secret names an entry of the

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import quote
 
 from .._transport import Transport
@@ -24,7 +24,7 @@ from ..types import (
     MigrateOptions,
 )
 from .events import stream_events
-from .interventions import wait_intervention
+from .interventions import read_held, settle_held, wait_intervention
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -100,6 +100,9 @@ class EnvironmentsService:
         resp = self._t.request(
             "POST", path, params={"action": "fork"}, body=options or ForkOptions()
         )
+        held = read_held(resp)
+        if held is not None:
+            return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
     def migrate(
@@ -113,6 +116,9 @@ class EnvironmentsService:
         resp = self._t.request(
             "POST", path, params={"action": "migrate"}, body=options or MigrateOptions()
         )
+        held = read_held(resp)
+        if held is not None:
+            return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
     def computer(self, vm_id: str, action: ComputerAction) -> ComputerResult:
@@ -192,12 +198,26 @@ class EnvironmentsService:
         resp = self._t.request("GET", path)
         return ComputerDisplay.model_validate(resp.json())
 
-    def exec(self, vm_id: str, request: ExecRequest) -> ExecResult:
+    def exec(
+        self,
+        vm_id: str,
+        request: ExecRequest,
+        *,
+        wait: bool = True,
+        on_held: Optional[Callable[[Intervention], None]] = None,
+    ) -> ExecResult:
         # runs a command inside a running environment's guest. requires the
         # master token.
         #
         # a non-zero exit_code is returned, not raised: the command ran and
         # failed. an ApiError means the command could not be run at all.
+        #
+        # when a hitl gate holds the exec, this waits for the decision; the
+        # orchestrator runs the approved (possibly edited) argv and its result
+        # is returned. on_held is called with the pending intervention first,
+        # overriding the client's. wait=False raises PendingInterventionError
+        # at once instead. a rejection raises InterventionRejectedError and a
+        # deny gate a ForbiddenError that is_hitl_denied matches.
         if not vm_id:
             raise ValueError("vm id is required")
         has_cmd = bool(request.cmd)
@@ -208,6 +228,12 @@ class EnvironmentsService:
             raise ValueError("cmd and shell are mutually exclusive")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
         resp = self._t.request("POST", path, params={"action": "exec"}, body=request)
+        held = read_held(resp)
+        if held is not None:
+            settled = settle_held(self._t, held, wait=wait, on_held=on_held)
+            if settled.result is None or settled.result.exec is None:
+                raise RuntimeError(f"intervention {settled.id} settled without an exec result")
+            return settled.result.exec
         return ExecResult.model_validate(resp.json())
 
     def request_human(
@@ -245,12 +271,18 @@ class EnvironmentsService:
         if not vm_id:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
-        self._t.request("POST", path, params={"action": "rotate-token"})
+        resp = self._t.request("POST", path, params={"action": "rotate-token"})
+        held = read_held(resp)
+        if held is not None:
+            settle_held(self._t, held)
 
     def destroy(self, vm_id: str) -> None:
         if not vm_id:
             raise ValueError("vm id is required")
-        self._t.request("DELETE", f"/v1/environments/{quote(vm_id, safe='')}")
+        resp = self._t.request("DELETE", f"/v1/environments/{quote(vm_id, safe='')}")
+        held = read_held(resp)
+        if held is not None:
+            settle_held(self._t, held)
 
     def events(self, vm_id: str) -> Iterator[Event]:
         # opens the sse stream and yields Event values. the iterator ends
@@ -265,4 +297,16 @@ class EnvironmentsService:
             raise ValueError("action is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
         resp = self._t.request("POST", path, params={"action": action})
+        held = read_held(resp)
+        if held is not None:
+            settle_held(self._t, held)
+            return self.get(vm_id)
         return EnvironmentInfo.model_validate(resp.json())
+
+    def _held_environment(self, held: Intervention) -> EnvironmentInfo:
+        # waits out a held fork or migrate and returns the environment it
+        # produced.
+        settled = settle_held(self._t, held)
+        if settled.result is None or not settled.result.env_id:
+            raise RuntimeError(f"intervention {settled.id} settled without an environment")
+        return self.get(settled.result.env_id)

@@ -4,6 +4,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::environments::ExecResult;
 use crate::strenum::string_enum;
 
 fn is_false(value: &bool) -> bool {
@@ -641,6 +642,12 @@ pub struct HitlSpec {
     /// Webhooks told about every intervention and audit event.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notify: Vec<HitlWebhook>,
+    /// Gates that hold, record or deny exec and lifecycle actions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub gates: Vec<HitlGate>,
+    /// Allowlist mode for exec.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec: Option<HitlExecPolicy>,
 }
 
 impl HitlSpec {
@@ -679,6 +686,18 @@ impl HitlSpec {
         });
         self
     }
+
+    /// Adds a gate.
+    pub fn gate(mut self, gate: HitlGate) -> Self {
+        self.gates.push(gate);
+        self
+    }
+
+    /// Turns on allowlist mode for exec.
+    pub fn exec_policy(mut self, policy: HitlExecPolicy) -> Self {
+        self.exec = Some(policy);
+        self
+    }
 }
 
 /// One [`HitlSpec::notify`] target. Deliveries are content-free and signed
@@ -707,7 +726,228 @@ string_enum! {
     pub enum HitlKind {
         /// A question for a human, optionally with a fixed set of choices.
         Ask => "ask",
+        /// A guest command a gate held.
+        Exec => "exec",
+        /// An environment action a gate held.
+        Lifecycle => "lifecycle",
     }
+}
+
+string_enum! {
+    /// What a [`HitlGate`] does with an action it matches.
+    pub enum GateMode {
+        /// The default: hold the action until a human decides.
+        Ask => "ask",
+        /// Run the action and record it.
+        Notify => "notify",
+        /// Refuse the action.
+        Deny => "deny",
+    }
+}
+
+string_enum! {
+    /// Environment actions a lifecycle gate can hold.
+    pub enum LifecycleAction {
+        Destroy => "destroy",
+        Fork => "fork",
+        Migrate => "migrate",
+        Drain => "drain",
+        Snapshot => "snapshot",
+        RotateToken => "rotate-token",
+    }
+}
+
+/// The gate name the exec allowlist ([`HitlSpec::exec`]) reports.
+pub const ALLOWLIST_GATE: &str = "exec.allowlist";
+
+/// One enforced gate of a [`HitlSpec`].
+///
+/// ```
+/// use fuse::{GateMode, HitlGate, HitlGateMatch, HitlSpec, LifecycleAction};
+///
+/// let spec = HitlSpec::new()
+///     .gate(HitlGate::exec("force-push", HitlGateMatch::new().program(["git"]).args(["push", "--force"])))
+///     .gate(HitlGate::lifecycle("keep", [LifecycleAction::Destroy]).mode(GateMode::Deny).reason("keep it"));
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlGate {
+    pub name: String,
+    /// [`HitlKind::Exec`] or [`HitlKind::Lifecycle`].
+    pub on: HitlKind,
+    #[serde(rename = "match", default)]
+    pub matches: HitlGateMatch,
+    /// `None` means [`GateMode::Ask`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<GateMode>,
+    /// The default reach of an approval: `once`, `env` or `ttl:<duration>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    /// Returned on a deny and shown to the human on an ask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl HitlGate {
+    /// A gate on guest commands matching `matches`.
+    pub fn exec(name: impl Into<String>, matches: HitlGateMatch) -> Self {
+        Self {
+            name: name.into(),
+            on: HitlKind::Exec,
+            matches,
+            mode: None,
+            grant: None,
+            timeout_seconds: None,
+            reason: None,
+        }
+    }
+
+    /// A gate on the environment actions `actions`.
+    pub fn lifecycle<I>(name: impl Into<String>, actions: I) -> Self
+    where
+        I: IntoIterator<Item = LifecycleAction>,
+    {
+        Self {
+            on: HitlKind::Lifecycle,
+            ..Self::exec(name, HitlGateMatch::new().action(actions))
+        }
+    }
+
+    pub fn mode(mut self, mode: GateMode) -> Self {
+        self.mode = Some(mode);
+        self
+    }
+
+    pub fn grant(mut self, grant: impl Into<String>) -> Self {
+        self.grant = Some(grant.into());
+        self
+    }
+
+    pub fn timeout_seconds(mut self, seconds: u64) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+
+    pub fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+}
+
+/// Selects the actions a [`HitlGate`] applies to. Every field set must
+/// match.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HitlGateMatch {
+    /// Matches the basename of argv\[0\] after env, sudo, nice, timeout,
+    /// xargs, nohup and stdbuf are stripped.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub program: Vec<String>,
+    /// Matches when these appear in argv in this order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// Matches any opaque shell exec.
+    #[serde(skip_serializing_if = "is_false")]
+    pub shell: bool,
+    /// Matches lifecycle actions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub action: Vec<LifecycleAction>,
+}
+
+impl HitlGateMatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn program<I, S>(mut self, program: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.program = program.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn shell(mut self) -> Self {
+        self.shell = true;
+        self
+    }
+
+    pub fn action<I>(mut self, actions: I) -> Self
+    where
+        I: IntoIterator<Item = LifecycleAction>,
+    {
+        self.action = actions.into_iter().collect();
+        self
+    }
+}
+
+/// Allowlist mode for exec: a program not in `allow` is held with
+/// `default` ([`GateMode::Ask`] or [`GateMode::Deny`]), interpreters and
+/// shells included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlExecPolicy {
+    pub default: GateMode,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+impl HitlExecPolicy {
+    pub fn new<I, S>(default: GateMode, allow: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            default,
+            allow: allow.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// A held guest command, on [`InterventionPayload::exec`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExecPayload {
+    pub argv: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// A held environment action, on [`InterventionPayload::lifecycle`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifecyclePayload {
+    pub action: LifecycleAction,
+}
+
+/// What running an approved gated action produced, on
+/// [`Intervention::result`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InterventionResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ExecResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    /// Set when fuse could not perform the approved action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 string_enum! {
@@ -811,6 +1051,8 @@ string_enum! {
         Cancelled => "cancelled",
         InviteMinted => "invite_minted",
         InviteUsed => "invite_used",
+        GrantCreated => "grant_created",
+        GrantUsed => "grant_used",
     }
 }
 
@@ -833,13 +1075,18 @@ pub struct AuditEntry {
     pub hash: String,
 }
 
-/// What the agent asked.
+/// What was asked or attempted: a question for an ask, the held exec or
+/// lifecycle action for a gate.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterventionPayload {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub question: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec: Option<ExecPayload>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<LifecyclePayload>,
 }
 
 /// How an intervention resolved. An expired one carries the on_timeout
@@ -853,6 +1100,12 @@ pub struct InterventionDecision {
     pub reason: Option<String>,
     pub decided_by: Actor,
     pub decided_at: DateTime<Utc>,
+    /// The argv the approver replaced a held exec's with.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edited_argv: Vec<String>,
+    /// How far an approval of a gated action reaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
 }
 
 /// One request for a human.
@@ -861,6 +1114,16 @@ pub struct Intervention {
     pub id: String,
     pub env_id: String,
     pub kind: HitlKind,
+    /// The gate that raised it; `None` for a request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    /// The gate's mode. Notify and deny records are born terminal.
+    #[serde(
+        default,
+        deserialize_with = "empty_as_none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mode: Option<GateMode>,
     pub state: InterventionState,
     pub payload: InterventionPayload,
     pub triggered_by: Actor,
@@ -868,6 +1131,9 @@ pub struct Intervention {
     pub on_timeout: HitlOnTimeout,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<InterventionDecision>,
+    /// Set once an approved gated action has been performed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<InterventionResult>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -884,6 +1150,18 @@ impl Intervention {
         self.decision
             .as_ref()
             .is_some_and(|d| d.outcome == InterventionOutcome::Approve)
+    }
+
+    /// Reports whether a caller has its final answer: resolved, and for an
+    /// approved gated action that fuse performs, performed (the outcome is
+    /// on [`Intervention::result`]).
+    pub fn is_settled(&self) -> bool {
+        if !self.is_terminal() {
+            return false;
+        }
+        let runs = self.mode == Some(GateMode::Ask)
+            && (self.payload.exec.is_some() || self.payload.lifecycle.is_some());
+        !runs || !self.is_approved() || self.result.is_some()
     }
 }
 

@@ -6,6 +6,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 
 use crate::error::{parse_api_error, Error, REQUEST_ID_HEADER};
+use crate::gates::{decode, HitlWait};
 use crate::types::ActorLabel;
 
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -31,6 +32,8 @@ pub(crate) struct Transport {
     user_agent: String,
     request_id: Option<Arc<RequestIdFn>>,
     actor: Option<ActorLabel>,
+    // hitl is how gated calls handle a hold. the builder sets it after new.
+    pub(crate) hitl: HitlWait,
 }
 
 impl Transport {
@@ -51,6 +54,7 @@ impl Transport {
             user_agent,
             request_id,
             actor,
+            hitl: HitlWait::default(),
         }
     }
 
@@ -147,9 +151,7 @@ impl Transport {
         &self,
         builder: RequestBuilder,
     ) -> Result<T, Error> {
-        let response = Self::check(builder.send().await?).await?;
-        let body = response.bytes().await?;
-        Ok(serde_json::from_slice(&body)?)
+        decode(Self::check(builder.send().await?).await?).await
     }
 
     /// Sends the request and discards any response body.

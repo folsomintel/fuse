@@ -707,6 +707,52 @@ type HitlSpec struct {
 	// Notify are webhooks told about every intervention and audit event.
 	// Deliveries are content-free and signed with the named secret.
 	Notify []HitlWebhook `json:"notify,omitempty"`
+	// Gates hold, record or deny exec and lifecycle actions.
+	Gates []HitlGate `json:"gates,omitempty"`
+	// Exec is allowlist mode for exec: a program not in allow is held.
+	Exec *HitlExecPolicy `json:"exec,omitempty"`
+}
+
+// HitlGate is one enforced gate.
+type HitlGate struct {
+	// Name identifies the gate on interventions and grants.
+	Name string `json:"name"`
+	// On is "exec" or "lifecycle".
+	On string `json:"on"`
+	// Match selects the actions the gate applies to. Every field set must
+	// match.
+	Match HitlGateMatch `json:"match"`
+	// Mode is "ask" (the default), "notify" or "deny".
+	Mode string `json:"mode,omitempty"`
+	// Grant is the default reach of an approval: "once" (the default),
+	// "env" or "ttl:<duration>".
+	Grant string `json:"grant,omitempty"`
+	// TimeoutSeconds overrides the policy deadline for this gate.
+	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
+	// Reason is returned on a deny and shown to the human on an ask.
+	Reason string `json:"reason,omitempty"`
+}
+
+// HitlGateMatch is a gate's structured match.
+type HitlGateMatch struct {
+	// Program matches the basename of argv[0] after env, sudo, nice,
+	// timeout, xargs, nohup and stdbuf are stripped.
+	Program []string `json:"program,omitempty"`
+	// Args matches when they appear in argv in this order.
+	Args []string `json:"args,omitempty"`
+	// Shell matches any opaque shell exec (shell:, or sh/bash -c).
+	Shell bool `json:"shell,omitempty"`
+	// Action matches lifecycle actions: destroy, fork, migrate, drain,
+	// snapshot, rotate-token.
+	Action []string `json:"action,omitempty"`
+}
+
+// HitlExecPolicy is allowlist mode for exec.
+type HitlExecPolicy struct {
+	// Default is "ask" or "deny".
+	Default string `json:"default"`
+	// Allow lists program basenames that run without a gate.
+	Allow []string `json:"allow"`
 }
 
 // HitlRequests declares the allowed request kinds. Only ask exists today.
@@ -765,6 +811,13 @@ type DecideInterventionRequest struct {
 	// Reason is text fed back to the agent. A reject without one gets a
 	// default.
 	Reason string `json:"reason,omitempty"`
+	// EditedArgv replaces a held exec's argv on approval. It is re-checked
+	// against the deny gates.
+	EditedArgv []string `json:"edited_argv,omitempty"`
+	// Grant is how far an approval of a gated action reaches: "once",
+	// "env" or "ttl:<duration>". Empty takes the gate's default. It cannot
+	// be combined with an edit.
+	Grant string `json:"grant,omitempty"`
 }
 
 // Actor is who raised or decided an intervention. Fuse records it and
@@ -776,10 +829,49 @@ type Actor struct {
 	KeyID  string `json:"key_id,omitempty"`
 }
 
-// InterventionPayload is what the agent asked.
+// InterventionPayload is what was asked or attempted: a question for an
+// ask, the held exec or lifecycle action for a gate.
 type InterventionPayload struct {
-	Question string   `json:"question"`
-	Choices  []string `json:"choices,omitempty"`
+	Question  string            `json:"question,omitempty"`
+	Choices   []string          `json:"choices,omitempty"`
+	Exec      *ExecPayload      `json:"exec,omitempty"`
+	Lifecycle *LifecyclePayload `json:"lifecycle,omitempty"`
+}
+
+// ExecPayload is a held exec.
+type ExecPayload struct {
+	Argv []string `json:"argv"`
+	// Shell is the script when the caller sent shell, in which case argv is
+	// the sh -lc that runs it.
+	Shell     string `json:"shell,omitempty"`
+	TimeoutMS int64  `json:"timeout_ms,omitempty"`
+}
+
+// LifecyclePayload is a held environment action.
+type LifecyclePayload struct {
+	Action string `json:"action"`
+}
+
+// InterventionResult is what running an approved gated action produced.
+type InterventionResult struct {
+	// Exec is set for an exec that ran. A non-zero exit code is still a
+	// result, not an error.
+	Exec *ExecEnvironmentResponse `json:"exec,omitempty"`
+	// EnvID is the environment a fork or migrate produced.
+	EnvID string `json:"env_id,omitempty"`
+	// SnapshotID is the snapshot a snapshot action produced.
+	SnapshotID string `json:"snapshot_id,omitempty"`
+	// Error is set when the approved action could not be performed.
+	Error      string    `json:"error,omitempty"`
+	FinishedAt time.Time `json:"finished_at"`
+}
+
+// HeldResponse is the 202 body of an exec or lifecycle action a gate holds.
+// Wait on the intervention with GET /v1/interventions/{id}?wait=; once it
+// is approved the orchestrator performs the action and stores the result.
+type HeldResponse struct {
+	InterventionID string       `json:"intervention_id"`
+	Intervention   Intervention `json:"intervention"`
 }
 
 // InterventionDecision is how an intervention resolved. Every terminal
@@ -791,21 +883,31 @@ type InterventionDecision struct {
 	Reason    string    `json:"reason,omitempty"`
 	DecidedBy Actor     `json:"decided_by"`
 	DecidedAt time.Time `json:"decided_at"`
+	// EditedArgv is the argv the approver replaced a held exec's with.
+	EditedArgv []string `json:"edited_argv,omitempty"`
+	// Grant is how far an approval of a gated action reaches.
+	Grant string `json:"grant,omitempty"`
 }
 
 // Intervention is one request for a human.
 type Intervention struct {
-	ID          string                `json:"id"`
-	EnvID       string                `json:"env_id"`
-	Kind        string                `json:"kind"`
+	ID    string `json:"id"`
+	EnvID string `json:"env_id"`
+	Kind  string `json:"kind"`
+	// Gate names the gate that raised it; empty for a request.
+	Gate string `json:"gate,omitempty"`
+	// Mode is the gate's mode; notify and deny records are born terminal.
+	Mode        string                `json:"mode,omitempty"`
 	State       string                `json:"state"`
 	Payload     InterventionPayload   `json:"payload"`
 	TriggeredBy Actor                 `json:"triggered_by"`
 	Deadline    time.Time             `json:"deadline"`
 	OnTimeout   string                `json:"on_timeout"`
 	Decision    *InterventionDecision `json:"decision,omitempty"`
-	CreatedAt   time.Time             `json:"created_at"`
-	UpdatedAt   time.Time             `json:"updated_at"`
+	// Result is set once an approved gated action has been performed.
+	Result    *InterventionResult `json:"result,omitempty"`
+	CreatedAt time.Time           `json:"created_at"`
+	UpdatedAt time.Time           `json:"updated_at"`
 }
 
 // InterventionList is the response body for GET /v1/interventions.

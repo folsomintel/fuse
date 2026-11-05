@@ -14,7 +14,7 @@ from ._core import (
     serialize_body,
 )
 from .errors import REQUEST_ID_HEADER, check_response
-from .types import ActorLabel
+from .types import ActorLabel, Intervention
 
 ACTOR_HEADER = "Fuse-Actor"
 ACTOR_NAME_HEADER = "Fuse-Actor-Name"
@@ -43,10 +43,15 @@ class Transport:
         request_id: Optional[Callable[[], str]] = None,
         timeout: float = DEFAULT_TIMEOUT,
         actor: Optional[ActorLabel] = None,
+        hitl_wait: bool = True,
+        on_held: Optional[Callable[[Intervention], None]] = None,
     ) -> None:
         if actor is not None:
             check_actor(actor)
         self._actor = actor
+        # the client's hitl wait options for calls a gate holds.
+        self.hitl_wait = hitl_wait
+        self.on_held = on_held
         self._bearer = token
         self._user_agent = user_agent
         self._request_id = request_id

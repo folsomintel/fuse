@@ -207,6 +207,8 @@ func (h *Handler) interventionAction(w http.ResponseWriter, r *http.Request) {
 		Outcome:    outcome,
 		Answer:     req.Answer,
 		Reason:     req.Reason,
+		EditedArgv: req.EditedArgv,
+		Grant:      req.Grant,
 		By:         principal(r).Actor,
 		RemoteAddr: r.RemoteAddr,
 	})
@@ -318,6 +320,20 @@ func toHitlSpec(s *HitlSpec) *hitl.Spec {
 	for _, w := range s.Notify {
 		out.Notify = append(out.Notify, hitl.Webhook{URL: w.URL, Secret: w.Secret})
 	}
+	for _, g := range s.Gates {
+		gate := hitl.Gate{
+			Name: g.Name, On: hitl.Kind(g.On), Mode: hitl.Mode(g.Mode), Grant: g.Grant,
+			TimeoutSeconds: g.TimeoutSeconds, Reason: g.Reason,
+			Match: hitl.GateMatch{Program: g.Match.Program, Args: g.Match.Args, Shell: g.Match.Shell},
+		}
+		for _, a := range g.Match.Action {
+			gate.Match.Action = append(gate.Match.Action, hitl.LifecycleAction(a))
+		}
+		out.Gates = append(out.Gates, gate)
+	}
+	if s.Exec != nil {
+		out.Exec = &hitl.ExecPolicy{Default: hitl.Mode(s.Exec.Default), Allow: s.Exec.Allow}
+	}
 	return out
 }
 
@@ -330,6 +346,8 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 		ID:          in.ID,
 		EnvID:       in.EnvID,
 		Kind:        string(in.Kind),
+		Gate:        in.Gate,
+		Mode:        string(in.Mode),
 		State:       string(in.State),
 		Payload:     InterventionPayload{Question: in.Payload.Question, Choices: in.Payload.Choices},
 		TriggeredBy: toAPIActor(in.TriggeredBy),
@@ -340,12 +358,53 @@ func toAPIIntervention(in hitl.Intervention) Intervention {
 	}
 	if d := in.Decision; d != nil {
 		out.Decision = &InterventionDecision{
-			Outcome:   string(d.Outcome),
-			Answer:    d.Answer,
-			Reason:    d.Reason,
-			DecidedBy: toAPIActor(d.DecidedBy),
-			DecidedAt: d.DecidedAt,
+			Outcome:    string(d.Outcome),
+			Answer:     d.Answer,
+			Reason:     d.Reason,
+			DecidedBy:  toAPIActor(d.DecidedBy),
+			DecidedAt:  d.DecidedAt,
+			EditedArgv: d.EditedArgv,
+			Grant:      d.Grant,
+		}
+	}
+	if p := in.Exec; p != nil {
+		out.Payload.Exec = &ExecPayload{Argv: p.Argv, Shell: p.Shell, TimeoutMS: p.TimeoutMS}
+	}
+	if p := in.Lifecycle; p != nil {
+		out.Payload.Lifecycle = &LifecyclePayload{Action: string(p.Action)}
+	}
+	if r := in.Result; r != nil {
+		out.Result = &InterventionResult{EnvID: r.EnvID, SnapshotID: r.SnapshotID, Error: r.Error, FinishedAt: r.FinishedAt}
+		if e := r.Exec; e != nil {
+			out.Result.Exec = &ExecEnvironmentResponse{ExitCode: e.ExitCode, Stdout: e.Stdout, Stderr: e.Stderr}
 		}
 	}
 	return out
+}
+
+// writeHeld answers a gated action a human now has to decide with 202.
+func writeHeld(w http.ResponseWriter, in *hitl.Intervention) {
+	w.Header().Set("Location", "/v1/interventions/"+in.ID)
+	writeJSON(w, http.StatusAccepted, HeldResponse{InterventionID: in.ID, Intervention: toAPIIntervention(*in)})
+}
+
+// gateCaller is who a gated action is recorded as raised by.
+func gateCaller(r *http.Request) orchestrator.GateCaller {
+	return orchestrator.GateCaller{By: principal(r).Actor, RemoteAddr: r.RemoteAddr}
+}
+
+// holdLifecycle runs an environment action through its lifecycle gates. it
+// returns true when the caller should go on and perform the action, and
+// false when it already answered (held with 202, or denied with 403).
+func (h *Handler) holdLifecycle(w http.ResponseWriter, r *http.Request, vmID string, action hitl.LifecycleAction, params any) bool {
+	held, err := h.Fleet.GateLifecycle(r.Context(), vmID, action, params, gateCaller(r))
+	if err != nil {
+		writeHitlError(w, err)
+		return false
+	}
+	if held != nil {
+		writeHeld(w, held)
+		return false
+	}
+	return true
 }

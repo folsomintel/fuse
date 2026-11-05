@@ -369,6 +369,18 @@ export interface ExecRequest {
    * default; the server clamps anything above its ceiling.
    */
   timeout_ms?: number;
+
+  /**
+   * Wait for a human when a hitl gate holds the exec (the default). false
+   * throws a PendingInterventionError at once instead. Not sent on the wire.
+   */
+  wait?: boolean;
+
+  /**
+   * Called with the pending intervention when a gate holds the exec, before
+   * waiting on it. It overrides the client's onHeld. Not sent on the wire.
+   */
+  onHeld?: (held: Intervention) => void;
 }
 
 /**
@@ -692,6 +704,69 @@ export interface HitlSpec {
   require_actor?: boolean;
   /** Webhooks told about every intervention and audit event. */
   notify?: HitlWebhook[];
+  /** Gates hold, record or deny exec and lifecycle actions. */
+  gates?: HitlGate[];
+  /** Allowlist mode for exec. */
+  exec?: HitlExecPolicy;
+}
+
+/** HitlGate is one enforced gate. */
+export interface HitlGate {
+  name: string;
+  /** HitlKind.Exec or HitlKind.Lifecycle. */
+  on: string;
+  match: HitlGateMatch;
+  /** One of GateMode; ask is the default. */
+  mode?: string;
+  /** The default reach of an approval: "once", "env" or "ttl:<duration>". */
+  grant?: string;
+  timeout_seconds?: number;
+  /** Returned on a deny and shown to the human on an ask. */
+  reason?: string;
+}
+
+/** HitlGateMatch selects the actions a gate applies to. Every field set must
+ * match. */
+export interface HitlGateMatch {
+  /** Matches the basename of argv[0] after env, sudo, nice, timeout, xargs,
+   * nohup and stdbuf are stripped. */
+  program?: string[];
+  /** Matches when these appear in argv in this order. */
+  args?: string[];
+  /** Matches any opaque shell exec. */
+  shell?: boolean;
+  /** Matches lifecycle actions (one of LifecycleAction). */
+  action?: string[];
+}
+
+/** HitlExecPolicy is allowlist mode for exec: a program not in allow is held
+ * with default ("ask" or "deny"), interpreters and shells included. */
+export interface HitlExecPolicy {
+  default: string;
+  allow: string[];
+}
+
+/** ExecPayload is a held exec. */
+export interface ExecPayload {
+  argv: string[];
+  shell?: string;
+  timeout_ms?: number;
+}
+
+/** LifecyclePayload is a held environment action. */
+export interface LifecyclePayload {
+  /** One of LifecycleAction. */
+  action: string;
+}
+
+/** InterventionResult is what running an approved gated action produced. */
+export interface InterventionResult {
+  exec?: ExecResult;
+  env_id?: string;
+  snapshot_id?: string;
+  error?: string;
+  /** RFC 3339 timestamp. */
+  finished_at: string;
 }
 
 /** HitlWebhook is one hitl.notify target. `secret` names an entry of the
@@ -721,10 +796,13 @@ export interface Actor {
   key_id?: string;
 }
 
-/** InterventionPayload is what the agent asked. */
+/** InterventionPayload is what was asked or attempted: a question for an
+ * ask, the held exec or lifecycle action for a gate. */
 export interface InterventionPayload {
-  question: string;
+  question?: string;
   choices?: string[];
+  exec?: ExecPayload;
+  lifecycle?: LifecyclePayload;
 }
 
 /** InterventionDecision is how an intervention resolved. An expired one
@@ -736,6 +814,10 @@ export interface InterventionDecision {
   reason?: string;
   decided_by: Actor;
   decided_at: string;
+  /** The argv the approver replaced a held exec's with. */
+  edited_argv?: string[];
+  /** How far an approval of a gated action reaches. */
+  grant?: string;
 }
 
 /** Intervention is one request for a human. */
@@ -743,6 +825,11 @@ export interface Intervention {
   id: string;
   env_id: string;
   kind: string;
+  /** Names the gate that raised it; absent for a request. */
+  gate?: string;
+  /** The gate's mode (one of GateMode). notify and deny records are born
+   * terminal. */
+  mode?: string;
   /** One of InterventionState. */
   state: string;
   payload: InterventionPayload;
@@ -752,6 +839,8 @@ export interface Intervention {
   on_timeout: string;
   /** Set on every terminal intervention. */
   decision?: InterventionDecision;
+  /** Set once an approved gated action has been performed. */
+  result?: InterventionResult;
   created_at: string;
   updated_at: string;
 }
@@ -780,16 +869,45 @@ export const AuditEvent = {
   Cancelled: "cancelled",
   InviteMinted: "invite_minted",
   InviteUsed: "invite_used",
+  GrantCreated: "grant_created",
+  GrantUsed: "grant_used",
 } as const;
 
 export type AuditEvent = (typeof AuditEvent)[keyof typeof AuditEvent];
 
-/** Hitl request kinds. */
+/** Intervention kinds: ask is a request, exec and lifecycle are the gate
+ * surfaces. */
 export const HitlKind = {
   Ask: "ask",
+  Exec: "exec",
+  Lifecycle: "lifecycle",
 } as const;
 
 export type HitlKind = (typeof HitlKind)[keyof typeof HitlKind];
+
+/** Gate modes. */
+export const GateMode = {
+  Ask: "ask",
+  Notify: "notify",
+  Deny: "deny",
+} as const;
+
+export type GateMode = (typeof GateMode)[keyof typeof GateMode];
+
+/** Lifecycle actions a gate can hold. */
+export const LifecycleAction = {
+  Destroy: "destroy",
+  Fork: "fork",
+  Migrate: "migrate",
+  Drain: "drain",
+  Snapshot: "snapshot",
+  RotateToken: "rotate-token",
+} as const;
+
+export type LifecycleAction = (typeof LifecycleAction)[keyof typeof LifecycleAction];
+
+/** The gate name the exec allowlist reports. */
+export const ALLOWLIST_GATE = "exec.allowlist";
 
 /** Intervention states. pending is the only non-terminal one. */
 export const InterventionState = {
@@ -821,4 +939,13 @@ export function isInterventionTerminal(i: Intervention | undefined): boolean {
  * approve, which includes an expiry under on_timeout: allow. */
 export function isInterventionApproved(i: Intervention | undefined): boolean {
   return i?.decision?.outcome === InterventionOutcome.Approve;
+}
+
+/** isInterventionSettled reports whether a caller has its final answer:
+ * resolved, and for an approved gated action that fuse performs, performed
+ * (with the outcome on result). */
+export function isInterventionSettled(i: Intervention | undefined): boolean {
+  if (!i || !isInterventionTerminal(i)) return false;
+  const runs = i.mode === GateMode.Ask && (!!i.payload?.exec || !!i.payload?.lifecycle);
+  return !runs || !isInterventionApproved(i) || !!i.result;
 }

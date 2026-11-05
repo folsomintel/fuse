@@ -4,6 +4,7 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::strenum::string_enum;
+use crate::types::Intervention;
 
 pub(crate) const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -53,6 +54,10 @@ string_enum! {
         ActorNotAllowed => "actor_not_allowed",
         /// A minted key would exceed the minting key's own access.
         MintEscalation => "mint_escalation",
+        /// A hitl deny gate (or the exec allowlist in deny mode) refused the
+        /// action. The message is the gate's reason; `details["gate"]` names
+        /// the gate.
+        HitlDenied => "hitl_denied",
     }
 }
 
@@ -111,6 +116,39 @@ pub enum Error {
     /// The request was rejected client-side before being sent.
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// A hitl gate held the call and waiting is off
+    /// ([`ExecRequest::no_wait`](crate::ExecRequest::no_wait) or
+    /// [`ClientBuilder::hitl_no_wait`](crate::ClientBuilder::hitl_no_wait)).
+    /// Wait on the intervention with
+    /// [`Interventions::wait`](crate::Interventions::wait); the outcome is
+    /// on its [`result`](Intervention::result).
+    #[error("held by hitl gate {}: waiting on intervention {}", .0.gate.as_deref().unwrap_or_default(), .0.id)]
+    InterventionPending(Box<Intervention>),
+    /// A held call a human rejected, or that expired or was cancelled
+    /// without approval. The decision's reason is for the agent to read and
+    /// replan on.
+    #[error("intervention {} {}: {}", .0.id, .0.state, decision_reason(.0))]
+    InterventionRejected(Box<Intervention>),
+    /// An approved held call fuse could not perform, or that settled
+    /// without the result the call returns.
+    #[error("approved action of intervention {} failed: {}", .0.id, result_error(.0))]
+    HeldActionFailed(Box<Intervention>),
+}
+
+fn decision_reason(intervention: &Intervention) -> &str {
+    intervention
+        .decision
+        .as_ref()
+        .and_then(|d| d.reason.as_deref())
+        .unwrap_or_default()
+}
+
+fn result_error(intervention: &Intervention) -> &str {
+    intervention
+        .result
+        .as_ref()
+        .and_then(|r| r.error.as_deref())
+        .unwrap_or("no result")
 }
 
 impl From<ApiError> for Error {
@@ -173,6 +211,23 @@ impl Error {
         self.api()
             .and_then(|err| err.details.get("reason"))
             .map(|reason| ForbiddenReason::from(reason.as_str()))
+    }
+
+    /// Reports whether a hitl gate denied the action.
+    pub fn is_hitl_denied(&self) -> bool {
+        self.forbidden_reason() == Some(ForbiddenReason::HitlDenied)
+    }
+
+    /// Returns the intervention of a held call that did not complete:
+    /// [`Error::InterventionPending`], [`Error::InterventionRejected`] or
+    /// [`Error::HeldActionFailed`].
+    pub fn intervention(&self) -> Option<&Intervention> {
+        match self {
+            Self::InterventionPending(intervention)
+            | Self::InterventionRejected(intervention)
+            | Self::HeldActionFailed(intervention) => Some(intervention),
+            _ => None,
+        }
     }
 
     /// Returns the missing scope of a `forbidden` api error, when the server

@@ -12,6 +12,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/fusefile"
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -726,6 +727,9 @@ func (h *Handler) getEnvironment(w http.ResponseWriter, r *http.Request) {
 //	@Router			/v1/environments/{vmId} [delete]
 func (h *Handler) destroyEnvironment(w http.ResponseWriter, r *http.Request) {
 	vmID := chi.URLParam(r, "vmId")
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionDestroy, nil) {
+		return
+	}
 	if err := h.Fleet.DestroyVM(r.Context(), vmID); err != nil {
 		writeFleetError(w, err)
 		return
@@ -776,7 +780,7 @@ func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	record, err := h.Fleet.CreateSnapshot(r.Context(), vmID, orchestrator.SnapshotOptions{
+	opts := orchestrator.SnapshotOptions{
 		Comment:        req.Comment,
 		Mode:           orchestrator.SnapshotMode(req.Mode),
 		RetentionUntil: retentionUntil,
@@ -794,7 +798,11 @@ func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
 		// by resolveSnapshot, which is what makes a write and a later lookup
 		// meet at all. See callerTenantID.
 		TenantID: callerTenantID(r.Context()),
-	})
+	}
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionSnapshot, opts) {
+		return
+	}
+	record, err := h.Fleet.CreateSnapshot(r.Context(), vmID, opts)
 	if err != nil {
 		writeFleetError(w, err)
 		return
@@ -1023,6 +1031,9 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) rotateToken(w http.ResponseWriter, r *http.Request) {
 	vmID := chi.URLParam(r, "vmId")
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionRotateToken, nil) {
+		return
+	}
 	if err := h.Fleet.RotateToken(r.Context(), vmID); err != nil {
 		writeFleetError(w, err)
 		return
@@ -1042,6 +1053,9 @@ func (h *Handler) rotateToken(w http.ResponseWriter, r *http.Request) {
 // state transition without a follow-up GET.
 func (h *Handler) drainEnvironment(w http.ResponseWriter, r *http.Request) {
 	vmID := chi.URLParam(r, "vmId")
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionDrain, nil) {
+		return
+	}
 	if err := h.Fleet.Drain(r.Context(), vmID); err != nil {
 		writeFleetError(w, err)
 		return
@@ -1069,10 +1083,14 @@ func (h *Handler) forkEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newID, err := h.Fleet.ForkEnvironment(r.Context(), vmID, orchestrator.ForkOptions{
+	forkOpts := orchestrator.ForkOptions{
 		ReuseSnapshotID: req.ReuseSnapshotID,
 		Comment:         req.Comment,
-	})
+	}
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionFork, forkOpts) {
+		return
+	}
+	newID, err := h.Fleet.ForkEnvironment(r.Context(), vmID, forkOpts)
 	if err != nil {
 		writeFleetError(w, err)
 		return
@@ -1095,11 +1113,15 @@ func (h *Handler) migrateEnvironment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newID, err := h.Fleet.MigrateVM(r.Context(), vmID, orchestrator.MigrateOptions{
+	migrateOpts := orchestrator.MigrateOptions{
 		TargetHostID: req.TargetHostID,
 		Live:         req.Live,
 		Lazy:         req.Lazy,
-	})
+	}
+	if !h.holdLifecycle(w, r, vmID, hitl.ActionMigrate, migrateOpts) {
+		return
+	}
+	newID, err := h.Fleet.MigrateVM(r.Context(), vmID, migrateOpts)
 	if err != nil {
 		writeFleetError(w, err)
 		return

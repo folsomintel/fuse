@@ -56,17 +56,24 @@ func TestHitlAbsentStaysNil(t *testing.T) {
 
 func TestHitlRejects(t *testing.T) {
 	cases := map[string]string{
-		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                                              "hitl.timeout",
-		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                "between",
-		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                            "between",
-		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                          "hitl.on_timeout",
-		"hitl:\n  timeout: 5m\n":                                                                          "declare at least one request kind",
-		"hitl:\n  requests:\n    ask: {}\n    secret: {targets: []}\n":                                    "hitl.requests.secret: not yet supported",
-		"hitl:\n  gates:\n    - name: x\n  requests:\n    ask: {}\n":                                      "hitl.gates: not yet supported",
-		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n":                          "hitl.notify[0].secret: name the secret",
-		"hitl:\n  notify:\n    - {webhook: https://x, secret: S}\n  requests:\n    ask: {}\n":             "must also be listed under the top-level secrets",
-		"secrets: [S]\nhitl:\n  notify:\n    - {webhook: ftp://x, secret: S}\n  requests:\n    ask: {}\n": "hitl.notify[0].webhook",
-		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                                                 "poll",
+		"hitl:\n  timeout: soon\n  requests:\n    ask: {}\n":                                                                   "hitl.timeout",
+		"hitl:\n  timeout: 2s\n  requests:\n    ask: {}\n":                                                                     "between",
+		"hitl:\n  timeout: 1500ms\n  requests:\n    ask: {}\n":                                                                 "between",
+		"hitl:\n  on_timeout: maybe\n  requests:\n    ask: {}\n":                                                               "hitl.on_timeout",
+		"hitl:\n  timeout: 5m\n":                                                                                               "declare at least one of requests.ask, gates or exec",
+		"hitl:\n  requests:\n    ask: {}\n    secret: {targets: []}\n":                                                         "hitl.requests.secret: not yet supported",
+		"hitl:\n  gates:\n    - {name: x, on: computer, match: {}}\n":                                                          "hitl.gates[0].on: \"computer\" is not yet supported",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {}}\n":                                                              "needs program, args or shell",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: /bin/git}}\n":                                             "not a path",
+		"hitl:\n  gates:\n    - {name: x, on: lifecycle, match: {action: reboot}}\n":                                           "must be one of destroy",
+		"hitl:\n  gates:\n    - {name: x, on: exec, mode: deny, grant: env, match: {program: git}}\n":                          "only an ask gate can grant",
+		"hitl:\n  gates:\n    - {name: x, on: exec, grant: forever, match: {program: git}}\n":                                  "must be once, env or ttl",
+		"hitl:\n  gates:\n    - {name: x, on: exec, match: {program: git}}\n    - {name: x, on: exec, match: {program: rm}}\n": "duplicate",
+		"hitl:\n  exec: {default: notify, allow: [git]}\n":                                                                     "hitl.exec.default",
+		"hitl:\n  notify:\n    - webhook: https://x\n  requests:\n    ask: {}\n":                                               "hitl.notify[0].secret: name the secret",
+		"hitl:\n  notify:\n    - {webhook: https://x, secret: S}\n  requests:\n    ask: {}\n":                                  "must also be listed under the top-level secrets",
+		"secrets: [S]\nhitl:\n  notify:\n    - {webhook: ftp://x, secret: S}\n  requests:\n    ask: {}\n":                      "hitl.notify[0].webhook",
+		"hitl:\n  requests:\n    ask: {}\n    poll: {}\n":                                                                      "poll",
 	}
 	for body, want := range cases {
 		_, err := parseHitl(t, body)
@@ -100,5 +107,47 @@ hitl:
 	}
 	if !slices.Contains(c.RequiredSecrets, "HOOK_SECRET") {
 		t.Fatalf("required secrets %v miss the webhook secret", c.RequiredSecrets)
+	}
+}
+
+func TestHitlGatesCompile(t *testing.T) {
+	f, err := parseHitl(t, `hitl:
+  exec:
+    default: ask
+    allow: [git, ls]
+  gates:
+    - name: force-push
+      on: exec
+      match: { program: git, args: [push, --force] }
+      grant: ttl:30m
+      timeout: 2m
+    - name: opaque
+      on: exec
+      match: { shell: true }
+      mode: notify
+    - name: no-destroy
+      on: lifecycle
+      match: { action: [destroy, migrate] }
+      mode: deny
+      reason: not yours
+`)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	want := &HitlSpec{
+		OnTimeout: "reject",
+		Exec:      &HitlExecPolicy{Default: "ask", Allow: []string{"git", "ls"}},
+		Gates: []HitlGateSpec{
+			{Name: "force-push", On: "exec", Program: []string{"git"}, Args: []string{"push", "--force"}, Grant: "ttl:30m", TimeoutSeconds: 120},
+			{Name: "opaque", On: "exec", Shell: true, Mode: "notify"},
+			{Name: "no-destroy", On: "lifecycle", Action: []string{"destroy", "migrate"}, Mode: "deny", Reason: "not yours"},
+		},
+	}
+	if !reflect.DeepEqual(c.Hitl, want) {
+		t.Fatalf("hitl = %+v, want %+v", c.Hitl, want)
 	}
 }

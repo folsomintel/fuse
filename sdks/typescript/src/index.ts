@@ -70,6 +70,12 @@ export type {
   InterventionPayload,
   InterventionDecision,
   Intervention,
+  HitlGate,
+  HitlGateMatch,
+  HitlExecPolicy,
+  ExecPayload,
+  LifecyclePayload,
+  InterventionResult,
 } from "./types.js";
 export {
   State,
@@ -82,6 +88,10 @@ export {
   InterventionOutcome,
   isInterventionTerminal,
   isInterventionApproved,
+  isInterventionSettled,
+  GateMode,
+  LifecycleAction,
+  ALLOWLIST_GATE,
 } from "./types.js";
 
 // Errors and code helpers.
@@ -98,5 +108,9 @@ export {
   isForbidden,
   isInvalidArgument,
   isUnavailable,
+  isHitlDenied,
+  PendingInterventionError,
+  InterventionRejectedError,
+  HeldActionError,
 } from "./errors.js";
 export type { FuseApiErrorInit } from "./errors.js";

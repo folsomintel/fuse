@@ -45,7 +45,12 @@ type DecideRequest struct {
 	// Answer is the reply to an ask; required to approve one.
 	Answer string
 	// Reason is fed back to the agent.
-	Reason     string
+	Reason string
+	// EditedArgv replaces a held exec's argv. it is re-checked against the
+	// deny gates before the approval is accepted.
+	EditedArgv []string
+	// Grant is once, env or ttl:<duration>; empty takes the gate's default.
+	Grant      string
 	By         hitl.Actor
 	RemoteAddr string
 }
@@ -207,7 +212,17 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 		if err != nil && !errors.As(err, &resolved) {
 			return in, fmt.Errorf("%w: %w", ErrInvalidIntervention, err)
 		}
-		return out, err
+		if err != nil {
+			return out, err
+		}
+		if out.Decision.Outcome == hitl.OutcomeApprove {
+			if err := applyGateDecision(&out, fm.hitlSpec(in.EnvID), req.EditedArgv, req.Grant); err != nil {
+				return in, err
+			}
+		} else if req.EditedArgv != nil || req.Grant != "" {
+			return in, fmt.Errorf("%w: edited_argv and grant only apply to an approval", ErrInvalidIntervention)
+		}
+		return out, nil
 	})
 	if err != nil {
 		return in, err
@@ -215,6 +230,7 @@ func (fm *FleetManager) DecideIntervention(ctx context.Context, id string, req D
 	if in.State == hitl.StateExpired {
 		return in, fmt.Errorf("%w: intervention %s expired before the decision arrived", ErrInterventionResolved, id)
 	}
+	fm.storeGrant(ctx, in, req.RemoteAddr)
 	fm.touchActivity(in.EnvID)
 	return in, nil
 }
@@ -229,15 +245,16 @@ func (fm *FleetManager) WaitIntervention(ctx context.Context, id string, maxWait
 		// select still wakes us.
 		wake := fm.interventionWaiter(id)
 		in, err := fm.GetIntervention(ctx, id)
-		if err != nil || in.State.Terminal() {
+		if err != nil || in.Settled() {
 			return in, err
 		}
 		wait := time.Until(until)
 		if wait <= 0 {
 			return in, nil
 		}
-		// wake at the deadline too, so expiry is applied on time.
-		if d := time.Until(in.Deadline); d < wait {
+		// wake at the deadline too, so expiry is applied on time. a
+		// resolved one waiting on its run only wakes on the result.
+		if d := time.Until(in.Deadline); in.State == hitl.StatePending && d < wait {
 			wait = max(d, 10*time.Millisecond)
 		}
 		timer := time.NewTimer(wait)
@@ -299,6 +316,10 @@ func (fm *FleetManager) moveInterventions(ctx context.Context, fromID, toID stri
 			fm.logger.Warn("move intervention failed", "intervention", rec.ID, "from", fromID, "to", toID, "err", err)
 		}
 	}
+	// grants follow the logical environment the same way.
+	if err := fm.store.MoveHitlGrants(ctx, fromID, toID); err != nil {
+		fm.logger.Warn("move hitl grants failed", "from", fromID, "to", toID, "err", err)
+	}
 }
 
 func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl.Intervention, error) {
@@ -349,7 +370,11 @@ func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta
 		close(ch)
 		delete(fm.hitlWaiters, id)
 	}
+	run := fm.claimRun(next)
 	fm.hitlMu.Unlock()
+	if run {
+		fm.launchRun(next)
+	}
 
 	fm.appendEvent(ctx, "intervention", id, "intervention."+string(next.State), map[string]any{
 		"env_id": next.EnvID, "outcome": string(next.Decision.Outcome), "decided_by": next.Decision.DecidedBy.ID,
@@ -406,9 +431,27 @@ func (fm *FleetManager) publishInterventionEvent(in hitl.Intervention) {
 	})
 }
 
-// interventionResult is the sealed result column for an ask.
+// interventionResult is the sealed result column: an ask's answer, or what
+// running an approved gated action produced.
 type interventionResult struct {
-	Answer string `json:"answer,omitempty"`
+	Answer string       `json:"answer,omitempty"`
+	Run    *hitl.Result `json:"run,omitempty"`
+}
+
+// interventionPayload is the sealed payload column. the ask fields keep the
+// shape rows written before gates existed already have.
+type interventionPayload struct {
+	hitl.AskPayload
+	Mode      hitl.Mode              `json:"mode,omitempty"`
+	Exec      *hitl.ExecPayload      `json:"exec,omitempty"`
+	Lifecycle *hitl.LifecyclePayload `json:"lifecycle,omitempty"`
+}
+
+// interventionEdit is the sealed edited_payload column: what the decider
+// changed about a gated action.
+type interventionEdit struct {
+	Argv  []string `json:"argv,omitempty"`
+	Grant string   `json:"grant,omitempty"`
 }
 
 func (fm *FleetManager) seal(b []byte) ([]byte, bool, error) {
@@ -434,13 +477,14 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 		ID:        in.ID,
 		EnvID:     in.EnvID,
 		Kind:      string(in.Kind),
+		Gate:      in.Gate,
 		State:     string(in.State),
 		OnTimeout: string(in.OnTimeout),
 		Deadline:  in.Deadline,
 		CreatedAt: in.CreatedAt,
 		UpdatedAt: in.UpdatedAt,
 	}
-	payload, err := json.Marshal(in.Payload)
+	payload, err := json.Marshal(interventionPayload{AskPayload: in.Payload, Mode: in.Mode, Exec: in.Exec, Lifecycle: in.Lifecycle})
 	if err != nil {
 		return rec, err
 	}
@@ -450,7 +494,12 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 	}
 	rec.TriggeredBy = triggeredBy
 
-	var result, reason []byte
+	var result, reason, edit []byte
+	if in.Result != nil {
+		if result, err = json.Marshal(interventionResult{Run: in.Result}); err != nil {
+			return rec, err
+		}
+	}
 	if d := in.Decision; d != nil {
 		rec.Outcome = string(d.Outcome)
 		decidedBy, err := json.Marshal(d.DecidedBy)
@@ -461,7 +510,12 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 		at := d.DecidedAt
 		rec.DecidedAt = &at
 		if d.Answer != "" {
-			if result, err = json.Marshal(interventionResult{Answer: d.Answer}); err != nil {
+			if result, err = json.Marshal(interventionResult{Answer: d.Answer, Run: in.Result}); err != nil {
+				return rec, err
+			}
+		}
+		if d.EditedArgv != nil || d.Grant != "" {
+			if edit, err = json.Marshal(interventionEdit{Argv: d.EditedArgv, Grant: d.Grant}); err != nil {
 				return rec, err
 			}
 		}
@@ -472,6 +526,9 @@ func (fm *FleetManager) interventionToRecord(in hitl.Intervention) (Intervention
 
 	if rec.Payload, rec.Sealed, err = fm.seal(payload); err != nil {
 		return rec, fmt.Errorf("seal intervention payload: %w", err)
+	}
+	if rec.EditedPayload, _, err = fm.seal(edit); err != nil {
+		return rec, fmt.Errorf("seal intervention edit: %w", err)
 	}
 	if rec.Result, _, err = fm.seal(result); err != nil {
 		return rec, fmt.Errorf("seal intervention result: %w", err)
@@ -487,6 +544,7 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 		ID:        rec.ID,
 		EnvID:     rec.EnvID,
 		Kind:      hitl.Kind(rec.Kind),
+		Gate:      rec.Gate,
 		State:     hitl.State(rec.State),
 		OnTimeout: hitl.OnTimeout(rec.OnTimeout),
 		Deadline:  rec.Deadline,
@@ -503,9 +561,22 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 		return in, fmt.Errorf("intervention %s: payload: %w", rec.ID, err)
 	}
 	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, &in.Payload); err != nil {
+		var p interventionPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
 			return in, fmt.Errorf("intervention %s: payload: %w", rec.ID, err)
 		}
+		in.Payload, in.Mode, in.Exec, in.Lifecycle = p.AskPayload, p.Mode, p.Exec, p.Lifecycle
+	}
+	result, err := fm.unseal(rec.Result, rec.Sealed)
+	if err != nil {
+		return in, fmt.Errorf("intervention %s: result: %w", rec.ID, err)
+	}
+	var r interventionResult
+	if len(result) > 0 {
+		if err := json.Unmarshal(result, &r); err != nil {
+			return in, fmt.Errorf("intervention %s: result: %w", rec.ID, err)
+		}
+		in.Result = r.Run
 	}
 	if rec.Outcome == "" {
 		return in, nil
@@ -519,16 +590,17 @@ func (fm *FleetManager) interventionFromRecord(rec InterventionRecord) (hitl.Int
 	if rec.DecidedAt != nil {
 		d.DecidedAt = *rec.DecidedAt
 	}
-	result, err := fm.unseal(rec.Result, rec.Sealed)
+	d.Answer = r.Answer
+	edit, err := fm.unseal(rec.EditedPayload, rec.Sealed)
 	if err != nil {
-		return in, fmt.Errorf("intervention %s: result: %w", rec.ID, err)
+		return in, fmt.Errorf("intervention %s: edited_payload: %w", rec.ID, err)
 	}
-	if len(result) > 0 {
-		var r interventionResult
-		if err := json.Unmarshal(result, &r); err != nil {
-			return in, fmt.Errorf("intervention %s: result: %w", rec.ID, err)
+	if len(edit) > 0 {
+		var e interventionEdit
+		if err := json.Unmarshal(edit, &e); err != nil {
+			return in, fmt.Errorf("intervention %s: edited_payload: %w", rec.ID, err)
 		}
-		d.Answer = r.Answer
+		d.EditedArgv, d.Grant = e.Argv, e.Grant
 	}
 	reason, err := fm.unseal(rec.Reason, rec.Sealed)
 	if err != nil {

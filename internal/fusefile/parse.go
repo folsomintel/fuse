@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -611,8 +612,8 @@ func validateHitl(h *Hitl, secrets []string) []error {
 			errs = append(errs, fmt.Errorf("hitl.notify[%d].secret: %q must also be listed under the top-level secrets", i, n.Secret))
 		}
 	}
+	errs = append(errs, validateHitlGates(h)...)
 	for name, node := range map[string]yaml.Node{
-		"hitl.gates":             h.Gates,
 		"hitl.requests.secret":   h.Requests.Secret,
 		"hitl.requests.review":   h.Requests.Review,
 		"hitl.requests.takeover": h.Requests.Takeover,
@@ -621,12 +622,153 @@ func validateHitl(h *Hitl, secrets []string) []error {
 			errs = append(errs, fmt.Errorf("%s: not yet supported", name))
 		}
 	}
-	if h.Requests.Ask == nil {
-		errs = append(errs, errors.New("hitl.requests: declare at least one request kind (only ask is supported)"))
+	if h.Requests.Ask == nil && len(h.Gates) == 0 && h.Exec == nil {
+		errs = append(errs, errors.New("hitl: declare at least one of requests.ask, gates or exec"))
 	}
 	// map iteration order is random; keep the report stable.
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Error() < errs[j].Error() })
 	return errs
+}
+
+// hitl gate vocabulary. it mirrors internal/hitl.
+var (
+	hitlGateName         = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
+	hitlLifecycleActions = []string{"destroy", "fork", "migrate", "drain", "snapshot", "rotate-token"}
+)
+
+const (
+	maxHitlGates   = 64
+	maxHitlGrant   = 24 * time.Hour
+	hitlAllowlist  = "exec.allowlist"
+	maxHitlReason  = 1024
+	maxHitlMatches = 64
+)
+
+// validateHitlGates checks hitl.exec and hitl.gates. it mirrors
+// internal/hitl validateGates so the cli refuses what the server would.
+func validateHitlGates(h *Hitl) []error {
+	var errs []error
+	if h.Exec != nil {
+		if h.Exec.Default != "ask" && h.Exec.Default != "deny" {
+			errs = append(errs, fmt.Errorf("hitl.exec.default: must be ask or deny, got %q", h.Exec.Default))
+		}
+		errs = append(errs, validateHitlPrograms("hitl.exec.allow", h.Exec.Allow)...)
+	}
+	if len(h.Gates) > maxHitlGates {
+		errs = append(errs, fmt.Errorf("hitl.gates: at most %d gates are allowed", maxHitlGates))
+	}
+	seen := map[string]bool{}
+	for i, g := range h.Gates {
+		at := fmt.Sprintf("hitl.gates[%d]", i)
+		switch {
+		case !hitlGateName.MatchString(g.Name):
+			errs = append(errs, fmt.Errorf("%s.name: must be 1-64 lowercase letters, digits, '-', '_' or '.', got %q", at, g.Name))
+		case g.Name == hitlAllowlist:
+			errs = append(errs, fmt.Errorf("%s.name: %q is reserved for hitl.exec", at, g.Name))
+		case seen[g.Name]:
+			errs = append(errs, fmt.Errorf("%s.name: %q is a duplicate", at, g.Name))
+		}
+		seen[g.Name] = true
+		m := g.Match
+		switch g.On {
+		case "exec":
+			if len(m.Action) > 0 {
+				errs = append(errs, fmt.Errorf("%s.match.action: only applies to on: lifecycle", at))
+			}
+			if !m.Shell && len(m.Program) == 0 && len(m.Args) == 0 {
+				errs = append(errs, fmt.Errorf("%s.match: an exec gate needs program, args or shell", at))
+			}
+			if m.Shell && (len(m.Program) > 0 || len(m.Args) > 0) {
+				errs = append(errs, fmt.Errorf("%s.match.shell: a shell exec is opaque, so it cannot be combined with program or args", at))
+			}
+			errs = append(errs, validateHitlPrograms(at+".match.program", m.Program)...)
+			if len(m.Args) > maxHitlMatches {
+				errs = append(errs, fmt.Errorf("%s.match.args: at most %d entries", at, maxHitlMatches))
+			}
+			for j, a := range m.Args {
+				if a == "" {
+					errs = append(errs, fmt.Errorf("%s.match.args[%d]: must not be empty", at, j))
+				}
+			}
+		case "lifecycle":
+			if m.Shell || len(m.Program) > 0 || len(m.Args) > 0 {
+				errs = append(errs, fmt.Errorf("%s.match: a lifecycle gate matches only action", at))
+			}
+			if len(m.Action) == 0 {
+				errs = append(errs, fmt.Errorf("%s.match.action: list at least one of %s", at, strings.Join(hitlLifecycleActions, ", ")))
+			}
+			for j, a := range m.Action {
+				if !slices.Contains(hitlLifecycleActions, a) {
+					errs = append(errs, fmt.Errorf("%s.match.action[%d]: must be one of %s, got %q", at, j, strings.Join(hitlLifecycleActions, ", "), a))
+				}
+			}
+		case "attach", "computer", "egress", "stall", "expiry":
+			errs = append(errs, fmt.Errorf("%s.on: %q is not yet supported", at, g.On))
+		default:
+			errs = append(errs, fmt.Errorf("%s.on: must be exec or lifecycle, got %q", at, g.On))
+		}
+		mode := g.Mode
+		switch mode {
+		case "":
+			mode = "ask"
+		case "ask", "notify", "deny":
+		default:
+			errs = append(errs, fmt.Errorf("%s.mode: must be ask, notify or deny, got %q", at, g.Mode))
+		}
+		if g.Grant != "" {
+			if err := validateHitlGrant(g.Grant); err != nil {
+				errs = append(errs, fmt.Errorf("%s.grant: %w", at, err))
+			} else if mode != "ask" {
+				errs = append(errs, fmt.Errorf("%s.grant: only an ask gate can grant", at))
+			}
+		}
+		if g.Timeout != "" {
+			d, err := time.ParseDuration(g.Timeout)
+			switch {
+			case err != nil:
+				errs = append(errs, fmt.Errorf("%s.timeout: %q is not a duration like 2m", at, g.Timeout))
+			case d < minHitlTimeout || d > maxHitlTimeout:
+				errs = append(errs, fmt.Errorf("%s.timeout: must be between %s and %s, got %s", at, minHitlTimeout, maxHitlTimeout, d))
+			case d%time.Second != 0:
+				errs = append(errs, fmt.Errorf("%s.timeout: must be a whole number of seconds, got %s", at, d))
+			}
+		}
+		if len(g.Reason) > maxHitlReason {
+			errs = append(errs, fmt.Errorf("%s.reason: must be at most %d bytes", at, maxHitlReason))
+		}
+	}
+	return errs
+}
+
+func validateHitlPrograms(at string, programs []string) []error {
+	var errs []error
+	if len(programs) > maxHitlMatches {
+		errs = append(errs, fmt.Errorf("%s: at most %d entries", at, maxHitlMatches))
+	}
+	for j, p := range programs {
+		if p == "" || strings.Contains(p, "/") {
+			errs = append(errs, fmt.Errorf("%s[%d]: name a program basename like git, not a path, got %q", at, j, p))
+		}
+	}
+	return errs
+}
+
+func validateHitlGrant(raw string) error {
+	if raw == "once" || raw == "env" {
+		return nil
+	}
+	d, ok := strings.CutPrefix(raw, "ttl:")
+	if !ok {
+		return fmt.Errorf("must be once, env or ttl:<duration>, got %q", raw)
+	}
+	ttl, err := time.ParseDuration(d)
+	if err != nil {
+		return fmt.Errorf("ttl: %q is not a duration like 30m", d)
+	}
+	if ttl < time.Second || ttl > maxHitlGrant {
+		return fmt.Errorf("ttl: must be between 1s and %s, got %s", maxHitlGrant, ttl)
+	}
+	return nil
 }
 
 // containsDotDot reports whether any segment of a slash-separated guest path

@@ -13,9 +13,10 @@ request has a deadline, so whatever the human does (or does not do), the
 agent always gets an outcome and carries on.
 
 This page covers the core loop, the one request kind that exists today
-(`ask`), and the access model around it: who may answer, how a person is
-named, the audit log and webhooks. Gates on exec and lifecycle actions,
-secrets and takeover build on the same object and come later.
+(`ask`), gates that hold exec and lifecycle actions until a human decides,
+and the access model around it: who may answer, how a person is named, the
+audit log and webhooks. Secrets and takeover build on the same object and
+come later.
 
 ## Concepts
 
@@ -152,6 +153,141 @@ moment before the decision arrived, is a 409.
 full-access API key can raise a request but cannot answer one, so an agent
 driving Fuse with its own key cannot approve itself. Give the human a scoped
 key instead, as below.
+
+## Gates
+
+A **gate** holds an action Fuse relays until a human decides, records it, or
+refuses it. Two surfaces have gates today: `exec` (SDK and CLI exec) and
+`lifecycle` (environment API actions).
+
+```yaml
+hitl:
+  timeout: 10m
+  gates:
+    - name: force-push
+      on: exec
+      match: { program: git, args: [push, --force] }
+      grant: ttl:30m          # an approval covers repeats for 30m
+      timeout: 2m
+
+    - name: watch-shell
+      on: exec
+      match: { shell: true }
+      mode: notify            # let it through, record it
+
+    - name: no-self-destruct
+      on: lifecycle
+      match: { action: [destroy, migrate] }
+      mode: deny
+      reason: this environment is not the agent's to destroy
+```
+
+### Gate reference
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Names the gate on interventions, grants and webhooks. 1-64 of `a-z 0-9 - _ .` |
+| `on` | `exec` or `lifecycle`. |
+| `match.program` | `exec`: the basename of `argv[0]`, one name or a list, after known wrappers are stripped. |
+| `match.args` | `exec`: arguments that appear in argv in this order, not necessarily next to each other. |
+| `match.shell` | `exec`: any opaque shell exec, a `shell:` string or `sh`/`bash -c`. Cannot be combined with `program` or `args`. |
+| `match.action` | `lifecycle`: `destroy`, `fork`, `migrate`, `drain`, `snapshot`, `rotate-token`. |
+| `mode` | `ask` (default) holds until decided; `notify` lets it through and records it; `deny` refuses it with `reason`. |
+| `grant` | Default reach of an approval: `once` (default), `env` or `ttl:<duration>`. Only for `ask`. |
+| `timeout` | Deadline for this gate, overriding `hitl.timeout`. |
+| `reason` | Returned to the caller on `deny`, shown to the human on `ask`. |
+
+Every field set in `match` must match. When several gates match one action,
+`deny` beats `ask` beats `notify`; each matching `notify` gate still leaves a
+record. Start a new gate as `notify`, read what it would have caught, then
+tighten it to `ask`.
+
+**Wrappers.** `env` (and its `VAR=x` arguments), `sudo`, `nice`, `timeout`,
+`xargs`, `nohup` and `stdbuf` are stripped before matching, so
+`env GIT_TRACE=1 git push --force` and `sudo git push --force` are both
+`git push --force` to a gate.
+
+**What a held call sees.** The API answers `202` with
+`{"intervention_id", "intervention"}`. When a human approves, the
+orchestrator performs the action itself, exactly as approved, and stores the
+outcome on the intervention's `result`: `result.exec` for an exec,
+`result.env_id` for a fork or migrate, `result.snapshot_id` for a snapshot,
+`result.error` when the approved action failed. `GET
+/v1/interventions/{id}?wait=` returns once that result is in. A `deny`
+answers `403` with `details.reason: hitl_denied`, the gate in
+`details.gate`, and the gate's `reason` as the message.
+
+The SDKs wait on a `202` for you: `exec` returns the approved command's
+result, `fork` the new environment, and so on. A rejection raises
+`InterventionRejectedError` with the reason; `wait: false` (or the client
+option) raises `PendingInterventionError` with the handle instead of
+waiting. The CLI prints the intervention it is waiting on:
+
+```bash
+fuse environment exec vm-1 -- git push --force origin main
+# held by hitl gate force-push: waiting on intervention int_...
+```
+
+### Approving, editing and granting
+
+```bash
+fuse hitl approve int_...                                  # run it as asked
+fuse hitl approve int_... --edit -- git push --force-with-lease origin main
+fuse hitl approve int_... --edit                           # edit argv in $EDITOR
+fuse hitl approve int_... --grant env                      # and don't ask again
+fuse hitl reject  int_... --reason "push to a branch instead"
+```
+
+An edited argv is checked against the `deny` gates again before it is
+accepted. A **grant** lets identical repeats through without a prompt: the
+same gate and the exact same argv (or the same lifecycle action), for the
+environment's lifetime (`env`) or a duration (`ttl:30m`). A different argv
+still prompts. Grants follow a migrate, are not copied to a fork, are
+dropped on destroy, and are audited (`grant_created`, and `grant_used` each
+time one lets an action through). An edit cannot carry a grant, since the
+grant would cover the original argv the human did not approve as written.
+
+### Allowlist mode
+
+Matching what to stop is a blocklist, and a blocklist misses whatever its
+author did not think of. For an agent you do not trust, list what may run
+instead:
+
+```yaml
+hitl:
+  exec:
+    default: ask        # or deny
+    allow: [ls, cat, grep, git, make]
+```
+
+Anything not in `allow` is held (or refused), and interpreters and shells
+are not special: `python -c ...`, `bash -c ...` and `shell:` execs are held
+unless their program is listed. Leave interpreters out of `allow`: allowing
+`python` allows everything. Gates still apply on top, so `git` can be
+allowed while `git push --force` stays gated.
+
+### A guardrail, not a boundary
+
+Gates see what Fuse relays: API exec and the environment actions. They do
+not see what happens inside the guest. A process the agent starts there (a
+`run:` agent, a script, a shell it already holds through `fuse environment
+shell`) can do anything root can, with no gate involved. So:
+
+- Gate the agent's **API** access. When the agent runs outside the VM and
+  only reaches it through exec, gates are enforced on everything it does.
+- When the agent runs **inside** the guest, exec gates do not apply to its
+  own commands. Lifecycle gates still do, since those actions only exist on
+  the API.
+- Gates match structure (argv), not strings. They cannot see inside a shell
+  string, which is why `shell` is its own match and why allowlist mode holds
+  shells.
+- Deciding needs `hitl:decide`, which a full-access key does not hold, but
+  the master token does. Exec currently needs the master token, so an agent
+  that execs holds a credential that could also approve its own held execs.
+  Lifecycle actions work with a full-access key; give the agent one of those
+  wherever it does not need exec.
+- A `deny` on `destroy` also stops you: the environment is then removed by
+  its `max_runtime` or `idle_timeout`, which are not gated.
 
 ## Access
 
@@ -388,7 +524,8 @@ It is content-free by design: the receiver learns that something needs a
 look and where, never what was asked. The human fetches the content from the
 API with their own key. `url` is built from the orchestrator's
 `ORCH_PUBLIC_URL` and is left out when that is unset. Invite events carry no
-intervention id, kind or deadline. `gate` is empty until gates exist.
+intervention id, kind or deadline. `gate` names the gate that raised the
+intervention and is empty for a request.
 
 Each delivery has a `Fuse-Signature` header:
 

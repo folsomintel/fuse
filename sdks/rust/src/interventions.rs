@@ -75,6 +75,68 @@ impl HumanRequest {
     }
 }
 
+/// The body of [`Interventions::approve_with`]: an approval of a held
+/// action or an answer to an ask.
+///
+/// ```
+/// use fuse::ApproveOptions;
+///
+/// let edit = ApproveOptions::new().edited_argv(["git", "push"]);
+/// let repeat = ApproveOptions::new().grant("ttl:30m").reason("ok for the next half hour");
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[non_exhaustive]
+pub struct ApproveOptions {
+    /// Required to approve an ask.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Replaces a held exec's argv. It is re-checked against the deny
+    /// gates, and cannot be combined with `grant`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub edited_argv: Vec<String>,
+    /// `once`, `env` or `ttl:<duration>`; `None` takes the gate's default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grant: Option<String>,
+}
+
+impl ApproveOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn answer(mut self, answer: impl Into<String>) -> Self {
+        self.answer = Some(answer.into());
+        self
+    }
+
+    pub fn reason(mut self, reason: impl Into<String>) -> Self {
+        self.reason = Some(reason.into());
+        self
+    }
+
+    pub fn edited_argv<I, S>(mut self, argv: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.edited_argv = argv.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn grant(mut self, grant: impl Into<String>) -> Self {
+        self.grant = Some(grant.into());
+        self
+    }
+}
+
+// non_empty maps the empty string of the positional approve and reject
+// arguments to an absent field.
+fn non_empty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
 /// Filters and pagination for [`Interventions::list`] and
 /// [`Interventions::list_page`].
 #[derive(Debug, Clone, Default)]
@@ -291,9 +353,10 @@ impl Interventions {
         self.t.send_json(request).await
     }
 
-    /// Waits until the intervention resolves. Every intervention has a
-    /// deadline, so this always returns eventually; drop the future to stop
-    /// early. Each poll is independent, so a dropped connection or an
+    /// Waits until the intervention settles: resolved, and for an approved
+    /// gated action, performed, with the outcome on
+    /// [`Intervention::result`]. Every intervention has a deadline, so this
+    /// always returns eventually; drop the future to stop early. Each poll is independent, so a dropped connection or an
     /// orchestrator restart only costs one poll.
     pub async fn wait(&self, id: &str) -> Result<Intervention, Error> {
         wait_intervention(&self.t, id).await
@@ -308,41 +371,55 @@ impl Interventions {
         answer: &str,
         reason: &str,
     ) -> Result<Intervention, Error> {
-        self.decide(id, "approve", answer, reason).await
+        let options = ApproveOptions {
+            answer: non_empty(answer),
+            reason: non_empty(reason),
+            ..ApproveOptions::default()
+        };
+        self.decide(id, "approve", &options).await
+    }
+
+    /// Approves a held exec or lifecycle action, optionally editing the
+    /// exec's argv or granting repeats (`env`, `ttl:30m`). The orchestrator
+    /// then performs the action; [`Interventions::wait`] on the id for its
+    /// result.
+    pub async fn approve_with(
+        &self,
+        id: &str,
+        options: ApproveOptions,
+    ) -> Result<Intervention, Error> {
+        self.decide(id, "approve", &options).await
     }
 
     /// Resolves a pending intervention as rejected. The reason is fed back
     /// to the agent; the server fills one in when it is empty. Requires the
     /// master token or a key with `hitl:decide`.
     pub async fn reject(&self, id: &str, reason: &str) -> Result<Intervention, Error> {
-        self.decide(id, "reject", "", reason).await
+        let options = ApproveOptions {
+            reason: non_empty(reason),
+            ..ApproveOptions::default()
+        };
+        self.decide(id, "reject", &options).await
     }
 
     async fn decide(
         &self,
         id: &str,
         action: &str,
-        answer: &str,
-        reason: &str,
+        body: &ApproveOptions,
     ) -> Result<Intervention, Error> {
         require(id, "intervention id")?;
-        #[derive(Serialize)]
-        struct Body<'a> {
-            #[serde(skip_serializing_if = "str::is_empty")]
-            answer: &'a str,
-            #[serde(skip_serializing_if = "str::is_empty")]
-            reason: &'a str,
-        }
         let request = self
             .t
             .request(Method::POST, &["v1", "interventions", id])
             .query(&[("action", action)])
-            .json(&Body { answer, reason });
+            .json(body);
         self.t.send_json(request).await
     }
 }
 
-// wait_intervention long-polls until the intervention is terminal. each poll
+// wait_intervention long-polls until the intervention is settled, not just
+// terminal: an approved gated action keeps polling until its result lands. each poll
 // runs on the no-timeout stream client with its own deadline, so a short
 // client timeout cannot cut a held poll short.
 pub(crate) async fn wait_intervention(t: &Transport, id: &str) -> Result<Intervention, Error> {
@@ -354,7 +431,7 @@ pub(crate) async fn wait_intervention(t: &Transport, id: &str) -> Result<Interve
             .query(&[("wait", wait.as_str())])
             .timeout(WAIT_POLL + WAIT_HTTP_OVERHEAD);
         let intervention: Intervention = t.send_json(request).await?;
-        if intervention.is_terminal() {
+        if intervention.is_settled() {
             return Ok(intervention);
         }
     }
