@@ -24,7 +24,7 @@ if ! command -v go >/dev/null 2>&1; then
 [build-agent] Go not found.
   fused is a static linux/amd64 binary, so you can build it anywhere:
    • on a machine that has Go:   ../shared/fc-build-agent.sh && scp fused <host>:~/fuse/host-agent/<backend>/
-   • or install Go on this host: ../firecracker/fc-deps.sh --with-go && export PATH=\$PATH:/usr/local/go/bin
+   • or install Go on this host: ../firecracker/scripts/fc-deps.sh --with-go && export PATH=\$PATH:/usr/local/go/bin
 EOF
   exit 1
 fi

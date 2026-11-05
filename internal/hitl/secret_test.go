@@ -23,17 +23,17 @@ func TestSpecValidatesSecretTakeoverAndSignals(t *testing.T) {
 	}
 
 	cases := map[string]Spec{
-		"set one of env or file":  {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{Label: "x"}}}}},
-		"label is required":       {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{Env: "A"}}}}},
-		"reserves":                {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/fuse/x", Label: "x"}}}}},
-		"must not contain ..":     {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/a/../etc/shadow", Label: "x"}}}}},
-		"not yet supported":       {Requests: Requests{Takeover: &TakeoverRequests{Via: []TakeoverVia{"desktop"}}}},
-		"needs failures or quiet": {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall}}},
-		"needs before":            {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "e", On: KindExpiry}}},
-		"no action to deny":       {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Mode: ModeDeny, Match: GateMatch{Failures: 1}}}},
-		"cannot grant":            {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Grant: "env", Match: GateMatch{Failures: 1}}}},
-		"must be between 1m0s":    {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "e", On: KindExpiry, Match: GateMatch{BeforeSeconds: 5}}}},
-		"matches only failures":   {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Match: GateMatch{Failures: 1, Program: []string{"git"}}}}},
+		"set one of env or file":           {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{Label: "x"}}}}},
+		"label is required":                {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{Env: "A"}}}}},
+		"reserves":                         {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/fuse/x", Label: "x"}}}}},
+		"must not contain \"..\" segments": {Requests: Requests{Secret: &SecretRequests{Targets: []SecretTarget{{File: "/a/../etc/shadow", Label: "x"}}}}},
+		"not yet supported":                {Requests: Requests{Takeover: &TakeoverRequests{Via: []TakeoverVia{"desktop"}}}},
+		"needs failures or quiet":          {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall}}},
+		"needs before":                     {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "e", On: KindExpiry}}},
+		"no action to deny":                {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Mode: ModeDeny, Match: GateMatch{Failures: 1}}}},
+		"cannot grant":                     {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Grant: "env", Match: GateMatch{Failures: 1}}}},
+		"must be between 1m0s":             {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "e", On: KindExpiry, Match: GateMatch{BeforeSeconds: 5}}}},
+		"matches only failures":            {Requests: Requests{Ask: &AskRequests{}}, Gates: []Gate{{Name: "s", On: KindStall, Match: GateMatch{Failures: 1, Program: []string{"git"}}}}},
 	}
 	for want, s := range cases {
 		err := s.Validate()

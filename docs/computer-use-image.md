@@ -2,7 +2,7 @@
 
 **Status: proposed. None of this is implemented.** This document is a reference for a
 possible default image, not a description of the current tree. The base rootfs today is
-minimal (see [`host-agent/firecracker/fc-bake-rootfs.sh`](../host-agent/firecracker/fc-bake-rootfs.sh))
+minimal (see [`host-agent/firecracker/scripts/fc-bake-rootfs.sh`](../host-agent/firecracker/scripts/fc-bake-rootfs.sh))
 and contains no graphical stack of any kind.
 
 ## Why it would exist
