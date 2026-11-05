@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.0](https://github.com/folsomintel/fuse/compare/v0.38.0...v0.39.0) (2026-11-05)
+
+
+### Features
+
+* add hitl computer gates, desktop takeover, review requests and deciders across api, cli and all four sdks ([#331](https://github.com/folsomintel/fuse/issues/331)) ([0c2d14d](https://github.com/folsomintel/fuse/commit/0c2d14dfef99e07cbc5a0f2ca91c37c0a03277ad))
+
 ## [0.38.0](https://github.com/folsomintel/fuse/compare/v0.37.1...v0.38.0) (2026-11-05)
 
 
