@@ -12,18 +12,19 @@ import (
 	"github.com/folsomintel/fuse/internal/hitl"
 )
 
+// deciderTimeout is hitl.DeciderTimeout; a var so tests can shorten it.
+var deciderTimeout = hitl.DeciderTimeout
+
 // deciderClient posts to gate deciders. a redirect would send the signed
 // action somewhere the author did not name, so it counts as a failure, and
 // a failure is ask.
 var deciderClient = &http.Client{
-	Timeout:       hitl.DeciderTimeout,
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
 // askDecider posts a held action to its gate's decider and returns the
 // answer. any error means the caller falls through to a human. the whole
-// call, screenshot included, is bounded by hitl.DeciderTimeout plus the
-// screenshot's own bound, so a slow decider costs the agent seconds, not
+// call is bounded by deciderTimeout, plus the screenshot's own bound, so a slow decider costs the agent seconds, not
 // the gate's full deadline.
 func (fm *FleetManager) askDecider(ctx context.Context, g hitl.Gate, in hitl.Intervention) (hitl.DeciderResponse, error) {
 	fm.mu.RLock()
@@ -50,7 +51,7 @@ func (fm *FleetManager) askDecider(ctx context.Context, g hitl.Gate, in hitl.Int
 		return hitl.DeciderResponse{}, err
 	}
 
-	cctx, cancel := context.WithTimeout(ctx, hitl.DeciderTimeout)
+	cctx, cancel := context.WithTimeout(ctx, deciderTimeout)
 	defer cancel()
 	hr, err := http.NewRequestWithContext(cctx, http.MethodPost, g.Decide.URL, bytes.NewReader(body))
 	if err != nil {
