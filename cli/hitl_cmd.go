@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,6 +195,37 @@ func renderIntervention(in *fuse.Intervention) error {
 	if l := in.Payload.Lifecycle; l != nil {
 		pairs = append(pairs, [2]string{"action", l.Action})
 	}
+	if c := in.Payload.Computer; c != nil {
+		pairs = append(pairs, [2]string{"action", c.Action})
+		if c.Action == "type" || c.Text != "" {
+			pairs = append(pairs, [2]string{"text", strconv.Quote(c.Text)})
+		}
+		if c.Action != "type" && len(c.Input) > 0 {
+			pairs = append(pairs, [2]string{"input", string(c.Input)})
+		}
+	}
+	if d := in.Payload.Decider; d != nil {
+		note := "escalated"
+		if d.Error != "" {
+			note = "failed, so you were asked: " + d.Error
+		} else if d.Reason != "" {
+			note += ": " + d.Reason
+		}
+		pairs = append(pairs, [2]string{"decider", note})
+	}
+	if rv := in.Payload.Review; rv != nil {
+		what := rv.Format
+		if rv.Path != "" {
+			what += " from " + rv.Path
+		}
+		if rv.Truncated {
+			what += " (truncated)"
+		}
+		pairs = append(pairs, [2]string{"review", what})
+		if rv.Message != "" {
+			pairs = append(pairs, [2]string{"agent says", rv.Message})
+		}
+	}
 	if len(in.Payload.Choices) > 0 {
 		pairs = append(pairs, [2]string{"choices", strings.Join(in.Payload.Choices, ", ")})
 	}
@@ -213,6 +245,9 @@ func renderIntervention(in *fuse.Intervention) error {
 		if d.EditedArgv != nil {
 			pairs = append(pairs, [2]string{"edited argv", renderArgv(d.EditedArgv)})
 		}
+		if d.EditedText != nil {
+			pairs = append(pairs, [2]string{"edited text", strconv.Quote(*d.EditedText)})
+		}
 		if d.Grant != "" {
 			pairs = append(pairs, [2]string{"grant", d.Grant})
 		}
@@ -227,6 +262,8 @@ func renderIntervention(in *fuse.Intervention) error {
 			pairs = append(pairs, [2]string{"result", styleBad.Render("error: " + r.Error)})
 		case r.Exec != nil:
 			pairs = append(pairs, [2]string{"result", fmt.Sprintf("exit %d", r.Exec.ExitCode)})
+		case r.Computer != nil:
+			pairs = append(pairs, [2]string{"result", "performed"})
 		case r.EnvID != "":
 			pairs = append(pairs, [2]string{"result", "environment " + r.EnvID})
 		case r.SnapshotID != "":
@@ -236,6 +273,12 @@ func renderIntervention(in *fuse.Intervention) error {
 		}
 	}
 	renderDetail(pairs)
+	// the content up for review goes under the details, in full: it is
+	// what the human is deciding on.
+	if rv := in.Payload.Review; rv != nil {
+		fmt.Println()
+		fmt.Println(rv.Content)
+	}
 	return nil
 }
 

@@ -53,7 +53,11 @@ func newDesktopCmd() *cobra.Command {
 			"desktop block).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDesktop(cmd.Context(), args[0], listen, viewOnly, noOpen)
+			cl, _, err := app.client()
+			if err != nil {
+				return err
+			}
+			return runDesktop(cmd.Context(), args[0], computerStreamOpener(cl, args[0]), listen, viewOnly, noOpen)
 		},
 	}
 
@@ -66,18 +70,23 @@ func newDesktopCmd() *cobra.Command {
 	return cmd
 }
 
-func runDesktop(ctx context.Context, vmID, listen string, viewOnly, noOpen bool) error {
-	cl, _, err := app.client()
-	if err != nil {
-		return err
-	}
+// streamOpener opens one desktop stream: the plain computer stream, or a
+// takeover holder's recorded one.
+type streamOpener func(ctx context.Context) (io.ReadWriteCloser, error)
 
+func computerStreamOpener(cl *fuse.Client, vmID string) streamOpener {
+	return func(ctx context.Context) (io.ReadWriteCloser, error) {
+		return cl.Environments.ComputerStream(ctx, vmID)
+	}
+}
+
+func runDesktop(ctx context.Context, vmID string, open streamOpener, listen string, viewOnly, noOpen bool) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Preflight the stream once, so "not a desktop image" or "vnc unit down"
 	// is a clear error here rather than a failed connection in a browser tab.
-	probe, err := cl.Environments.ComputerStream(ctx, vmID)
+	probe, err := open(ctx)
 	if err != nil {
 		return friendly(err)
 	}
@@ -118,7 +127,7 @@ func runDesktop(ctx context.Context, vmID, listen string, viewOnly, noOpen bool)
 			http.Error(w, "bad token", http.StatusForbidden)
 			return
 		}
-		serveDesktopBridge(w, r, cl, vmID)
+		serveDesktopBridge(w, r, open)
 	})
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
@@ -150,10 +159,10 @@ func runDesktop(ctx context.Context, vmID, listen string, viewOnly, noOpen bool)
 // serveDesktopBridge splices one websocket viewer onto one orchestrator
 // stream. Each browser connection gets its own guest stream; x11vnc runs
 // shared, so two tabs are two viewers of the same desktop.
-func serveDesktopBridge(w http.ResponseWriter, r *http.Request, cl *fuse.Client, vmID string) {
+func serveDesktopBridge(w http.ResponseWriter, r *http.Request, open streamOpener) {
 	// open the guest stream before the websocket handshake, while an HTTP
 	// error can still be reported
-	stream, err := cl.Environments.ComputerStream(r.Context(), vmID)
+	stream, err := open(r.Context())
 	if err != nil {
 		http.Error(w, friendly(err).Error(), http.StatusBadGateway)
 		return
