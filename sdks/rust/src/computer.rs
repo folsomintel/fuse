@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::environments::Environments;
 use crate::error::Error;
+use crate::gates::{decode, Gated, OnHeld};
 use crate::strenum::string_enum;
 use crate::transport::require;
+use crate::types::Intervention;
 
 string_enum! {
     /// Computer-use actions the guest agent understands, in the same
@@ -91,6 +93,15 @@ pub struct ComputerAction {
     pub scroll_direction: Option<ScrollDirection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll_amount: Option<u32>,
+    /// Returns [`Error::InterventionPending`] at once when a computer gate
+    /// holds the action, and [`Error::Locked`] when a human holds the
+    /// environment, instead of waiting. Never sent.
+    #[serde(skip)]
+    pub no_wait: bool,
+    /// Called with the pending intervention when a computer gate holds the
+    /// action, before waiting on it. Never sent.
+    #[serde(skip)]
+    pub on_held: Option<OnHeld>,
 }
 
 impl ComputerAction {
@@ -106,6 +117,8 @@ impl ComputerAction {
             duration: None,
             scroll_direction: None,
             scroll_amount: None,
+            no_wait: false,
+            on_held: None,
         }
     }
 
@@ -159,6 +172,21 @@ impl ComputerAction {
 
     pub fn duration(mut self, seconds: f64) -> Self {
         self.duration = Some(seconds);
+        self
+    }
+
+    /// Returns [`Error::InterventionPending`] at once when a computer gate
+    /// holds the action, and [`Error::Locked`] when a human holds the
+    /// environment, instead of waiting.
+    pub fn no_wait(mut self) -> Self {
+        self.no_wait = true;
+        self
+    }
+
+    /// Calls `callback` with the pending intervention when a computer gate
+    /// holds the action, before waiting on it.
+    pub fn on_held(mut self, callback: impl Fn(&Intervention) + Send + Sync + 'static) -> Self {
+        self.on_held = Some(OnHeld::new(callback));
         self
     }
 }
@@ -259,33 +287,50 @@ impl Environments {
     /// server answers 503 with a reason. Screenshots ride back
     /// base64-encoded, so the no-timeout stream client carries the call.
     ///
+    /// When a computer gate holds the action, the call waits for the
+    /// decision; the orchestrator performs the approved action (with the
+    /// approver's edited text, if any) and this returns its result. A
+    /// rejection is [`Error::InterventionRejected`], a deny gate an error
+    /// [`Error::is_hitl_denied`] matches.
+    ///
     /// While a human holds the environment or a stall is pending, the call
-    /// waits for it to end and then retries, unless the client was built
-    /// with [`ClientBuilder::hitl_no_wait`](crate::ClientBuilder::hitl_no_wait).
+    /// waits for it to end and then retries, unless
+    /// [`ComputerAction::no_wait`] is set or the client was built with
+    /// [`ClientBuilder::hitl_no_wait`](crate::ClientBuilder::hitl_no_wait).
     pub async fn computer(
         &self,
         vm_id: &str,
         action: ComputerAction,
     ) -> Result<ComputerResult, Error> {
         require(vm_id, "vm id")?;
-        self.send_computer(vm_id, &action).await
+        self.send_computer(vm_id, &action, action.on_held.as_ref(), action.no_wait)
+            .await
     }
 
-    // send_computer posts one action, waiting out a 423 lock and retrying.
+    // send_computer posts one action, waiting out a 423 lock and retrying,
+    // and waiting out a 202 hold until fuse has performed the action.
     async fn send_computer<B: Serialize + ?Sized>(
         &self,
         vm_id: &str,
         body: &B,
+        on_held: Option<&OnHeld>,
+        no_wait: bool,
     ) -> Result<ComputerResult, Error> {
-        loop {
+        let held = loop {
             let request = self
                 .transport()
                 .stream_request(Method::POST, &["v1", "environments", vm_id, "computer"])
                 .json(body);
-            match self.transport().send_json(request).await {
-                Err(err) => self.transport().wait_unlocked(err, false).await?,
-                result => return result,
+            match self.transport().send_gated(request).await {
+                Ok(Gated::Done(response)) => return decode(response).await,
+                Ok(Gated::Held(held)) => break held,
+                Err(err) => self.transport().wait_unlocked(err, no_wait).await?,
             }
+        };
+        let settled = self.transport().settle_held(held, on_held, no_wait).await?;
+        match settled.result.as_ref().and_then(|r| r.computer.clone()) {
+            Some(result) => Ok(result),
+            None => Err(Error::HeldActionFailed(Box::new(settled))),
         }
     }
 
@@ -311,7 +356,9 @@ impl Environments {
     /// that is not up) comes back as `is_error` content rather than an
     /// `Err`: the agent loop should feed it to the model, which is the party
     /// that can correct it. An `Err` is reserved for the failures the model
-    /// cannot fix — transport, auth, an unknown environment.
+    /// cannot fix — transport, auth, an unknown environment. A computer
+    /// gate's hold is waited out; a human's rejection or a deny gate is
+    /// `is_error` content too.
     pub async fn computer_tool_result(
         &self,
         vm_id: &str,
@@ -333,12 +380,19 @@ impl Environments {
             return Ok(tool_error("tool input names no action"));
         }
 
-        let result = match self.send_computer(vm_id, input).await {
+        let result = match self.send_computer(vm_id, input, None, false).await {
             Ok(result) => result,
+            Err(err) if err.is_hitl_denied() => {
+                let message = err.api().map(|e| e.message.as_str()).unwrap_or_default();
+                return Ok(tool_error(message));
+            }
             Err(Error::Api(api_err)) if matches!(api_err.status, 400 | 409 | 503) => {
                 // the model asked for something the environment refused;
                 // telling the model is the fix, not failing the loop.
                 return Ok(tool_error(&api_err.message));
+            }
+            Err(err @ Error::InterventionRejected(_)) => {
+                return Ok(tool_error(&format!("a human rejected this action: {err}")));
             }
             Err(err) => return Err(err),
         };

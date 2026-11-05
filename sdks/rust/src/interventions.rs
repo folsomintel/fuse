@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
-use crate::types::{AuditEntry, HitlKind, Intervention, InterventionState, TakeoverVia};
+use crate::types::{
+    AuditEntry, HitlKind, Intervention, InterventionState, ReviewFormat, TakeoverVia,
+};
 
 // how long one long-poll asks the server to hold. the server caps it at 50s.
 const WAIT_POLL: Duration = Duration::from_secs(30);
@@ -39,9 +41,20 @@ pub struct HumanRequest {
     /// A declared secret target's env name or file path (secret).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// The agent's text, shown under the target's label (secret).
+    /// The agent's text, shown under the target's label (secret), or with
+    /// the content up for review (review).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// An absolute guest file to review; fuse reads it at request time
+    /// (review). Exclusive with `content`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Inline text or a diff to review (review).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// `None` guesses from the content (review).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<ReviewFormat>,
     /// How the human takes over (takeover).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub via: Option<TakeoverVia>,
@@ -67,6 +80,9 @@ impl HumanRequest {
             choices: Vec::new(),
             target: None,
             message: None,
+            path: None,
+            content: None,
+            format: None,
             via: None,
             reason: None,
             timeout_seconds: None,
@@ -95,7 +111,31 @@ impl HumanRequest {
         }
     }
 
-    /// The agent's text shown with a secret request.
+    /// A request for a human to review the absolute guest file `path`.
+    pub fn review_path(path: impl Into<String>) -> Self {
+        Self {
+            kind: HitlKind::Review,
+            path: Some(path.into()),
+            ..Self::ask("")
+        }
+    }
+
+    /// A request for a human to review `content`, inline text or a diff.
+    pub fn review_content(content: impl Into<String>) -> Self {
+        Self {
+            kind: HitlKind::Review,
+            content: Some(content.into()),
+            ..Self::ask("")
+        }
+    }
+
+    /// The format of a review; unset guesses from the content.
+    pub fn format(mut self, format: ReviewFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    /// The agent's text shown with a secret or review request.
     pub fn message(mut self, message: impl Into<String>) -> Self {
         self.message = Some(message.into());
         self
@@ -156,6 +196,10 @@ pub struct ApproveOptions {
     /// gates, and cannot be combined with `grant`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub edited_argv: Vec<String>,
+    /// Replaces a held computer `type` action's text. It is re-checked
+    /// against the deny gates, and cannot be combined with `grant`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub edited_text: Option<String>,
     /// `once`, `env` or `ttl:<duration>`; `None` takes the gate's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grant: Option<String>,
@@ -189,6 +233,11 @@ impl ApproveOptions {
         self
     }
 
+    pub fn edited_text(mut self, text: impl Into<String>) -> Self {
+        self.edited_text = Some(text.into());
+        self
+    }
+
     pub fn grant(mut self, grant: impl Into<String>) -> Self {
         self.grant = Some(grant.into());
         self
@@ -198,6 +247,78 @@ impl ApproveOptions {
         self.extend_seconds = Some(seconds);
         self
     }
+}
+
+/// The body of
+/// [`Environments::request_review`](crate::Environments::request_review):
+/// exactly one of `path` and `content`.
+///
+/// ```
+/// use fuse::{ReviewFormat, ReviewRequest};
+///
+/// let diff = ReviewRequest::content("diff --git a/x b/x").format(ReviewFormat::Diff);
+/// let file = ReviewRequest::path("/work/plan.md").message("ok to proceed?").no_wait();
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReviewRequest {
+    /// An absolute guest file, read by fuse at request time.
+    pub path: Option<String>,
+    /// Inline text or a diff.
+    pub content: Option<String>,
+    /// `None` guesses from the content.
+    pub format: Option<ReviewFormat>,
+    pub message: Option<String>,
+    /// Shortens the policy's deadline. It can never extend it.
+    pub timeout_seconds: Option<u64>,
+    /// Returns the pending intervention at once instead of waiting.
+    pub no_wait: bool,
+}
+
+impl ReviewRequest {
+    /// A review of the absolute guest file `path`.
+    pub fn path(path: impl Into<String>) -> Self {
+        Self {
+            path: Some(path.into()),
+            ..Self::default()
+        }
+    }
+
+    /// A review of `content`, inline text or a diff.
+    pub fn content(content: impl Into<String>) -> Self {
+        Self {
+            content: Some(content.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn format(mut self, format: ReviewFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    pub fn message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    pub fn timeout_seconds(mut self, seconds: u64) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+
+    pub fn no_wait(mut self) -> Self {
+        self.no_wait = true;
+        self
+    }
+}
+
+/// A finished review. `comments` are the reviewer's, on either outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewResult {
+    pub approved: bool,
+    pub comments: Option<String>,
+    pub intervention: Intervention,
 }
 
 // non_empty maps the empty string of the positional approve and reject
@@ -510,7 +631,9 @@ impl Interventions {
         self.t.send_json(request).await
     }
 
-    /// Returns a recorded takeover session as asciinema v2 cast text. The id
+    /// Returns a recorded takeover session: asciinema v2 cast text for a
+    /// terminal session, json (an input-action log plus screenshots) for a
+    /// desktop one. The id
     /// is on the `takeover_session` audit row's
     /// [`AuditEntry::recording_id`](crate::AuditEntry::recording_id).
     /// Requires the master token or a key with `hitl:read`.

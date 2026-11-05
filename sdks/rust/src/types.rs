@@ -4,6 +4,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::computer::ComputerResult;
 use crate::environments::ExecResult;
 use crate::strenum::string_enum;
 
@@ -678,6 +679,12 @@ impl HitlSpec {
         self
     }
 
+    /// Allows review requests.
+    pub fn review(mut self) -> Self {
+        self.requests.review = Some(HitlReviewRequests {});
+        self
+    }
+
     pub fn timeout_seconds(mut self, seconds: u64) -> Self {
         self.timeout_seconds = Some(seconds);
         self
@@ -736,11 +743,17 @@ pub struct HitlRequests {
     pub secret: Option<HitlSecretRequests>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub takeover: Option<HitlTakeoverRequests>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<HitlReviewRequests>,
 }
 
 /// Configures ask requests. Present means allowed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HitlAskRequests {}
+
+/// Configures review requests. Present means allowed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlReviewRequests {}
 
 string_enum! {
     /// Kinds of request an environment can raise.
@@ -751,6 +764,10 @@ string_enum! {
         Exec => "exec",
         /// An environment action a gate held.
         Lifecycle => "lifecycle",
+        /// A computer action a gate held.
+        Computer => "computer",
+        /// A file or text/diff blob up for a human's review.
+        Review => "review",
         /// A secret a human types into a declared target.
         Secret => "secret",
         /// A human holding the environment's terminal.
@@ -789,6 +806,25 @@ string_enum! {
 /// The gate name the exec allowlist ([`HitlSpec::exec`]) reports.
 pub const ALLOWLIST_GATE: &str = "exec.allowlist";
 
+string_enum! {
+    /// What a gate's decider answers, and the verdict on a [`DeciderNote`].
+    pub enum DeciderVerdict {
+        Allow => "allow",
+        Deny => "deny",
+        Ask => "ask",
+    }
+}
+
+/// A gate's decider, on [`HitlGate::decide`]: a webhook asked allow, deny
+/// or ask before a human sees an ask gate's action. A failure or a timeout
+/// means ask. `secret` names an entry of the create request's secrets; its
+/// value signs each call (`Fuse-Signature`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HitlDecider {
+    pub url: String,
+    pub secret: String,
+}
+
 /// One enforced gate of a [`HitlSpec`].
 ///
 /// ```
@@ -801,7 +837,8 @@ pub const ALLOWLIST_GATE: &str = "exec.allowlist";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HitlGate {
     pub name: String,
-    /// [`HitlKind::Exec`] or [`HitlKind::Lifecycle`].
+    /// [`HitlKind::Exec`], [`HitlKind::Lifecycle`], [`HitlKind::Computer`],
+    /// [`HitlKind::Stall`] or [`HitlKind::Expiry`].
     pub on: HitlKind,
     #[serde(rename = "match", default)]
     pub matches: HitlGateMatch,
@@ -816,6 +853,9 @@ pub struct HitlGate {
     /// Returned on a deny and shown to the human on an ask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Asked allow, deny or ask before a human sees an ask gate's action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decide: Option<HitlDecider>,
 }
 
 impl HitlGate {
@@ -829,6 +869,7 @@ impl HitlGate {
             grant: None,
             timeout_seconds: None,
             reason: None,
+            decide: None,
         }
     }
 
@@ -841,6 +882,26 @@ impl HitlGate {
             on: HitlKind::Lifecycle,
             ..Self::exec(name, HitlGateMatch::new().action(actions))
         }
+    }
+
+    /// A gate on computer actions matching `matches`
+    /// ([`HitlGateMatch::computer_action`] and
+    /// [`HitlGateMatch::text_contains`]).
+    pub fn computer(name: impl Into<String>, matches: HitlGateMatch) -> Self {
+        Self {
+            on: HitlKind::Computer,
+            ..Self::exec(name, matches)
+        }
+    }
+
+    /// Asks the webhook at `url` before a human. `secret` names an entry of
+    /// the create request's secrets.
+    pub fn decide(mut self, url: impl Into<String>, secret: impl Into<String>) -> Self {
+        self.decide = Some(HitlDecider {
+            url: url.into(),
+            secret: secret.into(),
+        });
+        self
     }
 
     pub fn mode(mut self, mode: GateMode) -> Self {
@@ -879,9 +940,15 @@ pub struct HitlGateMatch {
     /// Matches any opaque shell exec.
     #[serde(skip_serializing_if = "is_false")]
     pub shell: bool,
-    /// Matches lifecycle actions.
+    /// Matches lifecycle actions or, on a computer gate, computer action
+    /// names (`type`, `key`, `left_click`, ...), which decode as
+    /// [`LifecycleAction::Other`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub action: Vec<LifecycleAction>,
+    /// Matches a computer `type` whose text contains any entry, ignoring
+    /// case.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub text_contains: Vec<String>,
     /// Raises a stall after this many consecutive non-zero exec exits
     /// (`on: stall`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -946,6 +1013,27 @@ impl HitlGateMatch {
         self.action = actions.into_iter().collect();
         self
     }
+
+    /// Matches computer actions, on a computer gate.
+    pub fn computer_action<I>(mut self, actions: I) -> Self
+    where
+        I: IntoIterator<Item = crate::computer::ComputerActionKind>,
+    {
+        self.action = actions
+            .into_iter()
+            .map(|a| LifecycleAction::from(a.as_str()))
+            .collect();
+        self
+    }
+
+    pub fn text_contains<I, S>(mut self, text: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.text_contains = text.into_iter().map(Into::into).collect();
+        self
+    }
 }
 
 /// Allowlist mode for exec: a program not in `allow` is held with
@@ -988,6 +1076,52 @@ pub struct LifecyclePayload {
     pub action: LifecycleAction,
 }
 
+/// A held computer action, on [`InterventionPayload::computer`]. `input` is
+/// the action body as sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComputerPayload {
+    pub action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub input: serde_json::Value,
+}
+
+string_enum! {
+    /// The format of a review, on [`ReviewPayload::format`].
+    pub enum ReviewFormat {
+        Text => "text",
+        Diff => "diff",
+    }
+}
+
+/// A review request, on [`InterventionPayload::review`]. `content` is the
+/// file as fuse read it at request time when `path` is set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub content: String,
+    pub format: ReviewFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+}
+
+/// What a gate's decider said when it sent an action on to a human, on
+/// [`InterventionPayload::decider`]: verdict ask with its reason, or the
+/// error fuse fell through on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeciderNote {
+    pub verdict: DeciderVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// What running an approved gated action produced, on
 /// [`Intervention::result`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -995,6 +1129,10 @@ pub struct LifecyclePayload {
 pub struct InterventionResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exec: Option<ExecResult>,
+    /// Set for a computer action that ran: the guest's output and
+    /// screenshot, as the action would have returned them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub computer: Option<ComputerResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1044,6 +1182,8 @@ string_enum! {
         Pinned => "pinned",
         /// An actor the caller named in the `Fuse-Actor` header.
         Asserted => "asserted",
+        /// A gate's decider webhook.
+        Decider => "decider",
     }
 }
 
@@ -1162,6 +1302,15 @@ pub struct InterventionPayload {
     /// What fuse saw, for a stall or expiry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal: Option<InterventionSignal>,
+    /// A held computer action.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub computer: Option<ComputerPayload>,
+    /// What is up for review.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewPayload>,
+    /// The gate decider's note on an action it escalated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decider: Option<DeciderNote>,
 }
 
 /// How an intervention resolved. An expired one carries the on_timeout
@@ -1178,6 +1327,9 @@ pub struct InterventionDecision {
     /// The argv the approver replaced a held exec's with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edited_argv: Vec<String>,
+    /// The text the approver replaced a held computer type's with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edited_text: Option<String>,
     /// How far an approval of a gated action reaches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grant: Option<String>,
@@ -1234,8 +1386,18 @@ impl Intervention {
         if !self.is_terminal() {
             return false;
         }
+        // a decider's allow lets the caller perform the action itself.
+        if self
+            .decision
+            .as_ref()
+            .is_some_and(|d| d.decided_by.source == ActorSource::Decider)
+        {
+            return true;
+        }
         let runs = self.mode == Some(GateMode::Ask)
-            && (self.payload.exec.is_some() || self.payload.lifecycle.is_some());
+            && (self.payload.exec.is_some()
+                || self.payload.lifecycle.is_some()
+                || self.payload.computer.is_some());
         !runs || !self.is_approved() || self.result.is_some()
     }
 }
@@ -1297,6 +1459,9 @@ string_enum! {
     /// How a human takes over an environment.
     pub enum TakeoverVia {
         Terminal => "terminal",
+        /// The live desktop view, recorded as an input-action log plus
+        /// periodic screenshots. It needs a desktop block.
+        Desktop => "desktop",
     }
 }
 

@@ -8,10 +8,11 @@ use serde::{Deserialize, Serialize, Serializer};
 use crate::error::Error;
 use crate::events::EventStream;
 use crate::gates::{decode, Gated, OnHeld};
-use crate::interventions::{wait_intervention, HumanRequest};
+use crate::interventions::{wait_intervention, HumanRequest, ReviewRequest, ReviewResult};
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{
-    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, Intervention, MigrateOptions,
+    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, HitlKind, Intervention,
+    MigrateOptions,
 };
 
 // mirrors the orchestrator's own default guest-command bound. it is what the
@@ -428,6 +429,36 @@ impl Environments {
             return Ok(intervention);
         }
         wait_intervention(&self.t, &intervention.id).await
+    }
+
+    /// Submits a guest file or a text/diff blob for a human to approve or
+    /// reject with comments, and waits for the verdict. It needs
+    /// `hitl.requests.review`. With [`ReviewRequest::no_wait`] it returns at
+    /// once with the pending intervention and `approved` false.
+    pub async fn request_review(
+        &self,
+        vm_id: &str,
+        review: ReviewRequest,
+    ) -> Result<ReviewResult, Error> {
+        let request = HumanRequest {
+            kind: HitlKind::Review,
+            path: review.path,
+            content: review.content,
+            format: review.format,
+            message: review.message,
+            timeout_seconds: review.timeout_seconds,
+            wait: !review.no_wait,
+            ..HumanRequest::ask("")
+        };
+        let intervention = self.request_human(vm_id, request).await?;
+        Ok(ReviewResult {
+            approved: intervention.is_approved(),
+            comments: intervention
+                .decision
+                .as_ref()
+                .and_then(|d| d.reason.clone()),
+            intervention,
+        })
     }
 
     /// Opens the SSE event stream for an environment. The stream ends
