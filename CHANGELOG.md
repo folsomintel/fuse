@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.0](https://github.com/folsomintel/fuse/compare/v0.39.0...v0.40.0) (2026-11-10)
+
+
+### Features
+
+* add wireguard egress provider with a per-environment config secret ([#323](https://github.com/folsomintel/fuse/issues/323)) ([5808e2d](https://github.com/folsomintel/fuse/commit/5808e2d61fba23e97288538ccbb812e0c84ac21c))
+
 ## [0.39.0](https://github.com/folsomintel/fuse/compare/v0.38.0...v0.39.0) (2026-11-05)
 
 
