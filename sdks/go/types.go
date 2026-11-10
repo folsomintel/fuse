@@ -130,12 +130,17 @@ type EgressHealth struct {
 type EgressSpec struct {
 	// Mode is EgressModeDirect or EgressModeProxy.
 	Mode string `json:"mode,omitempty"`
-	// Provider is the proxy backend, required when Mode is proxy (today
-	// "mock"; later "cloudflare-warp").
+	// Provider is the proxy backend, required when Mode is proxy
+	// ("cloudflare-warp", "wireguard", or "mock" for local development).
 	Provider string `json:"provider,omitempty"`
 	// Protocol is EgressProtocolSOCKS5 (the default for proxy) or
 	// EgressProtocolHTTP.
 	Protocol string `json:"protocol,omitempty"`
+	// Secret names an entry of CreateRequest.Secrets holding the
+	// provider's credential, for a provider that takes one: "wireguard"
+	// reads a base64 wg-quick config. The value goes to the host's egress
+	// backend only and is left out of the secrets the guest receives.
+	Secret string `json:"secret,omitempty"`
 }
 
 // EgressStatus is how the environment's outbound traffic is actually routed.

@@ -122,3 +122,23 @@ func withEgressFiles(files map[string][]byte, status egress.Status, env Environm
 	}
 	return out
 }
+
+// GuestSecrets is the secret map the guest receives: secretMap without the
+// egress credential. that credential is for the host-side backend only; a
+// workload holding it could connect the tunnel itself, or carry the key out
+// through the very proxy it configures. the input is never modified.
+func GuestSecrets(secretMap map[string]string, spec egress.Spec) map[string]string {
+	if spec.Secret == "" {
+		return secretMap
+	}
+	if _, ok := secretMap[spec.Secret]; !ok {
+		return secretMap
+	}
+	out := make(map[string]string, len(secretMap))
+	for k, v := range secretMap {
+		if k != spec.Secret {
+			out[k] = v
+		}
+	}
+	return out
+}

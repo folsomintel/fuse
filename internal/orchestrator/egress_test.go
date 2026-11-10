@@ -207,3 +207,67 @@ func TestEgressProvidersListsTheRegistry(t *testing.T) {
 		t.Fatalf("EgressProviders() without a registry = %v, want none", got)
 	}
 }
+
+// credentialEgress records the credential each provision was handed.
+type credentialEgress struct {
+	recordingEgress
+	credentials []string
+}
+
+func (c *credentialEgress) Provision(ctx context.Context, ec egress.Context) (egress.Endpoint, error) {
+	c.mu.Lock()
+	c.credentials = append(c.credentials, ec.Credential)
+	c.mu.Unlock()
+	return c.recordingEgress.Provision(ctx, ec)
+}
+
+func TestEgressSecretIsResolvedForTheProviderOnly(t *testing.T) {
+	rec := &credentialEgress{}
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	ctx := context.Background()
+
+	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "recording", Secret: "WG_CONF"}}
+	secretMap := map[string]string{"WG_CONF": "wg-value", "OTHER": "o"}
+	if _, err := fm.ProvisionAndAssign(ctx, "t-secret", spec, egressManifest, secretMap, BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.credentials) != 1 || rec.credentials[0] != "wg-value" {
+		t.Fatalf("credentials = %v", rec.credentials)
+	}
+	if secretMap["WG_CONF"] != "wg-value" {
+		t.Fatal("the caller's secret map was modified")
+	}
+}
+
+func TestEgressSecretThatWasNotSuppliedFailsTheCreate(t *testing.T) {
+	rec := &credentialEgress{}
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "recording", Secret: "WG_CONF"}}
+	_, err := fm.ProvisionAndAssign(context.Background(), "t-nosecret", spec, egressManifest, map[string]string{"OTHER": "o"}, BootOptions{})
+	if err == nil || !strings.Contains(err.Error(), "WG_CONF") {
+		t.Fatalf("err = %v", err)
+	}
+	if len(rec.credentials) != 0 {
+		t.Fatal("the provider was asked without its secret")
+	}
+}
+
+func TestGuestSecretsDropsOnlyTheEgressSecret(t *testing.T) {
+	in := map[string]string{"WG_CONF": "wg", "API_KEY": "k"}
+	got := GuestSecrets(in, egress.Spec{Mode: egress.ModeProxy, Provider: "wireguard", Secret: "WG_CONF"})
+	if len(got) != 1 || got["API_KEY"] != "k" {
+		t.Fatalf("guest secrets = %v", got)
+	}
+	if len(in) != 2 {
+		t.Fatal("input modified")
+	}
+	if got := GuestSecrets(in, egress.Spec{}); len(got) != 2 {
+		t.Fatalf("no egress secret should pass everything through, got %v", got)
+	}
+	spec := FusedAgentSpec(egressManifest, GuestSecrets(in, egress.Spec{Secret: "WG_CONF"}), nil, BootOptions{})
+	for path, data := range spec.Files {
+		if strings.Contains(string(data), `"wg"`) {
+			t.Fatalf("egress secret reached guest file %s", path)
+		}
+	}
+}

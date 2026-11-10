@@ -83,6 +83,18 @@ and health constants (`EgressModeProxy`, `EgressProtocolHTTP`,
 `EgressHealthUnhealthy`, ...) are plain strings. See the
 [egress guide](/docs/guides/egress) for what proxy mode enforces.
 
+A provider that takes a credential reads it from one of the request's
+secrets, named by `Secret`. The value goes to the host's egress backend and
+is left out of the secrets the guest receives:
+
+```go
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID:  "scrape-1",
+	Secrets: map[string]string{"WG_CONF": wgConfBase64},
+	Egress:  &fuse.EgressSpec{Mode: fuse.EgressModeProxy, Provider: "wireguard", Secret: "WG_CONF"},
+})
+```
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

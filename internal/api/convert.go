@@ -65,6 +65,7 @@ func toOrchestratorEgress(e *EgressSpec) egress.Spec {
 		Mode:     egress.Mode(e.Mode),
 		Provider: e.Provider,
 		Protocol: egress.Protocol(e.Protocol),
+		Secret:   e.Secret,
 	}.Normalize()
 }
 

@@ -315,7 +315,7 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
-	if err := h.validateEgress(req.Egress); err != nil {
+	if err := h.validateEgress(req.Egress, req.Secrets); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
@@ -613,17 +613,22 @@ func validateDesktop(d *DesktopSpec) error {
 // so raw SDK callers are held to the same rules as Fusefile authors, and
 // refuses a provider this orchestrator has not registered before any vm
 // row exists. the error names the providers it does have, so a caller can
-// act on it. a nil block is direct and always valid.
-func (h *Handler) validateEgress(e *EgressSpec) error {
+// act on it. a nil block is direct and always valid. a named egress secret
+// has to be among the request's secrets, so a typo fails here and not after
+// a vm has booted.
+func (h *Handler) validateEgress(e *EgressSpec, secretMap map[string]string) error {
 	if e == nil {
 		return nil
 	}
-	spec := egress.Spec{Mode: egress.Mode(e.Mode), Provider: e.Provider, Protocol: egress.Protocol(e.Protocol)}
+	spec := egress.Spec{Mode: egress.Mode(e.Mode), Provider: e.Provider, Protocol: egress.Protocol(e.Protocol), Secret: e.Secret}
 	if err := spec.Validate(); err != nil {
 		return err
 	}
 	if !spec.IsProxy() {
 		return nil
+	}
+	if spec.Secret != "" && secretMap[spec.Secret] == "" {
+		return fmt.Errorf("egress: secret %q is not among the request's secrets", spec.Secret)
 	}
 	known := h.Fleet.EgressProviders()
 	for _, name := range known {

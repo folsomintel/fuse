@@ -558,6 +558,8 @@ func TestCreateEnvironment_egressRejectedBeforeAnyVMExists(t *testing.T) {
 		{"direct with provider", &EgressSpec{Mode: "direct", Provider: "mock"}, `requires mode "proxy"`},
 		{"proxy without provider", &EgressSpec{Mode: "proxy"}, "requires a provider"},
 		{"bad mode", &EgressSpec{Mode: "tunnel"}, `unknown mode "tunnel"`},
+		{"direct with secret", &EgressSpec{Mode: "direct", Secret: "WG_CONF"}, `secret "WG_CONF" requires mode "proxy"`},
+		{"egress secret not supplied", &EgressSpec{Mode: "proxy", Provider: "mock", Secret: "WG_CONF"}, `secret "WG_CONF" is not among the request's secrets`},
 		{"bad protocol", &EgressSpec{Mode: "proxy", Provider: "mock", Protocol: "ftp"}, `unknown protocol "ftp"`},
 	}
 	for _, tc := range cases {

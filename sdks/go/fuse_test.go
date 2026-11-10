@@ -86,6 +86,28 @@ func TestEnvironmentsCreate_carriesEgressAndOmitsItWhenUnset(t *testing.T) {
 	}
 }
 
+func TestEnvironmentsCreate_carriesTheEgressSecretName(t *testing.T) {
+	var body []byte
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"vm-1","state":"running","task_id":"task-1","url":"u"}`)
+	})
+	defer cleanup()
+
+	_, err := c.Environments.Create(context.Background(), CreateRequest{
+		TaskID:  "task-1",
+		Secrets: map[string]string{"WG_CONF": "d2c="},
+		Egress:  &EgressSpec{Mode: EgressModeProxy, Provider: "wireguard", Secret: "WG_CONF"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !strings.Contains(string(body), `"egress":{"mode":"proxy","provider":"wireguard","secret":"WG_CONF"}`) {
+		t.Fatalf("request body missing the egress secret name: %s", body)
+	}
+}
+
 func TestEnvironmentsGet_decodesEgressStatus(t *testing.T) {
 	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

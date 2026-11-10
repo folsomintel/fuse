@@ -74,6 +74,9 @@ func (w *Warp) Provision(ctx context.Context, ec Context) (Endpoint, error) {
 	if ec.ListenIP == "" {
 		return Endpoint{}, errors.New("cloudflare-warp: the vm reported no tap address to publish the proxy on")
 	}
+	if ec.Credential != "" {
+		return Endpoint{}, errors.New("cloudflare-warp takes no egress secret; its credential is orchestrator config")
+	}
 	req := HostRequest{
 		Provider: WarpName,
 		Protocol: ec.Protocol,

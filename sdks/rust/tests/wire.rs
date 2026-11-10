@@ -256,6 +256,10 @@ fn create_request_omits_an_unset_egress() {
         serde_json::to_value(EgressSpec::proxy("mock").protocol(EgressProtocol::Http)).unwrap(),
         json!({"mode": "proxy", "provider": "mock", "protocol": "http"})
     );
+    assert_eq!(
+        serde_json::to_value(EgressSpec::proxy("wireguard").secret("WG_CONF")).unwrap(),
+        json!({"mode": "proxy", "provider": "wireguard", "secret": "WG_CONF"})
+    );
 }
 
 // EgressMode is a string_enum, so a mode this build has no variant for is

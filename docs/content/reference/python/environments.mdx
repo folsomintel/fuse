@@ -64,6 +64,20 @@ if info.egress and info.egress.health and info.egress.health.state == "unhealthy
 server that grows a new value still parses here. See the
 [egress guide](/docs/guides/egress) for what proxy mode enforces.
 
+A provider that takes a credential reads it from one of the request's
+secrets, named by `secret`. The value goes to the host's egress backend and
+is left out of the secrets the guest receives:
+
+```python
+env = client.environments.create(
+    fuse.CreateRequest(
+        task_id="scrape-1",
+        secrets={"WG_CONF": wg_conf_base64},
+        egress=fuse.EgressSpec(mode="proxy", provider="wireguard", secret="WG_CONF"),
+    )
+)
+```
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot

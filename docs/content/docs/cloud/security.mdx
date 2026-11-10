@@ -214,7 +214,8 @@ is not:
   A proxy-mode environment can fetch anything the backend can reach.
 - **No allowlist.** There is no per-environment destination policy. If you
   need one, the place to apply it is the backend: a Zero Trust organisation's
-  gateway rules for `cloudflare-warp`, nothing for `mock`.
+  gateway rules for `cloudflare-warp`, the VPN server's own rules for
+  `wireguard`, nothing for `mock`.
 - **The mock is not private.** `mock` is a socks5 server inside the
   orchestrator process, egressing from wherever that process runs. It
   proves the policy is enforced; it hides nothing and is registered only
@@ -228,6 +229,14 @@ separate matter: they stay in the orchestrator's configuration, travel to the
 host agent per provision request, and are never written to the agent's state,
 a log line, or the guest. See
 [WARP egress host setup](/docs/cloud/warp-host-setup#where-the-credential-goes-and-where-it-never-goes).
+
+`wireguard` is the exception to "orchestrator configuration": each
+environment brings its own config as a secret named by `egress.secret`. The
+orchestrator keeps that secret out of the guest's `/fuse/secrets.json` and
+sends it only to the host agent, which writes it once, mode 600 under
+`/run/fuse-wireguard/` (tmpfs), for the bridge's unit to read as a systemd
+credential. See
+[WireGuard egress host setup](/docs/cloud/wireguard-host-setup#how-it-works).
 
 ## What this doesn't cover
 

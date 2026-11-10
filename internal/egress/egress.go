@@ -24,6 +24,11 @@ type Spec struct {
 	Mode     Mode     `json:"mode,omitempty"`
 	Provider string   `json:"provider,omitempty"`
 	Protocol Protocol `json:"protocol,omitempty"`
+	// Secret names the environment secret that carries the provider's
+	// credential (wireguard's base64 config). it is a name, never a value:
+	// the value is resolved from the create request's secrets at provision
+	// time and handed to the provider alone, never to the guest.
+	Secret string `json:"secret,omitempty"`
 }
 
 func (s Spec) IsProxy() bool { return s.Mode == ModeProxy }
@@ -51,6 +56,9 @@ func (s Spec) Validate() error {
 		if s.Protocol != "" {
 			return fmt.Errorf("egress: protocol %q requires mode %q", s.Protocol, ModeProxy)
 		}
+		if s.Secret != "" {
+			return fmt.Errorf("egress: secret %q requires mode %q", s.Secret, ModeProxy)
+		}
 		return nil
 	case ModeProxy:
 		if s.Provider == "" {
@@ -74,6 +82,10 @@ type Context struct {
 	GuestIP  string
 	Protocol Protocol
 	Host     HostAgent
+	// Credential is the resolved value of Spec.Secret, empty when the spec
+	// names none. a provider that takes no credential refuses a non-empty
+	// one rather than ignoring it.
+	Credential string
 }
 
 type HostAgent interface {
