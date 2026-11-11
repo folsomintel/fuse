@@ -336,6 +336,21 @@ class PeerKeepAliveTest(unittest.TestCase):
         self.assertEqual(src.chunk(1), MEM[PAGE:2 * PAGE])
         self.assertEqual(len(self.connects), 2)
 
+    def test_a_stalled_source_is_not_retried_on_a_new_connection(self):
+        src = self.source()
+
+        class Stalled:
+            def request(self, *a, **k):
+                raise TimeoutError("timed out")
+
+            def close(self):
+                pass
+
+        src.local.conn = Stalled()
+        with self.assertRaises(TimeoutError):
+            src.chunk(0)
+        self.assertEqual(self.connects, [])
+
     def test_a_refused_chunk_is_not_retried_on_a_new_connection(self):
         src = self.source()
         src.grant = "v1.nope"

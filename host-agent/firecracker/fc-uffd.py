@@ -106,7 +106,9 @@ class PeerSource:
         if conn is not None:
             try:
                 return self.request(conn, i)
-            except BadChunk:
+            except (BadChunk, TimeoutError):
+                # a stalled source is not a dropped connection: retrying it at
+                # once would wait out FETCH_TIMEOUT twice per attempt.
                 raise
             except (OSError, http.client.HTTPException):
                 # the agent drops a connection that sat idle past its request
