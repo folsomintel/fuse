@@ -473,6 +473,60 @@ func TestHostsListGPUColumn(t *testing.T) {
 	}
 }
 
+// the firecracker column shows each host's release, the pin when it differs,
+// and a warning names the skew when hosts disagree.
+func TestHostsListFirecrackerSkew(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"hosts":[
+			{"id":"fc-a","url":"http://a","state":"active","capacity":{"cpus":8,"ram_mb":16384,"vm_count":4,"firecracker":"v1.16.0","firecracker_pinned":"v1.17.0"},"allocated":{}},
+			{"id":"fc-b","url":"http://b","state":"active","capacity":{"cpus":8,"ram_mb":16384,"vm_count":4,"firecracker":"v1.17.0","firecracker_pinned":"v1.17.0"},"allocated":{}},
+			{"id":"qemu-1","url":"http://q","state":"active","backend":"qemu","capacity":{"cpus":8,"ram_mb":16384,"vm_count":4},"allocated":{}}
+		]}`)
+	}))
+	defer srv.Close()
+
+	cfg := writeConfig(t, srv.URL)
+	out, errOut, err := captureBoth(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "hosts", "list"})
+		return root.Execute()
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out, "FIRECRACKER") {
+		t.Errorf("output missing FIRECRACKER header: %s", out)
+	}
+	if !strings.Contains(out, "v1.16.0 (pinned v1.17.0)") {
+		t.Errorf("output missing the behind-pin cell: %s", out)
+	}
+	if !strings.Contains(errOut, "v1.16.0 on fc-a; v1.17.0 on fc-b") {
+		t.Errorf("stderr missing the skew warning: %s", errOut)
+	}
+}
+
+func TestFirecrackerSkew(t *testing.T) {
+	host := func(id, version string) fuse.Host {
+		return fuse.Host{ID: id, Capacity: fuse.HostCapacity{Firecracker: version}}
+	}
+	cases := []struct {
+		name  string
+		hosts []fuse.Host
+		want  string
+	}{
+		{"none", nil, ""},
+		{"all agree", []fuse.Host{host("a", "v1.17.0"), host("b", "v1.17.0")}, ""},
+		{"unreported hosts are ignored", []fuse.Host{host("a", "v1.17.0"), host("q", "")}, ""},
+		{"skew", []fuse.Host{host("b", "v1.17.0"), host("a", "v1.16.0"), host("c", "v1.17.0")},
+			"v1.16.0 on a; v1.17.0 on b, c"},
+	}
+	for _, c := range cases {
+		if got := firecrackerSkew(c.hosts); got != c.want {
+			t.Errorf("%s: firecrackerSkew = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestHostsListGPUCell(t *testing.T) {
 	cases := []struct {
 		name string
