@@ -562,8 +562,10 @@ export class EnvironmentsService {
   /**
    * Phase-1 only: quiesces the guest workload and moves the environment to
    * "draining" so you can inspect its output, but does not destroy it. Call
-   * destroy() afterward to remove it - a drained environment left
-   * undestroyed keeps running (and billing) forever.
+   * destroy() afterward to remove it. A drained environment left
+   * undestroyed keeps running (and billing) until the orchestrator's
+   * draining timeout (5m30s by default) passes, and then the orchestrator
+   * destroys it.
    */
   async drain(vmId: string, opts: CallOptions = {}): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
