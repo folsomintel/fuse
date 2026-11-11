@@ -100,6 +100,11 @@ type ArtifactMoved struct {
 	// live snapshots ignores Files and commits the rootfs alone, and says so
 	// here by reporting nothing, which reads as disk.
 	Kind SnapshotKind
+	// Files is what the receiving host reports about the copy it committed,
+	// file name to sha256. only a delta merge has digests of its own to
+	// report (see moveDeltaToHost); a full move commits the digests it was
+	// given.
+	Files map[string]string
 }
 
 // liveFilesMetadataKey is where a live snapshot record keeps the digests of

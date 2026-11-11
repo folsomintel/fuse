@@ -421,6 +421,12 @@ type ArtifactPullResponse struct {
 	// that predates Files ignores it, commits the rootfs alone and sends no
 	// kind, which is how the caller finds out.
 	Kind string `json:"kind,omitempty"`
+	// Files is the committed copy's memory half, file name to hex sha256. on a
+	// delta pull merged onto a version 2 base these are the merged copy's own
+	// digests (the agent rewrites its live.json and works out its mem digest
+	// from the base's chunk table), which is what lets it move on as a full
+	// live snapshot. an older agent, or a version 1 base, reports no mem.
+	Files map[string]string `json:"files,omitempty"`
 	// SourcePeer is the peer the bytes came from. Provenance matters here in
 	// a way it does not for a locally built snapshot: there is no origin VM on
 	// this host to point at.
