@@ -138,8 +138,24 @@ There is one strike, not two: nothing legitimate keeps an environment in
 same path a stuck task takes: a `vm.drain_expired` event, the VM moves to
 `destroying`, its task (if any) is failed, and a `drain_timeout` dead letter is
 recorded. The destroy itself runs in the background, so a host call that hangs
-does not hold up the cycle. Destroying the VM through the host agent also removes
-its port forwards and tap, as an explicit destroy does.
+does not hold up the cycle. The host agent removes the VM's port forwards and
+tap as it does for any destroy. Unlike an explicit destroy, this teardown does
+not remove a fuse-proxy ingress route, so a
+VM published through fuse-proxy keeps its route (the same is true of stuck-task
+and idle teardowns).
+
+Human-in-the-loop holds the reaper the way it holds idle expiry. An environment
+with a pending intervention, or an expiry extension a human approved, is left
+alone until that clears. An environment whose `hitl.gates` hold or deny
+`destroy` (mode `ask` or `deny`) is never reaped from `draining`: a human owns
+that destroy, and one they rejected stays rejected. A `notify` gate holds
+nothing.
+
+If a teardown fails (the host returned an error or was unreachable), the VM stays
+`destroying` while the host still lists it. Every cycle retries the destroy of
+such a VM once it has been `destroying` for more than two minutes, so it goes away
+once the host recovers. This applies to every background teardown, not only
+draining ones.
 
 ## Health verdicts
 
