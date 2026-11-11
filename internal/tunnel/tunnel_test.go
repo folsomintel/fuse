@@ -95,6 +95,7 @@ type harness struct {
 	hellos atomic.Int32
 	cfg    Config
 	rec    *recorder
+	token  atomic.Value // the token the authenticator accepts
 }
 
 func startServer(t *testing.T) *harness {
@@ -109,9 +110,10 @@ func startServer(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{rec: &recorder{handshakes: map[string]int{}, probes: map[bool]int{}}}
+	h.token.Store("secret")
 	h.srv, err = Listen(udp, cert, func(owner, token string) bool {
 		h.hellos.Add(1)
-		return owner == "vm-1" && token == "secret"
+		return owner == "vm-1" && token == h.token.Load().(string)
 	}, quiet)
 	if err != nil {
 		t.Fatal(err)
@@ -288,6 +290,9 @@ type relay struct {
 	mu     sync.Mutex
 	back   net.PacketConn
 	client net.Addr
+	// blocked drops every packet both ways, which to the proxy looks like a
+	// paused guest.
+	blocked atomic.Bool
 }
 
 func newRelay(t *testing.T, server net.Addr) *relay {
@@ -310,7 +315,9 @@ func newRelay(t *testing.T, server net.Addr) *relay {
 			r.client = from
 			back := r.back
 			r.mu.Unlock()
-			_, _ = back.WriteTo(buf[:n], server)
+			if !r.blocked.Load() {
+				_, _ = back.WriteTo(buf[:n], server)
+			}
 		}
 	}()
 	return r
@@ -340,7 +347,7 @@ func (r *relay) swap(t *testing.T) {
 			r.mu.Lock()
 			client := r.client
 			r.mu.Unlock()
-			if client != nil {
+			if client != nil && !r.blocked.Load() {
 				_, _ = r.front.WriteTo(buf[:n], client)
 			}
 		}
@@ -388,4 +395,246 @@ func TestAnOpenStreamSurvivesTheGuestChangingAddress(t *testing.T) {
 	if h.rec.migrations < 1 || h.rec.connected != 1 {
 		t.Fatalf("%d path migrations and %d connections, want at least 1 and exactly 1", h.rec.migrations, h.rec.connected)
 	}
+}
+
+// downloadServer is a guest-side service that sends size bytes of a known
+// pattern to every client, as fast as the client reads them.
+func downloadServer(t *testing.T, size int) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				buf := make([]byte, 32<<10)
+				for sent := 0; sent < size; sent += len(buf) {
+					for i := range buf {
+						buf[i] = byte((sent + i) % 251)
+					}
+					if _, err := c.Write(buf[:min(len(buf), size-sent)]); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// readPattern reads n bytes from r starting at offset and checks they follow
+// downloadServer's pattern.
+func readPattern(t *testing.T, r io.Reader, offset, n int) {
+	t.Helper()
+	buf := make([]byte, n)
+	if _, err := io.ReadFull(r, buf); err != nil {
+		t.Fatalf("read %d bytes at %d: %v", n, offset, err)
+	}
+	for i, b := range buf {
+		if b != byte((offset+i)%251) {
+			t.Fatalf("byte %d = %d, want %d", offset+i, b, (offset+i)%251)
+		}
+	}
+}
+
+func registered(t *testing.T, srv *Server) *guest {
+	t.Helper()
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	g := srv.guests["vm-1"]
+	if g == nil {
+		t.Fatal("no guest registered")
+	}
+	return g
+}
+
+func waitClosed(t *testing.T, g *guest, within time.Duration) {
+	t.Helper()
+	select {
+	case <-g.conn.Context().Done():
+	case <-time.After(within):
+		t.Fatalf("the retired connection was still open after %s", within)
+	}
+}
+
+// rotating a running guest's token must not break a download it is serving:
+// the old connection keeps the streams it has, every new stream goes to the
+// guest that dialed in with the new token, and the old connection closes once
+// its last stream is done.
+func TestRotatingTheTokenKeepsAnInProgressDownload(t *testing.T) {
+	const size = 4 << 20
+	h := startServer(t)
+	h.cfg.Ports = []int{downloadServer(t, size), echoServer(t)}
+	runSidecar(t, h.cfg)
+
+	dl, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer dl.Close()
+	_ = dl.SetDeadline(time.Now().Add(30 * time.Second))
+	readPattern(t, dl, 0, 1<<20)
+
+	old := registered(t, h.srv)
+	h.token.Store("rotated")
+	h.srv.Retire("vm-1")
+
+	rotated := h.cfg
+	rotated.Token = "rotated"
+	runSidecar(t, rotated)
+	fresh, err := open(t, h.srv, h.cfg.Ports[1], 10*time.Second)
+	if err != nil {
+		t.Fatalf("open after the rotation: %v", err)
+	}
+	defer fresh.Close()
+	roundTrip(t, fresh, bufio.NewReader(fresh), "new token")
+	if fresh.RemoteAddr().String() == dl.RemoteAddr().String() {
+		t.Fatal("a new stream went to the retired connection")
+	}
+	if registered(t, h.srv) == old {
+		t.Fatal("the retired guest is still registered")
+	}
+
+	readPattern(t, dl, 1<<20, size-(1<<20))
+	select {
+	case <-old.conn.Context().Done():
+		t.Fatal("the retired connection closed before its download was closed")
+	default:
+	}
+	_ = dl.Close()
+	waitClosed(t, old, 5*time.Second)
+}
+
+// a stream that never ends must not keep a revoked connection alive.
+func TestARetiredConnectionClosesAtTheEndOfItsGrace(t *testing.T) {
+	h := startServer(t)
+	h.srv.drainGrace = 300 * time.Millisecond
+	h.cfg.Ports = []int{echoServer(t)}
+	runSidecar(t, h.cfg)
+
+	c, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	r := bufio.NewReader(c)
+	roundTrip(t, c, r, "before")
+
+	old := registered(t, h.srv)
+	h.srv.Retire("vm-1")
+	roundTrip(t, c, r, "inside the grace")
+	waitClosed(t, old, 5*time.Second)
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(c, "after\n"); err == nil {
+		if _, err := r.ReadString('\n'); err == nil {
+			t.Fatal("the stream still worked after the grace ended")
+		}
+	}
+}
+
+// with nothing open there is nothing to wait for.
+func TestAnIdleRetiredConnectionClosesAtOnce(t *testing.T) {
+	h := startServer(t)
+	runSidecar(t, h.cfg)
+	deadline := time.Now().Add(5 * time.Second)
+	for !h.srv.Connected("vm-1") {
+		if time.Now().After(deadline) {
+			t.Fatal("guest never connected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	old := registered(t, h.srv)
+	h.srv.Retire("vm-1")
+	waitClosed(t, old, time.Second)
+}
+
+// removing an owner cuts a connection that is still draining after a token
+// rotation, rather than letting it serve out its grace.
+func TestDropClosesARetiredConnectionStillDraining(t *testing.T) {
+	h := startServer(t)
+	h.cfg.Ports = []int{echoServer(t)}
+	runSidecar(t, h.cfg)
+
+	c, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roundTrip(t, c, bufio.NewReader(c), "before")
+
+	old := registered(t, h.srv)
+	h.srv.Retire("vm-1")
+	h.srv.Drop("vm-1")
+	waitClosed(t, old, time.Second)
+	h.srv.mu.Lock()
+	defer h.srv.mu.Unlock()
+	if len(h.srv.retiring) != 0 {
+		t.Fatalf("%d guests still tracked as retiring after the drop", len(h.srv.retiring))
+	}
+}
+
+// a clone's probe of a paused guest must not close that guest if a token
+// rotation retires it while the probe is still waiting: a retired guest is
+// draining, not failed.
+func TestAProbeThatOutlivesARetireDoesNotCloseTheRetiredGuest(t *testing.T) {
+	old := keepAlive
+	t.Cleanup(func() { keepAlive = old })
+	keepAlive = 200 * time.Millisecond
+
+	h := startServer(t)
+	h.cfg.Ports = []int{echoServer(t)}
+	rl := newRelay(t, h.srv.Addr())
+	paused := h.cfg
+	paused.ProxyAddr = rl.front.LocalAddr().String()
+	runSidecar(t, paused)
+
+	c, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	r := bufio.NewReader(c)
+	roundTrip(t, c, r, "before the pause")
+	retired := registered(t, h.srv)
+
+	rl.blocked.Store(true)
+	runSidecar(t, h.cfg) // the clone, which probes the paused guest
+	deadline := time.Now().Add(5 * time.Second)
+	for h.hellos.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the clone never said hello")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.srv.Retire("vm-1")
+
+	// wait out the probe the clone started before the retire.
+	deadline = time.Now().Add(probeTimeout + 5*time.Second)
+	for {
+		h.rec.mu.Lock()
+		dead := h.rec.probes[false]
+		h.rec.mu.Unlock()
+		if dead > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the clone's probe never finished")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-retired.conn.Context().Done():
+		t.Fatalf("the probe closed the retired guest: %v", context.Cause(retired.conn.Context()))
+	default:
+	}
+
+	rl.blocked.Store(false)
+	roundTrip(t, c, r, "after the pause")
 }

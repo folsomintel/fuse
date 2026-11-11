@@ -58,10 +58,71 @@ type Server struct {
 	// pathCheck is how often a registered guest's address is compared with
 	// the last one seen. a field so a test can shorten it.
 	pathCheck time.Duration
+	// drainGrace bounds how long a retired guest keeps serving the streams it
+	// already had. a field so a test can shorten it.
+	drainGrace time.Duration
+
+	mu     sync.Mutex
+	guests map[string]*guest
+	// retiring holds guests Retire took out of guests, by owner, until their
+	// drain ends, so Drop can still cut them.
+	retiring map[*guest]string
+	changed  chan struct{} // closed and replaced whenever guests changes
+}
+
+// guest is one registered connection and the client streams open on it.
+type guest struct {
+	conn *quic.Conn
 
 	mu      sync.Mutex
-	guests  map[string]*quic.Conn
-	changed chan struct{} // closed and replaced whenever guests changes
+	streams int
+	retired bool
+	idle    chan struct{} // closed once retired with no stream open
+}
+
+// acquire counts a stream about to be opened on g. the server calls it under
+// its own lock while g is still registered.
+func (g *guest) acquire() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.streams++
+}
+
+// release is the matching end of acquire, once that stream is closed or
+// failed to open.
+func (g *guest) release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.streams--
+	if g.retired && g.streams == 0 {
+		close(g.idle)
+	}
+}
+
+// retire marks g as taking no new streams and returns a channel closed once
+// the ones it has are done. call it once, after g is out of the guests map, so
+// no acquire can follow it.
+func (g *guest) retire() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.retired = true
+	if g.streams == 0 {
+		close(g.idle)
+	}
+	return g.idle
+}
+
+// trackedConn releases its guest's stream count once, on the first Close.
+type trackedConn struct {
+	*streamConn
+	once    sync.Once
+	release func()
+}
+
+func (c *trackedConn) Close() error {
+	err := c.streamConn.Close()
+	c.once.Do(c.release)
+	return err
 }
 
 // Listen starts accepting guests on conn.
@@ -76,13 +137,15 @@ func Listen(conn net.PacketConn, cert tls.Certificate, auth Authenticator, logge
 		return nil, err
 	}
 	return &Server{
-		ln:        ln,
-		auth:      auth,
-		logger:    logger,
-		metrics:   nopMetrics{},
-		pathCheck: time.Second,
-		guests:    make(map[string]*quic.Conn),
-		changed:   make(chan struct{}),
+		ln:         ln,
+		auth:       auth,
+		logger:     logger,
+		metrics:    nopMetrics{},
+		pathCheck:  time.Second,
+		drainGrace: drainGrace,
+		guests:     make(map[string]*guest),
+		retiring:   make(map[*guest]string),
+		changed:    make(chan struct{}),
 	}, nil
 }
 
@@ -174,7 +237,10 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 // replaced reports whether an established guest was evicted to make room.
 func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (registered, replaced bool) {
 	s.mu.Lock()
-	existing := s.guests[owner]
+	var existing *quic.Conn
+	if g := s.guests[owner]; g != nil {
+		existing = g.conn
+	}
 	s.mu.Unlock()
 
 	if existing != nil {
@@ -187,14 +253,20 @@ func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (r
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if current := s.guests[owner]; current != nil && current != existing {
-		// somebody else registered while we were probing.
+	var current *quic.Conn
+	if g := s.guests[owner]; g != nil {
+		current = g.conn
+	}
+	if current != existing {
+		// somebody else registered while we were probing, or the probed guest
+		// was retired or dropped. a retired guest is draining, not failed, so
+		// it is not closed here.
 		return false, false
 	}
 	if existing != nil {
 		_ = existing.CloseWithError(2, "replaced")
 	}
-	s.guests[owner] = conn
+	s.guests[owner] = &guest{conn: conn, idle: make(chan struct{})}
 	s.broadcastLocked()
 	return true, existing != nil
 }
@@ -224,7 +296,7 @@ func (s *Server) watchPath(owner string, conn *quic.Conn) {
 func (s *Server) unregister(owner string, conn *quic.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.guests[owner] == conn {
+	if g := s.guests[owner]; g != nil && g.conn == conn {
 		delete(s.guests, owner)
 		s.broadcastLocked()
 	}
@@ -255,20 +327,66 @@ func (s *Server) Connected(owner string) bool {
 	return s.guests[owner] != nil
 }
 
-// Drop disconnects owner's guest, if any. used when the owner is deleted or
-// its token is replaced, so a revoked credential stops carrying traffic now
-// rather than whenever the connection next ends.
+// Drop disconnects owner's guest, if any, and every stream on it. used when
+// the owner is deleted, so it stops carrying traffic now rather than whenever
+// the connection next ends. a replaced token goes through Retire instead.
 func (s *Server) Drop(owner string) {
 	s.mu.Lock()
-	conn := s.guests[owner]
+	var cut []*guest
+	if g := s.guests[owner]; g != nil {
+		cut = append(cut, g)
+		delete(s.guests, owner)
+		s.broadcastLocked()
+	}
+	// a guest still draining after a token rotation goes too: a removed
+	// owner carries no traffic under any token.
+	for g, o := range s.retiring {
+		if o == owner {
+			cut = append(cut, g)
+			delete(s.retiring, g)
+		}
+	}
+	s.mu.Unlock()
+	for _, g := range cut {
+		_ = g.conn.CloseWithError(3, "owner removed")
+	}
+}
+
+// Retire stops sending new streams to owner's guest and closes its connection
+// once the streams it already carries are done, or drainGrace has passed,
+// whichever is first. used when the owner's token is replaced: the guest that
+// dials in with the new token registers at once and takes every new stream,
+// while a download that started under the old one is allowed to finish.
+//
+// the old connection is always closed at the end, so a guest still holding
+// the revoked token cannot outlive the grace period.
+func (s *Server) Retire(owner string) {
+	s.mu.Lock()
+	g := s.guests[owner]
 	delete(s.guests, owner)
-	if conn != nil {
+	if g != nil {
+		s.retiring[g] = owner
 		s.broadcastLocked()
 	}
 	s.mu.Unlock()
-	if conn != nil {
-		_ = conn.CloseWithError(3, "owner removed")
+	if g == nil {
+		return
 	}
+	idle := g.retire()
+	go func() {
+		timer := time.NewTimer(s.drainGrace)
+		defer timer.Stop()
+		select {
+		case <-idle:
+		case <-timer.C:
+			s.logger.Info("retired guest still had open streams at the end of its grace period", "owner", owner)
+		case <-g.conn.Context().Done():
+		}
+		_ = g.conn.CloseWithError(3, "token replaced")
+		s.mu.Lock()
+		delete(s.retiring, g)
+		s.mu.Unlock()
+	}()
 }
 
 // Open connects to port on owner's guest, waiting until ctx is done for the
@@ -282,14 +400,21 @@ func (s *Server) Drop(owner string) {
 func (s *Server) Open(ctx context.Context, owner string, port int) (net.Conn, error) {
 	for {
 		s.mu.Lock()
-		conn := s.guests[owner]
+		g := s.guests[owner]
+		if g != nil {
+			g.acquire()
+		}
 		changed := s.changed
 		s.mu.Unlock()
 
-		if conn != nil {
-			c, err := openStream(ctx, conn, port)
-			if err == nil || errors.Is(err, errRefused) {
-				return c, err
+		if g != nil {
+			c, err := openStream(ctx, g.conn, port)
+			if err == nil {
+				return &trackedConn{streamConn: c, release: g.release}, nil
+			}
+			g.release()
+			if errors.Is(err, errRefused) {
+				return nil, err
 			}
 			if ctx.Err() != nil {
 				return nil, ErrNoTunnel
@@ -308,7 +433,7 @@ func (s *Server) Open(ctx context.Context, owner string, port int) (net.Conn, er
 var errRefused = errors.New("tunnel: guest refused the port")
 
 // openStream opens one stream toward the guest and waits for it to accept.
-func openStream(ctx context.Context, conn *quic.Conn, port int) (net.Conn, error) {
+func openStream(ctx context.Context, conn *quic.Conn, port int) (*streamConn, error) {
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
@@ -316,7 +441,7 @@ func openStream(ctx context.Context, conn *quic.Conn, port int) (net.Conn, error
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = stream.SetDeadline(deadline)
 	}
-	abort := func(err error) (net.Conn, error) {
+	abort := func(err error) (*streamConn, error) {
 		stream.CancelRead(0)
 		stream.CancelWrite(0)
 		return nil, err

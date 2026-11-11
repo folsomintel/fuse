@@ -297,6 +297,54 @@ func TestRepublishKeepsThePortAndRotatesTheToken(t *testing.T) {
 	}
 }
 
+// a client connected before a token rotation keeps its connection, and one
+// that connects after it reaches the guest holding the new token.
+func TestRotatingTheTokenKeepsAnOpenClientConnection(t *testing.T) {
+	r := newRig(t, t.TempDir())
+	port := startGuest(t, "vm-1")
+	grant := r.publish(t, "vm-1", port, "")
+	runSidecar(t, grant, "vm-1", port)
+
+	held, err := net.DialTimeout("tcp", grant.Routes[0].URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	_ = held.SetDeadline(time.Now().Add(20 * time.Second))
+	heldReader := bufio.NewReader(held)
+	_, _ = io.WriteString(held, "who\n")
+	if line, err := heldReader.ReadString('\n'); line != "vm-1\n" {
+		t.Fatalf("before the rotation the held connection answered %q, %v", line, err)
+	}
+
+	// the rotated guest answers with its own name on its own port, which the
+	// old sidecar does not publish, so a new client served by the retired
+	// connection is refused or answered by the wrong name.
+	rotatedPort := startGuest(t, "rotated")
+	if _, err := r.admin.Publish(context.Background(), orchestrator.IngressRequest{
+		Owner: "vm-1", Token: "rotated",
+		Ports: []orchestrator.IngressPort{{Name: "agent", GuestPort: rotatedPort}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() {
+		_ = tunnel.Run(ctx, tunnel.Config{
+			ProxyAddr: grant.ProxyAddr, ServerCertPEM: grant.ServerCertPEM,
+			Owner: "vm-1", Token: "rotated", Ports: []int{rotatedPort},
+		}, quiet)
+	}()
+	if got := ask(t, grant.Routes[0].URL); got != "rotated" {
+		t.Fatalf("after the rotation: answered by %q, want the rotated guest", got)
+	}
+
+	_, _ = io.WriteString(held, "who\n")
+	if line, err := heldReader.ReadString('\n'); line != "vm-1\n" {
+		t.Fatalf("the rotation cut the held connection: %q, %v", line, err)
+	}
+}
+
 func TestAdminAPIRequiresTheToken(t *testing.T) {
 	r := newRig(t, t.TempDir())
 	stranger := NewClient(r.admin.BaseURL, "wrong")

@@ -48,6 +48,10 @@ const (
 	// probe before a newcomer with the same identity is allowed to replace it.
 	probeTimeout = 3 * time.Second
 
+	// drainGrace is how long a guest whose token was replaced keeps serving
+	// the streams it already had before its connection is closed anyway.
+	drainGrace = 5 * time.Minute
+
 	// maxStreams caps concurrent client connections per guest.
 	maxStreams = 4096
 
