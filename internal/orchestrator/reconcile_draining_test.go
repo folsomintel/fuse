@@ -227,3 +227,53 @@ func TestStuckDraining_hangingDestroyDoesNotBlockCycle(t *testing.T) {
 		t.Errorf("state = %s, want destroying while the host call hangs", state)
 	}
 }
+
+// an orphan destroy that hangs is cut off at the per-call timeout, counted as
+// a failed attempt, and the cycle finishes.
+func TestReconcileOrphan_hangingDestroyIsBounded(t *testing.T) {
+	metrics := &captureMetrics{}
+	p := newHangingDestroyProvider(t, "fuse-orphan")
+	fm := NewFleetManager(FleetConfig{
+		Provider: p,
+		Prefix:   "fuse-",
+		Metrics:  metrics,
+	})
+	fm.orphanDestroyTimeout = 50 * time.Millisecond
+
+	p.mu.Lock()
+	p.envs["fuse-orphan"] = &mockEnv{name: "fuse-orphan"}
+	p.envs["fuse-orphan-2"] = &mockEnv{name: "fuse-orphan-2"}
+	p.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		fm.reconcile(context.Background())
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcile blocked on a hanging orphan destroy")
+	}
+
+	got := metrics.last()
+	if got.OrphansFailed != 1 {
+		t.Errorf("OrphansFailed = %d, want 1", got.OrphansFailed)
+	}
+	// the other orphan is still destroyed in the same cycle.
+	if got.OrphansDestroyed != 1 {
+		t.Errorf("OrphansDestroyed = %d, want 1", got.OrphansDestroyed)
+	}
+	p.mu.Lock()
+	lastErr := p.lastErr
+	p.mu.Unlock()
+	if !errors.Is(lastErr, context.DeadlineExceeded) {
+		t.Errorf("hanging destroy ended with %v, want context.DeadlineExceeded", lastErr)
+	}
+	fm.mu.RLock()
+	retries := fm.orphanRetries["fuse-orphan"]
+	fm.mu.RUnlock()
+	if retries != 1 {
+		t.Errorf("orphan retries = %d, want 1", retries)
+	}
+}
