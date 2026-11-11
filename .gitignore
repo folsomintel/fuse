@@ -23,7 +23,9 @@ coverage/
 # GoReleaser build output
 dist/
 
-.claude
+# claude code: local state stays ignored, shared project skills are tracked
+.claude/*
+!.claude/skills/
 
 # docs site build/dep output (docs/ itself is tracked)
 docs/node_modules/
