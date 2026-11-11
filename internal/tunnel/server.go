@@ -60,8 +60,45 @@ type Server struct {
 	pathCheck time.Duration
 
 	mu      sync.Mutex
-	guests  map[string]*quic.Conn
+	guests  map[string]*guest
 	changed chan struct{} // closed and replaced whenever guests changes
+}
+
+// guest is one registered connection and the client streams open on it.
+type guest struct {
+	conn *quic.Conn
+
+	mu      sync.Mutex
+	streams int
+}
+
+// acquire counts a stream about to be opened on g. the server calls it under
+// its own lock while g is still registered.
+func (g *guest) acquire() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.streams++
+}
+
+// release is the matching end of acquire, once that stream is closed or
+// failed to open.
+func (g *guest) release() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.streams--
+}
+
+// trackedConn releases its guest's stream count once, on the first Close.
+type trackedConn struct {
+	*streamConn
+	once    sync.Once
+	release func()
+}
+
+func (c *trackedConn) Close() error {
+	err := c.streamConn.Close()
+	c.once.Do(c.release)
+	return err
 }
 
 // Listen starts accepting guests on conn.
@@ -81,7 +118,7 @@ func Listen(conn net.PacketConn, cert tls.Certificate, auth Authenticator, logge
 		logger:    logger,
 		metrics:   nopMetrics{},
 		pathCheck: time.Second,
-		guests:    make(map[string]*quic.Conn),
+		guests:    make(map[string]*guest),
 		changed:   make(chan struct{}),
 	}, nil
 }
@@ -174,7 +211,10 @@ func (s *Server) admit(ctx context.Context, conn *quic.Conn) {
 // replaced reports whether an established guest was evicted to make room.
 func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (registered, replaced bool) {
 	s.mu.Lock()
-	existing := s.guests[owner]
+	var existing *quic.Conn
+	if g := s.guests[owner]; g != nil {
+		existing = g.conn
+	}
 	s.mu.Unlock()
 
 	if existing != nil {
@@ -187,14 +227,14 @@ func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (r
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if current := s.guests[owner]; current != nil && current != existing {
+	if current := s.guests[owner]; current != nil && current.conn != existing {
 		// somebody else registered while we were probing.
 		return false, false
 	}
 	if existing != nil {
 		_ = existing.CloseWithError(2, "replaced")
 	}
-	s.guests[owner] = conn
+	s.guests[owner] = &guest{conn: conn}
 	s.broadcastLocked()
 	return true, existing != nil
 }
@@ -224,7 +264,7 @@ func (s *Server) watchPath(owner string, conn *quic.Conn) {
 func (s *Server) unregister(owner string, conn *quic.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.guests[owner] == conn {
+	if g := s.guests[owner]; g != nil && g.conn == conn {
 		delete(s.guests, owner)
 		s.broadcastLocked()
 	}
@@ -260,14 +300,14 @@ func (s *Server) Connected(owner string) bool {
 // rather than whenever the connection next ends.
 func (s *Server) Drop(owner string) {
 	s.mu.Lock()
-	conn := s.guests[owner]
+	g := s.guests[owner]
 	delete(s.guests, owner)
-	if conn != nil {
+	if g != nil {
 		s.broadcastLocked()
 	}
 	s.mu.Unlock()
-	if conn != nil {
-		_ = conn.CloseWithError(3, "owner removed")
+	if g != nil {
+		_ = g.conn.CloseWithError(3, "owner removed")
 	}
 }
 
@@ -282,14 +322,21 @@ func (s *Server) Drop(owner string) {
 func (s *Server) Open(ctx context.Context, owner string, port int) (net.Conn, error) {
 	for {
 		s.mu.Lock()
-		conn := s.guests[owner]
+		g := s.guests[owner]
+		if g != nil {
+			g.acquire()
+		}
 		changed := s.changed
 		s.mu.Unlock()
 
-		if conn != nil {
-			c, err := openStream(ctx, conn, port)
-			if err == nil || errors.Is(err, errRefused) {
-				return c, err
+		if g != nil {
+			c, err := openStream(ctx, g.conn, port)
+			if err == nil {
+				return &trackedConn{streamConn: c, release: g.release}, nil
+			}
+			g.release()
+			if errors.Is(err, errRefused) {
+				return nil, err
 			}
 			if ctx.Err() != nil {
 				return nil, ErrNoTunnel
@@ -308,7 +355,7 @@ func (s *Server) Open(ctx context.Context, owner string, port int) (net.Conn, er
 var errRefused = errors.New("tunnel: guest refused the port")
 
 // openStream opens one stream toward the guest and waits for it to accept.
-func openStream(ctx context.Context, conn *quic.Conn, port int) (net.Conn, error) {
+func openStream(ctx context.Context, conn *quic.Conn, port int) (*streamConn, error) {
 	stream, err := conn.OpenStreamSync(ctx)
 	if err != nil {
 		return nil, err
@@ -316,7 +363,7 @@ func openStream(ctx context.Context, conn *quic.Conn, port int) (net.Conn, error
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = stream.SetDeadline(deadline)
 	}
-	abort := func(err error) (net.Conn, error) {
+	abort := func(err error) (*streamConn, error) {
 		stream.CancelRead(0)
 		stream.CancelWrite(0)
 		return nil, err
