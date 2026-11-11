@@ -190,6 +190,10 @@ No token needed (public repo). Optional `host-agent/firecracker/.fc-updater.env`
 also update a co-located orchestrator. Override the source repo with
 `FUSE_REPO=owner/name`.
 
+Upgrade every fc-agent before live-migrating or checkpointing across hosts. An
+upgraded agent hashes a live snapshot's memory in a format older agents cannot
+check, so an older target refuses it with a 422 and the move fails.
+
 ## State
 
 State lives under `agent-state/vms/<vm_id>/`, safe to `rm -rf` if the agent is
