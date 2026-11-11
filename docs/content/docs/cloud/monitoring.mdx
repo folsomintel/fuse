@@ -189,8 +189,11 @@ at the source vm's id:
 Separately, `guest_connections_total{owner="<destination vm>"}` goes to 1 once
 the destination's sidecar connects under its own identity and adopts the url.
 That sidecar restart currently ends the source identity's connection, along
-with any client connections still on it
-([#287](https://github.com/folsomintel/fuse/issues/287)).
+with any client connections still on it. The old sidecar process exits, so
+this is not covered by the grace the proxy gives a connection whose token was
+replaced: when an owner is republished under a new token, its old connection
+takes no new client connections but keeps the ones it has until they close,
+for up to five minutes.
 
 Other things worth watching:
 
