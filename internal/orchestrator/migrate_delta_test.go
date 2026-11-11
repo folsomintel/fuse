@@ -70,11 +70,14 @@ func (p *deltaMigrateProvider) Create(_ context.Context, spec Spec) (Environment
 	return env, nil
 }
 
-// deltaMover records every move and can fail the delta ones.
+// deltaMover records every move and can fail the delta ones. mergedFiles is
+// what its agent reports for a merged copy; nil plays one that reports no mem
+// digest.
 type deltaMover struct {
 	recordingMover
-	mu        sync.Mutex
-	failDelta bool
+	mu          sync.Mutex
+	failDelta   bool
+	mergedFiles map[string]string
 }
 
 func (m *deltaMover) MoveArtifact(ctx context.Context, move ArtifactMove) (ArtifactMoved, error) {
@@ -84,7 +87,11 @@ func (m *deltaMover) MoveArtifact(ctx context.Context, move ArtifactMove) (Artif
 	if fail {
 		return ArtifactMoved{}, errors.New("peer went away mid-delta")
 	}
-	return m.recordingMover.MoveArtifact(ctx, move)
+	moved, err := m.recordingMover.MoveArtifact(ctx, move)
+	if err == nil && move.Base != "" {
+		moved.Files = m.mergedFiles
+	}
+	return moved, err
 }
 
 func newDeltaFleet(t *testing.T, provider *deltaMigrateProvider, mover ArtifactMover) *FleetManager {
@@ -140,14 +147,94 @@ func TestMigrateVM_deltaCopiesTheBulkThenOnlyTheDiff(t *testing.T) {
 	if _, ok := fm.GetVM("fuse-task-src"); ok {
 		t.Error("source vm was not destroyed after the migration")
 	}
-	// the merged copy has no memory digest, so it must not offer itself as
-	// the source of a full move.
+	// this mover's agent reports no digests for the merged copy (a version 1
+	// base, or an agent that predates them), so it records none and must not
+	// offer itself as the source of a full move.
 	merged, err := fm.GetSnapshotByID(context.Background(), delta.SnapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(liveFiles(merged)) != 0 {
 		t.Errorf("merged copy records live files %v", liveFiles(merged))
+	}
+	if err := fm.RegisterHost(context.Background(), artifactHost("h-c", 8), provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fm.ensureArtifactOnHost(context.Background(), merged, "h-c", false); !errors.Is(err, ErrArtifactImmovable) {
+		t.Errorf("moving a merged copy with no digests = %v, want ErrArtifactImmovable", err)
+	}
+}
+
+// mergedTestFiles is what an agent reports for a delta merged onto a version 2
+// base: the merged copy's own digests, not the delta's.
+var mergedTestFiles = map[string]string{"vmstate": "d-vmstate", "mem": "m-mem-table", "live.json": "m-manifest"}
+
+// TestMigrateVM_aMergedCopyMovesOnToAThirdHost moves a vm from h-a to h-b with
+// only the diff crossing after the bulk, then moves the merged copy on to h-c
+// as a full live snapshot under the digests h-b's agent reported for it.
+func TestMigrateVM_aMergedCopyMovesOnToAThirdHost(t *testing.T) {
+	provider := newDeltaMigrateProvider()
+	mover := &deltaMover{mergedFiles: mergedTestFiles}
+	fm := newDeltaFleet(t, provider, mover)
+	ctx := context.Background()
+	if err := fm.RegisterHost(ctx, artifactHost("h-c", 8), provider); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := fm.MigrateVM(ctx, "fuse-task-src", MigrateOptions{TargetHostID: "h-b", Live: true}); err != nil {
+		t.Fatalf("delta migrate: %v", err)
+	}
+	moves := mover.calls()
+	if len(moves) != 2 || moves[1].Base == "" {
+		t.Fatalf("moves = %+v, want the full seed then the delta", moves)
+	}
+	merged, err := fm.GetSnapshotByID(ctx, moves[1].SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(liveFiles(merged), mergedTestFiles) {
+		t.Fatalf("merged copy records %v, want the digests its agent reported", liveFiles(merged))
+	}
+
+	localID, err := fm.ensureArtifactOnHost(ctx, merged, "h-c", false)
+	if err != nil {
+		t.Fatalf("move the merged copy on to h-c: %v", err)
+	}
+	moves = mover.calls()
+	if len(moves) != 3 {
+		t.Fatalf("%d moves, want one more: the merged copy in full", len(moves))
+	}
+	third := moves[2]
+	if third.From.HostID != "h-b" || third.SourceSnapshotID != merged.SnapshotID || third.Base != "" {
+		t.Errorf("third move = %+v, want a full copy read out of %s on h-b", third, merged.SnapshotID)
+	}
+	if !reflect.DeepEqual(third.Files, mergedTestFiles) || third.Digest != merged.Digest {
+		t.Errorf("third move files %v digest %s, want the merged copy's", third.Files, third.Digest)
+	}
+	replica, err := fm.GetSnapshotByID(ctx, localID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replica.HostID != "h-c" || replica.Kind != SnapshotKindLive || !reflect.DeepEqual(liveFiles(replica), mergedTestFiles) {
+		t.Errorf("copy on h-c = host %s kind %s files %v, want a live record that can move again",
+			replica.HostID, replica.Kind, liveFiles(replica))
+	}
+}
+
+func TestCompleteLiveFiles(t *testing.T) {
+	for _, tc := range []struct {
+		files map[string]string
+		want  bool
+	}{
+		{mergedTestFiles, true},
+		{nil, false},
+		{map[string]string{"vmstate": "a", "live.json": "b"}, false},
+		{map[string]string{"vmstate": "a", "mem": "", "live.json": "b"}, false},
+		{map[string]string{"vmstate": "a", "mem": "c", "live.json": "b", "mem.delta": "d"}, false},
+	} {
+		if got := completeLiveFiles(tc.files); got != tc.want {
+			t.Errorf("completeLiveFiles(%v) = %v, want %v", tc.files, got, tc.want)
+		}
 	}
 }
 
