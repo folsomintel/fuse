@@ -144,6 +144,7 @@ func (m peerArtifactMover) MoveArtifact(ctx context.Context, move orchestrator.A
 		SnapshotID: res.SnapshotID,
 		SizeBytes:  res.SizeBytes,
 		Kind:       orchestrator.SnapshotKind(res.Kind),
+		Files:      res.Files,
 	}, nil
 }
 

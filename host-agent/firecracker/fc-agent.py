@@ -1449,6 +1449,13 @@ SNAPSHOT_API_TIMEOUT = float(os.environ.get("FC_AGENT_SNAPSHOT_API_TIMEOUT", "60
 #   host         the cpu and firecracker build that wrote the image.
 LIVE_MANIFEST = "live.json"
 LIVE_FILES = ("vmstate", "mem", LIVE_MANIFEST)
+# what live.json's digest_version says about the snapshot's "mem" digest.
+# absent (an older agent's snapshot): the sha256 of the whole image. 2: the
+# mem_table_digest of live.json's mem_chunks, a table of every chunk's sha256,
+# so a pull checks mem a chunk at a time and a merged delta copy has a mem
+# digest without its image ever being read whole. the table's chunk is
+# HUGE_PAGE_BYTES, the same as fc-uffd's chunk table, so one table serves both.
+LIVE_DIGEST_VERSION = 2
 
 # the files a diff snapshot is moved as. it has no standalone memory image or
 # rootfs worth sending: mem.delta is the pages dirtied since its parent and
@@ -1604,7 +1611,8 @@ def free_hugepages_mb() -> int:
 def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
     """sha256 of every 2M chunk of a memory image, and which chunks are all
     zero. fc-uffd checks pages one chunk at a time as they arrive, which a
-    digest over the whole file cannot do."""
+    digest over the whole file cannot do, and the same table is what a
+    version 2 mem digest is a hash over (see mem_table_digest)."""
     sudo(["chmod", "644", str(path)], check=False)
     zero = bytes(HUGE_PAGE_BYTES)
     chunks, zeros = [], []
@@ -1617,6 +1625,56 @@ def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
                 zeros.append(len(chunks))
             chunks.append(hashlib.sha256(b).hexdigest())
     return chunks, zeros
+
+
+def live_digest_version(manifest: dict) -> int:
+    """live.json's digest_version, refusing one this agent does not know
+    rather than guessing at a newer format."""
+    version = manifest.get("digest_version", 1)
+    if version not in (1, LIVE_DIGEST_VERSION):
+        raise HTTPError(422, f"live.json digest_version {version!r} is not one this agent knows; nothing committed")
+    return version
+
+
+def mem_digest(path: Path, manifest: dict) -> str:
+    """the "mem" digest of a memory image, in the version its live.json says."""
+    if live_digest_version(manifest) == 1:
+        return file_digest(path)
+    return mem_table_digest(chunk_digests(path)[0])
+
+
+def merged_mem_chunks(mem: Path, base_chunks: list[str],
+                      written: list[tuple[int, int]]) -> list[str] | None:
+    """the chunk table of a memory image merged from a delta: the base's
+    table, with only the chunks a delta record touched re-hashed from the
+    merged image. None when the base's table does not fit the image."""
+    size = os.path.getsize(mem)
+    if len(base_chunks) != -(-size // HUGE_PAGE_BYTES):
+        return None
+    touched = {i for off, n in written
+               for i in range(off // HUGE_PAGE_BYTES, -(-(off + n) // HUGE_PAGE_BYTES))}
+    chunks = list(base_chunks)
+    with open(mem, "rb") as f:
+        for i in sorted(touched):
+            f.seek(i * HUGE_PAGE_BYTES)
+            chunks[i] = hashlib.sha256(f.read(HUGE_PAGE_BYTES)).hexdigest()
+    return chunks
+
+
+def manifest_identity(path: Path) -> str:
+    """what a diff's parent_manifest names its parent by: the digest of the
+    live.json the parent's own host wrote. a merged delta copy rewrites its
+    live.json to add its mem table, so it carries that digest as
+    source_manifest, and every copy of it answers to the same identity."""
+    return json.loads(path.read_text()).get("source_manifest") or file_digest(path)
+
+
+def mem_table_digest(chunks: list[str]) -> str:
+    """a version 2 mem digest: a sha256 over the per-chunk sha256s rather than
+    over the image. it proves the same bytes, and a merge that knows which
+    chunks a delta touched works it out from the base's table by re-hashing
+    only those, never reading the rest of the image."""
+    return hashlib.sha256(b"fuse-mem-chunks-v1\n" + "\n".join(chunks).encode()).hexdigest()
 
 
 
@@ -1864,20 +1922,23 @@ def write_delta(src: Path, ranges: list[tuple[int, int]], out: Path) -> None:
                 left -= len(b)
 
 
-def apply_delta(delta: Path, target: Path, size: int) -> None:
-    """write every record of a delta into target in place. a record reaching
-    past size is refused: its digest verified, but an offset off the wire is
-    still not something to hand to pwrite unchecked."""
+def apply_delta(delta: Path, target: Path, size: int) -> list[tuple[int, int]]:
+    """write every record of a delta into target in place, and return the
+    (offset, length) of each. a record reaching past size is refused: its
+    digest verified, but an offset off the wire is still not something to
+    hand to pwrite unchecked."""
+    written = []
     with open(delta, "rb") as d, open(target, "r+b") as t:
         while True:
             head = d.read(DELTA_HEADER.size)
             if not head:
-                return
+                return written
             if len(head) != DELTA_HEADER.size:
                 raise HTTPError(422, "truncated delta record")
             off, n = DELTA_HEADER.unpack(head)
             if off + n > size:
                 raise HTTPError(422, f"delta record at {off} reaches past the {size} byte image")
+            written.append((off, n))
             while n:
                 b = d.read(min(ARTIFACT_CHUNK_BYTES, n))
                 if not b:
@@ -2090,7 +2151,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # firecracker will only restore through fc-uffd.
             live_manifest["page_size"] = HUGE_PAGE_BYTES
         if diff:
-            live_manifest["parent_manifest"] = file_digest(parent_manifest)
+            live_manifest["parent_manifest"] = manifest_identity(parent_manifest)
             changed = changed_block_ranges(blocks, old, rootfs_size)
             write_delta(snap_rootfs, changed, snap_dir / "rootfs.delta")
             mem = snap_dir / "mem"
@@ -2098,9 +2159,13 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # the sparse diff image reads as zeros wherever the guest did not
             # write, so it must never be served or restored as a memory image.
             mem.unlink()
-        elif meta.get("huge_pages"):
+        else:
+            # one read of mem for both tables, in place of the whole-file
+            # sha256 a version 1 snapshot paid for.
             chunks, zeros = chunk_digests(snap_dir / "mem")
-            live_manifest.update(chunks=chunks, zero_chunks=zeros)
+            live_manifest.update(digest_version=LIVE_DIGEST_VERSION, mem_chunks=chunks)
+            if meta.get("huge_pages"):
+                live_manifest.update(chunks=chunks, zero_chunks=zeros)
         sparse = shrink and not diff and snapshot_fs_reports_holes()
         if sparse:
             mem = snap_dir / "mem"
@@ -2111,7 +2176,9 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         # file gets a digest of its own so a peer can verify each one as it
         # arrives without the identity changing meaning between kinds.
         names = DELTA_FILES if diff else LIVE_FILES + ((SPARSE_MEM,) if sparse else ())
-        files = {name: file_digest(snap_dir / name) for name in names}
+        files = {name: file_digest(snap_dir / name) for name in names if name != "mem"}
+        if not diff:
+            files["mem"] = mem_table_digest(live_manifest["mem_chunks"])
         extra_bytes = sum(os.path.getsize(snap_dir / name) for name in names)
     else:
         # Quiesce guest FS then copy.
@@ -2592,11 +2659,67 @@ def _peer_connection(peer_url: str) -> http.client.HTTPConnection:
     return cls(u.hostname, u.port, timeout=ARTIFACT_IO_TIMEOUT)
 
 
+class ChunkTableCheck:
+    """checks a stream against a table of per-chunk sha256s as it arrives, so
+    a wrong chunk fails the pull the moment it lands rather than once the
+    whole file is in. the caller has already matched the table to the digest
+    the orchestrator recorded (block_table_digest or mem_table_digest)."""
+
+    def __init__(self, chunk_bytes: int, hashes: list[str]):
+        self.chunk_bytes, self.hashes = chunk_bytes, hashes
+        self.index, self.filled, self.h = 0, 0, hashlib.sha256()
+
+    def update(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            take = min(self.chunk_bytes - self.filled, len(view))
+            self.h.update(view[:take])
+            self.filled += take
+            view = view[take:]
+            if self.filled == self.chunk_bytes:
+                self._close_chunk()
+
+    def finish(self) -> None:
+        if self.filled:
+            self._close_chunk()
+        if self.index != len(self.hashes):
+            raise HTTPError(422, f"got {self.index} of {len(self.hashes)} chunks; nothing committed")
+
+    def _close_chunk(self) -> None:
+        i = self.index
+        if i >= len(self.hashes) or not hmac.compare_digest(self.h.hexdigest(), self.hashes[i]):
+            raise HTTPError(422, f"chunk {i} digest mismatch; nothing committed")
+        self.index, self.filled, self.h = i + 1, 0, hashlib.sha256()
+
+
+def chunk_table_for(name: str, expected: str, manifest: dict) -> ChunkTableCheck | None:
+    """how a pulled file of a live snapshot is checked: chunk by chunk when
+    its recorded digest is a table digest, as a whole otherwise. the rootfs
+    has a table digest only when a migrate's final pause took it (see
+    block_table_digest), mem in every version 2 snapshot. manifest is the
+    snapshot's live.json, already verified against its own recorded digest."""
+    if name == "rootfs.ext4":
+        blocks = manifest.get("rootfs_blocks") or []
+        if blocks and hmac.compare_digest(block_table_digest(blocks), expected):
+            return ChunkTableCheck(ROOTFS_BLOCK_BYTES, blocks)
+        return None
+    if name != "mem":
+        return None
+    if live_digest_version(manifest) == 1:
+        return None
+    chunks = manifest.get("mem_chunks") or []
+    if not hmac.compare_digest(mem_table_digest(chunks), expected):
+        raise HTTPError(422, "mem digest does not match the chunk table in live.json; nothing committed")
+    return ChunkTableCheck(HUGE_PAGE_BYTES, chunks)
+
+
 def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
-                    deadline: float, limit: int) -> tuple[Path, int]:
+                    deadline: float, limit: int,
+                    table: ChunkTableCheck | None = None) -> tuple[Path, int]:
     """stream one file from a peer into a temp file and return it only if its
-    sha256 is `expected`. on any failure the temp file is removed and nothing
-    is returned; the caller owns the file on success.
+    sha256 is `expected`, or, given a table, only if every chunk matches it.
+    on any failure the temp file is removed and nothing is returned; the
+    caller owns the file on success.
     """
     # The name is built from a fresh uuid alone. A digest prefix would have been
     # a nicer thing to read in a directory listing, but it puts request-derived
@@ -2653,7 +2776,10 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
                     )
                 if declared >= 0 and total > declared:
                     raise HTTPError(422, "peer sent more bytes than it declared")
-                running.update(chunk)
+                if table is not None:
+                    table.update(chunk)
+                else:
+                    running.update(chunk)
                 f.write(chunk)
             # Durable before the rename: a crash between the two would
             # otherwise publish a file whose tail never reached the disk, and
@@ -2664,7 +2790,9 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
 
         if declared >= 0 and total != declared:
             raise HTTPError(422, f"short read: got {total} of {declared} bytes")
-        if not hmac.compare_digest(running.hexdigest(), expected):
+        if table is not None:
+            table.finish()
+        elif not hmac.compare_digest(running.hexdigest(), expected):
             raise HTTPError(422, "artifact digest mismatch; nothing committed")
         return tmp, total
     except BaseException:
@@ -2725,27 +2853,37 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     dest_dir = _artifact_dest(snapshot_id)
 
     deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
-    # iterating LIVE_FILES rather than `files` keeps the names that reach a url
-    # or a path our own literals, whatever the request body spelled.
+    # iterating our own literals rather than `files` keeps the names that
+    # reach a url or a path ours, whatever the request body spelled.
     # a sparse copy crosses the wire in mem's place and mem is rebuilt from it.
-    # lazy fetches neither: fc-uffd reads mem off the peer.
+    # lazy fetches neither: fc-uffd reads mem off the peer. live.json goes
+    # first, since its tables say how the rootfs and mem are checked.
     sparse = SPARSE_MEM in files and not lazy
     skip = {"mem", SPARSE_MEM} if lazy else {"mem"} if sparse else {SPARSE_MEM}
-    wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest)] + [
-        (name, f"/v1/artifacts/{digest}/files/{name}{q}", files[name])
-        for name in LIVE_FILES + (SPARSE_MEM,) if name in files and name not in skip
-    ]
+
+    def file_url(name: str) -> str:
+        return f"/v1/artifacts/{digest}/files/{name}{q}"
+    wanted = [(LIVE_MANIFEST, file_url(LIVE_MANIFEST), files[LIVE_MANIFEST])] if files else []
+    wanted.append(("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest))
+    wanted += [(name, file_url(name), files[name])
+               for name in ("vmstate", "mem", SPARSE_MEM) if name in files and name not in skip]
     staged: list[tuple[str, Path]] = []
+    manifest: dict = {}
     total = 0
     try:
         for name, url_path, expected in wanted:
             tmp, size = _fetch_verified(
-                peer_url, url_path, grant, expected, deadline, MAX_ARTIFACT_BYTES - total
+                peer_url, url_path, grant, expected, deadline, MAX_ARTIFACT_BYTES - total,
+                chunk_table_for(name, expected, manifest),
             )
             staged.append((name, tmp))
             total += size
+            if name == LIVE_MANIFEST:
+                manifest = json.loads(tmp.read_text())
+                # once, before any path (sparse, lazy) that never fetches mem.
+                live_digest_version(manifest)
 
-        if lazy and not json.loads(dict(staged)[LIVE_MANIFEST].read_text()).get("chunks"):
+        if lazy and not manifest.get("chunks"):
             raise HTTPError(409, "snapshot has no chunk table; it was not taken with 2M pages")
 
         if sparse:
@@ -2758,7 +2896,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             apply_delta(stage[SPARSE_MEM], mem, size)
             # checked against mem's own digest, so the pulled copy is as good
             # as a full one and can be moved on to a third host.
-            if not hmac.compare_digest(file_digest(mem), files["mem"]):
+            if not hmac.compare_digest(mem_digest(mem, manifest), files["mem"]):
                 raise HTTPError(422, "rebuilt memory image digest mismatch; nothing committed")
 
         # Same fresh-inode-plus-mv commit as snapshot_restore: the bytes are
@@ -2824,11 +2962,15 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
     advancing a checkpoint chain would otherwise keep one full memory image
     per interval, and nothing else on the host ever deletes a pulled copy.
 
-    the merged image is not re-hashed. base verified when it arrived and the
-    delta verified just now, so the result is what the source had, and reading
-    a whole rootfs and memory image back here would sit inside the migrate's
-    pause. the cost: the record carries no mem digest, so it can be the base of
-    the next delta but not the source of a full move to a third host.
+    the merged image is not re-hashed whole. base verified when it arrived and
+    the delta verified just now, so the result is what the source had, and
+    reading a whole memory image back here would sit inside the migrate's
+    pause. a version 2 base has a mem chunk table, so only the chunks the delta
+    touched are re-hashed into the merged copy's own table, which goes into its
+    live.json and gives it a mem digest: it can move on to a third host like
+    any full live snapshot. a version 1 base has no table, and its merged copy
+    carries no mem digest, so it can be the base of the next delta but not
+    the source of a full move.
     """
     if not _DIGEST_RE.fullmatch(digest):
         raise HTTPError(400, "digest must be a lowercase hex sha256")
@@ -2866,7 +3008,7 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             total += size
         stage = dict(staged)
         manifest = json.loads(stage[LIVE_MANIFEST].read_text())
-        if manifest.get("parent_manifest") != file_digest(base_manifest):
+        if manifest.get("parent_manifest") != manifest_identity(base_manifest):
             raise HTTPError(409, f"delta was taken against a different parent than {base}")
 
         rootfs = ARTIFACT_TMP_DIR / f"merge-{uuid.uuid4().hex}.rootfs"
@@ -2879,7 +3021,21 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
         rootfs_size = int(manifest["rootfs_size"])
         os.truncate(rootfs, rootfs_size)
         apply_delta(stage["rootfs.delta"], rootfs, rootfs_size)
-        apply_delta(stage["mem.delta"], mem, os.path.getsize(mem))
+        written = apply_delta(stage["mem.delta"], mem, os.path.getsize(mem))
+
+        record_files = {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]}
+        base_m = json.loads(base_manifest.read_text())
+        chunks = None
+        if base_m.get("digest_version") == LIVE_DIGEST_VERSION:
+            chunks = merged_mem_chunks(mem, base_m.get("mem_chunks") or [], written)
+        if chunks is not None:
+            # source_manifest keeps the identity the next diff names this
+            # copy by (see manifest_identity) through the rewrite.
+            manifest.update(digest_version=LIVE_DIGEST_VERSION, mem_chunks=chunks,
+                            source_manifest=files[LIVE_MANIFEST])
+            stage[LIVE_MANIFEST].write_text(json.dumps(manifest))
+            record_files.update({"mem": mem_table_digest(chunks),
+                                 LIVE_MANIFEST: file_digest(stage[LIVE_MANIFEST])})
 
         # same commit as pull_artifact: nothing moves until everything has
         # verified and merged, and meta.json goes last.
@@ -2897,7 +3053,7 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             "bytes": total,
             "source_peer": peer_url,
             "merged_onto": base,
-            "files": {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]},
+            "files": record_files,
         }
         (dest_dir / "meta.json").write_text(json.dumps(record))
         if drop_base:

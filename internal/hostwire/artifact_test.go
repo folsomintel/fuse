@@ -451,7 +451,8 @@ func TestPullArtifact_liveFiles(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
-		_, _ = w.Write([]byte(`{"snapshot_id":"art-abc","digest":"` + testDigest + `","kind":"live","bytes":8192}`))
+		_, _ = w.Write([]byte(`{"snapshot_id":"art-abc","digest":"` + testDigest + `","kind":"live","bytes":8192,` +
+			`"files":{"mem":"` + testDigest + `"}}`))
 	}))
 	defer srv.Close()
 
@@ -468,6 +469,9 @@ func TestPullArtifact_liveFiles(t *testing.T) {
 	}
 	if res.Kind != "live" {
 		t.Errorf("kind: got %q, want live", res.Kind)
+	}
+	if res.Files["mem"] != testDigest {
+		t.Errorf("committed files: got %v, want the agent's mem digest", res.Files)
 	}
 
 	req.Files["mem"] = "../../etc/shadow"

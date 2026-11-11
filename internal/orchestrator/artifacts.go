@@ -100,6 +100,11 @@ type ArtifactMoved struct {
 	// live snapshots ignores Files and commits the rootfs alone, and says so
 	// here by reporting nothing, which reads as disk.
 	Kind SnapshotKind
+	// Files is what the receiving host reports about the copy it committed,
+	// file name to sha256. only a delta merge has digests of its own to
+	// report (see moveDeltaToHost); a full move commits the digests it was
+	// given.
+	Files map[string]string
 }
 
 // liveFilesMetadataKey is where a live snapshot record keeps the digests of
@@ -503,10 +508,16 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		return "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
 			ErrArtifactImmovable, record.SnapshotID, parent)
 	}
+	// a delta merged onto a version 2 base records the digests its host agent
+	// worked out for it, and moves like any other live snapshot.
 	files := liveFiles(record)
 	if record.Kind == SnapshotKindLive && len(files) == 0 {
-		return "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (taken by a host agent that cannot move live snapshots)",
-			ErrArtifactImmovable, record.SnapshotID)
+		why := "taken by a host agent that cannot move live snapshots"
+		if snapshotMetadataString(record.Metadata, "merged_onto") != "" {
+			why = "a delta merged onto a base with no memory chunk table, from a host agent that predates them"
+		}
+		return "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (%s)",
+			ErrArtifactImmovable, record.SnapshotID, why)
 	}
 
 	holders, err := fm.HostsHoldingArtifact(ctx, record.TenantID, record.Digest)
