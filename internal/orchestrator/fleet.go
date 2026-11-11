@@ -350,6 +350,14 @@ type FleetConfig struct {
 	// skipped on subsequent cycles. Default 5.
 	OrphanDestroyMaxRetries int
 
+	// DrainingTimeout is how long a VM may sit in Draining before the
+	// reconcile loop destroys it. Drain never destroys on its own, so a
+	// caller that drains and never sends DELETE would otherwise leak the
+	// VM forever. Default DefaultDrainingTimeout; a value at or below the
+	// drain command's own ceiling is raised to the default so a drain is
+	// never cut short.
+	DrainingTimeout time.Duration
+
 	// StartupScriptTimeout bounds a caller's boot-time startup script when
 	// BootOptions does not set its own. Default
 	// DefaultStartupScriptTimeout. Keep it under the HTTP write timeout so
@@ -460,6 +468,7 @@ type FleetManager struct {
 	taskStuckTimeout         time.Duration
 	defaultIdleTimeout       time.Duration
 	orphanDestroyMaxRetries  int
+	drainingTimeout          time.Duration
 	defaultSnapshotRetention time.Duration
 	snapshotQuotaMaxCount    int
 	snapshotQuotaMaxBytes    int64
@@ -590,6 +599,9 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 	if cfg.OrphanDestroyMaxRetries == 0 {
 		cfg.OrphanDestroyMaxRetries = 5
 	}
+	if cfg.DrainingTimeout <= drainTimeout {
+		cfg.DrainingTimeout = DefaultDrainingTimeout
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -622,6 +634,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		taskStuckTimeout:         cfg.TaskStuckTimeout,
 		defaultIdleTimeout:       cfg.DefaultIdleTimeout,
 		orphanDestroyMaxRetries:  cfg.OrphanDestroyMaxRetries,
+		drainingTimeout:          cfg.DrainingTimeout,
 		defaultSnapshotRetention: cfg.DefaultSnapshotRetention,
 		snapshotQuotaMaxCount:    cfg.SnapshotQuotaMaxCount,
 		snapshotQuotaMaxBytes:    cfg.SnapshotQuotaMaxBytes,
