@@ -294,6 +294,73 @@ func TestReconcileOrphan_hangingDestroyIsBounded(t *testing.T) {
 	}
 }
 
+// failOnceDestroyProvider fails the first Destroy of one name and lets every
+// later call through, like a host that was briefly unreachable.
+type failOnceDestroyProvider struct {
+	*mockProvider
+	name   string
+	mu     sync.Mutex
+	failed bool
+}
+
+func (p *failOnceDestroyProvider) Destroy(ctx context.Context, name string) error {
+	p.mu.Lock()
+	first := name == p.name && !p.failed
+	if first {
+		p.failed = true
+	}
+	p.mu.Unlock()
+	if first {
+		return errors.New("injected transient destroy failure")
+	}
+	return p.mockProvider.Destroy(ctx, name)
+}
+
+// a reaped draining vm whose first destroy fails stays destroying on the
+// host; a later cycle retries the teardown and it goes away.
+func TestStuckDraining_failedDestroyIsRetried(t *testing.T) {
+	p := &failOnceDestroyProvider{mockProvider: newMockProvider(), name: "fuse-task-1"}
+	fm, vmID := drainingFleet(t, FleetConfig{
+		Provider:        p,
+		DrainingTimeout: 10 * time.Minute,
+	}, "task-1", 30*time.Minute)
+	p.mu.Lock()
+	p.envs[vmID] = &mockEnv{name: vmID}
+	p.mu.Unlock()
+
+	fm.reconcile(context.Background())
+
+	waitForEgress(t, "first destroy attempt", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.failed
+	})
+	fm.mu.RLock()
+	state := fm.vms[vmID].state
+	fm.mu.RUnlock()
+	if state != VMStateDestroying || p.count() != 1 {
+		t.Fatalf("after failed destroy: state = %s, provider envs = %d; want destroying and 1", state, p.count())
+	}
+
+	// inside the retry window nothing is retried.
+	fm.reconcile(context.Background())
+	if p.count() != 1 {
+		t.Fatalf("teardown retried inside the retry window")
+	}
+
+	// past the window the next cycle retries, then a later cycle reaps it.
+	fm.mu.Lock()
+	fm.vms[vmID].updatedAt = time.Now().Add(-2 * teardownRetryAfter)
+	fm.mu.Unlock()
+	fm.reconcile(context.Background())
+	waitForEgress(t, "retried teardown removes the vm", func() bool {
+		fm.mu.RLock()
+		_, tracked := fm.vms[vmID]
+		fm.mu.RUnlock()
+		return !tracked && p.count() == 0
+	})
+}
+
 // a pending intervention means a human is deciding something about the env;
 // the reaper must not destroy it out from under them.
 func TestStuckDraining_pendingInterventionKeepsVM(t *testing.T) {

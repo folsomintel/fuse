@@ -376,6 +376,43 @@ func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *Rec
 	}
 }
 
+// teardownRetryAfter is how long a VM may sit in Destroying while its
+// provider still lists it before reconcile tries the destroy again. it is
+// longer than the 60s bound on destroyAndRemove and on a DELETE request, so a
+// destroy still in flight is never doubled up.
+const teardownRetryAfter = 2 * time.Minute
+
+// retryFailedTeardowns re-runs the destroy of VMs left in Destroying whose
+// provider still lists them. a background teardown (from the stuck-task, idle
+// or draining detectors) that hit a host error gives up once and leaves the
+// VM there; without a retry nothing else touches it, since the orphan pass
+// skips tracked VMs and reapDestroyedVMs waits for the provider to drop it, so
+// the VM and its host allocation would outlive the host's recovery.
+func (fm *FleetManager) retryFailedTeardowns(providerVMs map[string]bool) {
+	now := time.Now()
+
+	fm.mu.Lock()
+	retry := make([]string, 0)
+	for id, v := range fm.vms {
+		if v.state != VMStateDestroying || !providerVMs[id] {
+			continue
+		}
+		if now.Sub(v.updatedAt) <= teardownRetryAfter {
+			continue
+		}
+		// restart the clock so the next attempt waits a full window.
+		v.updatedAt = now
+		retry = append(retry, id)
+	}
+	fm.mu.Unlock()
+
+	for _, id := range retry {
+		fm.logger.Warn("vm still present after destroy, retrying teardown", "vm", id)
+		fm.appendEventBackground("vm", id, "vm.destroy_retried", nil)
+		go fm.destroyAndRemove(id)
+	}
+}
+
 // destroyGated reports whether an env's hitl policy holds or denies destroy.
 // such an env is never reaped from draining: a human owns that destroy, and a
 // rejected one must stay rejected rather than be redone by the reaper.

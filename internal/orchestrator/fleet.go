@@ -1629,8 +1629,10 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileSnapshots(ctx)
 	fm.reconcileArtifacts(ctx)
 
-	// Sweep VMs that have been marked destroying and are no longer present
+	// Retry teardowns that failed and left a destroying VM on its host, then
+	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
+	fm.retryFailedTeardowns(providerVMs)
 	fm.reapDestroyedVMs(providerVMs)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan
