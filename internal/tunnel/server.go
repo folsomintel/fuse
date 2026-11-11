@@ -58,6 +58,9 @@ type Server struct {
 	// pathCheck is how often a registered guest's address is compared with
 	// the last one seen. a field so a test can shorten it.
 	pathCheck time.Duration
+	// drainGrace bounds how long a retired guest keeps serving the streams it
+	// already had. a field so a test can shorten it.
+	drainGrace time.Duration
 
 	mu      sync.Mutex
 	guests  map[string]*guest
@@ -70,6 +73,8 @@ type guest struct {
 
 	mu      sync.Mutex
 	streams int
+	retired bool
+	idle    chan struct{} // closed once retired with no stream open
 }
 
 // acquire counts a stream about to be opened on g. the server calls it under
@@ -86,6 +91,22 @@ func (g *guest) release() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.streams--
+	if g.retired && g.streams == 0 {
+		close(g.idle)
+	}
+}
+
+// retire marks g as taking no new streams and returns a channel closed once
+// the ones it has are done. call it once, after g is out of the guests map, so
+// no acquire can follow it.
+func (g *guest) retire() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.retired = true
+	if g.streams == 0 {
+		close(g.idle)
+	}
+	return g.idle
 }
 
 // trackedConn releases its guest's stream count once, on the first Close.
@@ -113,13 +134,14 @@ func Listen(conn net.PacketConn, cert tls.Certificate, auth Authenticator, logge
 		return nil, err
 	}
 	return &Server{
-		ln:        ln,
-		auth:      auth,
-		logger:    logger,
-		metrics:   nopMetrics{},
-		pathCheck: time.Second,
-		guests:    make(map[string]*guest),
-		changed:   make(chan struct{}),
+		ln:         ln,
+		auth:       auth,
+		logger:     logger,
+		metrics:    nopMetrics{},
+		pathCheck:  time.Second,
+		drainGrace: drainGrace,
+		guests:     make(map[string]*guest),
+		changed:    make(chan struct{}),
 	}, nil
 }
 
@@ -234,7 +256,7 @@ func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (r
 	if existing != nil {
 		_ = existing.CloseWithError(2, "replaced")
 	}
-	s.guests[owner] = &guest{conn: conn}
+	s.guests[owner] = &guest{conn: conn, idle: make(chan struct{})}
 	s.broadcastLocked()
 	return true, existing != nil
 }
@@ -295,9 +317,9 @@ func (s *Server) Connected(owner string) bool {
 	return s.guests[owner] != nil
 }
 
-// Drop disconnects owner's guest, if any. used when the owner is deleted or
-// its token is replaced, so a revoked credential stops carrying traffic now
-// rather than whenever the connection next ends.
+// Drop disconnects owner's guest, if any, and every stream on it. used when
+// the owner is deleted, so it stops carrying traffic now rather than whenever
+// the connection next ends. a replaced token goes through Retire instead.
 func (s *Server) Drop(owner string) {
 	s.mu.Lock()
 	g := s.guests[owner]
@@ -309,6 +331,39 @@ func (s *Server) Drop(owner string) {
 	if g != nil {
 		_ = g.conn.CloseWithError(3, "owner removed")
 	}
+}
+
+// Retire stops sending new streams to owner's guest and closes its connection
+// once the streams it already carries are done, or drainGrace has passed,
+// whichever is first. used when the owner's token is replaced: the guest that
+// dials in with the new token registers at once and takes every new stream,
+// while a download that started under the old one is allowed to finish.
+//
+// the old connection is always closed at the end, so a guest still holding
+// the revoked token cannot outlive the grace period.
+func (s *Server) Retire(owner string) {
+	s.mu.Lock()
+	g := s.guests[owner]
+	delete(s.guests, owner)
+	if g != nil {
+		s.broadcastLocked()
+	}
+	s.mu.Unlock()
+	if g == nil {
+		return
+	}
+	idle := g.retire()
+	go func() {
+		timer := time.NewTimer(s.drainGrace)
+		defer timer.Stop()
+		select {
+		case <-idle:
+		case <-timer.C:
+			s.logger.Info("retired guest still had open streams at the end of its grace period", "owner", owner)
+		case <-g.conn.Context().Done():
+		}
+		_ = g.conn.CloseWithError(3, "token replaced")
+	}()
 }
 
 // Open connects to port on owner's guest, waiting until ctx is done for the
