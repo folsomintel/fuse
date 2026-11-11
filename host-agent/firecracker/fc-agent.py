@@ -1634,6 +1634,32 @@ def mem_digest(path: Path, manifest: dict) -> str:
     return mem_table_digest(chunk_digests(path)[0])
 
 
+def merged_mem_chunks(mem: Path, base_chunks: list[str],
+                      written: list[tuple[int, int]]) -> list[str] | None:
+    """the chunk table of a memory image merged from a delta: the base's
+    table, with only the chunks a delta record touched re-hashed from the
+    merged image. None when the base's table does not fit the image."""
+    size = os.path.getsize(mem)
+    if len(base_chunks) != -(-size // HUGE_PAGE_BYTES):
+        return None
+    touched = {i for off, n in written
+               for i in range(off // HUGE_PAGE_BYTES, -(-(off + n) // HUGE_PAGE_BYTES))}
+    chunks = list(base_chunks)
+    with open(mem, "rb") as f:
+        for i in sorted(touched):
+            f.seek(i * HUGE_PAGE_BYTES)
+            chunks[i] = hashlib.sha256(f.read(HUGE_PAGE_BYTES)).hexdigest()
+    return chunks
+
+
+def manifest_identity(path: Path) -> str:
+    """what a diff's parent_manifest names its parent by: the digest of the
+    live.json the parent's own host wrote. a merged delta copy rewrites its
+    live.json to add its mem table, so it carries that digest as
+    source_manifest, and every copy of it answers to the same identity."""
+    return json.loads(path.read_text()).get("source_manifest") or file_digest(path)
+
+
 def mem_table_digest(chunks: list[str]) -> str:
     """a version 2 mem digest: a sha256 over the per-chunk sha256s rather than
     over the image. it proves the same bytes, and a merge that knows which
@@ -2116,7 +2142,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # firecracker will only restore through fc-uffd.
             live_manifest["page_size"] = HUGE_PAGE_BYTES
         if diff:
-            live_manifest["parent_manifest"] = file_digest(parent_manifest)
+            live_manifest["parent_manifest"] = manifest_identity(parent_manifest)
             changed = changed_block_ranges(blocks, old, rootfs_size)
             write_delta(snap_rootfs, changed, snap_dir / "rootfs.delta")
             mem = snap_dir / "mem"
@@ -2928,11 +2954,15 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
     advancing a checkpoint chain would otherwise keep one full memory image
     per interval, and nothing else on the host ever deletes a pulled copy.
 
-    the merged image is not re-hashed. base verified when it arrived and the
-    delta verified just now, so the result is what the source had, and reading
-    a whole rootfs and memory image back here would sit inside the migrate's
-    pause. the cost: the record carries no mem digest, so it can be the base of
-    the next delta but not the source of a full move to a third host.
+    the merged image is not re-hashed whole. base verified when it arrived and
+    the delta verified just now, so the result is what the source had, and
+    reading a whole memory image back here would sit inside the migrate's
+    pause. a version 2 base has a mem chunk table, so only the chunks the delta
+    touched are re-hashed into the merged copy's own table, which goes into its
+    live.json and gives it a mem digest: it can move on to a third host like
+    any full live snapshot. a version 1 base has no table, and its merged copy
+    carries no mem digest, so it can be the base of the next delta but not
+    the source of a full move.
     """
     if not _DIGEST_RE.fullmatch(digest):
         raise HTTPError(400, "digest must be a lowercase hex sha256")
@@ -2970,7 +3000,7 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             total += size
         stage = dict(staged)
         manifest = json.loads(stage[LIVE_MANIFEST].read_text())
-        if manifest.get("parent_manifest") != file_digest(base_manifest):
+        if manifest.get("parent_manifest") != manifest_identity(base_manifest):
             raise HTTPError(409, f"delta was taken against a different parent than {base}")
 
         rootfs = ARTIFACT_TMP_DIR / f"merge-{uuid.uuid4().hex}.rootfs"
@@ -2983,7 +3013,21 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
         rootfs_size = int(manifest["rootfs_size"])
         os.truncate(rootfs, rootfs_size)
         apply_delta(stage["rootfs.delta"], rootfs, rootfs_size)
-        apply_delta(stage["mem.delta"], mem, os.path.getsize(mem))
+        written = apply_delta(stage["mem.delta"], mem, os.path.getsize(mem))
+
+        record_files = {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]}
+        base_m = json.loads(base_manifest.read_text())
+        chunks = None
+        if base_m.get("digest_version") == LIVE_DIGEST_VERSION:
+            chunks = merged_mem_chunks(mem, base_m.get("mem_chunks") or [], written)
+        if chunks is not None:
+            # source_manifest keeps the identity the next diff names this
+            # copy by (see manifest_identity) through the rewrite.
+            manifest.update(digest_version=LIVE_DIGEST_VERSION, mem_chunks=chunks,
+                            source_manifest=files[LIVE_MANIFEST])
+            stage[LIVE_MANIFEST].write_text(json.dumps(manifest))
+            record_files.update({"mem": mem_table_digest(chunks),
+                                 LIVE_MANIFEST: file_digest(stage[LIVE_MANIFEST])})
 
         # same commit as pull_artifact: nothing moves until everything has
         # verified and merged, and meta.json goes last.
@@ -3001,7 +3045,7 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             "bytes": total,
             "source_peer": peer_url,
             "merged_onto": base,
-            "files": {"vmstate": files["vmstate"], LIVE_MANIFEST: files[LIVE_MANIFEST]},
+            "files": record_files,
         }
         (dest_dir / "meta.json").write_text(json.dumps(record))
         if drop_base:
