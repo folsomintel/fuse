@@ -4,7 +4,9 @@ host-agent/firecracker/fc-uffd.py: fill a live-migrated guests memory while it r
 
 The new VM on the target resumes with an empty memory. Firecracker hands this
 process a userfaultfd over a unix socket, and every page the guest touches
-is fetched from the source in 2M chunks, checked against live.json, and copied in. A background thread pulls the rest,
+is fetched from the source in 2M chunks, checked against live.json, and copied in. Faults are served by a
+pool of workers, so vcpus waiting on different chunks wait in parallel and vcpus waiting on the same chunk
+share one fetch. A background thread pulls the rest,
 and --status reports done once the source is no longer needed
 
 all-zero chunks (holes in the image, which is what unplugged virtio-mem
@@ -21,6 +23,7 @@ import hashlib
 import http.client
 import os 
 import json
+import queue
 import select 
 import socket 
 import struct
@@ -38,6 +41,9 @@ GRANT_HEADER = "X-Fuse-Artifact-Grant"
 FETCH_ATTEMPTS = 5 
 FETCH_TIMEOUT = 30.0
 STATUS_EVERY = 64
+# threads serving page faults. each holds one fetch in flight, so this many
+# vcpus can wait on different chunks at once.
+FAULT_WORKERS = int(os.environ.get("FC_UFFD_WORKERS", "8"))
 
 def log(msg: str) -> None:
     print(f"[fc-uffd] {msg}", file=sys.stderr, flush=True)
@@ -169,7 +175,12 @@ class Pager:
         # chunks the guest gave back since the resume. the host dropped their
         # pages, so they read as zeros from here on.
         self.removed: set[int] = set()
+        # chunk -> set once the thread filling it is done. a second fault on
+        # the chunk waits on it instead of fetching the chunk again.
+        self.inflight: dict[int, threading.Event] = {}
         self.error = ""
+        # the first error a fault worker hit, which ends serve_faults.
+        self.fault_error: Exception | None = None
 
     def chunk_for(self, addr: int) -> int | None:
         for r in self.regions:
@@ -195,11 +206,27 @@ class Pager:
         raise RuntimeError(last)
 
     def fill(self, i: int) -> None:
+        """make chunk i resident. one thread at a time fills a chunk; the
+        others wait for it, and fill it themselves only if it failed."""
         if not 0 <= i < self.total:
             raise RuntimeError(f"chunk {i} outside the manifest")
+        while True:
+            with self.lock:
+                if i in self.resident:
+                    return
+                done = self.inflight.get(i)
+                if done is None:
+                    self.inflight[i] = threading.Event()
+                    break
+            done.wait()
+        try:
+            self.copy_in(i)
+        finally:
+            with self.lock:
+                self.inflight.pop(i).set()
+
+    def copy_in(self, i: int) -> None:
         with self.lock:
-            if i in self.resident:
-                return
             blank = i in self.zero or i in self.removed
         data = bytearray(self.page) if blank else bytearray(self.fetch(i))
         removed = lambda: self.is_removed(i)
@@ -251,12 +278,19 @@ class Pager:
         self.write_status()
         log(f"all {self.total} chunks settled")
 
-    def serve_faults(self, conn: socket.socket) -> None:
+    def serve_faults(self, conn: socket.socket, workers: int = FAULT_WORKERS) -> None:
+        """read uffd events and hand each fault to a pool of workers, so a
+        vcpu waiting on the network does not hold up the others. removes are
+        applied here, in order with the faults around them."""
+        faults: queue.Queue = queue.Queue()
+        for _ in range(max(1, workers)):
+            threading.Thread(target=self.fault_worker, args=(faults,), daemon=True).start()
         poller = select.poll()
         poller.register(self.uffd, select.POLLIN)
         poller.register(conn.fileno(), select.POLLIN)
         while True:
-            for fd, ev in poller.poll():
+            # the timeout is only so a failed worker is noticed.
+            for fd, ev in poller.poll(200):
                 if fd == conn.fileno():
                     if not conn.recv(4096):
                         return 
@@ -279,8 +313,21 @@ class Pager:
                 i = self.chunk_for(addr)
                 if i is None:
                     raise RuntimeError(f"fault at {addr:#x} outside every region")
-                self.fill(i)
+                faults.put(i)
+            with self.lock:
+                err = self.fault_error
+            if err:
+                raise err
 
+    def fault_worker(self, faults: queue.Queue) -> None:
+        while True:
+            i = faults.get()
+            try:
+                self.fill(i)
+            except Exception as e:
+                with self.lock:
+                    self.fault_error = self.fault_error or e
+                return
 
     def write_status(self) -> None:
         settled = self.settled()
