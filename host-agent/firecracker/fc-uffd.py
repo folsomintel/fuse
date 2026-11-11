@@ -67,11 +67,16 @@ class FileSource:
             off = os.lseek(fd, data, os.SEEK_HOLE)
         return out
 
+class BadChunk(OSError):
+    """the source answered, and the answer was not the chunk."""
+
+
 class PeerSource:
     """
     Chunks fetched from the source host's agent, one range request each.
-    The agent answers http/1.0 and closes after every response, so there is no connection worth 
-    keeping between chunks.
+    The agent speaks http/1.1 keep-alive, so each thread that fetches (every
+    fault worker, and the prefetcher) keeps one connection of its own and
+    reuses it chunk after chunk.
     """
     def __init__(self, url: str, grant: str, size: int):
         u = urlparse(url)
@@ -84,10 +89,28 @@ class PeerSource:
         self.scheme, self.host, self.port, self.path = u.scheme, u.hostname, u.port, path
         self.grant = grant 
         self.size = size 
+        self.local = threading.local()
+
+    def connect(self) -> http.client.HTTPConnection:
+        cls = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
+        return cls(self.host, self.port, timeout=FETCH_TIMEOUT)
 
     def chunk(self, i: int) -> bytes:
-        cls = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
-        conn = cls(self.host, self.port, timeout=FETCH_TIMEOUT)
+        conn = getattr(self.local, "conn", None)
+        if conn is not None:
+            try:
+                return self.request(conn, i)
+            except BadChunk:
+                raise
+            except (OSError, http.client.HTTPException):
+                # the agent drops a connection that sat idle past its request
+                # timeout. that is not the source failing, so one fresh
+                # connection gets the chunk before fetch's retries count it.
+                pass
+        self.local.conn = self.connect()
+        return self.request(self.local.conn, i)
+
+    def request(self, conn: http.client.HTTPConnection, i: int) -> bytes:
         try:
             off = i * self.size 
             conn.request("GET", self.path, headers={
@@ -96,10 +119,17 @@ class PeerSource:
             })
             resp = conn.getresponse()
             if resp.status != 206:
-                raise OSError(f"http {resp.status}")
-            return resp.read(self.size)
-        finally:
+                raise BadChunk(f"http {resp.status}")
+            # one byte over the chunk is enough to tell a wrong length.
+            data = resp.read(self.size + 1)
+            if len(data) != self.size:
+                raise BadChunk(f"chunk of {len(data)} bytes, not {self.size}")
+            return data
+        except BaseException:
+            # whatever is left of a failed exchange is not reusable.
             conn.close()
+            self.local.conn = None
+            raise
 
 def copy_page(uffd: int, dst: int, data: bytearray, removed=lambda: False) -> None:
     """UFFDIO_COPY data into the guest at dst. EEXIST means the other thread
