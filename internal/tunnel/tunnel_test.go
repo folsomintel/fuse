@@ -549,3 +549,28 @@ func TestAnIdleRetiredConnectionClosesAtOnce(t *testing.T) {
 	h.srv.Retire("vm-1")
 	waitClosed(t, old, time.Second)
 }
+
+// removing an owner cuts a connection that is still draining after a token
+// rotation, rather than letting it serve out its grace.
+func TestDropClosesARetiredConnectionStillDraining(t *testing.T) {
+	h := startServer(t)
+	h.cfg.Ports = []int{echoServer(t)}
+	runSidecar(t, h.cfg)
+
+	c, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	roundTrip(t, c, bufio.NewReader(c), "before")
+
+	old := registered(t, h.srv)
+	h.srv.Retire("vm-1")
+	h.srv.Drop("vm-1")
+	waitClosed(t, old, time.Second)
+	h.srv.mu.Lock()
+	defer h.srv.mu.Unlock()
+	if len(h.srv.retiring) != 0 {
+		t.Fatalf("%d guests still tracked as retiring after the drop", len(h.srv.retiring))
+	}
+}
