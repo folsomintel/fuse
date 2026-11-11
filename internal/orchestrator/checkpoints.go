@@ -190,8 +190,11 @@ func (fm *FleetManager) checkpointCandidates() []string {
 
 // pickStandby chooses where vmID's checkpoints are kept: another active host
 // running the same backend that could place the vm if it migrated there, with
-// the standby copies other vms keep on it counted against its storage. ties
-// go to the lowest id, so the choice is stable from one tick to the next. ""
+// the standby copies other vms keep on it counted against its storage. among
+// those it prefers the host holding the fewest standby copies, so one host
+// does not end up as the landing spot for every vm that has to move at once
+// (a drained source sends all its vms to their standbys together). ties go
+// to the lowest id, so the choice is stable from one tick to the next. ""
 // when the fleet has no such host.
 func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
 	usage := fm.standbyUsageExcept(vmID)
@@ -209,6 +212,7 @@ func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	best := ""
 	for _, id := range ids {
 		h := fm.hosts[id]
 		if id == srcHostID || h.URL == "" || h.Token == "" {
@@ -220,9 +224,11 @@ func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
 		if standbyRejection(h, spec, usage[id]) != "" {
 			continue
 		}
-		return id
+		if best == "" || usage[id].copies < usage[best].copies {
+			best = id
+		}
 	}
-	return ""
+	return best
 }
 
 // standbyRejection is hostRejection with the standby copies a host already
