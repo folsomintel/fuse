@@ -16,11 +16,81 @@ import (
 // mu serializes everything that takes a live snapshot of the vm through the
 // chain: a tick, and a migrate. any other live snapshot in between resets the
 // host's dirty bitmap, and the next diff is refused rather than wrong.
+//
+// standby and bytes are written under both mu and fm.chainsMu, so the standby
+// picker can read every chain's with chainsMu alone, without waiting on a
+// chain that is mid-tick or mid-migrate.
 type checkpointChain struct {
 	mu      sync.Mutex
 	standby string
 	head    SnapshotRecord
 	base    string
+	// bytes is what the base takes on the standby's disk: the size of the
+	// full checkpoint it started as. a merge rewrites the base at the same
+	// size, so it is not updated per tick (the merged record only carries
+	// the delta that moved).
+	bytes int64
+}
+
+// setStandbyLocked records where the chain's base lives and how big it is.
+// the caller holds c.mu.
+func (fm *FleetManager) setStandbyLocked(c *checkpointChain, standby string, bytes int64) {
+	fm.chainsMu.Lock()
+	c.standby, c.bytes = standby, bytes
+	fm.chainsMu.Unlock()
+}
+
+// standbyUsage is what one host holds as a checkpoint standby.
+type standbyUsage struct {
+	copies int
+	bytes  int64
+}
+
+// standbyCopy is one chain's base: the host it sits on and its size.
+type standbyCopy struct {
+	host  string
+	bytes int64
+}
+
+// standbyCopies lists every chain's standby copy by vm id.
+func (fm *FleetManager) standbyCopies() map[string]standbyCopy {
+	fm.chainsMu.Lock()
+	defer fm.chainsMu.Unlock()
+	out := make(map[string]standbyCopy)
+	for id, c := range fm.chains {
+		if c.standby != "" {
+			out[id] = standbyCopy{host: c.standby, bytes: c.bytes}
+		}
+	}
+	return out
+}
+
+// usageExcept sums copies by host, leaving out vmID's own: a vm's own copy
+// becomes its disk when it migrates there, so it is already covered by the
+// spec the host has to fit.
+func usageExcept(copies map[string]standbyCopy, vmID string) map[string]standbyUsage {
+	out := make(map[string]standbyUsage)
+	for id, c := range copies {
+		if id == vmID {
+			continue
+		}
+		u := out[c.host]
+		u.copies++
+		u.bytes += c.bytes
+		out[c.host] = u
+	}
+	return out
+}
+
+// standbyUsageExcept is usageExcept over the live chains.
+func (fm *FleetManager) standbyUsageExcept(vmID string) map[string]standbyUsage {
+	return usageExcept(fm.standbyCopies(), vmID)
+}
+
+// copyEstimate is how big a full live checkpoint of spec will be before one
+// has been taken: its disk plus its memory image.
+func copyEstimate(spec Spec) int64 {
+	return int64(spec.StorageGB)<<30 + int64(spec.RamMB)<<20
 }
 
 func (fm *FleetManager) chainFor(vmID string) *checkpointChain {
@@ -52,7 +122,8 @@ func (fm *FleetManager) resetChainLocked(c *checkpointChain) {
 	if c.base != "" {
 		fm.endArtifactPull(c.base)
 	}
-	c.standby, c.head, c.base = "", SnapshotRecord{}, ""
+	fm.setStandbyLocked(c, "", 0)
+	c.head, c.base = SnapshotRecord{}, ""
 }
 
 // retireChain removes what a broken chain still holds, both ends, then
@@ -145,32 +216,97 @@ func (fm *FleetManager) checkpointCandidates() []string {
 	return out
 }
 
-// pickStandby chooses where a vm's checkpoints are kept: the first other
-// active host running the same backend, by id, so the choice is stable from
-// one tick to the next. "" when the fleet has no such host.
-func (fm *FleetManager) pickStandby(srcHostID string) string {
+// pickStandby chooses where vmID's checkpoints are kept: another active host
+// running the same backend that could place the vm if it migrated there, with
+// the standby copies other vms keep on it counted against its storage. among
+// those it prefers the host holding the fewest standby copies, so one host
+// does not end up as the landing spot for every vm that has to move at once
+// (a drained source sends all its vms to their standbys together). ties go
+// to the lowest id, so the choice is stable from one tick to the next. ""
+// when the fleet has no such host.
+//
+// a host is also passed over when the new copy would crowd out a vm whose
+// standby is already there: that vm's next re-check would fail and reset its
+// chain with nothing new scheduled on the host.
+func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
+	copies := fm.standbyCopies()
+	usage := usageExcept(copies, vmID)
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	src, ok := fm.hosts[srcHostID]
-	if !ok {
+	v, vok := fm.vms[vmID]
+	if !ok || !vok {
 		return ""
 	}
+	spec := v.spec
+	spec.HostID = ""
 	ids := make([]string, 0, len(fm.hosts))
 	for id := range fm.hosts {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	best := ""
 	for _, id := range ids {
 		h := fm.hosts[id]
-		if id == srcHostID || !h.schedulable() || h.URL == "" || h.Token == "" {
+		if id == srcHostID || h.URL == "" || h.Token == "" {
 			continue
 		}
 		if h.Backend != src.Backend || (hostArch(src) != "" && hostArch(h) != hostArch(src)) {
 			continue
 		}
-		return id
+		if standbyRejection(h, spec, usage[id]) != "" {
+			continue
+		}
+		if fm.crowdsOutLocked(h, vmID, copyEstimate(spec), copies) {
+			continue
+		}
+		if best == "" || usage[id].copies < usage[best].copies {
+			best = id
+		}
 	}
-	return ""
+	return best
+}
+
+// crowdsOutLocked reports whether adding vmID's copy of size bytes to h would
+// make any other vm with a standby copy on h fail its re-check. the caller
+// holds fm.mu.
+func (fm *FleetManager) crowdsOutLocked(h *Host, vmID string, bytes int64, copies map[string]standbyCopy) bool {
+	for otherID, c := range copies {
+		if otherID == vmID || c.host != h.ID {
+			continue
+		}
+		other, ok := fm.vms[otherID]
+		if !ok {
+			continue
+		}
+		held := usageExcept(copies, otherID)[h.ID]
+		held.copies++
+		held.bytes += bytes
+		spec := other.spec
+		spec.HostID = ""
+		if standbyRejection(h, spec, held) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// standbyRejection is hostRejection with the standby copies a host already
+// holds charged to its storage: a host whose disk is spoken for by other vms'
+// checkpoints cannot take this one if it has to migrate. "" if it can.
+func standbyRejection(h *Host, spec Spec, held standbyUsage) string {
+	hc := *h
+	hc.Allocated.StorageGB += bytesToGB(held.bytes)
+	return hostRejection(&hc, spec)
+}
+
+// bytesToGB rounds up, so a partial gigabyte still counts as used.
+func bytesToGB(n int64) int {
+	if n <= 0 {
+		return 0
+	}
+	const gb = 1 << 30
+	return int((n + gb - 1) / gb)
 }
 
 // advanceChain takes one step for vmID: a full checkpoint copied whole to a
@@ -198,7 +334,20 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	}
 	retention := time.Now().Add(4 * fm.checkpointInterval)
 
-	if c.base != "" && c.standby != "" && c.standby != srcHostID && fm.hostSchedulable(c.standby) {
+	keep := c.base != "" && c.standby != "" && c.standby != srcHostID
+	if keep {
+		// a standby that was cordoned, or filled up with other work since it
+		// was picked, can no longer take the vm if it has to move: retire the
+		// chain on it and re-pick below.
+		if reason := fm.standbyRejectionFor(vmID, c.standby); reason != "" {
+			fm.logger.Info("checkpoint standby no longer fits; re-picking", "vm", vmID, "host", c.standby, "reason", reason)
+			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{
+				"error": "standby host " + c.standby + " " + reason, "standby_host_id": c.standby,
+			})
+			keep = false
+		}
+	}
+	if keep {
 		child, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
 			Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 			Live: true, Diff: true, Parent: c.head.SnapshotID, NoLineage: true,
@@ -233,7 +382,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	if c.head.SnapshotID != "" || c.base != "" {
 		fm.retireChain(ctx, vmID, c)
 	}
-	standby := fm.pickStandby(srcHostID)
+	standby := fm.pickStandby(vmID, srcHostID)
 	if standby == "" {
 		return
 	}
@@ -252,15 +401,28 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		return
 	}
 	fm.beginArtifactPull(base)
-	c.standby, c.head, c.base = standby, full, base
+	fm.setStandbyLocked(c, standby, full.SizeBytes)
+	c.head, c.base = full, base
 	fm.appendEventBackground("vm", vmID, "vm.checkpointed", map[string]any{
 		"snapshot_id": full.SnapshotID, "standby_host_id": standby, "base": base, "diff": false,
 	})
 }
 
-func (fm *FleetManager) hostSchedulable(hostID string) bool {
+// standbyRejectionFor says why hostID can no longer serve as vmID's standby,
+// by the same rule pickStandby used to pick it, or "" if it still can.
+func (fm *FleetManager) standbyRejectionFor(vmID, hostID string) string {
+	usage := fm.standbyUsageExcept(vmID)
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	h, ok := fm.hosts[hostID]
-	return ok && h.schedulable()
+	if !ok {
+		return "is gone"
+	}
+	v, ok := fm.vms[vmID]
+	if !ok {
+		return ""
+	}
+	spec := v.spec
+	spec.HostID = ""
+	return standbyRejection(h, spec, usage[hostID])
 }
