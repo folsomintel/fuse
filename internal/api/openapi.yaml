@@ -369,7 +369,11 @@ paths:
           destroyed; a subsequent DELETE tears it down. Only running VMs
           can be drained — any other state returns 409. If the drain
           command fails the VM remains in `draining` so the caller can
-          still DELETE; the failure is returned as 5xx.
+          still DELETE; the failure is returned as 5xx. A VM left in
+          `draining` longer than the orchestrator's draining timeout
+          (`--draining-timeout`, default 5m30s) is destroyed by the
+          reconcile loop, unless a hitl decision is pending on it or its
+          destroy is gated.
         - `fork` — create a new environment seeded from a checkpoint of
           this one. With `reuse_snapshot_id` empty the server snapshots
           the source first; otherwise it reuses that ready snapshot (it
