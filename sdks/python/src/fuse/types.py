@@ -709,6 +709,12 @@ class HostCapacity(_Model):
     arch: str = ""
     gpus: int = 0
     gpu_kind: str = ""
+    # the firecracker release the host agent reports it runs ("v1.17.0") and
+    # the release its fc-agent.py pins. probed at registration (a declared
+    # value is ignored) and only set on capacity. live migration needs both
+    # hosts on the same release. empty on qemu hosts and older agents.
+    firecracker: str = ""
+    firecracker_pinned: str = ""
     # fractional gpu capacity: mig instance count by profile name. when the
     # host reports per-instance mig inventory (mig_instances), this map is a
     # derived summary; otherwise it is the scheduling unit.
