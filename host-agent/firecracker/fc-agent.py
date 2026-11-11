@@ -2215,6 +2215,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
     if live and deferred:
         record["rootfs_digest_pending"] = True
     (snap_dir / "meta.json").write_text(json.dumps(record))
+    forget_artifacts()
     if live:
         # every live snapshot resets the dirty bitmap, so each one is the
         # parent the next diff has to be taken against.
@@ -2251,6 +2252,7 @@ def snapshot_delete(snapshot_id: str, vm_id: str = "") -> None:
         raise HTTPError(404, "snapshot not found")
     for d in found:
         sudo(["rm", "-rf", str(d)], check=False)
+    forget_artifacts()
     meta = load_meta(vm_id) if vm_id else None
     if meta:
         meta["snapshots"] = [r for r in meta.get("snapshots", []) if r.get("snapshot_id") != snapshot_id]
@@ -2471,6 +2473,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         # a lazy seed has no memory image, so nothing may boot from it, and
         # the orchestrator never recorded it. fc-uffd already read the manifest.
         sudo(["rm", "-rf", str(resume["manifest"].parent)], check=False)
+        forget_artifacts()
 
 
 def fork_vm(src_vm_id: str, req: dict) -> dict:
@@ -2613,6 +2616,19 @@ def artifact_file(digest: str, name: str = "rootfs.ext4", snapshot_id: str = "")
     if not _DIGEST_RE.fullmatch(digest):
         raise HTTPError(404, "artifact not found")
     store_root = os.path.realpath(str(SNAPSHOTS_DIR))
+    key = (digest, snapshot_id, name)
+    # a lazy resume asks for one chunk at a time, so the store is listed once
+    # per artifact rather than once per page fault. a hit is only a hint: the
+    # entry is checked again exactly as the scan checks it, so an entry deleted
+    # or rewritten behind the cache falls through to the scan, never out.
+    with _artifact_paths_lock:
+        cached = _artifact_paths.get(key)
+    if cached:
+        found = _artifact_entry(store_root, cached, digest, name)
+        if found:
+            return found
+        with _artifact_paths_lock:
+            _artifact_paths.pop(key, None)
     try:
         entries = sorted(os.listdir(store_root))
     except OSError:
@@ -2623,19 +2639,44 @@ def artifact_file(digest: str, name: str = "rootfs.ext4", snapshot_id: str = "")
         # of a pull coming out of the same snapshot.
         if snapshot_id and entry != snapshot_id:
             continue
-        try:
-            with open(os.path.join(store_root, entry, "meta.json"), "rb") as f:
-                rec = json.loads(f.read(MAX_BODY_BYTES))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(rec, dict) or rec.get("digest") != digest:
-            continue
-        resolved = os.path.realpath(os.path.join(store_root, entry, name))
-        if not resolved.startswith(store_root + os.sep):
-            continue
-        if os.path.exists(resolved):
-            return Path(resolved), str(rec["digest"])
+        found = _artifact_entry(store_root, entry, digest, name)
+        if found:
+            with _artifact_paths_lock:
+                _artifact_paths[key] = entry
+            return found
     raise HTTPError(404, "artifact not found")
+
+
+# (digest, snapshot_id, name) -> the store entry artifact_file last found it
+# in. only hits are kept, so a new artifact is always found by the scan.
+_artifact_paths: dict[tuple[str, str, str], str] = {}
+_artifact_paths_lock = threading.Lock()
+
+
+def forget_artifacts() -> None:
+    """drop every cached artifact lookup. called wherever the store gains or
+    loses an entry; artifact_file rechecks a hit anyway, so this keeps the
+    cache small rather than keeping it correct."""
+    with _artifact_paths_lock:
+        _artifact_paths.clear()
+
+
+def _artifact_entry(store_root: str, entry: str, digest: str, name: str) -> tuple[Path, str] | None:
+    """`name` of store entry `entry` if that entry holds artifact `digest`,
+    realpath'd and confirmed to stay under the store."""
+    try:
+        with open(os.path.join(store_root, entry, "meta.json"), "rb") as f:
+            rec = json.loads(f.read(MAX_BODY_BYTES))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or rec.get("digest") != digest:
+        return None
+    resolved = os.path.realpath(os.path.join(store_root, entry, name))
+    if not resolved.startswith(store_root + os.sep):
+        return None
+    if not os.path.exists(resolved):
+        return None
+    return Path(resolved), str(rec["digest"])
 
 
 def _artifact_dest(snapshot_id: str) -> Path:
@@ -2930,6 +2971,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             record["lazy"] = {"peer_url": peer_url, "digest": digest, "grant": grant,
                               "source_snapshot_id": source_snapshot_id}
         (dest_dir / "meta.json").write_text(json.dumps(record))
+        forget_artifacts()
         return record
     except HTTPError:
         raise
@@ -3060,6 +3102,7 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
             # after the commit, never before: a merge that failed part way has
             # to leave the base it was merging onto exactly as it was.
             sudo(["rm", "-rf", str(_artifact_dest(base))], check=False)
+        forget_artifacts()
         return record
     except HTTPError:
         raise
