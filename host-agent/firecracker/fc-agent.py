@@ -2121,9 +2121,13 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # the sparse diff image reads as zeros wherever the guest did not
             # write, so it must never be served or restored as a memory image.
             mem.unlink()
-        elif meta.get("huge_pages"):
+        else:
+            # one read of mem for both tables, in place of the whole-file
+            # sha256 a version 1 snapshot paid for.
             chunks, zeros = chunk_digests(snap_dir / "mem")
-            live_manifest.update(chunks=chunks, zero_chunks=zeros)
+            live_manifest.update(digest_version=LIVE_DIGEST_VERSION, mem_chunks=chunks)
+            if meta.get("huge_pages"):
+                live_manifest.update(chunks=chunks, zero_chunks=zeros)
         sparse = shrink and not diff and snapshot_fs_reports_holes()
         if sparse:
             mem = snap_dir / "mem"
@@ -2134,7 +2138,9 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         # file gets a digest of its own so a peer can verify each one as it
         # arrives without the identity changing meaning between kinds.
         names = DELTA_FILES if diff else LIVE_FILES + ((SPARSE_MEM,) if sparse else ())
-        files = {name: file_digest(snap_dir / name) for name in names}
+        files = {name: file_digest(snap_dir / name) for name in names if name != "mem"}
+        if not diff:
+            files["mem"] = mem_table_digest(live_manifest["mem_chunks"])
         extra_bytes = sum(os.path.getsize(snap_dir / name) for name in names)
     else:
         # Quiesce guest FS then copy.

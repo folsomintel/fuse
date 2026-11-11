@@ -395,6 +395,41 @@ class DiffRefusalTest(unittest.TestCase):
         self.assertEqual(list(fc_agent.SNAPSHOTS_DIR.glob("snap-*")), [], "a refused diff left a dir behind")
 
 
+class FullLiveSnapshotTest(unittest.TestCase):
+    """snapshot_create against a stand-in firecracker that writes the files."""
+
+    def setUp(self):
+        self.name = self.id().rsplit(".", 1)[1].replace("_", "-")
+        self.vm_id = f"vm-{self.name}"
+        d = fc_agent.VMS_DIR / self.vm_id
+        d.mkdir(parents=True)
+        (d / "rootfs.ext4").write_bytes(b"r" * (2 * B))
+        (d / "meta.json").write_text(json.dumps({"vm_id": self.vm_id, "sock": str(d / "fc.sock"),
+                                                 "rootfs": str(d / "rootfs.ext4"), "index": 3}))
+        self.mem = bytes(range(256)) * ((3 << 20) // 256)
+        self.saved = fc_agent.fc_api, fc_agent.fc_vm_state
+
+        def fc_api(sock, method, path, body=None, timeout=5.0):
+            Path(body["snapshot_path"]).write_bytes(b"vcpu state")
+            Path(body["mem_file_path"]).write_bytes(self.mem)
+            return 204, b""
+        fc_agent.fc_api = fc_api
+        fc_agent.fc_vm_state = lambda sock, state: None
+
+    def tearDown(self):
+        fc_agent.fc_api, fc_agent.fc_vm_state = self.saved
+
+    def test_records_a_version_2_mem_digest(self):
+        rec = fc_agent.snapshot_create(self.vm_id, "", live=True)
+        snap = fc_agent.SNAPSHOTS_DIR / rec["snapshot_id"]
+        manifest = json.loads((snap / "live.json").read_text())
+        self.assertEqual(manifest["digest_version"], fc_agent.LIVE_DIGEST_VERSION)
+        self.assertEqual(manifest["mem_chunks"], fc_agent.chunk_digests(snap / "mem")[0])
+        self.assertNotIn("chunks", manifest, "the fc-uffd table is only for a 2M vm")
+        self.assertEqual(rec["files"]["mem"], fc_agent.mem_table_digest(manifest["mem_chunks"]))
+        self.assertEqual(rec["files"]["live.json"], fc_agent.file_digest(snap / "live.json"))
+
+
 class SnapshotDeleteTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
