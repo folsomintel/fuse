@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// orphanDestroyTimeout bounds one orphan destroy, the same 60s ceiling
+// destroyAndRemove uses. without it a single host call (for example a delete
+// queued behind a runaway exec holding the agent's vm lock) blocks the whole
+// reconcile cycle until the hostwire header timeout, minutes later.
+const orphanDestroyTimeout = 60 * time.Second
+
 // reconcileOrphans destroys provider VMs that are not tracked in the fleet.
 // Repeated destroy failures are counted per-VM in fm.orphanRetries; once
 // the count exceeds orphanDestroyMaxRetries the entry is dead-lettered and
@@ -39,7 +45,10 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 			summary.OrphansFailed++
 			continue
 		}
-		if err := provider.Destroy(ctx, name); err != nil {
+		destroyCtx, cancel := context.WithTimeout(ctx, fm.orphanDestroyTimeout)
+		err := provider.Destroy(destroyCtx, name)
+		cancel()
+		if err != nil {
 			fm.logger.Error("orphan destroy failed", "vm", name, "err", err, "attempt", retries+1)
 			summary.OrphansFailed++
 

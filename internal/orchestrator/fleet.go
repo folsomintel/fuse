@@ -471,6 +471,7 @@ type FleetManager struct {
 	taskStuckTimeout         time.Duration
 	defaultIdleTimeout       time.Duration
 	orphanDestroyMaxRetries  int
+	orphanDestroyTimeout     time.Duration
 	drainingTimeout          time.Duration
 	defaultSnapshotRetention time.Duration
 	snapshotQuotaMaxCount    int
@@ -637,6 +638,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		taskStuckTimeout:         cfg.TaskStuckTimeout,
 		defaultIdleTimeout:       cfg.DefaultIdleTimeout,
 		orphanDestroyMaxRetries:  cfg.OrphanDestroyMaxRetries,
+		orphanDestroyTimeout:     orphanDestroyTimeout,
 		drainingTimeout:          cfg.DrainingTimeout,
 		defaultSnapshotRetention: cfg.DefaultSnapshotRetention,
 		snapshotQuotaMaxCount:    cfg.SnapshotQuotaMaxCount,
