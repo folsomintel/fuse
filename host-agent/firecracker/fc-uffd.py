@@ -182,6 +182,10 @@ class Pager:
         # chunk -> set once the thread filling it is done. a second fault on
         # the chunk waits on it instead of fetching the chunk again.
         self.inflight: dict[int, threading.Event] = {}
+        # chunk -> whether another fault on it came in, for each chunk queued
+        # to or held by a fault worker. a repeat fault is folded in here
+        # instead of tying up a second worker waiting on the first.
+        self.pending: dict[int, bool] = {}
         self.error = ""
         # the first error a fault worker hit, which ends serve_faults.
         self.fault_error: Exception | None = None
@@ -323,7 +327,11 @@ class Pager:
                 i = self.chunk_for(addr)
                 if i is None:
                     raise RuntimeError(f"fault at {addr:#x} outside every region")
-                faults.put(i)
+                with self.lock:
+                    queued = i in self.pending
+                    self.pending[i] = queued
+                if not queued:
+                    faults.put(i)
             with self.lock:
                 err = self.fault_error
             if err:
@@ -333,7 +341,17 @@ class Pager:
         while True:
             i = faults.get()
             try:
-                self.fill(i)
+                while True:
+                    self.fill(i)
+                    # the copy woke every vcpu that faulted on the chunk before
+                    # it. a repeat fault only needs another fill if the chunk is
+                    # not resident after all (a remove landed during the fill).
+                    with self.lock:
+                        again = self.pending.pop(i) and i not in self.resident
+                        if again:
+                            self.pending[i] = False
+                    if not again:
+                        break
             except Exception as e:
                 with self.lock:
                     self.fault_error = self.fault_error or e

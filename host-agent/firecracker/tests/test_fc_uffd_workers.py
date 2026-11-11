@@ -246,6 +246,39 @@ class ServeFaultsTest(Base):
         self.assertEqual(source.calls, [1])
         self.assertEqual(len(self.copies), 1)
 
+    def test_repeat_faults_do_not_hold_up_another_chunk(self):
+        source = GatedSource()
+        p, w, conn, t, result = self.start(source, workers=2)
+        for _ in range(4):
+            os.write(w, fault(BASE + PAGE))
+        os.write(w, fault(BASE + 2 * PAGE))
+        # with every repeat taking a worker, both workers would sit on chunk 1
+        # and chunk 2 would wait behind them.
+        self.assertTrue(source.wait_calls(2), source.calls)
+        source.release.set()
+        self.assertTrue(self.wait(lambda: p.resident == {1, 2}))
+        conn.close()
+        t.join(5)
+        self.assertEqual(sorted(source.calls), [1, 2])
+
+    def test_a_repeat_fault_after_a_remove_mid_fill_gets_its_own_fill(self):
+        source = GatedSource()
+        p, w, conn, t, result = self.start(source)
+        os.write(w, fault(BASE))
+        self.assertTrue(source.wait_calls(1))
+        # the guest gives the chunk back and touches it again while the first
+        # fill is still fetching: that touch is folded into the first fault,
+        # and still has to be served.
+        os.write(w, remove(BASE, BASE + PAGE))
+        os.write(w, fault(BASE))
+        self.assertTrue(self.wait(lambda: p.pending.get(0) is True))
+        source.release.set()
+        self.assertTrue(self.wait(lambda: 0 in p.resident))
+        conn.close()
+        t.join(5)
+        self.assertEqual(self.copies, [(BASE, bytes(PAGE)), (BASE, bytes(PAGE))])
+        self.assertEqual(p.pending, {})
+
     def test_a_remove_reaches_the_pager_in_order(self):
         source = GatedSource()
         source.release.set()
