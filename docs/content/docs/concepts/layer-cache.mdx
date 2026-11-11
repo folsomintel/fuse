@@ -25,6 +25,9 @@ behaves. That is a known and accepted limitation, not a bug.
 
 The **digest** is the sha256 of the artifact's rootfs, and answers *"did I
 receive these bytes intact?"*. It is the artifact's identity on the wire.
+The one exception is the live snapshot a migrate takes in its final pause on an
+xfs or btrfs host. Its rootfs is never read whole there, so its digest is a
+sha256 of its per-block hash table instead of the file.
 
 :::warning[A digest is not a cross-build identity]
 Two builds of the same recipe produce **different** rootfs bytes: timestamps,

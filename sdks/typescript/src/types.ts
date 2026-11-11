@@ -507,7 +507,9 @@ export interface Snapshot {
    * those bytes is intact, and nothing more: it is not a cross-build
    * identity, because two builds of the same recipe produce different rootfs
    * bytes (timestamps, inode ordering, package caches). It can never be used
-   * as a cache key. */
+   * as a cache key. The live snapshot a migrate takes in its final pause on
+   * an xfs or btrfs host is the exception: its digest is a sha256 of its
+   * per-block hash table, not of the rootfs file. */
   digest?: string;
   /** Whether this artifact is the rootfs alone (`"disk"`), or the rootfs plus
    * the guest's memory and vCPU state (`"live"`). Restoring a disk snapshot

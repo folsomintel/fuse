@@ -126,11 +126,18 @@ class DeltaFormatTest(unittest.TestCase):
         self.assertEqual(digest, fc_agent.file_digest(path))
         self.assertEqual(blocks, [hashlib.sha256(b"a" * B).hexdigest(), hashlib.sha256(b"b" * 100).hexdigest()])
 
+    def test_the_reflink_probe_answers(self):
+        self.assertIsInstance(fc_agent.snapshot_store_reflinks(), bool)
+        self.assertEqual(list(fc_agent.SNAPSHOTS_DIR.glob(".reflink-probe-*")), [])
+
     def test_the_holes_probe_answers(self):
         # whatever this filesystem supports, the probe must answer rather than
         # raise, and must not leave its file behind.
         self.assertIsInstance(fc_agent.snapshot_fs_reports_holes(), bool)
         self.assertEqual(list(fc_agent.SNAPSHOTS_DIR.glob(".holes-probe-*")), [])
+
+
+SHARED = fc_agent.FIEMAP_EXTENT_SHARED
 
 
 def sha(b: bytes) -> str:
@@ -163,9 +170,9 @@ class ExtentDiffTest(unittest.TestCase):
         child = b"x" * B + b"B" * B + b"c" * B
         p, c = self.files(parent, child)
         old = [sha(b"a" * B), sha(b"b" * B), sha(b"c" * B)]
-        self.maps[str(p)] = [(0, 1 << 20, 3 * B, 0)]
+        self.maps[str(p)] = [(0, 1 << 20, B, SHARED), (B, (1 << 20) + B, 2 * B, 0)]
         # blocks 1 and 2 were copied on write to new extents; 2 got the same bytes back.
-        self.maps[str(c)] = [(0, 1 << 20, B, 0), (B, 9 << 20, 2 * B, fc_agent.FIEMAP_EXTENT_LAST)]
+        self.maps[str(c)] = [(0, 1 << 20, B, SHARED), (B, 9 << 20, 2 * B, fc_agent.FIEMAP_EXTENT_LAST)]
         blocks = fc_agent.rootfs_blocks_by_extents(c, p, old)
         self.assertEqual(blocks, [old[0], sha(b"B" * B), old[2]])
         self.assertEqual(fc_agent.changed_block_ranges(blocks, old, len(child)), [(B, B)])
@@ -173,24 +180,31 @@ class ExtentDiffTest(unittest.TestCase):
     def test_runs_split_differently_still_compare_equal(self):
         p, c = self.files(b"a" * 2 * B, b"a" * 2 * B)
         old = [sha(b"a" * B)] * 2
-        self.maps[str(p)] = [(0, 1 << 20, 2 * B, 0)]
-        self.maps[str(c)] = [(0, 1 << 20, B // 2, 0), (B // 2, (1 << 20) + B // 2, B + B // 2, 0)]
+        self.maps[str(p)] = [(0, 1 << 20, 2 * B, SHARED)]
+        self.maps[str(c)] = [(0, 1 << 20, B // 2, SHARED), (B // 2, (1 << 20) + B // 2, B + B // 2, SHARED)]
         self.assertEqual(fc_agent.block_extent_maps(self.maps[str(p)], 2 * B),
                          fc_agent.block_extent_maps(self.maps[str(c)], 2 * B))
         self.assertEqual(fc_agent.rootfs_blocks_by_extents(c, p, old), old)
 
     def test_an_unsure_extent_is_always_hashed(self):
         p, c = self.files(b"a" * B, b"z" * B)
-        flags = 0x4  # delayed allocation: the physical offset means nothing yet
+        flags = 0x4 | SHARED  # delayed allocation: the physical offset means nothing yet
         self.maps[str(p)] = [(0, 1 << 20, B, flags)]
         self.maps[str(c)] = [(0, 1 << 20, B, flags)]
+        self.assertEqual(fc_agent.rootfs_blocks_by_extents(c, p, [sha(b"a" * B)]), [sha(b"z" * B)])
+
+    def test_a_clone_not_flagged_shared_is_hashed(self):
+        # a filesystem that clones without saying so is not trusted with the skip.
+        p, c = self.files(b"a" * B, b"z" * B)
+        self.maps[str(p)] = [(0, 1 << 20, B, 0)]
+        self.maps[str(c)] = [(0, 1 << 20, B, 0)]
         self.assertEqual(fc_agent.rootfs_blocks_by_extents(c, p, [sha(b"a" * B)]), [sha(b"z" * B)])
 
     def test_holes_in_both_keep_parents_hash(self):
         p, c = self.files(bytes(B) + b"a" * B, bytes(B) + b"a" * B)
         old = [sha(bytes(B)), sha(b"a" * B)]
-        self.maps[str(p)] = [(B, 1 << 20, B, 0)]
-        self.maps[str(c)] = [(B, 1 << 20, B, 0)]
+        self.maps[str(p)] = [(B, 1 << 20, B, SHARED)]
+        self.maps[str(c)] = [(B, 1 << 20, B, SHARED)]
         self.assertEqual(fc_agent.rootfs_blocks_by_extents(c, p, old), old)
 
     def test_falls_back_without_fiemap_or_on_a_resized_disk(self):
@@ -215,6 +229,22 @@ class ExtentDiffTest(unittest.TestCase):
         self.assertEqual(record["rootfs_digest"], fc_agent.file_digest(snap / "rootfs.ext4"))
         self.assertEqual(record["digest"], "0" * 64, "the wire identity must not change after the move")
 
+    def test_a_restart_picks_up_a_pending_full_pass(self):
+        snap = fc_agent.SNAPSHOTS_DIR / f"snap-pending-{os.urandom(4).hex()}"
+        snap.mkdir(parents=True)
+        (snap / "rootfs.ext4").write_bytes(b"a" * B)
+        (snap / "live.json").write_text(json.dumps({"rootfs_blocks": [sha(b"a" * B)]}))
+        (snap / "meta.json").write_text(json.dumps({"snapshot_id": snap.name, "digest": "0" * 64,
+                                                    "origin_vm_id": "gone", "rootfs_digest_pending": True}))
+        fc_agent.resume_pending_rootfs_digests()
+        for _ in range(100):
+            record = json.loads((snap / "meta.json").read_text())
+            if "rootfs_digest" in record:
+                break
+            time.sleep(0.02)
+        self.assertEqual(record.get("rootfs_digest"), fc_agent.file_digest(snap / "rootfs.ext4"))
+        self.assertNotIn("rootfs_digest_pending", record)
+
 
 class RealReflinkTest(unittest.TestCase):
     """the same thing against the real FIEMAP, where the test dir reflinks."""
@@ -233,7 +263,8 @@ class RealReflinkTest(unittest.TestCase):
         self.assertEqual(blocks, [old[0], sha(b"B" * B), old[2]])
         mine = fc_agent.block_extent_maps(fc_agent.file_extent_map(c), 3 * B)
         theirs = fc_agent.block_extent_maps(fc_agent.file_extent_map(p), 3 * B)
-        self.assertEqual([a == b for a, b in zip(mine, theirs)], [True, False, True])
+        skippable = [a is not None and a == b for a, b in zip(mine, theirs)]
+        self.assertEqual(skippable, [True, False, True])
 
 
 class DeltaPullTest(unittest.TestCase):
