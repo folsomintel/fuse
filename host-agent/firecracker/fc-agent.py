@@ -1887,20 +1887,23 @@ def write_delta(src: Path, ranges: list[tuple[int, int]], out: Path) -> None:
                 left -= len(b)
 
 
-def apply_delta(delta: Path, target: Path, size: int) -> None:
-    """write every record of a delta into target in place. a record reaching
-    past size is refused: its digest verified, but an offset off the wire is
-    still not something to hand to pwrite unchecked."""
+def apply_delta(delta: Path, target: Path, size: int) -> list[tuple[int, int]]:
+    """write every record of a delta into target in place, and return the
+    (offset, length) of each. a record reaching past size is refused: its
+    digest verified, but an offset off the wire is still not something to
+    hand to pwrite unchecked."""
+    written = []
     with open(delta, "rb") as d, open(target, "r+b") as t:
         while True:
             head = d.read(DELTA_HEADER.size)
             if not head:
-                return
+                return written
             if len(head) != DELTA_HEADER.size:
                 raise HTTPError(422, "truncated delta record")
             off, n = DELTA_HEADER.unpack(head)
             if off + n > size:
                 raise HTTPError(422, f"delta record at {off} reaches past the {size} byte image")
+            written.append((off, n))
             while n:
                 b = d.read(min(ARTIFACT_CHUNK_BYTES, n))
                 if not b:
