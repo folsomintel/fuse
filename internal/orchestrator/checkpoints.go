@@ -188,16 +188,22 @@ func (fm *FleetManager) checkpointCandidates() []string {
 	return out
 }
 
-// pickStandby chooses where a vm's checkpoints are kept: the first other
-// active host running the same backend, by id, so the choice is stable from
-// one tick to the next. "" when the fleet has no such host.
-func (fm *FleetManager) pickStandby(srcHostID string) string {
+// pickStandby chooses where vmID's checkpoints are kept: another active host
+// running the same backend that could place the vm if it migrated there, with
+// the standby copies other vms keep on it counted against its storage. ties
+// go to the lowest id, so the choice is stable from one tick to the next. ""
+// when the fleet has no such host.
+func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
+	usage := fm.standbyUsageExcept(vmID)
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	src, ok := fm.hosts[srcHostID]
-	if !ok {
+	v, vok := fm.vms[vmID]
+	if !ok || !vok {
 		return ""
 	}
+	spec := v.spec
+	spec.HostID = ""
 	ids := make([]string, 0, len(fm.hosts))
 	for id := range fm.hosts {
 		ids = append(ids, id)
@@ -205,15 +211,36 @@ func (fm *FleetManager) pickStandby(srcHostID string) string {
 	sort.Strings(ids)
 	for _, id := range ids {
 		h := fm.hosts[id]
-		if id == srcHostID || !h.schedulable() || h.URL == "" || h.Token == "" {
+		if id == srcHostID || h.URL == "" || h.Token == "" {
 			continue
 		}
 		if h.Backend != src.Backend || (hostArch(src) != "" && hostArch(h) != hostArch(src)) {
 			continue
 		}
+		if standbyRejection(h, spec, usage[id]) != "" {
+			continue
+		}
 		return id
 	}
 	return ""
+}
+
+// standbyRejection is hostRejection with the standby copies a host already
+// holds charged to its storage: a host whose disk is spoken for by other vms'
+// checkpoints cannot take this one if it has to migrate. "" if it can.
+func standbyRejection(h *Host, spec Spec, held standbyUsage) string {
+	hc := *h
+	hc.Allocated.StorageGB += bytesToGB(held.bytes)
+	return hostRejection(&hc, spec)
+}
+
+// bytesToGB rounds up, so a partial gigabyte still counts as used.
+func bytesToGB(n int64) int {
+	if n <= 0 {
+		return 0
+	}
+	const gb = 1 << 30
+	return int((n + gb - 1) / gb)
 }
 
 // advanceChain takes one step for vmID: a full checkpoint copied whole to a
@@ -276,7 +303,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	if c.head.SnapshotID != "" || c.base != "" {
 		fm.retireChain(ctx, vmID, c)
 	}
-	standby := fm.pickStandby(srcHostID)
+	standby := fm.pickStandby(vmID, srcHostID)
 	if standby == "" {
 		return
 	}
