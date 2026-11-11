@@ -2062,7 +2062,9 @@ pub struct Snapshot {
     /// of those bytes is intact, and nothing more: it is not a cross-build
     /// identity, because two builds of the same recipe produce different
     /// rootfs bytes (timestamps, inode ordering, package caches). It can
-    /// never be used as a cache key.
+    /// never be used as a cache key. The live snapshot a migrate takes in its
+    /// final pause on an xfs or btrfs host is the exception: its digest is a
+    /// sha256 of its per-block hash table, not of the rootfs file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

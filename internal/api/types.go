@@ -367,6 +367,9 @@ type Snapshot struct {
 	// transfer of these exact bytes. It is not an identity two artifacts can
 	// share: rebuilding the same recipe produces different bytes, so nothing
 	// looks a snapshot up by digest. Empty when the host agent does not hash.
+	// The exception is the live snapshot a migrate takes in its final pause
+	// on an xfs or btrfs host: its rootfs is never read whole there, so its
+	// digest is a sha256 of its per-block hash table instead.
 	Digest string `json:"digest,omitempty"`
 	// Kind is "disk" or "live" and reports what the artifact actually
 	// contains, never what the caller asked for: a live request served by an

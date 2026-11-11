@@ -1689,6 +1689,163 @@ def rootfs_digests(path: Path) -> tuple[str, list[str]]:
     return whole.hexdigest(), blocks
 
 
+def changed_block_ranges(blocks: list[str], old: list[str], size: int) -> list[tuple[int, int]]:
+    """the (offset, length) of every block whose hash differs from old, the
+    ranges a rootfs.delta carries."""
+    return [
+        (i * ROOTFS_BLOCK_BYTES, min(ROOTFS_BLOCK_BYTES, size - i * ROOTFS_BLOCK_BYTES))
+        for i, h in enumerate(blocks) if i >= len(old) or old[i] != h
+    ]
+
+
+# FS_IOC_FIEMAP and the structs from linux/fiemap.h.
+FS_IOC_FIEMAP = 0xC020660B
+FIEMAP_HEAD = struct.Struct("=QQIIII")
+FIEMAP_EXTENT = struct.Struct("=QQQ16xI12x")
+FIEMAP_FLAG_SYNC = 0x1
+FIEMAP_EXTENT_LAST = 0x1
+# unknown location, delayed allocation, compressed, encrypted, not aligned,
+# inline, tail-packed or unwritten: the physical offset of such an extent does
+# not pin its bytes, so a block touching one is always hashed.
+FIEMAP_EXTENT_UNSURE = 0x2 | 0x4 | 0x8 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800
+# the filesystem says another file maps these bytes too. only a block made
+# entirely of shared extents can be skipped: a filesystem that clones without
+# flagging it is not trusted to report physical offsets that mean anything.
+FIEMAP_EXTENT_SHARED = 0x2000
+FIEMAP_BATCH = 512
+
+
+def file_extent_map(path: Path) -> list[tuple[int, int, int, int]]:
+    """the (logical, physical, length, flags) extents of a file, flushed first
+    so nothing is still delayed allocation. raises OSError on a filesystem
+    without FIEMAP."""
+    out = []
+    with open(path, "rb") as f:
+        start = 0
+        while True:
+            buf = bytearray(FIEMAP_HEAD.pack(start, (1 << 64) - 1, FIEMAP_FLAG_SYNC, 0, FIEMAP_BATCH, 0))
+            buf += bytes(FIEMAP_EXTENT.size * FIEMAP_BATCH)
+            fcntl.ioctl(f.fileno(), FS_IOC_FIEMAP, buf)
+            mapped = FIEMAP_HEAD.unpack_from(buf)[3]
+            if not mapped:
+                return out
+            for i in range(mapped):
+                ext = FIEMAP_EXTENT.unpack_from(buf, FIEMAP_HEAD.size + i * FIEMAP_EXTENT.size)
+                out.append(ext)
+            logical, _, length, flags = out[-1]
+            if flags & FIEMAP_EXTENT_LAST:
+                return out
+            start = logical + length
+
+
+def block_extent_maps(extents: list[tuple[int, int, int, int]], size: int) -> list[tuple | None]:
+    """where each ROOTFS_BLOCK_BYTES block of a file lives on disk, as its data
+    runs (offset, physical, length). adjacent runs are merged, so two files
+    that split the same extent differently still compare equal. holes are
+    simply absent. None for a block touching an extent that does not pin its
+    bytes or is not shared."""
+    bs = ROOTFS_BLOCK_BYTES
+    runs: list[list[tuple[int, int, int]]] = [[] for _ in range(-(-size // bs))]
+    unsure = set()
+    for logical, physical, length, flags in extents:
+        end = min(logical + length, size)
+        if end <= logical:
+            continue
+        for i in range(logical // bs, -(-end // bs)):
+            if flags & FIEMAP_EXTENT_UNSURE or not flags & FIEMAP_EXTENT_SHARED:
+                unsure.add(i)
+                continue
+            lo, hi = max(logical, i * bs), min(end, (i + 1) * bs)
+            phys, r = physical + lo - logical, runs[i]
+            if r and r[-1][0] + r[-1][2] == lo and r[-1][1] + r[-1][2] == phys:
+                r[-1] = (r[-1][0], r[-1][1], r[-1][2] + hi - lo)
+            else:
+                r.append((lo, phys, hi - lo))
+    return [None if i in unsure else tuple(r) for i, r in enumerate(runs)]
+
+
+def rootfs_blocks_by_extents(path: Path, parent: Path, old: list[str]) -> list[str] | None:
+    """the block table of a rootfs reflinked from the same live disk as
+    parent, hashing only the blocks whose extents moved since parent was
+    taken. on a reflink filesystem a block still mapped to parent's physical
+    bytes is parent's bytes, so it keeps parent's hash unread; a block the
+    guest rewrote was copied on write to new extents and is hashed.
+
+    None when the extent maps cannot answer (no FIEMAP, a resized disk), and
+    the caller reads the whole file instead."""
+    size = path.stat().st_size
+    if parent.stat().st_size != size or len(old) != -(-size // ROOTFS_BLOCK_BYTES):
+        return None
+    try:
+        mine = block_extent_maps(file_extent_map(path), size)
+        theirs = block_extent_maps(file_extent_map(parent), size)
+    except OSError:
+        return None
+    blocks = list(old)
+    with open(path, "rb") as f:
+        for i, (a, b) in enumerate(zip(mine, theirs)):
+            if a is None or a != b:
+                f.seek(i * ROOTFS_BLOCK_BYTES)
+                blocks[i] = hashlib.sha256(f.read(ROOTFS_BLOCK_BYTES)).hexdigest()
+    return blocks
+
+
+def block_table_digest(blocks: list[str]) -> str:
+    """the identity of a rootfs whose block table is known but whose whole
+    file was never read: what the final pause records in place of the file
+    sha256, until finish_rootfs_digest has read it."""
+    return hashlib.sha256(b"fuse-rootfs-blocks-v1\n" + "\n".join(blocks).encode()).hexdigest()
+
+
+def finish_rootfs_digest(vm_id: str, snap_dir: Path, blocks: list[str]) -> None:
+    """the full rootfs_digests pass the final pause skipped. it waits for the
+    source to stop being paused (destroyed after the target resumed, or
+    resumed after a failed move), so it never competes with the move for disk.
+    the true sha256 lands in meta.json as rootfs_digest, replacing the
+    rootfs_digest_pending marker; the record's digest stays the block-table
+    one, since that is what the orchestrator and the target already hold. a
+    block table that disagrees with the full read means an extent map lied,
+    and the target got a wrong disk."""
+    deadline = time.monotonic() + 3600
+    while time.monotonic() < deadline:
+        meta = load_meta(vm_id)
+        if not meta or not meta.get("paused"):
+            break
+        time.sleep(1)
+    try:
+        digest, full = rootfs_digests(snap_dir / "rootfs.ext4")
+        p = snap_dir / "meta.json"
+        record = json.loads(p.read_text())
+        record["rootfs_digest"] = digest
+        record.pop("rootfs_digest_pending", None)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(record))
+        tmp.replace(p)
+    except (OSError, ValueError) as e:
+        # the snapshot was deleted under us, which a migration delta often is.
+        print(f"[fc-agent] snapshot {snap_dir.name}: full rootfs digest skipped: {e}", flush=True)
+        return
+    if full != blocks:
+        bad = [i for i, (a, b) in enumerate(zip(full, blocks)) if a != b]
+        print(f"[fc-agent] snapshot {snap_dir.name}: extent block table disagrees with the "
+              f"full read at blocks {bad or 'count'}; the delta sent from it was wrong", flush=True)
+
+
+def resume_pending_rootfs_digests() -> None:
+    """restart the full pass for every snapshot whose pass an agent restart
+    cut short, so rootfs_digest still lands and the check still runs."""
+    for p in SNAPSHOTS_DIR.glob("*/meta.json"):
+        try:
+            record = json.loads(p.read_text())
+            if not record.get("rootfs_digest_pending"):
+                continue
+            blocks = json.loads((p.parent / LIVE_MANIFEST).read_text())["rootfs_blocks"]
+        except (OSError, ValueError, KeyError):
+            continue
+        threading.Thread(target=finish_rootfs_digest,
+                         args=(str(record.get("origin_vm_id") or ""), p.parent, blocks), daemon=True).start()
+
+
 def write_delta(src: Path, ranges: list[tuple[int, int]], out: Path) -> None:
     """copy the given byte ranges of src into out as (offset, length) records,
     each followed by its bytes. one format for memory and rootfs diffs, and
@@ -1772,16 +1929,46 @@ def start_uffd(meta: dict, manifest: Path, mem: Path | None, lazy: dict | None) 
     return {"backend_type": "Uffd", "backend_path": str(sock)}
 
 
-def copy_rootfs(src: str, dst: Path) -> None:
-    """Copy a rootfs image, reflinking when the filesystem allows it.
+_reflink_probe: bool | None = None
+
+
+def snapshot_store_reflinks() -> bool:
+    """whether cp can reflink inside the snapshot store, probed once, so a
+    store that cannot (ext4) does not pay for a failed clone on every copy
+    inside a pause."""
+    global _reflink_probe
+    if _reflink_probe is None:
+        a = SNAPSHOTS_DIR / f".reflink-probe-{uuid.uuid4().hex}"
+        b = a.with_suffix(".clone")
+        try:
+            a.write_bytes(b"x" * 4096)
+            _reflink_probe = run(["cp", "--reflink=always", str(a), str(b)], check=False).returncode == 0
+        except OSError:
+            _reflink_probe = False
+        finally:
+            a.unlink(missing_ok=True)
+            b.unlink(missing_ok=True)
+    return _reflink_probe
+
+
+def copy_rootfs(src: str, dst: Path) -> bool:
+    """Copy a rootfs image, reflinking when the filesystem allows it, and say
+    whether it did. only xfs (reflink=1) and btrfs reflink; there dst shares
+    src's extents, which is what rootfs_blocks_by_extents relies on.
 
     cp goes through sudo because the live rootfs can be root-owned; the plain
     copy is the fallback for a filesystem with no reflink support, where cp
     --reflink=auto still exits non-zero on some coreutils versions.
     """
+    if snapshot_store_reflinks():
+        if sudo(["cp", "--reflink=always", src, str(dst)], check=False).returncode == 0:
+            return True
+        # src on another filesystem; a failed clone can leave an empty dst.
+        sudo(["rm", "-f", str(dst)], check=False)
     sudo(["cp", "--reflink=auto", src, str(dst)], check=False)
     if not dst.exists():
         shutil.copyfile(src, dst)
+    return False
 
 
 def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = False,
@@ -1837,7 +2024,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         fc_vm_state(sock, "Paused")
         ok = False
         try:
-            copy_rootfs(meta["rootfs"], snap_rootfs)
+            reflinked = copy_rootfs(meta["rootfs"], snap_rootfs)
             code, resp = fc_api(
                 sock, "PUT", "/snapshot/create",
                 {
@@ -1881,8 +2068,20 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         }
         # one read of the rootfs for its digest and its block table. after the
         # resume, so the guest is not kept stopped for it, except under
-        # keep_paused, where this is inside the migrate's pause.
-        digest, blocks = rootfs_digests(snap_rootfs)
+        # keep_paused, where this is inside the migrate's pause. there, on a
+        # reflink store, the extent maps say which blocks moved since parent
+        # and only those are read; the full read waits for the pause to end.
+        blocks, old, parent_rootfs = None, [], None
+        if diff:
+            old = json.loads(parent_manifest.read_text()).get("rootfs_blocks") or []
+            parent_rootfs = snapshot_file(vm_id, parent, "rootfs.ext4", required=False)
+        if keep_paused and reflinked and old and parent_rootfs:
+            blocks = rootfs_blocks_by_extents(snap_rootfs, parent_rootfs, old)
+        deferred = blocks is not None
+        if deferred:
+            digest = block_table_digest(blocks)
+        else:
+            digest, blocks = rootfs_digests(snap_rootfs)
         rootfs_size = os.path.getsize(snap_rootfs)
         live_manifest.update(rootfs_size=rootfs_size, rootfs_blocks=blocks)
         if meta.get("huge_pages"):
@@ -1891,12 +2090,8 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             # firecracker will only restore through fc-uffd.
             live_manifest["page_size"] = HUGE_PAGE_BYTES
         if diff:
-            old = json.loads(parent_manifest.read_text()).get("rootfs_blocks") or []
             live_manifest["parent_manifest"] = file_digest(parent_manifest)
-            changed = [
-                (i * ROOTFS_BLOCK_BYTES, min(ROOTFS_BLOCK_BYTES, rootfs_size - i * ROOTFS_BLOCK_BYTES))
-                for i, h in enumerate(blocks) if i >= len(old) or old[i] != h
-            ]
+            changed = changed_block_ranges(blocks, old, rootfs_size)
             write_delta(snap_rootfs, changed, snap_dir / "rootfs.delta")
             mem = snap_dir / "mem"
             write_delta(mem, file_extents(mem), snap_dir / "mem.delta")
@@ -1950,6 +2145,8 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         record["files"] = files
     if diff:
         record["parent"] = parent
+    if live and deferred:
+        record["rootfs_digest_pending"] = True
     (snap_dir / "meta.json").write_text(json.dumps(record))
     if live:
         # every live snapshot resets the dirty bitmap, so each one is the
@@ -1958,6 +2155,9 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         meta["paused"] = was_paused or keep_paused
     meta.setdefault("snapshots", []).append(record)
     save_meta(meta)
+    if live and deferred:
+        # after save_meta, so it sees the vm as paused and waits.
+        threading.Thread(target=finish_rootfs_digest, args=(vm_id, snap_dir, blocks), daemon=True).start()
     return record
 
 
@@ -3794,6 +3994,7 @@ def main():
     # started on every host, not just FC_MEM_HOTPLUG ones: a vm resumed from
     # another host's snapshot brings its hotplug device with it.
     threading.Thread(target=hotplug_loop, daemon=True).start()
+    resume_pending_rootfs_digests()
     srv =ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"[fc-agent] listening :{PORT}", flush=True)
     srv.serve_forever()
