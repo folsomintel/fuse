@@ -587,6 +587,26 @@ func TestHostsList(t *testing.T) {
 	}
 }
 
+func TestHostsGetDecodesFirecrackerVersion(t *testing.T) {
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"host-1","url":"https://h","state":"active",
+			"capacity":{"cpus":8,"ram_mb":16384,"storage_gb":100,"vm_count":4,
+				"firecracker":"v1.16.0","firecracker_pinned":"v1.17.0"},
+			"allocated":{"cpus":0,"ram_mb":0,"storage_gb":0,"vm_count":0}}`)
+	})
+	defer cleanup()
+
+	h, err := c.Hosts.Get(context.Background(), "host-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if h.Capacity.Firecracker != "v1.16.0" || h.Capacity.FirecrackerPinned != "v1.17.0" {
+		t.Fatalf("firecracker = %q/%q, want v1.16.0/v1.17.0",
+			h.Capacity.Firecracker, h.Capacity.FirecrackerPinned)
+	}
+}
+
 func TestHostsCordon(t *testing.T) {
 	var got recordedRequest
 	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
