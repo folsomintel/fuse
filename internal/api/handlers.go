@@ -1361,6 +1361,10 @@ func (h *Handler) registerHost(w http.ResponseWriter, r *http.Request) {
 			}
 			// the probe is the source of truth for the per-device list.
 			capacity.GPUDevices = probed.GPUDevices
+			// firecracker versions are only ever probed, never declared:
+			// they say what the host runs, not what the operator wants.
+			capacity.Firecracker = probed.Firecracker
+			capacity.FirecrackerPinned = probed.FirecrackerPinned
 			// per-instance MIG inventory is probed too. when the agent reports
 			// instances, the scheduler binds specific uuids to VMs; the count
 			// map (MIGProfiles) is then a derived summary. an operator's
