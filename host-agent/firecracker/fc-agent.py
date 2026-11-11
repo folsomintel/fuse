@@ -3752,6 +3752,11 @@ def goarch() -> str:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "fc-agent/0.1"
+    # keep-alive, so fc-uffd's page fetches reuse one connection each instead
+    # of a handshake per chunk. every response has to say where it ends: _json
+    # and _text send Content-Length, _serve_artifact sends the exact length and
+    # closes if it falls short, attach takes the socket over and closes it.
+    protocol_version = "HTTP/1.1"
     # socketserver applies this to the connection, so a client that opens a
     # socket and then stalls mid-request is dropped instead of holding a
     # thread. do_attach clears it for its own socket.
@@ -3762,6 +3767,15 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("Authorization", ""), f"Bearer {TOKEN}"
         )
 
+    def end_headers(self) -> None:
+        # a request body this handler never read would be parsed as the next
+        # request on the connection, so the connection ends with this response.
+        headers = getattr(self, "headers", None)
+        if headers is not None and not getattr(self, "_body_read", False):
+            if headers.get("Transfer-Encoding") or headers.get("Content-Length", "0").strip() not in ("", "0"):
+                self.send_header("Connection", "close")
+        super().end_headers()
+
     def _json(self, code: int, obj) -> None:
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -3771,6 +3785,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _text(self, code: int, msg: str) -> None:
+        if code == 204:
+            # a 204 has no body and no Content-Length.
+            self.send_response(code)
+            self.end_headers()
+            return
         body = msg.encode()
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
@@ -3806,6 +3825,7 @@ class Handler(BaseHTTPRequestHandler):
         # truncated remainder would be guessing at what it meant.
         if len(raw) < n:
             raise HTTPError(400, "request body shorter than Content-Length")
+        self._body_read = True
         try:
             return json.loads(raw or b"{}")
         except Exception as e:
@@ -3888,6 +3908,8 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _route(self, method: str):
+        # the handler lives as long as the connection, so this is per request.
+        self._body_read = False
         path = self.path.split("?", 1)[0]
         try:
             # Grant-authenticated, deliberately ahead of the bearer check: a
