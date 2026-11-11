@@ -46,6 +46,7 @@ type ownerState struct {
 type Opener interface {
 	Open(ctx context.Context, owner string, port int) (net.Conn, error)
 	Drop(owner string)
+	Retire(owner string)
 }
 
 // Config tunes a Proxy.
@@ -266,8 +267,9 @@ func (p *Proxy) publish(owner, token string, ports []PortSpec, adoptFrom string)
 	}
 	if tokenChanged && p.tunnel != nil {
 		// a guest still connected under the old token is not the guest this
-		// owner now means.
-		go p.tunnel.Drop(owner)
+		// owner now means. it takes no new streams, but the ones it carries
+		// (a download in progress) finish before it is closed.
+		p.tunnel.Retire(owner)
 	}
 	return append([]Route(nil), routes...), nil
 }
