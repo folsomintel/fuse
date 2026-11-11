@@ -46,23 +46,51 @@ type standbyUsage struct {
 	bytes  int64
 }
 
-// standbyUsageExcept sums every chain's standby copy by host, leaving out
-// vmID's own: a vm's own copy becomes its disk when it migrates there, so it
-// is already covered by the spec the host has to fit.
-func (fm *FleetManager) standbyUsageExcept(vmID string) map[string]standbyUsage {
+// standbyCopy is one chain's base: the host it sits on and its size.
+type standbyCopy struct {
+	host  string
+	bytes int64
+}
+
+// standbyCopies lists every chain's standby copy by vm id.
+func (fm *FleetManager) standbyCopies() map[string]standbyCopy {
 	fm.chainsMu.Lock()
 	defer fm.chainsMu.Unlock()
-	out := make(map[string]standbyUsage)
+	out := make(map[string]standbyCopy)
 	for id, c := range fm.chains {
-		if id == vmID || c.standby == "" {
-			continue
+		if c.standby != "" {
+			out[id] = standbyCopy{host: c.standby, bytes: c.bytes}
 		}
-		u := out[c.standby]
-		u.copies++
-		u.bytes += c.bytes
-		out[c.standby] = u
 	}
 	return out
+}
+
+// usageExcept sums copies by host, leaving out vmID's own: a vm's own copy
+// becomes its disk when it migrates there, so it is already covered by the
+// spec the host has to fit.
+func usageExcept(copies map[string]standbyCopy, vmID string) map[string]standbyUsage {
+	out := make(map[string]standbyUsage)
+	for id, c := range copies {
+		if id == vmID {
+			continue
+		}
+		u := out[c.host]
+		u.copies++
+		u.bytes += c.bytes
+		out[c.host] = u
+	}
+	return out
+}
+
+// standbyUsageExcept is usageExcept over the live chains.
+func (fm *FleetManager) standbyUsageExcept(vmID string) map[string]standbyUsage {
+	return usageExcept(fm.standbyCopies(), vmID)
+}
+
+// copyEstimate is how big a full live checkpoint of spec will be before one
+// has been taken: its disk plus its memory image.
+func copyEstimate(spec Spec) int64 {
+	return int64(spec.StorageGB)<<30 + int64(spec.RamMB)<<20
 }
 
 func (fm *FleetManager) chainFor(vmID string) *checkpointChain {
@@ -196,8 +224,13 @@ func (fm *FleetManager) checkpointCandidates() []string {
 // (a drained source sends all its vms to their standbys together). ties go
 // to the lowest id, so the choice is stable from one tick to the next. ""
 // when the fleet has no such host.
+//
+// a host is also passed over when the new copy would crowd out a vm whose
+// standby is already there: that vm's next re-check would fail and reset its
+// chain with nothing new scheduled on the host.
 func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
-	usage := fm.standbyUsageExcept(vmID)
+	copies := fm.standbyCopies()
+	usage := usageExcept(copies, vmID)
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	src, ok := fm.hosts[srcHostID]
@@ -224,11 +257,38 @@ func (fm *FleetManager) pickStandby(vmID, srcHostID string) string {
 		if standbyRejection(h, spec, usage[id]) != "" {
 			continue
 		}
+		if fm.crowdsOutLocked(h, vmID, copyEstimate(spec), copies) {
+			continue
+		}
 		if best == "" || usage[id].copies < usage[best].copies {
 			best = id
 		}
 	}
 	return best
+}
+
+// crowdsOutLocked reports whether adding vmID's copy of size bytes to h would
+// make any other vm with a standby copy on h fail its re-check. the caller
+// holds fm.mu.
+func (fm *FleetManager) crowdsOutLocked(h *Host, vmID string, bytes int64, copies map[string]standbyCopy) bool {
+	for otherID, c := range copies {
+		if otherID == vmID || c.host != h.ID {
+			continue
+		}
+		other, ok := fm.vms[otherID]
+		if !ok {
+			continue
+		}
+		held := usageExcept(copies, otherID)[h.ID]
+		held.copies++
+		held.bytes += bytes
+		spec := other.spec
+		spec.HostID = ""
+		if standbyRejection(h, spec, held) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // standbyRejection is hostRejection with the standby copies a host already
