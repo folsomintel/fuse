@@ -133,6 +133,127 @@ class LiveArtifactPullTest(unittest.TestCase):
             conn.close()
 
 
+def write_v2_snapshot(snapshot_id: str, rootfs: bytes, mem: bytes,
+                      block_table_rootfs: bool = False) -> tuple[str, dict]:
+    """a version 2 snapshot laid out the way snapshot_create writes one: mem's
+    digest is a hash over its chunk table, and with block_table_rootfs the
+    rootfs digest is the block table one a migrate's final pause records."""
+    d = fc_agent.SNAPSHOTS_DIR / snapshot_id
+    d.mkdir(parents=True)
+    (d / "rootfs.ext4").write_bytes(rootfs)
+    (d / "mem").write_bytes(mem)
+    (d / "vmstate").write_bytes(b"vcpu state")
+    rootfs_digest, blocks = fc_agent.rootfs_digests(d / "rootfs.ext4")
+    chunks, _ = fc_agent.chunk_digests(d / "mem")
+    manifest = {"index": 7, "rootfs_blocks": blocks,
+                "digest_version": fc_agent.LIVE_DIGEST_VERSION, "mem_chunks": chunks}
+    (d / "live.json").write_text(json.dumps(manifest))
+    digest = fc_agent.block_table_digest(blocks) if block_table_rootfs else rootfs_digest
+    files = {"vmstate": sha(b"vcpu state"), "mem": fc_agent.mem_table_digest(chunks),
+             "live.json": fc_agent.file_digest(d / "live.json")}
+    (d / "meta.json").write_text(json.dumps(
+        {"snapshot_id": snapshot_id, "digest": digest, "kind": "live", "files": files}
+    ))
+    return digest, files
+
+
+class ChunkedDigestPullTest(unittest.TestCase):
+    """a version 2 snapshot's mem, and a final-pause rootfs, are checked chunk
+    by chunk against the tables in live.json rather than as one sha256."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.peer = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        self.name = self.id().rsplit(".", 1)[1].replace("_", "-")
+        # three 2M chunks, the last one short.
+        self.mem = bytes(range(256)) * ((5 << 20) // 256)
+        self.rootfs = f"rootfs {self.name}".encode()
+
+    def pull(self, digest: str, files: dict) -> dict:
+        return fc_agent.pull_artifact(digest, self.peer, grant_for(digest), f"dst-{self.name}", files,
+                                      source_snapshot_id=f"src-{self.name}")
+
+    def assertNothingCommitted(self, caught, fragment: str):
+        self.assertEqual(caught.exception.code, 422)
+        self.assertIn(fragment, caught.exception.msg)
+        self.assertFalse((fc_agent.SNAPSHOTS_DIR / f"dst-{self.name}").exists())
+        self.assertEqual(list(fc_agent.ARTIFACT_TMP_DIR.iterdir()), [])
+
+    def test_commits_a_version_2_snapshot(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem)
+        self.assertNotEqual(files["mem"], sha(self.mem), "a version 2 mem digest is not the file sha256")
+        rec = self.pull(digest, files)
+        self.assertEqual(rec["files"], files)
+        self.assertEqual((fc_agent.SNAPSHOTS_DIR / f"dst-{self.name}" / "mem").read_bytes(), self.mem)
+
+    def test_a_wrong_chunk_fails_at_that_chunk(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem)
+        src = fc_agent.SNAPSHOTS_DIR / f"src-{self.name}" / "mem"
+        with open(src, "r+b") as f:
+            f.seek((2 << 20) + 5)
+            f.write(b"!")
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            self.pull(digest, files)
+        self.assertNothingCommitted(caught, "chunk 1")
+
+    def test_a_table_that_is_not_the_recorded_digest_is_refused(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem)
+        files["mem"] = sha(self.mem)
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            self.pull(digest, files)
+        self.assertNothingCommitted(caught, "chunk table")
+
+    def test_an_unknown_digest_version_is_refused(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem)
+        manifest = fc_agent.SNAPSHOTS_DIR / f"src-{self.name}" / "live.json"
+        manifest.write_text(json.dumps({**json.loads(manifest.read_text()), "digest_version": 3}))
+        files["live.json"] = fc_agent.file_digest(manifest)
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            self.pull(digest, files)
+        self.assertNothingCommitted(caught, "digest_version 3")
+
+    def test_a_block_table_rootfs_digest_is_checked_block_by_block(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem, block_table_rootfs=True)
+        self.assertNotEqual(digest, sha(self.rootfs))
+        rec = self.pull(digest, files)
+        self.assertEqual(rec["digest"], digest)
+        self.assertEqual((fc_agent.SNAPSHOTS_DIR / f"dst-{self.name}" / "rootfs.ext4").read_bytes(), self.rootfs)
+
+    def test_a_wrong_rootfs_block_commits_nothing(self):
+        digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem, block_table_rootfs=True)
+        (fc_agent.SNAPSHOTS_DIR / f"src-{self.name}" / "rootfs.ext4").write_bytes(b"x" * len(self.rootfs))
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            self.pull(digest, files)
+        self.assertNothingCommitted(caught, "chunk 0")
+
+
+class ChunkTableCheckTest(unittest.TestCase):
+    def test_chunks_split_across_reads_still_match(self):
+        data = b"a" * 10 + b"b" * 10 + b"c" * 3
+        check = fc_agent.ChunkTableCheck(10, [sha(b"a" * 10), sha(b"b" * 10), sha(b"c" * 3)])
+        for piece in (data[:7], data[7:15], data[15:]):
+            check.update(piece)
+        check.finish()
+
+    def test_a_missing_or_extra_chunk_is_refused(self):
+        check = fc_agent.ChunkTableCheck(10, [sha(b"a" * 10), sha(b"b" * 10)])
+        check.update(b"a" * 10)
+        with self.assertRaises(fc_agent.HTTPError):
+            check.finish()
+        check = fc_agent.ChunkTableCheck(10, [sha(b"a" * 10)])
+        with self.assertRaises(fc_agent.HTTPError):
+            check.update(b"a" * 20)
+
+
 class ResumePlanTest(unittest.TestCase):
     def setUp(self):
         self.name = self.id().rsplit(".", 1)[1].replace("_", "-")

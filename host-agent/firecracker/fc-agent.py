@@ -2615,11 +2615,70 @@ def _peer_connection(peer_url: str) -> http.client.HTTPConnection:
     return cls(u.hostname, u.port, timeout=ARTIFACT_IO_TIMEOUT)
 
 
+class ChunkTableCheck:
+    """checks a stream against a table of per-chunk sha256s as it arrives, so
+    a wrong chunk fails the pull the moment it lands rather than once the
+    whole file is in. the caller has already matched the table to the digest
+    the orchestrator recorded (block_table_digest or mem_table_digest)."""
+
+    def __init__(self, chunk_bytes: int, hashes: list[str]):
+        self.chunk_bytes, self.hashes = chunk_bytes, hashes
+        self.index, self.filled, self.h = 0, 0, hashlib.sha256()
+
+    def update(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            take = min(self.chunk_bytes - self.filled, len(view))
+            self.h.update(view[:take])
+            self.filled += take
+            view = view[take:]
+            if self.filled == self.chunk_bytes:
+                self._close_chunk()
+
+    def finish(self) -> None:
+        if self.filled:
+            self._close_chunk()
+        if self.index != len(self.hashes):
+            raise HTTPError(422, f"got {self.index} of {len(self.hashes)} chunks; nothing committed")
+
+    def _close_chunk(self) -> None:
+        i = self.index
+        if i >= len(self.hashes) or not hmac.compare_digest(self.h.hexdigest(), self.hashes[i]):
+            raise HTTPError(422, f"chunk {i} digest mismatch; nothing committed")
+        self.index, self.filled, self.h = i + 1, 0, hashlib.sha256()
+
+
+def chunk_table_for(name: str, expected: str, manifest: dict) -> ChunkTableCheck | None:
+    """how a pulled file of a live snapshot is checked: chunk by chunk when
+    its recorded digest is a table digest, as a whole otherwise. the rootfs
+    has a table digest only when a migrate's final pause took it (see
+    block_table_digest), mem in every version 2 snapshot. manifest is the
+    snapshot's live.json, already verified against its own recorded digest."""
+    if name == "rootfs.ext4":
+        blocks = manifest.get("rootfs_blocks") or []
+        if blocks and hmac.compare_digest(block_table_digest(blocks), expected):
+            return ChunkTableCheck(ROOTFS_BLOCK_BYTES, blocks)
+        return None
+    if name != "mem":
+        return None
+    version = manifest.get("digest_version", 1)
+    if version == 1:
+        return None
+    if version != LIVE_DIGEST_VERSION:
+        raise HTTPError(422, f"live.json digest_version {version!r} is not one this agent knows; nothing committed")
+    chunks = manifest.get("mem_chunks") or []
+    if not hmac.compare_digest(mem_table_digest(chunks), expected):
+        raise HTTPError(422, "mem digest does not match the chunk table in live.json; nothing committed")
+    return ChunkTableCheck(HUGE_PAGE_BYTES, chunks)
+
+
 def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
-                    deadline: float, limit: int) -> tuple[Path, int]:
+                    deadline: float, limit: int,
+                    table: ChunkTableCheck | None = None) -> tuple[Path, int]:
     """stream one file from a peer into a temp file and return it only if its
-    sha256 is `expected`. on any failure the temp file is removed and nothing
-    is returned; the caller owns the file on success.
+    sha256 is `expected`, or, given a table, only if every chunk matches it.
+    on any failure the temp file is removed and nothing is returned; the
+    caller owns the file on success.
     """
     # The name is built from a fresh uuid alone. A digest prefix would have been
     # a nicer thing to read in a directory listing, but it puts request-derived
@@ -2676,7 +2735,10 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
                     )
                 if declared >= 0 and total > declared:
                     raise HTTPError(422, "peer sent more bytes than it declared")
-                running.update(chunk)
+                if table is not None:
+                    table.update(chunk)
+                else:
+                    running.update(chunk)
                 f.write(chunk)
             # Durable before the rename: a crash between the two would
             # otherwise publish a file whose tail never reached the disk, and
@@ -2687,7 +2749,9 @@ def _fetch_verified(peer_url: str, url_path: str, grant: str, expected: str,
 
         if declared >= 0 and total != declared:
             raise HTTPError(422, f"short read: got {total} of {declared} bytes")
-        if not hmac.compare_digest(running.hexdigest(), expected):
+        if table is not None:
+            table.finish()
+        elif not hmac.compare_digest(running.hexdigest(), expected):
             raise HTTPError(422, "artifact digest mismatch; nothing committed")
         return tmp, total
     except BaseException:
@@ -2748,27 +2812,35 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
     dest_dir = _artifact_dest(snapshot_id)
 
     deadline = time.monotonic() + ARTIFACT_TRANSFER_TIMEOUT
-    # iterating LIVE_FILES rather than `files` keeps the names that reach a url
-    # or a path our own literals, whatever the request body spelled.
+    # iterating our own literals rather than `files` keeps the names that
+    # reach a url or a path ours, whatever the request body spelled.
     # a sparse copy crosses the wire in mem's place and mem is rebuilt from it.
-    # lazy fetches neither: fc-uffd reads mem off the peer.
+    # lazy fetches neither: fc-uffd reads mem off the peer. live.json goes
+    # first, since its tables say how the rootfs and mem are checked.
     sparse = SPARSE_MEM in files and not lazy
     skip = {"mem", SPARSE_MEM} if lazy else {"mem"} if sparse else {SPARSE_MEM}
-    wanted = [("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest)] + [
-        (name, f"/v1/artifacts/{digest}/files/{name}{q}", files[name])
-        for name in LIVE_FILES + (SPARSE_MEM,) if name in files and name not in skip
-    ]
+
+    def file_url(name: str) -> str:
+        return f"/v1/artifacts/{digest}/files/{name}{q}"
+    wanted = [(LIVE_MANIFEST, file_url(LIVE_MANIFEST), files[LIVE_MANIFEST])] if files else []
+    wanted.append(("rootfs.ext4", f"/v1/artifacts/{digest}{q}", digest))
+    wanted += [(name, file_url(name), files[name])
+               for name in ("vmstate", "mem", SPARSE_MEM) if name in files and name not in skip]
     staged: list[tuple[str, Path]] = []
+    manifest: dict = {}
     total = 0
     try:
         for name, url_path, expected in wanted:
             tmp, size = _fetch_verified(
-                peer_url, url_path, grant, expected, deadline, MAX_ARTIFACT_BYTES - total
+                peer_url, url_path, grant, expected, deadline, MAX_ARTIFACT_BYTES - total,
+                chunk_table_for(name, expected, manifest),
             )
             staged.append((name, tmp))
             total += size
+            if name == LIVE_MANIFEST:
+                manifest = json.loads(tmp.read_text())
 
-        if lazy and not json.loads(dict(staged)[LIVE_MANIFEST].read_text()).get("chunks"):
+        if lazy and not manifest.get("chunks"):
             raise HTTPError(409, "snapshot has no chunk table; it was not taken with 2M pages")
 
         if sparse:
@@ -2781,7 +2853,7 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             apply_delta(stage[SPARSE_MEM], mem, size)
             # checked against mem's own digest, so the pulled copy is as good
             # as a full one and can be moved on to a third host.
-            if not hmac.compare_digest(file_digest(mem), files["mem"]):
+            if not hmac.compare_digest(mem_digest(mem, manifest), files["mem"]):
                 raise HTTPError(422, "rebuilt memory image digest mismatch; nothing committed")
 
         # Same fresh-inode-plus-mv commit as snapshot_restore: the bytes are
