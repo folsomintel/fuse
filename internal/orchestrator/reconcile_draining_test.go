@@ -1,8 +1,11 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -78,9 +81,20 @@ func drainingFleet(t *testing.T, cfg FleetConfig, taskID string, drainingFor tim
 
 func TestDrainingTimeoutDefaults(t *testing.T) {
 	for _, d := range []time.Duration{0, -time.Second, drainTimeout, drainTimeout / 2} {
-		fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), DrainingTimeout: d})
+		var buf bytes.Buffer
+		fm := NewFleetManager(FleetConfig{
+			Provider:        newMockProvider(),
+			DrainingTimeout: d,
+			Logger:          slog.New(slog.NewTextHandler(&buf, nil)),
+		})
 		if fm.drainingTimeout != DefaultDrainingTimeout {
 			t.Errorf("DrainingTimeout %s: got %s, want the default %s", d, fm.drainingTimeout, DefaultDrainingTimeout)
+		}
+		// an unset timeout takes the default quietly; one that was asked
+		// for and overridden is logged.
+		warned := strings.Contains(buf.String(), "draining timeout at or below")
+		if warned != (d != 0) {
+			t.Errorf("DrainingTimeout %s: warned = %v, want %v (log: %q)", d, warned, d != 0, buf.String())
 		}
 	}
 	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), DrainingTimeout: time.Hour})

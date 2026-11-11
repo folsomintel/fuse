@@ -603,11 +603,20 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 	if cfg.OrphanDestroyMaxRetries == 0 {
 		cfg.OrphanDestroyMaxRetries = 5
 	}
-	if cfg.DrainingTimeout <= drainTimeout {
-		cfg.DrainingTimeout = DefaultDrainingTimeout
-	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
+	}
+	if cfg.DrainingTimeout <= drainTimeout {
+		// zero is "unset" and takes the default quietly; anything else was
+		// asked for and is worth saying out loud.
+		if cfg.DrainingTimeout != 0 {
+			cfg.Logger.Warn("draining timeout at or below the drain command ceiling, using the default",
+				"requested", cfg.DrainingTimeout,
+				"drain_command_ceiling", drainTimeout,
+				"using", DefaultDrainingTimeout,
+			)
+		}
+		cfg.DrainingTimeout = DefaultDrainingTimeout
 	}
 	if cfg.StateStore == nil {
 		cfg.StateStore = NewMemoryStateStore()
