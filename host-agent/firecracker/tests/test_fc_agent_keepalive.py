@@ -221,6 +221,42 @@ class KeepAliveTest(AgentServer, unittest.TestCase):
         self.assertTrue(self.closed)
 
 
+class TimeoutLogTest(unittest.TestCase):
+    """the request timeout closes idle keep-alive connections all the time;
+    only a timeout partway through a request is logged."""
+
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        patcher = mock.patch.object(fc_agent.Handler, "timeout", 0.2)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def logged_after(self, data: bytes) -> list[str]:
+        lines = []
+        with mock.patch.object(fc_agent.Handler, "log_message",
+                               lambda h, fmt, *args: lines.append(fmt % args)):
+            s = socket.create_connection(self.server.server_address, timeout=5)
+            try:
+                s.sendall(data)
+                # the server closes once its timeout fires.
+                while s.recv(65536):
+                    pass
+            finally:
+                s.close()
+        return [line for line in lines if "timed out" in line]
+
+    def test_an_idle_connection_closes_quietly(self):
+        out = self.logged_after(b"GET /healthz HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer test-token\r\n\r\n")
+        self.assertEqual(out, [])
+
+    def test_a_stall_partway_through_the_headers_is_logged(self):
+        out = self.logged_after(b"GET /healthz HTTP/1.1\r\nHost: x\r\n")
+        self.assertEqual(len(out), 1, out)
+
+
 class ArtifactCacheTest(unittest.TestCase):
     def setUp(self):
         self.name = self.id().rsplit(".", 1)[1].replace("_", "-")

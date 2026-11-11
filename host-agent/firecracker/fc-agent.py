@@ -3775,6 +3775,19 @@ class Handler(BaseHTTPRequestHandler):
             # that stopped reading at a bad chunk. nothing is left to answer.
             pass
 
+    def handle_one_request(self) -> None:
+        # cleared so log_error can tell a connection that timed out waiting for
+        # its next request line from one that stalled partway through a request.
+        self.raw_requestline = b""
+        super().handle_one_request()
+
+    def log_error(self, fmt, *args) -> None:
+        # an idle keep-alive connection reaching REQUEST_TIMEOUT is routine,
+        # so only a timeout once a request line has arrived is worth a line.
+        if fmt.startswith("Request timed out") and not self.raw_requestline:
+            return
+        super().log_error(fmt, *args)
+
     def end_headers(self) -> None:
         # a request body this handler never read would be parsed as the next
         # request on the connection, so the connection ends with this response.
