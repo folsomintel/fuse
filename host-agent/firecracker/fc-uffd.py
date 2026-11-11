@@ -4,7 +4,9 @@ host-agent/firecracker/fc-uffd.py: fill a live-migrated guests memory while it r
 
 The new VM on the target resumes with an empty memory. Firecracker hands this
 process a userfaultfd over a unix socket, and every page the guest touches
-is fetched from the source in 2M chunks, checked against live.json, and copied in. A background thread pulls the rest,
+is fetched from the source in 2M chunks, checked against live.json, and copied in. Faults are served by a
+pool of workers, so vcpus waiting on different chunks wait in parallel and vcpus waiting on the same chunk
+share one fetch. A background thread pulls the rest,
 and --status reports done once the source is no longer needed
 
 all-zero chunks (holes in the image, which is what unplugged virtio-mem
@@ -21,6 +23,7 @@ import hashlib
 import http.client
 import os 
 import json
+import queue
 import select 
 import socket 
 import struct
@@ -38,6 +41,9 @@ GRANT_HEADER = "X-Fuse-Artifact-Grant"
 FETCH_ATTEMPTS = 5 
 FETCH_TIMEOUT = 30.0
 STATUS_EVERY = 64
+# threads serving page faults. each holds one fetch in flight, so this many
+# vcpus can wait on different chunks at once.
+FAULT_WORKERS = int(os.environ.get("FC_UFFD_WORKERS", "8"))
 
 def log(msg: str) -> None:
     print(f"[fc-uffd] {msg}", file=sys.stderr, flush=True)
@@ -67,11 +73,16 @@ class FileSource:
             off = os.lseek(fd, data, os.SEEK_HOLE)
         return out
 
+class BadChunk(OSError):
+    """the source answered, and the answer was not the chunk."""
+
+
 class PeerSource:
     """
     Chunks fetched from the source host's agent, one range request each.
-    The agent answers http/1.0 and closes after every response, so there is no connection worth 
-    keeping between chunks.
+    The agent speaks http/1.1 keep-alive, so each thread that fetches (every
+    fault worker, and the prefetcher) keeps one connection of its own and
+    reuses it chunk after chunk.
     """
     def __init__(self, url: str, grant: str, size: int):
         u = urlparse(url)
@@ -84,10 +95,30 @@ class PeerSource:
         self.scheme, self.host, self.port, self.path = u.scheme, u.hostname, u.port, path
         self.grant = grant 
         self.size = size 
+        self.local = threading.local()
+
+    def connect(self) -> http.client.HTTPConnection:
+        cls = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
+        return cls(self.host, self.port, timeout=FETCH_TIMEOUT)
 
     def chunk(self, i: int) -> bytes:
-        cls = http.client.HTTPSConnection if self.scheme == "https" else http.client.HTTPConnection
-        conn = cls(self.host, self.port, timeout=FETCH_TIMEOUT)
+        conn = getattr(self.local, "conn", None)
+        if conn is not None:
+            try:
+                return self.request(conn, i)
+            except (BadChunk, TimeoutError):
+                # a stalled source is not a dropped connection: retrying it at
+                # once would wait out FETCH_TIMEOUT twice per attempt.
+                raise
+            except (OSError, http.client.HTTPException):
+                # the agent drops a connection that sat idle past its request
+                # timeout. that is not the source failing, so one fresh
+                # connection gets the chunk before fetch's retries count it.
+                pass
+        self.local.conn = self.connect()
+        return self.request(self.local.conn, i)
+
+    def request(self, conn: http.client.HTTPConnection, i: int) -> bytes:
         try:
             off = i * self.size 
             conn.request("GET", self.path, headers={
@@ -96,10 +127,17 @@ class PeerSource:
             })
             resp = conn.getresponse()
             if resp.status != 206:
-                raise OSError(f"http {resp.status}")
-            return resp.read(self.size)
-        finally:
+                raise BadChunk(f"http {resp.status}")
+            # one byte over the chunk is enough to tell a wrong length.
+            data = resp.read(self.size + 1)
+            if len(data) != self.size:
+                raise BadChunk(f"chunk of {len(data)} bytes, not {self.size}")
+            return data
+        except BaseException:
+            # whatever is left of a failed exchange is not reusable.
             conn.close()
+            self.local.conn = None
+            raise
 
 def copy_page(uffd: int, dst: int, data: bytearray, removed=lambda: False) -> None:
     """UFFDIO_COPY data into the guest at dst. EEXIST means the other thread
@@ -139,7 +177,18 @@ class Pager:
         # chunks the guest gave back since the resume. the host dropped their
         # pages, so they read as zeros from here on.
         self.removed: set[int] = set()
+        # bumped by every remove, so a fill can tell one landed while it ran.
+        self.removes = 0
+        # chunk -> set once the thread filling it is done. a second fault on
+        # the chunk waits on it instead of fetching the chunk again.
+        self.inflight: dict[int, threading.Event] = {}
+        # chunk -> whether another fault on it came in, for each chunk queued
+        # to or held by a fault worker. a repeat fault is folded in here
+        # instead of tying up a second worker waiting on the first.
+        self.pending: dict[int, bool] = {}
         self.error = ""
+        # the first error a fault worker hit, which ends serve_faults.
+        self.fault_error: Exception | None = None
 
     def chunk_for(self, addr: int) -> int | None:
         for r in self.regions:
@@ -165,12 +214,29 @@ class Pager:
         raise RuntimeError(last)
 
     def fill(self, i: int) -> None:
+        """make chunk i resident. one thread at a time fills a chunk; the
+        others wait for it, and fill it themselves only if it failed."""
         if not 0 <= i < self.total:
             raise RuntimeError(f"chunk {i} outside the manifest")
+        while True:
+            with self.lock:
+                if i in self.resident:
+                    return
+                done = self.inflight.get(i)
+                if done is None:
+                    self.inflight[i] = threading.Event()
+                    break
+            done.wait()
+        try:
+            self.copy_in(i)
+        finally:
+            with self.lock:
+                self.inflight.pop(i).set()
+
+    def copy_in(self, i: int) -> None:
         with self.lock:
-            if i in self.resident:
-                return
             blank = i in self.zero or i in self.removed
+            removes = self.removes
         data = bytearray(self.page) if blank else bytearray(self.fetch(i))
         removed = lambda: self.is_removed(i)
         # a remove can land while the chunk was being fetched.
@@ -181,7 +247,11 @@ class Pager:
             if r ["offset"] <= off < r["offset"] + r["size"]:
                 copy_page(self.uffd, r["base_host_virt_addr"] + off - r["offset"], data, removed)
         with self.lock:
-            self.resident.add(i)
+            # a remove of this chunk that landed during the fill may have
+            # dropped the pages again, so it is not resident: its next fault
+            # fills zeros instead of being ignored.
+            if not (i in self.removed and self.removes != removes):
+                self.resident.add(i)
 
     def is_removed(self, i: int) -> bool:
         with self.lock:
@@ -198,6 +268,7 @@ class Pager:
                 with self.lock:
                     self.removed.add(i)
                     self.resident.discard(i)
+                    self.removes += 1
             addr = (addr // self.page + 1) * self.page
 
     def settled(self) -> int:
@@ -221,12 +292,19 @@ class Pager:
         self.write_status()
         log(f"all {self.total} chunks settled")
 
-    def serve_faults(self, conn: socket.socket) -> None:
+    def serve_faults(self, conn: socket.socket, workers: int = FAULT_WORKERS) -> None:
+        """read uffd events and hand each fault to a pool of workers, so a
+        vcpu waiting on the network does not hold up the others. removes are
+        applied here, in order with the faults around them."""
+        faults: queue.Queue = queue.Queue()
+        for _ in range(max(1, workers)):
+            threading.Thread(target=self.fault_worker, args=(faults,), daemon=True).start()
         poller = select.poll()
         poller.register(self.uffd, select.POLLIN)
         poller.register(conn.fileno(), select.POLLIN)
         while True:
-            for fd, ev in poller.poll():
+            # the timeout is only so a failed worker is noticed.
+            for fd, ev in poller.poll(200):
                 if fd == conn.fileno():
                     if not conn.recv(4096):
                         return 
@@ -249,8 +327,35 @@ class Pager:
                 i = self.chunk_for(addr)
                 if i is None:
                     raise RuntimeError(f"fault at {addr:#x} outside every region")
-                self.fill(i)
+                with self.lock:
+                    queued = i in self.pending
+                    self.pending[i] = queued
+                if not queued:
+                    faults.put(i)
+            with self.lock:
+                err = self.fault_error
+            if err:
+                raise err
 
+    def fault_worker(self, faults: queue.Queue) -> None:
+        while True:
+            i = faults.get()
+            try:
+                while True:
+                    self.fill(i)
+                    # the copy woke every vcpu that faulted on the chunk before
+                    # it. a repeat fault only needs another fill if the chunk is
+                    # not resident after all (a remove landed during the fill).
+                    with self.lock:
+                        again = self.pending.pop(i) and i not in self.resident
+                        if again:
+                            self.pending[i] = False
+                    if not again:
+                        break
+            except Exception as e:
+                with self.lock:
+                    self.fault_error = self.fault_error or e
+                return
 
     def write_status(self) -> None:
         settled = self.settled()
