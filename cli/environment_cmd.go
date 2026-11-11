@@ -438,7 +438,7 @@ func newEnvDrainCmd() *cobra.Command {
 				return friendly(err)
 			}
 			successf("draining environment %q", args[0])
-			infof("drain is phase-1 only; it does not auto-destroy. run `fuse environment destroy %s` to remove it", args[0])
+			infof("drain is phase-1 only; the orchestrator destroys a draining environment once its draining timeout passes (5m30s by default). run `fuse environment destroy %s` to remove it now", args[0])
 			if app.isJSON() {
 				return printJSON(e)
 			}

@@ -17,13 +17,16 @@ environments can be drained, any other state returns a conflict error.
 Drain is phase one of a two-phase teardown, it does **not** destroy the
 environment. The CLI prints a reminder of this after a successful drain. Follow
 up with [`fuse environment destroy`](/reference/cli/environment/destroy)
-to actually remove it:
+to actually remove it. An environment left draining longer than the
+orchestrator's draining timeout (5m30s by default) is destroyed by the
+[reconcile loop](/docs/concepts/reconcile#stuck-draining):
 
 ```bash
 fuse environment drain fuse-abc123
 # draining environment "fuse-abc123"
-# drain is phase-1 only; it does not auto-destroy. run
-# `fuse environment destroy fuse-abc123` to remove it
+# drain is phase-1 only; the orchestrator destroys a draining environment once
+# its draining timeout passes (5m30s by default). run
+# `fuse environment destroy fuse-abc123` to remove it now
 
 fuse environment destroy fuse-abc123
 ```
@@ -35,7 +38,8 @@ command runs, so a failing drain command leaves the environment in `draining`
 and returns an error. Draining is one-way, `DELETE` is the only supported
 transition out of it, so there is no way back to `running` and re-draining the
 same environment returns a conflict error. The only recovery is
-[`fuse environment destroy`](/reference/cli/environment/destroy).
+[`fuse environment destroy`](/reference/cli/environment/destroy), or waiting for
+the draining timeout.
 
 The failure reason is stamped onto the environment's error field, visible via
 [`fuse environment get`](/reference/cli/environment/get).

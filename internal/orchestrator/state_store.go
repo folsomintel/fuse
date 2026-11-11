@@ -226,6 +226,10 @@ const (
 	// DeadLetterIdleTimeout records an environment torn down because it went
 	// longer than its idle timeout with no exec and no attach session.
 	DeadLetterIdleTimeout DeadLetterKind = "idle_timeout"
+
+	// DeadLetterDrainTimeout records an environment torn down because it
+	// stayed in draining past the draining timeout with no DELETE.
+	DeadLetterDrainTimeout DeadLetterKind = "drain_timeout"
 )
 
 // DeadLetterRecord is a failure the reconciler has given up on retrying.

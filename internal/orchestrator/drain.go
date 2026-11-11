@@ -13,6 +13,12 @@ import (
 // shorter ceiling can pass a context with their own deadline.
 const drainTimeout = 30 * time.Second
 
+// DefaultDrainingTimeout is how long a VM may stay Draining before the
+// reconcile loop destroys it, when FleetConfig.DrainingTimeout is unset. It
+// is the drain command's ceiling plus a margin for the caller to read the
+// result and send DELETE.
+const DefaultDrainingTimeout = drainTimeout + 5*time.Minute
+
 // Drain transitions a Running VM into the Draining state and runs the
 // configured drain command inside the guest (via Environment.ExecStream) to
 // quiesce in-guest workloads gracefully. It is the first phase of two-phase

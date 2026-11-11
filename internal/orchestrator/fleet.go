@@ -276,7 +276,10 @@ type ReconcileSummary struct {
 	StuckTasksFailed    int
 	IdleVMsSuspected    int
 	IdleVMsFailed       int
-	VMsMissingProvider  int
+	// DrainingVMsDestroyed counts VMs torn down this cycle for sitting in
+	// draining past the draining timeout.
+	DrainingVMsDestroyed int
+	VMsMissingProvider   int
 	// HealthChecked counts VMs whose guest returned a usable health verdict
 	// this cycle; HealthFailing is how many of those were failing. Neither
 	// causes a teardown: the environment-level probe reports, it does not act.
@@ -349,6 +352,14 @@ type FleetConfig struct {
 	// an orphan VM may fail to destroy before being dead-lettered and
 	// skipped on subsequent cycles. Default 5.
 	OrphanDestroyMaxRetries int
+
+	// DrainingTimeout is how long a VM may sit in Draining before the
+	// reconcile loop destroys it. Drain never destroys on its own, so a
+	// caller that drains and never sends DELETE would otherwise leak the
+	// VM forever. Default DefaultDrainingTimeout; a value at or below the
+	// drain command's own ceiling is raised to the default so a drain is
+	// never cut short.
+	DrainingTimeout time.Duration
 
 	// StartupScriptTimeout bounds a caller's boot-time startup script when
 	// BootOptions does not set its own. Default
@@ -460,6 +471,8 @@ type FleetManager struct {
 	taskStuckTimeout         time.Duration
 	defaultIdleTimeout       time.Duration
 	orphanDestroyMaxRetries  int
+	orphanDestroyTimeout     time.Duration
+	drainingTimeout          time.Duration
 	defaultSnapshotRetention time.Duration
 	snapshotQuotaMaxCount    int
 	snapshotQuotaMaxBytes    int64
@@ -593,6 +606,18 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.DrainingTimeout <= drainTimeout {
+		// zero is "unset" and takes the default quietly; anything else was
+		// asked for and is worth saying out loud.
+		if cfg.DrainingTimeout != 0 {
+			cfg.Logger.Warn("draining timeout at or below the drain command ceiling, using the default",
+				"requested", cfg.DrainingTimeout,
+				"drain_command_ceiling", drainTimeout,
+				"using", DefaultDrainingTimeout,
+			)
+		}
+		cfg.DrainingTimeout = DefaultDrainingTimeout
+	}
 	if cfg.StateStore == nil {
 		cfg.StateStore = NewMemoryStateStore()
 	}
@@ -622,6 +647,8 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		taskStuckTimeout:         cfg.TaskStuckTimeout,
 		defaultIdleTimeout:       cfg.DefaultIdleTimeout,
 		orphanDestroyMaxRetries:  cfg.OrphanDestroyMaxRetries,
+		orphanDestroyTimeout:     orphanDestroyTimeout,
+		drainingTimeout:          cfg.DrainingTimeout,
 		defaultSnapshotRetention: cfg.DefaultSnapshotRetention,
 		snapshotQuotaMaxCount:    cfg.SnapshotQuotaMaxCount,
 		snapshotQuotaMaxBytes:    cfg.SnapshotQuotaMaxBytes,
@@ -1596,13 +1623,16 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)
+	fm.reconcileStuckDraining(ctx, &summary)
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
 	fm.reconcileArtifacts(ctx)
 
-	// Sweep VMs that have been marked destroying and are no longer present
+	// Retry teardowns that failed and left a destroying VM on its host, then
+	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
+	fm.retryFailedTeardowns(providerVMs)
 	fm.reapDestroyedVMs(providerVMs)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan

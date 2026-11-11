@@ -13,18 +13,19 @@ import (
 // gauges that are updated each reconcile cycle.
 type PrometheusMetrics struct {
 	// Reconcile cycle metrics.
-	reconcileDuration   prometheus.Histogram
-	reconcileTotal      prometheus.Counter
-	trackedVMs          prometheus.Gauge
-	providerVMs         prometheus.Gauge
-	orphansDestroyed    prometheus.Counter
-	orphansFailed       prometheus.Counter
-	orphansDeadLettered prometheus.Counter
-	stuckTasksSuspected prometheus.Counter
-	stuckTasksFailed    prometheus.Counter
-	idleVMsSuspected    prometheus.Counter
-	idleVMsFailed       prometheus.Counter
-	vmsMissingProvider  prometheus.Counter
+	reconcileDuration    prometheus.Histogram
+	reconcileTotal       prometheus.Counter
+	trackedVMs           prometheus.Gauge
+	providerVMs          prometheus.Gauge
+	orphansDestroyed     prometheus.Counter
+	orphansFailed        prometheus.Counter
+	orphansDeadLettered  prometheus.Counter
+	stuckTasksSuspected  prometheus.Counter
+	stuckTasksFailed     prometheus.Counter
+	idleVMsSuspected     prometheus.Counter
+	idleVMsFailed        prometheus.Counter
+	drainingVMsDestroyed prometheus.Counter
+	vmsMissingProvider   prometheus.Counter
 	// Health gauges rather than counters: each cycle reports how many
 	// environments answered their probe and how many of those are failing
 	// right now, not how many ever have.
@@ -120,6 +121,12 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Name:      "idle_vms_failed_total",
 			Help:      "Total VMs torn down for exceeding their idle timeout (second strike).",
 		}),
+		drainingVMsDestroyed: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "reconcile",
+			Name:      "draining_vms_destroyed_total",
+			Help:      "Total VMs torn down for staying in draining past the draining timeout.",
+		}),
 		vmsMissingProvider: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "orchestrator",
 			Subsystem: "reconcile",
@@ -207,6 +214,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.stuckTasksFailed,
 		m.idleVMsSuspected,
 		m.idleVMsFailed,
+		m.drainingVMsDestroyed,
 		m.vmsMissingProvider,
 		m.healthChecked,
 		m.healthFailing,
@@ -237,6 +245,7 @@ func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) 
 	m.stuckTasksFailed.Add(float64(s.StuckTasksFailed))
 	m.idleVMsSuspected.Add(float64(s.IdleVMsSuspected))
 	m.idleVMsFailed.Add(float64(s.IdleVMsFailed))
+	m.drainingVMsDestroyed.Add(float64(s.DrainingVMsDestroyed))
 	m.vmsMissingProvider.Add(float64(s.VMsMissingProvider))
 	m.healthChecked.Set(float64(s.HealthChecked))
 	m.healthFailing.Set(float64(s.HealthFailing))

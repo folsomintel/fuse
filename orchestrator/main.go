@@ -215,6 +215,7 @@ func run() error {
 
 		startupScriptTimeout    time.Duration
 		maxStartupScriptTimeout time.Duration
+		drainingTimeout         time.Duration
 
 		artifactPullTimeout  time.Duration
 		checkpointInterval   time.Duration
@@ -264,6 +265,9 @@ func run() error {
 		envInt("ORCH_ARTIFACT_MAX_PER_TENANT", 0),
 		"cap on ready build layer artifacts per tenant, evicting least recently used "+
 			"on overflow (0 = no cap)")
+	flag.DurationVar(&drainingTimeout, "draining-timeout",
+		time.Duration(envInt("ORCH_DRAINING_TIMEOUT_SECONDS", int(orchestrator.DefaultDrainingTimeout.Seconds())))*time.Second,
+		"destroy an environment left in draining this long with no DELETE")
 	flag.DurationVar(&shutdownTimeout, "shutdown-timeout",
 		time.Duration(envInt("ORCH_SHUTDOWN_TIMEOUT_SECONDS", 30))*time.Second,
 		"graceful shutdown ceiling")
@@ -505,6 +509,7 @@ func run() error {
 
 		StartupScriptTimeout:    startupScriptTimeout,
 		MaxStartupScriptTimeout: maxStartupScriptTimeout,
+		DrainingTimeout:         drainingTimeout,
 
 		// Peer-to-peer artifact distribution. The mover is always wired: a
 		// fleet with one host simply never uses it, and leaving it nil would

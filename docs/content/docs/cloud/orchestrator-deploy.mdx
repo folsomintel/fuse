@@ -64,6 +64,7 @@ range covers the fleet.
 | `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/reference/auth). |
 | `ORCH_ALLOWED_CIDRS` | `--allowed-cidrs` | empty → open | Comma-separated CIDR allowlist. |
 | `ORCH_SHUTDOWN_TIMEOUT_SECONDS` | `--shutdown-timeout` | `30` | Graceful shutdown ceiling. |
+| `ORCH_DRAINING_TIMEOUT_SECONDS` | `--draining-timeout` | `330` (5m30s) | Destroy an environment left `draining` this long with no `DELETE`. See [The reconcile loop](/docs/concepts/reconcile#stuck-draining). |
 | `ORCH_VM_PREFIX` | `--vm-prefix` | `fuse-` | Prefix applied to generated VM names. |
 
 With `FIRECRACKER_BASE_URL` unset, the orchestrator runs the in-memory stub provider

@@ -83,7 +83,8 @@ reported rather than freezing at its last value:
 
 - `orchestrator_fleet_vms{state,host}` counts VMs by state and host. A
   growing `state="provisioning"` or `state="draining"` series is work that isn't
-  finishing. `host` is empty on a single-provider fleet.
+  finishing. Draining environments are destroyed after the draining timeout, and
+  `orchestrator_reconcile_draining_vms_destroyed_total` counts them. `host` is empty on a single-provider fleet.
 - `orchestrator_host_capacity{host,resource}` and
   `orchestrator_host_allocated{host,resource}` give each host's capacity and
   what's allocated from it, for `resource` in `cpus`, `ram_mb`, `storage_gb`,
