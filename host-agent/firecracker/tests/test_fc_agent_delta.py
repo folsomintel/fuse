@@ -34,6 +34,8 @@ fc_agent.sudo = lambda cmd, check=True: fc_agent.run(cmd, check=check)
 
 B = 4096
 fc_agent.ROOTFS_BLOCK_BYTES = B
+# mem chunks of 8 pages, so a 64 page image has a table worth merging.
+fc_agent.HUGE_PAGE_BYTES = 8 * B
 
 
 def grant_for(digest: str) -> str:
@@ -42,19 +44,24 @@ def grant_for(digest: str) -> str:
 
 
 def write_snapshot(sid: str, rootfs: bytes, mem: bytes, parent: str = "",
-                   dirty: list[tuple[int, bytes]] | None = None) -> tuple[str, dict]:
+                   dirty: list[tuple[int, bytes]] | None = None, version: int = 1,
+                   block_table_rootfs: bool = False) -> tuple[str, dict]:
     """lay a snapshot out the way snapshot_create does: a complete one, or a
-    diff against parent holding only dirty pages and changed blocks."""
+    diff against parent holding only dirty pages and changed blocks. version
+    2 gives a complete one a mem chunk table; block_table_rootfs gives the
+    rootfs the digest a migrate's final pause records."""
     d = fc_agent.SNAPSHOTS_DIR / sid
     d.mkdir(parents=True)
     (d / "rootfs.ext4").write_bytes(rootfs)
     (d / "vmstate").write_bytes(b"vcpu state of " + sid.encode())
     digest, blocks = fc_agent.rootfs_digests(d / "rootfs.ext4")
+    if block_table_rootfs:
+        digest = fc_agent.block_table_digest(blocks)
     manifest = {"snapshot_id": sid, "index": 7, "rootfs_size": len(rootfs), "rootfs_blocks": blocks}
     if parent:
         parent_manifest = fc_agent.SNAPSHOTS_DIR / parent / "live.json"
         old = json.loads(parent_manifest.read_text())["rootfs_blocks"]
-        manifest["parent_manifest"] = fc_agent.file_digest(parent_manifest)
+        manifest["parent_manifest"] = fc_agent.manifest_identity(parent_manifest)
         changed = [(i * B, min(B, len(rootfs) - i * B))
                    for i, h in enumerate(blocks) if i >= len(old) or old[i] != h]
         fc_agent.write_delta(d / "rootfs.ext4", changed, d / "rootfs.delta")
@@ -72,8 +79,12 @@ def write_snapshot(sid: str, rootfs: bytes, mem: bytes, parent: str = "",
     else:
         (d / "mem").write_bytes(mem)
         names = fc_agent.LIVE_FILES
+        if version == 2:
+            manifest.update(digest_version=2, mem_chunks=fc_agent.chunk_digests(d / "mem")[0])
     (d / "live.json").write_text(json.dumps(manifest))
     files = {n: fc_agent.file_digest(d / n) for n in names}
+    if "mem_chunks" in manifest:
+        files["mem"] = fc_agent.mem_table_digest(manifest["mem_chunks"])
     record = {"snapshot_id": sid, "digest": digest, "kind": "live", "files": files}
     if parent:
         record["parent"] = parent
@@ -360,6 +371,116 @@ class DeltaPullTest(unittest.TestCase):
         self.assertEqual(path.parent.name, twin)
         path, _ = fc_agent.artifact_file(d_twin, "vmstate", self.parent)
         self.assertEqual(path.parent.name, self.parent)
+
+
+class ThreeHostTest(unittest.TestCase):
+    """a vm checkpointed from host a to host b, then moved on to host c, with
+    nothing but diffs crossing to b after the first full copy. one store plays
+    all three hosts, each copy under its own id."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+        cls.peer = f"http://127.0.0.1:{cls.server.server_address[1]}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        self.name = self.id().rsplit(".", 1)[1].replace("_", "-")
+        self.rootfs = b"A" * B + b"B" * B + b"C" * B
+        self.mem = bytes(range(256)) * (64 * B // 256)
+
+    def sid(self, label: str) -> str:
+        return f"{label}-{self.name}"
+
+    def diff_on_a(self, label: str, parent: str, block: bytes, dirty: list[tuple[int, bytes]],
+                  block_table_rootfs: bool = False) -> tuple[str, dict]:
+        """the next diff on host a: block 1 of the rootfs and the dirty pages change."""
+        self.rootfs = self.rootfs[:B] + block + self.rootfs[2 * B:]
+        mem = bytearray(self.mem)
+        for off, data in dirty:
+            mem[off:off + len(data)] = data
+        self.mem = bytes(mem)
+        return write_snapshot(self.sid(label), self.rootfs, self.mem, parent=self.sid(parent),
+                              dirty=dirty, block_table_rootfs=block_table_rootfs)
+
+    def merge_on(self, label: str, child: str, digest: str, files: dict, base: str) -> dict:
+        return fc_agent.pull_artifact_delta(digest, self.peer, grant_for(digest), self.sid(label),
+                                            files, self.sid(base), self.sid(child), drop_base=True)
+
+    def assertSameVM(self, label: str):
+        d = fc_agent.SNAPSHOTS_DIR / self.sid(label)
+        self.assertEqual((d / "rootfs.ext4").read_bytes(), self.rootfs)
+        self.assertEqual((d / "mem").read_bytes(), self.mem)
+
+    def run_chain(self, block_table_rootfs: bool) -> None:
+        # a -> b: one full copy, then only diffs.
+        d0, f0 = write_snapshot(self.sid("a0"), self.rootfs, self.mem, version=2)
+        fc_agent.pull_artifact(d0, self.peer, grant_for(d0), self.sid("b0"), f0,
+                               source_snapshot_id=self.sid("a0"))
+        # a dirty page inside a chunk, and a run across a chunk boundary.
+        d1, f1 = self.diff_on_a("a1", "a0", b"X" * B, [(3 * B, b"z" * B), (15 * B, b"y" * (2 * B))],
+                                block_table_rootfs)
+        b1 = self.merge_on("b1", "a1", d1, f1, "b0")
+        d2, f2 = self.diff_on_a("a2", "a1", b"Y" * B, [(40 * B, b"w" * B)], block_table_rootfs)
+        b2 = self.merge_on("b2", "a2", d2, f2, "b1")
+        self.assertSameVM("b2")
+
+        # the merged copy's digests are its own, worked out from the base's
+        # table and the touched chunks only, and agree with a full read.
+        mem_b2 = fc_agent.SNAPSHOTS_DIR / self.sid("b2") / "mem"
+        self.assertEqual(set(b1["files"]), set(fc_agent.LIVE_FILES))
+        self.assertEqual(b2["files"]["mem"], fc_agent.mem_table_digest(fc_agent.chunk_digests(mem_b2)[0]))
+        self.assertEqual(b2["files"]["live.json"],
+                         fc_agent.file_digest(fc_agent.SNAPSHOTS_DIR / self.sid("b2") / "live.json"))
+
+        # b -> c: a full move of the merged copy, the record's own digests
+        # standing in for the orchestrator's.
+        rec = fc_agent.pull_artifact(b2["digest"], self.peer, grant_for(b2["digest"]), self.sid("c2"),
+                                     b2["files"], source_snapshot_id=self.sid("b2"))
+        self.assertEqual(rec["kind"], "live")
+        self.assertSameVM("c2")
+
+        # the copy on c is still the parent the vm's next diff on a names.
+        d3, f3 = self.diff_on_a("a3", "a2", b"Z" * B, [(60 * B, b"v" * B)], block_table_rootfs)
+        self.merge_on("c3", "a3", d3, f3, "c2")
+        self.assertSameVM("c3")
+
+    def test_a_merged_copy_moves_on_to_a_third_host(self):
+        self.run_chain(block_table_rootfs=False)
+
+    def test_a_final_pause_rootfs_digest_moves_on_too(self):
+        self.run_chain(block_table_rootfs=True)
+
+    def test_a_diff_taken_after_resuming_from_a_merged_copy_merges_onto_its_moved_copy(self):
+        d0, f0 = write_snapshot(self.sid("a0"), self.rootfs, self.mem, version=2)
+        fc_agent.pull_artifact(d0, self.peer, grant_for(d0), self.sid("b0"), f0,
+                               source_snapshot_id=self.sid("a0"))
+        d1, f1 = self.diff_on_a("a1", "a0", b"X" * B, [(3 * B, b"z" * B)])
+        b1 = self.merge_on("b1", "a1", d1, f1, "b0")
+        fc_agent.pull_artifact(b1["digest"], self.peer, grant_for(b1["digest"]), self.sid("c1"),
+                               b1["files"], source_snapshot_id=self.sid("b1"))
+        # the vm resumed on b from b1 names b1 as its diff's parent, and the
+        # copy on c answers to the same identity even though b rewrote live.json.
+        b_manifest = fc_agent.SNAPSHOTS_DIR / self.sid("b1") / "live.json"
+        c_manifest = fc_agent.SNAPSHOTS_DIR / self.sid("c1") / "live.json"
+        self.assertNotEqual(fc_agent.file_digest(b_manifest), f1["live.json"])
+        self.assertEqual(fc_agent.manifest_identity(b_manifest), f1["live.json"])
+        self.assertEqual(fc_agent.manifest_identity(c_manifest), f1["live.json"])
+
+    def test_a_version_1_base_still_merges_but_records_no_mem_digest(self):
+        d0, f0 = write_snapshot(self.sid("a0"), self.rootfs, self.mem)
+        fc_agent.pull_artifact(d0, self.peer, grant_for(d0), self.sid("b0"), f0,
+                               source_snapshot_id=self.sid("a0"))
+        d1, f1 = self.diff_on_a("a1", "a0", b"X" * B, [(3 * B, b"z" * B)])
+        b1 = self.merge_on("b1", "a1", d1, f1, "b0")
+        self.assertSameVM("b1")
+        self.assertNotIn("mem", b1["files"])
+        self.assertEqual(b1["files"]["live.json"], f1["live.json"], "a version 1 merge must not rewrite live.json")
 
 
 class DiffRefusalTest(unittest.TestCase):
