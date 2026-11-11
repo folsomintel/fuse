@@ -40,10 +40,13 @@ func (fm *FleetManager) forgetSnapshotRecord(ctx context.Context, snapshotID str
 // free-standing copy and returned by id. dropBase has the agent delete base
 // once the merge has committed, and its record goes with it.
 //
-// the merged copy records no memory digest (the agent does not re-hash a
-// merge, see pull_artifact_delta), so it can be the base of the next delta or
-// a seed on that host, but not the source of a full move to a third host:
-// ensureArtifactOnHost refuses it for want of live_files.
+// the merged copy records the digests the agent reports for it. merged onto
+// a version 2 base, the agent works out a mem digest from the base's chunk
+// table and the chunks the delta touched (see pull_artifact_delta), so the
+// copy is a full live snapshot that can move on to a third host. merged onto
+// a version 1 base, or by an older agent, it gets no mem digest and records
+// none: it can be the base of the next delta or a seed on that host, and
+// ensureArtifactOnHost refuses it as a source for want of live_files.
 func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecord, base, hostID string, dropBase bool) (string, error) {
 	if diffParent(child) == "" {
 		return "", fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)
@@ -97,11 +100,15 @@ func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecor
 		committedID = localID
 	}
 	now := time.Now()
-	metadata, _ := marshalSnapshotMetadata("", map[string]string{
+	replicaMetadata := map[string]string{
 		"source_snapshot_id": child.SnapshotID,
 		"source_host_id":     source.endpoint.HostID,
 		"merged_onto":        base,
-	})
+	}
+	if completeLiveFiles(moved.Files) {
+		replicaMetadata = withLiveFiles(replicaMetadata, moved.Files)
+	}
+	metadata, _ := marshalSnapshotMetadata("", replicaMetadata)
 	replica := SnapshotRecord{
 		SnapshotID: committedID,
 		HostID:     hostID,
@@ -125,4 +132,16 @@ func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecor
 		fm.forgetSnapshotRecord(ctx, base)
 	}
 	return committedID, nil
+}
+
+// completeLiveFiles reports whether files names a digest for every file a
+// full live move sends, and nothing else: what a merged copy needs to be the
+// source of one.
+func completeLiveFiles(files map[string]string) bool {
+	for _, name := range []string{"vmstate", "mem", "live.json"} {
+		if files[name] == "" {
+			return false
+		}
+	}
+	return len(files) == 3
 }
