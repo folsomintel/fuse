@@ -253,8 +253,14 @@ func (s *Server) register(ctx context.Context, owner string, conn *quic.Conn) (r
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if current := s.guests[owner]; current != nil && current.conn != existing {
-		// somebody else registered while we were probing.
+	var current *quic.Conn
+	if g := s.guests[owner]; g != nil {
+		current = g.conn
+	}
+	if current != existing {
+		// somebody else registered while we were probing, or the probed guest
+		// was retired or dropped. a retired guest is draining, not failed, so
+		// it is not closed here.
 		return false, false
 	}
 	if existing != nil {
