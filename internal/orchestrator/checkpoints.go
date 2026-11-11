@@ -16,11 +16,53 @@ import (
 // mu serializes everything that takes a live snapshot of the vm through the
 // chain: a tick, and a migrate. any other live snapshot in between resets the
 // host's dirty bitmap, and the next diff is refused rather than wrong.
+//
+// standby and bytes are written under both mu and fm.chainsMu, so the standby
+// picker can read every chain's with chainsMu alone, without waiting on a
+// chain that is mid-tick or mid-migrate.
 type checkpointChain struct {
 	mu      sync.Mutex
 	standby string
 	head    SnapshotRecord
 	base    string
+	// bytes is what the base takes on the standby's disk: the size of the
+	// full checkpoint it started as. a merge rewrites the base at the same
+	// size, so it is not updated per tick (the merged record only carries
+	// the delta that moved).
+	bytes int64
+}
+
+// setStandbyLocked records where the chain's base lives and how big it is.
+// the caller holds c.mu.
+func (fm *FleetManager) setStandbyLocked(c *checkpointChain, standby string, bytes int64) {
+	fm.chainsMu.Lock()
+	c.standby, c.bytes = standby, bytes
+	fm.chainsMu.Unlock()
+}
+
+// standbyUsage is what one host holds as a checkpoint standby.
+type standbyUsage struct {
+	copies int
+	bytes  int64
+}
+
+// standbyUsageExcept sums every chain's standby copy by host, leaving out
+// vmID's own: a vm's own copy becomes its disk when it migrates there, so it
+// is already covered by the spec the host has to fit.
+func (fm *FleetManager) standbyUsageExcept(vmID string) map[string]standbyUsage {
+	fm.chainsMu.Lock()
+	defer fm.chainsMu.Unlock()
+	out := make(map[string]standbyUsage)
+	for id, c := range fm.chains {
+		if id == vmID || c.standby == "" {
+			continue
+		}
+		u := out[c.standby]
+		u.copies++
+		u.bytes += c.bytes
+		out[c.standby] = u
+	}
+	return out
 }
 
 func (fm *FleetManager) chainFor(vmID string) *checkpointChain {
@@ -52,7 +94,8 @@ func (fm *FleetManager) resetChainLocked(c *checkpointChain) {
 	if c.base != "" {
 		fm.endArtifactPull(c.base)
 	}
-	c.standby, c.head, c.base = "", SnapshotRecord{}, ""
+	fm.setStandbyLocked(c, "", 0)
+	c.head, c.base = SnapshotRecord{}, ""
 }
 
 // retireChain removes what a broken chain still holds, both ends, then
@@ -252,7 +295,8 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		return
 	}
 	fm.beginArtifactPull(base)
-	c.standby, c.head, c.base = standby, full, base
+	fm.setStandbyLocked(c, standby, full.SizeBytes)
+	c.head, c.base = full, base
 	fm.appendEventBackground("vm", vmID, "vm.checkpointed", map[string]any{
 		"snapshot_id": full.SnapshotID, "standby_host_id": standby, "base": base, "diff": false,
 	})
