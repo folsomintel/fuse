@@ -274,7 +274,20 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	}
 	retention := time.Now().Add(4 * fm.checkpointInterval)
 
-	if c.base != "" && c.standby != "" && c.standby != srcHostID && fm.hostSchedulable(c.standby) {
+	keep := c.base != "" && c.standby != "" && c.standby != srcHostID
+	if keep {
+		// a standby that was cordoned, or filled up with other work since it
+		// was picked, can no longer take the vm if it has to move: retire the
+		// chain on it and re-pick below.
+		if reason := fm.standbyRejectionFor(vmID, c.standby); reason != "" {
+			fm.logger.Info("checkpoint standby no longer fits; re-picking", "vm", vmID, "host", c.standby, "reason", reason)
+			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{
+				"error": "standby host " + c.standby + " " + reason, "standby_host_id": c.standby,
+			})
+			keep = false
+		}
+	}
+	if keep {
 		child, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
 			Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 			Live: true, Diff: true, Parent: c.head.SnapshotID, NoLineage: true,
@@ -335,9 +348,21 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	})
 }
 
-func (fm *FleetManager) hostSchedulable(hostID string) bool {
+// standbyRejectionFor says why hostID can no longer serve as vmID's standby,
+// by the same rule pickStandby used to pick it, or "" if it still can.
+func (fm *FleetManager) standbyRejectionFor(vmID, hostID string) string {
+	usage := fm.standbyUsageExcept(vmID)
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	h, ok := fm.hosts[hostID]
-	return ok && h.schedulable()
+	if !ok {
+		return "is gone"
+	}
+	v, ok := fm.vms[vmID]
+	if !ok {
+		return ""
+	}
+	spec := v.spec
+	spec.HostID = ""
+	return standbyRejection(h, spec, usage[hostID])
 }
