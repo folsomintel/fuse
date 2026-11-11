@@ -34,7 +34,10 @@ carrying the failure. The error text survives on the task record, and `--follow`
 `fuse environment watch`) prints it inline, so read it there rather than expecting it
 on the environment.
 
-Draining does not auto-destroy. A subsequent explicit destroy call removes the VM.
+Drain itself does not destroy the VM. A subsequent explicit destroy call removes
+it. If none arrives, the [reconcile loop](/docs/concepts/reconcile#stuck-draining)
+destroys an environment that has been draining longer than the draining timeout,
+5m30s by default (`--draining-timeout` on the orchestrator).
 
 ## Health is not a state
 

@@ -30,12 +30,14 @@ Each cycle, in order:
    `destroying` and its task is failed.
 3. **Destroy orphans**, VMs the provider has that Fuse does not track.
 4. **Fail stuck tasks** that have exceeded their runtime ceiling.
-5. **Read health verdicts** back from the guests of environments that declared a
+5. **Destroy idle environments** past their idle timeout, and environments left
+   draining past the draining timeout.
+6. **Read health verdicts** back from the guests of environments that declared a
    [`healthcheck`](/docs/concepts/fusefile#healthcheck).
-6. **Probe egress endpoints** of environments running with
+7. **Probe egress endpoints** of environments running with
    [`egress: proxy`](/docs/concepts/fusefile#egress).
-7. **Garbage-collect snapshots** past the retention window.
-8. **Reap** destroyed VMs and return their capacity to the host.
+8. **Garbage-collect snapshots** past the retention window.
+9. **Reap** destroyed VMs and return their capacity to the host.
 
 :::warning[Known limitation]
 A failure listing VMs from any host aborts the entire cycle, it does not isolate
@@ -49,6 +51,11 @@ is a flat cycle in the metrics.
 An **orphan** is a VM present in a provider but absent from Fuse's own records.
 The definition is pure set difference, with no grace period, so anything the
 orchestrator has forgotten about is destroyed on the next tick.
+
+Each destroy call is bounded at 60 seconds, so a host agent that queues the
+delete (behind a long exec holding the VM's lock, for example) costs the cycle
+one bounded wait rather than stalling it until the HTTP header timeout. A call
+that hits the bound counts as a failed attempt.
 
 Destruction is retried up to five times. After that the orphan is recorded in the
 dead-letter queue and skipped permanently, so a VM that cannot be destroyed stops
@@ -111,6 +118,29 @@ its task (if any) is failed, and an `idle_timeout` dead letter is recorded.
 The activity clock lives in memory only. Restarting the orchestrator restarts
 every environment's idle window rather than inheriting a stale one.
 
+## Stuck draining
+
+[Drain](/reference/cli/environment/drain) is phase one of a two-phase teardown
+and never destroys the VM itself. An environment that is drained and then never
+destroyed (the caller crashed, or forgot the `DELETE`) would otherwise hold its
+host capacity forever, so the loop destroys any environment that has been
+`draining` longer than the draining timeout.
+
+The timeout defaults to 5m30s, the 30-second drain command ceiling plus five
+minutes for the caller to read the result and send `DELETE`. Set it with
+`--draining-timeout` or `ORCH_DRAINING_TIMEOUT_SECONDS`; a value at or below the
+drain command's 30-second ceiling falls back to the default, so a drain is never
+cut short. The clock starts at the transition into `draining` and is persisted,
+so it survives an orchestrator restart.
+
+There is one strike, not two: nothing legitimate keeps an environment in
+`draining`, and exec is already refused there. The environment goes down the
+same path a stuck task takes: a `vm.drain_expired` event, the VM moves to
+`destroying`, its task (if any) is failed, and a `drain_timeout` dead letter is
+recorded. The destroy itself runs in the background, so a host call that hangs
+does not hold up the cycle. Destroying the VM through the host agent also removes
+its port forwards and tap, as an explicit destroy does.
+
 ## Health verdicts
 
 This is the one pass that is **not** a detector. It reads and reports; it never
@@ -166,7 +196,7 @@ pays nothing. Probes run concurrently, each bounded at 5 seconds.
 ## Dead letters
 
 Orphans that exhaust their retries, tasks failed for being stuck, and
-environments torn down for being idle are all recorded in a dead-letter queue,
+environments torn down for being idle or for staying draining are all recorded in a dead-letter queue,
 keyed by kind and entity so repeated failures update one row rather than piling
 up duplicates.
 
@@ -202,6 +232,7 @@ visible rather than silent:
 | `orchestrator_reconcile_orphans_dead_lettered_total` | Orphans that exhausted retries. |
 | `orchestrator_reconcile_stuck_tasks_suspected_total` | First-strike suspicions. |
 | `orchestrator_reconcile_stuck_tasks_failed_total` | Tasks actually failed. |
+| `orchestrator_reconcile_draining_vms_destroyed_total` | Environments destroyed for staying `draining` past the draining timeout. |
 | `orchestrator_reconcile_vms_missing_provider_total` | Tracked VMs the provider lost. |
 | `orchestrator_reconcile_health_checked_vms` | Environments that answered their healthcheck this cycle. |
 | `orchestrator_reconcile_health_failing_vms` | Environments whose healthcheck reported `failing` this cycle. |
