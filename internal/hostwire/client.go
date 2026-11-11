@@ -23,7 +23,7 @@ const (
 	agentDialTimeout           = 10 * time.Second
 	agentTLSHandshakeTimeout   = 10 * time.Second
 	agentResponseHeaderTimeout = 5 * time.Minute
-	agentIdleConnTimeout       = 90 * time.Second
+	agentIdleConnTimeout       = 45 * time.Second // under fc-agent's 60s idle close, so a request never lands on a connection it just closed
 	agentRequestTimeout        = 10 * time.Minute
 )
 

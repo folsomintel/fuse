@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateAgentURL_Accepts(t *testing.T) {
@@ -69,6 +70,11 @@ func TestNewClient_HasTimeouts(t *testing.T) {
 	}
 	if tr.IdleConnTimeout <= 0 {
 		t.Error("transport has no idle connection timeout")
+	}
+	// fc-agent closes a keep-alive connection idle for 60s; reusing one past
+	// that would send a request into a closed socket.
+	if tr.IdleConnTimeout >= 60*time.Second {
+		t.Errorf("idle connection timeout %v is not under fc-agent's 60s", tr.IdleConnTimeout)
 	}
 }
 
