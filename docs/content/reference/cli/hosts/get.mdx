@@ -68,8 +68,8 @@ memory, driver version, and MIG mode) is not rendered in the table, read it with
 
 `firecracker` is the release the host agent reported at registration, with
 the release its `fc-agent.py` pins in parentheses when the two differ (for
-example `v1.16.0 (pinned v1.17.0)`). It is `-` on a `qemu` host or an agent too
-old to report it.
+example `v1.16.0 (pinned v1.17.0)`). It is `-` on a `qemu` host, an agent too
+old to report it, or a host registered before the orchestrator stored it.
 
 `last seen` is set once at registration and is never refreshed afterward, it is
 not a liveness signal, don't use it to detect a dead host agent.

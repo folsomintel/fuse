@@ -42,8 +42,10 @@ pools, see [`fuse host get`](/docs/reference/cli/hosts/get) and
 FIRECRACKER is the firecracker release the host agent reported at
 registration. When it differs from the release that host's `fc-agent.py` pins
 (`FIRECRACKER_VERSION`), the pin follows in parentheses: that host has not run
-`fc-update` since the pin moved. A `qemu` host, or an agent too old to report a
-version, shows `-`. When the listed hosts run more than one release, a warning
+`fc-update` since the pin moved. A `qemu` host, an agent too old to report a
+version, or a host registered before the orchestrator stored it shows `-`.
+Nothing re-probes an existing host, so after upgrading the orchestrator every
+host that was already registered shows `-` until it is registered again. When the listed hosts run more than one release, a warning
 on stderr names each release and the hosts on it, since live migration needs
 both hosts on the same release. Only the listed page is compared, pass
 `--all-pages` to check the whole fleet. Like LAST SEEN, the version is read
