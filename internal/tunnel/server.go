@@ -62,9 +62,12 @@ type Server struct {
 	// already had. a field so a test can shorten it.
 	drainGrace time.Duration
 
-	mu      sync.Mutex
-	guests  map[string]*guest
-	changed chan struct{} // closed and replaced whenever guests changes
+	mu     sync.Mutex
+	guests map[string]*guest
+	// retiring holds guests Retire took out of guests, by owner, until their
+	// drain ends, so Drop can still cut them.
+	retiring map[*guest]string
+	changed  chan struct{} // closed and replaced whenever guests changes
 }
 
 // guest is one registered connection and the client streams open on it.
@@ -141,6 +144,7 @@ func Listen(conn net.PacketConn, cert tls.Certificate, auth Authenticator, logge
 		pathCheck:  time.Second,
 		drainGrace: drainGrace,
 		guests:     make(map[string]*guest),
+		retiring:   make(map[*guest]string),
 		changed:    make(chan struct{}),
 	}, nil
 }
@@ -322,13 +326,22 @@ func (s *Server) Connected(owner string) bool {
 // the connection next ends. a replaced token goes through Retire instead.
 func (s *Server) Drop(owner string) {
 	s.mu.Lock()
-	g := s.guests[owner]
-	delete(s.guests, owner)
-	if g != nil {
+	var cut []*guest
+	if g := s.guests[owner]; g != nil {
+		cut = append(cut, g)
+		delete(s.guests, owner)
 		s.broadcastLocked()
 	}
+	// a guest still draining after a token rotation goes too: a removed
+	// owner carries no traffic under any token.
+	for g, o := range s.retiring {
+		if o == owner {
+			cut = append(cut, g)
+			delete(s.retiring, g)
+		}
+	}
 	s.mu.Unlock()
-	if g != nil {
+	for _, g := range cut {
 		_ = g.conn.CloseWithError(3, "owner removed")
 	}
 }
@@ -346,6 +359,7 @@ func (s *Server) Retire(owner string) {
 	g := s.guests[owner]
 	delete(s.guests, owner)
 	if g != nil {
+		s.retiring[g] = owner
 		s.broadcastLocked()
 	}
 	s.mu.Unlock()
@@ -363,6 +377,9 @@ func (s *Server) Retire(owner string) {
 		case <-g.conn.Context().Done():
 		}
 		_ = g.conn.CloseWithError(3, "token replaced")
+		s.mu.Lock()
+		delete(s.retiring, g)
+		s.mu.Unlock()
 	}()
 }
 
