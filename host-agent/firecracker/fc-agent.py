@@ -1627,9 +1627,18 @@ def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
     return chunks, zeros
 
 
+def live_digest_version(manifest: dict) -> int:
+    """live.json's digest_version, refusing one this agent does not know
+    rather than guessing at a newer format."""
+    version = manifest.get("digest_version", 1)
+    if version not in (1, LIVE_DIGEST_VERSION):
+        raise HTTPError(422, f"live.json digest_version {version!r} is not one this agent knows; nothing committed")
+    return version
+
+
 def mem_digest(path: Path, manifest: dict) -> str:
     """the "mem" digest of a memory image, in the version its live.json says."""
-    if manifest.get("digest_version", 1) == 1:
+    if live_digest_version(manifest) == 1:
         return file_digest(path)
     return mem_table_digest(chunk_digests(path)[0])
 
@@ -2696,11 +2705,8 @@ def chunk_table_for(name: str, expected: str, manifest: dict) -> ChunkTableCheck
         return None
     if name != "mem":
         return None
-    version = manifest.get("digest_version", 1)
-    if version == 1:
+    if live_digest_version(manifest) == 1:
         return None
-    if version != LIVE_DIGEST_VERSION:
-        raise HTTPError(422, f"live.json digest_version {version!r} is not one this agent knows; nothing committed")
     chunks = manifest.get("mem_chunks") or []
     if not hmac.compare_digest(mem_table_digest(chunks), expected):
         raise HTTPError(422, "mem digest does not match the chunk table in live.json; nothing committed")
@@ -2874,6 +2880,8 @@ def pull_artifact(digest: str, peer_url: str, grant: str, snapshot_id: str = "",
             total += size
             if name == LIVE_MANIFEST:
                 manifest = json.loads(tmp.read_text())
+                # once, before any path (sparse, lazy) that never fetches mem.
+                live_digest_version(manifest)
 
         if lazy and not manifest.get("chunks"):
             raise HTTPError(409, "snapshot has no chunk table; it was not taken with 2M pages")

@@ -220,6 +220,17 @@ class ChunkedDigestPullTest(unittest.TestCase):
         with self.assertRaises(fc_agent.HTTPError) as caught:
             self.pull(digest, files)
         self.assertNothingCommitted(caught, "digest_version 3")
+        # lazy and sparse pulls never fetch mem, and must refuse it all the same.
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            fc_agent.pull_artifact(digest, self.peer, grant_for(digest), f"dst-{self.name}", files,
+                                   lazy=True, source_snapshot_id=f"src-{self.name}")
+        self.assertNothingCommitted(caught, "digest_version 3")
+        src = fc_agent.SNAPSHOTS_DIR / f"src-{self.name}"
+        fc_agent.write_delta(src / "mem", [(0, len(self.mem))], src / fc_agent.SPARSE_MEM)
+        sparse = {**files, fc_agent.SPARSE_MEM: fc_agent.file_digest(src / fc_agent.SPARSE_MEM)}
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            self.pull(digest, sparse)
+        self.assertNothingCommitted(caught, "digest_version 3")
 
     def test_a_block_table_rootfs_digest_is_checked_block_by_block(self):
         digest, files = write_v2_snapshot(f"src-{self.name}", self.rootfs, self.mem, block_table_rootfs=True)
