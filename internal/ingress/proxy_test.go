@@ -317,9 +317,13 @@ func TestRotatingTheTokenKeepsAnOpenClientConnection(t *testing.T) {
 		t.Fatalf("before the rotation the held connection answered %q, %v", line, err)
 	}
 
+	// the rotated guest answers with its own name on its own port, which the
+	// old sidecar does not publish, so a new client served by the retired
+	// connection is refused or answered by the wrong name.
+	rotatedPort := startGuest(t, "rotated")
 	if _, err := r.admin.Publish(context.Background(), orchestrator.IngressRequest{
 		Owner: "vm-1", Token: "rotated",
-		Ports: []orchestrator.IngressPort{{Name: "agent", GuestPort: port}},
+		Ports: []orchestrator.IngressPort{{Name: "agent", GuestPort: rotatedPort}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -328,11 +332,11 @@ func TestRotatingTheTokenKeepsAnOpenClientConnection(t *testing.T) {
 	go func() {
 		_ = tunnel.Run(ctx, tunnel.Config{
 			ProxyAddr: grant.ProxyAddr, ServerCertPEM: grant.ServerCertPEM,
-			Owner: "vm-1", Token: "rotated", Ports: []int{port},
+			Owner: "vm-1", Token: "rotated", Ports: []int{rotatedPort},
 		}, quiet)
 	}()
-	if got := ask(t, grant.Routes[0].URL); got != "vm-1" {
-		t.Fatalf("after the rotation: answered by %q", got)
+	if got := ask(t, grant.Routes[0].URL); got != "rotated" {
+		t.Fatalf("after the rotation: answered by %q, want the rotated guest", got)
 	}
 
 	_, _ = io.WriteString(held, "who\n")
