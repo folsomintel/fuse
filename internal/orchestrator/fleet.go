@@ -276,7 +276,10 @@ type ReconcileSummary struct {
 	StuckTasksFailed    int
 	IdleVMsSuspected    int
 	IdleVMsFailed       int
-	VMsMissingProvider  int
+	// DrainingVMsDestroyed counts VMs torn down this cycle for sitting in
+	// draining past the draining timeout.
+	DrainingVMsDestroyed int
+	VMsMissingProvider   int
 	// HealthChecked counts VMs whose guest returned a usable health verdict
 	// this cycle; HealthFailing is how many of those were failing. Neither
 	// causes a teardown: the environment-level probe reports, it does not act.
@@ -1609,6 +1612,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)
+	fm.reconcileStuckDraining(ctx, &summary)
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)

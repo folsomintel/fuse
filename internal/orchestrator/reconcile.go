@@ -301,10 +301,66 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 	}
 }
 
+// reconcileStuckDraining destroys VMs that have sat in Draining longer than
+// the draining timeout. Drain is phase one of a two-phase teardown and never
+// destroys on its own; a caller that drains and then crashes or forgets the
+// DELETE would otherwise leave the VM holding host capacity forever.
+//
+// The clock is updatedAt, which Drain sets on the Running -> Draining
+// transition (and again when the drain command finishes, within its own
+// ceiling). It is persisted, so the window survives an orchestrator restart.
+// A single strike is enough: unlike a long-running task, nothing legitimate
+// keeps a VM in Draining, and exec is already refused there.
+func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *ReconcileSummary) {
+	now := time.Now()
+
+	type drainingCandidate struct {
+		vmID   string
+		taskID string
+		age    time.Duration
+	}
+
+	fm.mu.RLock()
+	candidates := make([]drainingCandidate, 0)
+	for id, v := range fm.vms {
+		if v.state != VMStateDraining {
+			continue
+		}
+		age := now.Sub(v.updatedAt)
+		if age <= fm.drainingTimeout {
+			continue
+		}
+		candidates = append(candidates, drainingCandidate{vmID: id, taskID: v.taskID, age: age})
+	}
+	fm.mu.RUnlock()
+
+	for _, c := range candidates {
+		torn := fm.failExpiredVM(ctx, c.vmID, c.taskID, expiry{
+			from:       VMStateDraining,
+			reasonCode: "drain_timeout",
+			kind:       DeadLetterDrainTimeout,
+			reason:     fmt.Sprintf("environment left draining for %s with no DELETE, exceeding draining timeout %s", c.age.Round(time.Second), fm.drainingTimeout),
+			age:        c.age,
+			ceiling:    fm.drainingTimeout,
+		})
+		if !torn {
+			// a DELETE got there between the scan and the teardown.
+			continue
+		}
+		fm.appendEventBackground("vm", c.vmID, "vm.drain_expired", map[string]any{
+			"task_id":    c.taskID,
+			"draining_s": int(c.age.Seconds()),
+			"timeout":    fm.drainingTimeout.String(),
+		})
+		summary.DrainingVMsDestroyed++
+	}
+}
+
 // expiry describes why a VM is being torn down by a reconcile detector. The
 // stuck-task and idle detectors differ only in these strings and counters, so
 // they share failExpiredVM below.
 type expiry struct {
+	from       VMState        // the state the vm must still be in to be torn down
 	reasonCode string         // short code carried on events and dead letters
 	kind       DeadLetterKind // dead-letter classification
 	reason     string         // human-readable, stored on the vm and the task
@@ -317,6 +373,7 @@ type expiry struct {
 // path in reconcile() but is triggered by the stuck-task detector.
 func (fm *FleetManager) failStuckTask(ctx context.Context, vmID, taskID string, age, ceiling time.Duration) {
 	fm.failExpiredVM(ctx, vmID, taskID, expiry{
+		from:       VMStateRunning,
 		reasonCode: "stuck_task",
 		kind:       DeadLetterStuckTask,
 		reason:     fmt.Sprintf("task stuck: runtime %s exceeded ceiling %s with no state transitions", age.Round(time.Second), ceiling),
@@ -330,6 +387,7 @@ func (fm *FleetManager) failStuckTask(ctx context.Context, vmID, taskID string, 
 // path as failStuckTask, with its own reason code.
 func (fm *FleetManager) failIdleVM(ctx context.Context, vmID, taskID string, idle, timeout time.Duration) {
 	fm.failExpiredVM(ctx, vmID, taskID, expiry{
+		from:       VMStateRunning,
 		reasonCode: "idle_timeout",
 		kind:       DeadLetterIdleTimeout,
 		reason:     fmt.Sprintf("environment idle: no exec or attach for %s, exceeding idle timeout %s", idle.Round(time.Second), timeout),
@@ -338,14 +396,15 @@ func (fm *FleetManager) failIdleVM(ctx context.Context, vmID, taskID string, idl
 	})
 }
 
-// failExpiredVM marks a Running VM as destroying, fails its task if it carries
-// one, dead-letters the reason, and destroys the VM in the background.
-func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, e expiry) {
+// failExpiredVM marks a VM still in e.from as destroying, fails its task if it
+// carries one, dead-letters the reason, and destroys the VM in the background.
+// It reports false when the VM had already moved on and nothing was done.
+func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
-	if !ok || v.state != VMStateRunning || v.taskID != taskID {
+	if !ok || v.state != e.from || v.taskID != taskID {
 		fm.mu.Unlock()
-		return
+		return false
 	}
 	v.state = VMStateDestroying
 	v.taskID = ""
@@ -394,6 +453,7 @@ func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, 
 		),
 	})
 	go fm.destroyAndRemove(vmID)
+	return true
 }
 
 // recordDeadLetter upserts a dead-letter entry through the state store.
