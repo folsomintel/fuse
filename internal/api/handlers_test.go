@@ -1589,6 +1589,41 @@ func TestRegisterHost_ProbesCapacityWhenUnset(t *testing.T) {
 	}
 }
 
+// TestRegisterHost_StoresProbedFirecrackerVersion checks the firecracker
+// versions come from the probe and a declared value is ignored: they report
+// what the host runs, which only the agent knows.
+func TestRegisterHost_StoresProbedFirecrackerVersion(t *testing.T) {
+	h, _ := newTestHandlerWithCapacityProvider(t, orchestrator.HostCapacity{
+		CPUs: 8, RamMB: 16384, StorageGB: 200,
+		Firecracker: "v1.16.0", FirecrackerPinned: "v1.17.0",
+	}, nil)
+	r := mustRouter(t, h)
+
+	rr := doJSON(t, r, http.MethodPost, "/v1/hosts", RegisterHostRequest{
+		ID:  "host-fc-version",
+		URL: "http://host-fc-version.test",
+		Capacity: HostCapacity{
+			VMCount:     10,
+			Firecracker: "v9.9.9", // declared, must not win
+		},
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201. body: %s", rr.Code, rr.Body.String())
+	}
+	var info HostInfo
+	if err := json.NewDecoder(rr.Body).Decode(&info); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if info.Capacity.Firecracker != "v1.16.0" || info.Capacity.FirecrackerPinned != "v1.17.0" {
+		t.Errorf("capacity firecracker = %q/%q, want probed v1.16.0/v1.17.0",
+			info.Capacity.Firecracker, info.Capacity.FirecrackerPinned)
+	}
+	if info.Allocated.Firecracker != "" || info.Allocated.FirecrackerPinned != "" {
+		t.Errorf("allocated firecracker = %q/%q, want empty",
+			info.Allocated.Firecracker, info.Allocated.FirecrackerPinned)
+	}
+}
+
 // TestRegisterHost_DeclaredOverridesProbeWithWarning covers proposal item 2+3:
 // an explicit override wins over the probe but is flagged when it exceeds
 // what the host actually has.

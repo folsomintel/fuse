@@ -152,7 +152,10 @@ func TestCapacityQueriesHostAgent(t *testing.T) {
 			http.Error(w, "not found", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(capacityResponse{CPUs: 8, RamMB: 16384, StorageGB: 100})
+		// the literal keys fc-agent.py host_capacity() sends, so a renamed
+		// key on either side fails here.
+		_, _ = w.Write([]byte(`{"cpus": 8, "ram_mb": 16384, "storage_gb": 100, "arch": "amd64",
+			"gpus": 0, "gpu_devices": [], "firecracker": "v1.16.0", "firecracker_pinned": "v1.17.0"}`))
 	}))
 	defer srv.Close()
 
@@ -161,7 +164,11 @@ func TestCapacityQueriesHostAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capacity: %v", err)
 	}
-	want := orchestrator.HostCapacity{CPUs: 8, RamMB: 16384, StorageGB: 100}
+	want := orchestrator.HostCapacity{
+		CPUs: 8, RamMB: 16384, StorageGB: 100, Arch: "amd64",
+		GPUDevices:  []orchestrator.GPUDevice{},
+		Firecracker: "v1.16.0", FirecrackerPinned: "v1.17.0",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("capacity = %+v, want %+v", got, want)
 	}

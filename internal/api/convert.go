@@ -221,6 +221,9 @@ func toAPIHost(h orchestrator.Host) HostInfo {
 			MIGProfiles:  copyMIGProfiles(h.Capacity.MIGProfiles),
 			MIGInstances: toAPIMIGInstances(h.Capacity.MIGInstances),
 			GPUDevices:   toAPIGPUDevices(h.Capacity.GPUDevices),
+
+			Firecracker:       h.Capacity.Firecracker,
+			FirecrackerPinned: h.Capacity.FirecrackerPinned,
 		},
 		Allocated: HostCapacity{
 			CPUs:             h.Allocated.CPUs,

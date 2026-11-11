@@ -272,6 +272,9 @@ func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, err
 		GPUs:       resp.GPUs,
 		GPUKind:    resp.GPUKind,
 		GPUDevices: resp.GPUDevices,
+
+		Firecracker:       resp.Firecracker,
+		FirecrackerPinned: resp.FirecrackerPinned,
 	}, nil
 }
 
@@ -700,6 +703,11 @@ type capacityResponse struct {
 	GPUs       int                      `json:"gpus"`
 	GPUKind    string                   `json:"gpu_kind"`
 	GPUDevices []orchestrator.GPUDevice `json:"gpu_devices"`
+
+	// the firecracker release the agent runs and the one it pins. empty from
+	// an agent older than #291.
+	Firecracker       string `json:"firecracker"`
+	FirecrackerPinned string `json:"firecracker_pinned"`
 }
 
 type listVMResponse struct {

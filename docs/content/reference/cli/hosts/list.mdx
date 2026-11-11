@@ -13,18 +13,21 @@ fuse hosts
 fuse hosts list
 ```
 
-Aliases on the parent: `host-list`. `list` alias: `ls`. No flags beyond the
-globals. Both forms are equivalent, `fuse hosts` with no subcommand runs
+Aliases on the parent: `host-list`. `list` alias: `ls`. Flags: `--limit`
+(page size, default 50, max 200), `--cursor` (resume from a previous page) and
+`--all-pages` (fetch every host). Both forms are equivalent, `fuse hosts` with no subcommand runs
 `list`.
 
 ```bash
 $ fuse hosts
-╭───┬─────────────┬─────────┬────────┬──────┬────────────┬────────────┬──────┬───────────╮
-│   │ ID          │ REGION  │ STATE  │ CPUS │ RAM MB     │ GPUS       │ VMS  │ LAST SEEN │
-├───┼─────────────┼─────────┼────────┼──────┼────────────┼────────────┼──────┼───────────┤
-│ * │ prod-east-1 │ us-east │ active │ 4/16 │ 8192/65536 │ 2/4 (a100) │ 1/20 │ 3m        │
-│   │ prod-west-1 │ us-west │ active │ 0/16 │ 0/65536    │ -          │ 0/20 │ 1h        │
-╰───┴─────────────┴─────────┴────────┴──────┴────────────┴────────────┴──────┴───────────╯
+╭───┬─────────────┬─────────┬────────┬───────┬──────────────┬────────────┬──────┬──────────────────────────┬───────────╮
+│   │ ID          │ REGION  │ STATE  │ CPUS  │ RAM MB       │ GPUS       │ VMS  │ FIRECRACKER              │ LAST SEEN │
+├───┼─────────────┼─────────┼────────┼───────┼──────────────┼────────────┼──────┼──────────────────────────┼───────────┤
+│ * │ prod-east-1 │ us-east │ active │ 4/16  │ 8192/65536   │ -          │ 1/20 │ v1.17.0                  │ 3m        │
+│   │ prod-west-1 │ us-west │ active │ 0/16  │ 0/65536      │ -          │ 0/20 │ v1.16.0 (pinned v1.17.0) │ 1h        │
+│   │ gpu-1       │ us-east │ active │ 16/64 │ 65536/262144 │ 2/4 (a100) │ 2/8  │ -                        │ 2d        │
+╰───┴─────────────┴─────────┴────────┴───────┴──────────────┴────────────┴──────┴──────────────────────────┴───────────╯
+firecracker versions differ across hosts (v1.16.0 on prod-west-1; v1.17.0 on prod-east-1); live migration needs both hosts on the same release, run fc-update on the hosts behind
 ```
 
 The `*` marks the host currently selected as active for this context.
@@ -35,6 +38,19 @@ stays readable. GPU capacity is only probed and reported on `qemu` hosts, a
 firecracker host always shows `-`. For per-device detail and MIG instance
 pools, see [`fuse host get`](/docs/reference/cli/hosts/get) and
 [`fuse host metrics`](/docs/reference/cli/hosts/metrics).
+
+FIRECRACKER is the firecracker release the host agent reported at
+registration. When it differs from the release that host's `fc-agent.py` pins
+(`FIRECRACKER_VERSION`), the pin follows in parentheses: that host has not run
+`fc-update` since the pin moved. A `qemu` host, an agent too old to report a
+version, or a host registered before the orchestrator stored it shows `-`.
+Nothing re-probes an existing host, so after upgrading the orchestrator every
+host that was already registered shows `-` until it is registered again. When the listed hosts run more than one release, a warning
+on stderr names each release and the hosts on it, since live migration needs
+both hosts on the same release. Only the listed page is compared, pass
+`--all-pages` to check the whole fleet. Like LAST SEEN, the version is read
+once at registration and not refreshed, so it can lag a host that ran
+`fc-update` after it registered.
 
 LAST SEEN is stamped at registration and never refreshed, it is **not** a
 liveness signal and the scheduler never consults it. Judge reachability from

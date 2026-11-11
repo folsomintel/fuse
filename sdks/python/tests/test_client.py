@@ -710,6 +710,35 @@ def test_hosts_register_decodes_gpu_devices() -> None:
 
 
 @respx.mock
+def test_hosts_get_decodes_firecracker_version() -> None:
+    respx.get(f"{BASE_URL}/v1/hosts/host-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "host-1",
+                "url": "https://h",
+                "state": "active",
+                "capacity": {
+                    "cpus": 4,
+                    "ram_mb": 8192,
+                    "storage_gb": 100,
+                    "vm_count": 10,
+                    "firecracker": "v1.16.0",
+                    "firecracker_pinned": "v1.17.0",
+                },
+                "allocated": {"cpus": 0, "ram_mb": 0, "storage_gb": 0, "vm_count": 0},
+            },
+        )
+    )
+    with new_client() as client:
+        host = client.hosts.get("host-1")
+
+    assert host.capacity.firecracker == "v1.16.0"
+    assert host.capacity.firecracker_pinned == "v1.17.0"
+    assert host.allocated.firecracker == ""
+
+
+@respx.mock
 def test_hosts_list() -> None:
     route = respx.get(f"{BASE_URL}/v1/hosts").mock(
         return_value=httpx.Response(

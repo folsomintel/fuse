@@ -565,6 +565,14 @@ type HostCapacity struct {
 	GPUs    int    `json:"gpus,omitempty"`
 	GPUKind string `json:"gpu_kind,omitempty"`
 
+	// Firecracker is the firecracker release the host agent reports it runs
+	// ("v1.17.0") and FirecrackerPinned the release its fc-agent.py pins.
+	// Probed at registration (a declared value is ignored) and only set on
+	// Capacity. Live migration needs both hosts on the same release. Empty
+	// on qemu hosts and older agents.
+	Firecracker       string `json:"firecracker,omitempty"`
+	FirecrackerPinned string `json:"firecracker_pinned,omitempty"`
+
 	// MIGProfiles advertises fractional GPU capacity: MIG instance count
 	// by profile name (e.g. {"1g.10gb": 4}). Requires backend "qemu". When the
 	// host reports per-instance MIG inventory (MIGInstances), this map is a

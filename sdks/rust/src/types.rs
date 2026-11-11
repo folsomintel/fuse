@@ -2098,6 +2098,17 @@ pub struct HostCapacity {
     pub gpus: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gpu_kind: Option<String>,
+    /// The firecracker release the host agent reports it runs (`"v1.17.0"`).
+    /// Probed at registration (a declared value is ignored) and only set on
+    /// capacity. Live migration needs both hosts on the same release. `None`
+    /// on qemu hosts and older agents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firecracker: Option<String>,
+    /// The firecracker release the host's fc-agent.py pins. Differs from
+    /// [`firecracker`](Self::firecracker) when the host has not run
+    /// fc-update since the pin moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub firecracker_pinned: Option<String>,
     /// Advertises fractional GPU capacity: MIG instance count by profile
     /// name (e.g. `{"1g.10gb": 4}`). Requires backend qemu. When the host
     /// reports per-instance MIG inventory (`mig_instances`), this map is a

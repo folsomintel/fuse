@@ -45,6 +45,14 @@ type HostCapacity struct {
 	// without migration.
 	Arch string `json:"arch,omitempty"`
 
+	// Firecracker is the firecracker release the host agent reports it runs
+	// ("v1.17.0"), and FirecrackerPinned the release its fc-agent.py pins.
+	// Both are probed at registration and only ever set on Capacity. Live
+	// migration needs both ends on the same release, so these make skew
+	// across the fleet visible. Empty on qemu hosts and older agents.
+	Firecracker       string `json:"firecracker,omitempty"`
+	FirecrackerPinned string `json:"firecracker_pinned,omitempty"`
+
 	// GPUs is the count of whole GPU devices available on the host.
 	// Zero means no GPUs. Only qemu-backed hosts may report GPUs > 0
 	// (enforced at registration, see internal/api registerHost).

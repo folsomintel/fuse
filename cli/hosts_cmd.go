@@ -105,10 +105,14 @@ func runHostsList(cmd *cobra.Command, _ []string) error {
 			fmt.Sprintf("%d/%d", h.Allocated.RamMB, h.Capacity.RamMB),
 			gpuCell(h),
 			fmt.Sprintf("%d/%d", h.Allocated.VMCount, h.Capacity.VMCount),
+			firecrackerCell(h),
 			ago(h.LastSeen),
 		})
 	}
-	renderTable([]string{"", "ID", "REGION", "STATE", "CPUS", "RAM MB", "GPUS", "VMS", "LAST SEEN"}, rows)
+	renderTable([]string{"", "ID", "REGION", "STATE", "CPUS", "RAM MB", "GPUS", "VMS", "FIRECRACKER", "LAST SEEN"}, rows)
+	if skew := firecrackerSkew(hosts); skew != "" {
+		warnf("firecracker versions differ across hosts (%s); live migration needs both hosts on the same release, run fc-update on the hosts behind", skew)
+	}
 	if next != "" {
 		warnf("more results: rerun with --cursor %s (or pass --all-pages to fetch everything)", next)
 	}
@@ -126,6 +130,46 @@ func gpuCell(h fuse.Host) string {
 		cell += " (" + h.Capacity.GPUKind + ")"
 	}
 	return cell
+}
+
+// firecrackerCell renders the firecracker release a host runs, or "-" for a
+// qemu host or an agent too old to report it. a host that runs something
+// other than what its fc-agent.py pins gets the pin alongside, since that
+// host has not run fc-update since the pin moved.
+func firecrackerCell(h fuse.Host) string {
+	running, pinned := h.Capacity.Firecracker, h.Capacity.FirecrackerPinned
+	if running == "" {
+		return "-"
+	}
+	if pinned != "" && pinned != running {
+		return running + " (pinned " + pinned + ")"
+	}
+	return running
+}
+
+// firecrackerSkew names each firecracker release the listed hosts run and
+// which hosts run it ("v1.16.0 on a; v1.17.0 on b, c"), or "" when they all
+// agree. hosts that report no version are left out.
+func firecrackerSkew(hosts []fuse.Host) string {
+	byVersion := map[string][]string{}
+	for _, h := range hosts {
+		if v := h.Capacity.Firecracker; v != "" {
+			byVersion[v] = append(byVersion[v], h.ID)
+		}
+	}
+	if len(byVersion) < 2 {
+		return ""
+	}
+	versions := make([]string, 0, len(byVersion))
+	for v := range byVersion {
+		versions = append(versions, v)
+	}
+	sort.Strings(versions)
+	parts := make([]string, len(versions))
+	for i, v := range versions {
+		parts[i] = v + " on " + strings.Join(byVersion[v], ", ")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // sortedMIGProfiles returns the profile names advertised by a host's capacity
@@ -233,6 +277,7 @@ func renderHostDetail(h *fuse.Host) {
 		{"region", dash(h.Region)},
 		{"backend", dash(h.Backend)},
 		{"arch", dash(h.Capacity.Arch)},
+		{"firecracker", firecrackerCell(*h)},
 		{"labels", dash(formatHostLabels(h.Labels))},
 		{"state", stateStyle(h.State)},
 		{"cpus", fmt.Sprintf("%d / %d", h.Allocated.CPUs, h.Capacity.CPUs)},

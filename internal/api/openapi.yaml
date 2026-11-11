@@ -3579,6 +3579,25 @@ components:
         gpu_kind:
           type: string
           description: GPU model (e.g. "a100"). Empty when gpus is 0.
+        firecracker:
+          type: string
+          description: |
+            Firecracker release the host agent reports it runs (e.g.
+            "v1.17.0"), probed at registration. Probe-only: a value sent
+            in a register request is discarded. Populated only on
+            capacity (never allocated). Absent on qemu hosts, agents
+            that predate the field, and hosts registered before the
+            orchestrator stored it (nothing re-probes them). Live
+            migration needs both hosts on the same release.
+        firecracker_pinned:
+          type: string
+          description: |
+            Firecracker release the host's fc-agent.py pins
+            (FIRECRACKER_VERSION), probed at registration. When it
+            differs from `firecracker` the host has not run fc-update
+            since the pin moved. Probe-only, capacity only, absent on
+            qemu hosts, older agents, and hosts registered before the
+            orchestrator stored it.
         mig_profiles:
           type: object
           additionalProperties:

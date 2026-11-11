@@ -11,7 +11,7 @@ fuse host get <id>
 ```
 
 No flags beyond the globals. Prints the host's full detail: URL, region,
-backend, state, capacity vs. allocated (CPUs, RAM, storage, VM count, and GPUs
+backend, arch, firecracker release, labels, state, capacity vs. allocated (CPUs, RAM, storage, VM count, and GPUs
 or MIG profiles if the host has any), last seen time, and created/updated
 timestamps.
 
@@ -21,6 +21,9 @@ id            prod-east-1
 url           http://10.0.0.5:8090
 region        us-east
 backend       firecracker
+arch          amd64
+firecracker   v1.17.0
+labels        -
 state         active
 cpus          4 / 16
 ram mb        8192 / 65536
@@ -41,6 +44,9 @@ id            gpu-1
 url           http://gpu-host:8091
 region        -
 backend       qemu
+arch          amd64
+firecracker   -
+labels        -
 state         active
 cpus          16 / 64
 ram mb        65536 / 262144
@@ -59,6 +65,11 @@ The `gpus` row appears only when the host has whole-device GPU capacity, and the
 shows just that row. Per-device inventory (each GPU's UUID, model, PCI address,
 memory, driver version, and MIG mode) is not rendered in the table, read it with
 `-o json`.
+
+`firecracker` is the release the host agent reported at registration, with
+the release its `fc-agent.py` pins in parentheses when the two differ (for
+example `v1.16.0 (pinned v1.17.0)`). It is `-` on a `qemu` host, an agent too
+old to report it, or a host registered before the orchestrator stored it.
 
 `last seen` is set once at registration and is never refreshed afterward, it is
 not a liveness signal, don't use it to detect a dead host agent.

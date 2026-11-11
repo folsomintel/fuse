@@ -4,8 +4,8 @@
 use fuse::{
     Arch, ComputerAction, ComputerDisplay, CreateRequest, DesktopSpec, DesktopWm, EgressMode,
     EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event,
-    EventKind, ExecRequest, ExposeSpec, HealthcheckHttp, HealthcheckSpec, MissReason, Protocol,
-    ScrollDirection, Snapshot, SnapshotKind, SnapshotRequest, Spec,
+    EventKind, ExecRequest, ExposeSpec, HealthcheckHttp, HealthcheckSpec, Host, MissReason,
+    Protocol, ScrollDirection, Snapshot, SnapshotKind, SnapshotRequest, Spec,
 };
 use serde_json::json;
 
@@ -307,4 +307,26 @@ fn egress_status_round_trips_and_tolerates_the_unknown() {
     }))
     .unwrap();
     assert_eq!(old.egress, None);
+}
+
+#[test]
+fn host_decodes_firecracker_version() {
+    let host: Host = serde_json::from_value(json!({
+        "id": "host-1",
+        "url": "https://h",
+        "state": "active",
+        "capacity": {"cpus": 4, "ram_mb": 8192, "storage_gb": 100, "vm_count": 10,
+            "firecracker": "v1.16.0", "firecracker_pinned": "v1.17.0"},
+        "allocated": {"cpus": 0, "ram_mb": 0, "storage_gb": 0, "vm_count": 0},
+        "last_seen": "2024-01-01T00:00:00Z",
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+    }))
+    .unwrap();
+    assert_eq!(host.capacity.firecracker.as_deref(), Some("v1.16.0"));
+    assert_eq!(host.capacity.firecracker_pinned.as_deref(), Some("v1.17.0"));
+    assert_eq!(host.allocated.firecracker, None);
+    // never declared, so a default capacity keeps them off the register body.
+    let declared = serde_json::to_value(fuse::HostCapacity::default()).unwrap();
+    assert!(declared.get("firecracker").is_none());
 }
