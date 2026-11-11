@@ -1449,6 +1449,13 @@ SNAPSHOT_API_TIMEOUT = float(os.environ.get("FC_AGENT_SNAPSHOT_API_TIMEOUT", "60
 #   host         the cpu and firecracker build that wrote the image.
 LIVE_MANIFEST = "live.json"
 LIVE_FILES = ("vmstate", "mem", LIVE_MANIFEST)
+# what live.json's digest_version says about the snapshot's "mem" digest.
+# absent (an older agent's snapshot): the sha256 of the whole image. 2: the
+# mem_table_digest of live.json's mem_chunks, a table of every chunk's sha256,
+# so a pull checks mem a chunk at a time and a merged delta copy has a mem
+# digest without its image ever being read whole. the table's chunk is
+# HUGE_PAGE_BYTES, the same as fc-uffd's chunk table, so one table serves both.
+LIVE_DIGEST_VERSION = 2
 
 # the files a diff snapshot is moved as. it has no standalone memory image or
 # rootfs worth sending: mem.delta is the pages dirtied since its parent and
@@ -1604,7 +1611,8 @@ def free_hugepages_mb() -> int:
 def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
     """sha256 of every 2M chunk of a memory image, and which chunks are all
     zero. fc-uffd checks pages one chunk at a time as they arrive, which a
-    digest over the whole file cannot do."""
+    digest over the whole file cannot do, and the same table is what a
+    version 2 mem digest is a hash over (see mem_table_digest)."""
     sudo(["chmod", "644", str(path)], check=False)
     zero = bytes(HUGE_PAGE_BYTES)
     chunks, zeros = [], []
@@ -1617,6 +1625,21 @@ def chunk_digests(path: Path) -> tuple[list[str], list[int]]:
                 zeros.append(len(chunks))
             chunks.append(hashlib.sha256(b).hexdigest())
     return chunks, zeros
+
+
+def mem_digest(path: Path, manifest: dict) -> str:
+    """the "mem" digest of a memory image, in the version its live.json says."""
+    if manifest.get("digest_version", 1) == 1:
+        return file_digest(path)
+    return mem_table_digest(chunk_digests(path)[0])
+
+
+def mem_table_digest(chunks: list[str]) -> str:
+    """a version 2 mem digest: a sha256 over the per-chunk sha256s rather than
+    over the image. it proves the same bytes, and a merge that knows which
+    chunks a delta touched works it out from the base's table by re-hashing
+    only those, never reading the rest of the image."""
+    return hashlib.sha256(b"fuse-mem-chunks-v1\n" + "\n".join(chunks).encode()).hexdigest()
 
 
 
