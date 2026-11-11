@@ -148,7 +148,10 @@ and 64 MiB for guest file uploads (`FC_AGENT_MAX_UPLOAD_BYTES` /
 which nothing in Fuse sends. `FC_AGENT_REQUEST_TIMEOUT` /
 `QEMU_AGENT_REQUEST_TIMEOUT` (60s) bound a client that opens a connection and
 then stalls; interactive attach sessions are exempt, since idling is what they
-are for.
+are for. `fc-agent` speaks HTTP/1.1 keep-alive, and the same timeout closes a
+kept-alive connection that sits idle. A request whose body the agent did not
+read (one it refused before parsing, such as a 401 or 413) gets
+`Connection: close`, so the unread bytes are never taken for the next request.
 
 ## Host agent tokens are a separate concern
 
