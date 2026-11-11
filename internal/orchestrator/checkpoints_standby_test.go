@@ -120,6 +120,34 @@ func TestPickStandby_prefersTheHostHoldingFewerCopies(t *testing.T) {
 	}
 }
 
+func TestPickStandby_doesNotCrowdOutAnExistingStandby(t *testing.T) {
+	fm := newStandbyFleet(t, &deltaMover{})
+	ctx := context.Background()
+	if _, err := fm.ProvisionAndAssign(ctx, "task-a",
+		Spec{CPUs: 1, RamMB: 512, HostID: "h-a"}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatalf("provision a: %v", err)
+	}
+	// vm a has a 40 GB disk and keeps a 42 GB copy on h-b. h-c already holds
+	// another copy, so fewest-copies alone would send src to h-b.
+	fm.mu.Lock()
+	fm.vms["fuse-task-a"].spec.StorageGB = 40
+	// src has a 56 GB disk and 6 GB of memory: a ~62 GB copy.
+	fm.vms["fuse-task-src"].spec.StorageGB = 56
+	fm.vms["fuse-task-src"].spec.RamMB = 6 << 10
+	fm.mu.Unlock()
+	fm.chainsMu.Lock()
+	fm.chains["fuse-task-a"] = &checkpointChain{standby: "h-b", bytes: 42 << 30}
+	fm.chains["fuse-other"] = &checkpointChain{standby: "h-c", bytes: 1 << 30}
+	fm.chainsMu.Unlock()
+
+	if reason := fm.standbyRejectionFor("fuse-task-src", "h-b"); reason != "" {
+		t.Fatalf("src does not fit h-b by itself (%s); the test needs it to", reason)
+	}
+	if got := fm.pickStandby("fuse-task-src", "h-a"); got != "h-c" {
+		t.Errorf("standby = %q, want h-c: src's copy on h-b would leave vm a's standby 2 GB short", got)
+	}
+}
+
 func TestPickStandby_noneWhenNoOtherHostFits(t *testing.T) {
 	fm := newStandbyFleet(t, &deltaMover{})
 	fm.mu.Lock()
