@@ -203,6 +203,10 @@ func TestPostgresStateStore_HostBackendDefaultsToFirecracker(t *testing.T) {
 		if got.Allocated.GPUs != 0 {
 			t.Errorf("host allocated gpus = %d, want 0", got.Allocated.GPUs)
 		}
+		if got.Capacity.Firecracker != "" || got.Capacity.FirecrackerPinned != "" {
+			t.Errorf("legacy row firecracker = %q/%q, want empty",
+				got.Capacity.Firecracker, got.Capacity.FirecrackerPinned)
+		}
 	})
 
 	t.Run("explicit firecracker backend round-trips", func(t *testing.T) {
@@ -210,11 +214,14 @@ func TestPostgresStateStore_HostBackendDefaultsToFirecracker(t *testing.T) {
 		t.Cleanup(func() { _ = store.DeleteHost(ctx, hostID) })
 
 		host := HostRecord{
-			ID:        hostID,
-			URL:       "https://fc-host.local",
-			State:     HostActive,
-			Backend:   BackendFirecracker,
-			Capacity:  HostCapacity{CPUs: 4, RamMB: 8192, StorageGB: 50, VMCount: 2},
+			ID:      hostID,
+			URL:     "https://fc-host.local",
+			State:   HostActive,
+			Backend: BackendFirecracker,
+			Capacity: HostCapacity{
+				CPUs: 4, RamMB: 8192, StorageGB: 50, VMCount: 2,
+				Firecracker: "v1.16.0", FirecrackerPinned: "v1.17.0",
+			},
 			LastSeen:  now,
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -232,6 +239,10 @@ func TestPostgresStateStore_HostBackendDefaultsToFirecracker(t *testing.T) {
 		}
 		if got.Capacity.GPUs != 0 {
 			t.Errorf("host capacity gpus = %d, want 0", got.Capacity.GPUs)
+		}
+		if got.Capacity.Firecracker != "v1.16.0" || got.Capacity.FirecrackerPinned != "v1.17.0" {
+			t.Errorf("host firecracker = %q/%q, want v1.16.0/v1.17.0",
+				got.Capacity.Firecracker, got.Capacity.FirecrackerPinned)
 		}
 	})
 }
