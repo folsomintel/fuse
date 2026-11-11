@@ -175,6 +175,8 @@ class Pager:
         # chunks the guest gave back since the resume. the host dropped their
         # pages, so they read as zeros from here on.
         self.removed: set[int] = set()
+        # bumped by every remove, so a fill can tell one landed while it ran.
+        self.removes = 0
         # chunk -> set once the thread filling it is done. a second fault on
         # the chunk waits on it instead of fetching the chunk again.
         self.inflight: dict[int, threading.Event] = {}
@@ -228,6 +230,7 @@ class Pager:
     def copy_in(self, i: int) -> None:
         with self.lock:
             blank = i in self.zero or i in self.removed
+            removes = self.removes
         data = bytearray(self.page) if blank else bytearray(self.fetch(i))
         removed = lambda: self.is_removed(i)
         # a remove can land while the chunk was being fetched.
@@ -238,7 +241,11 @@ class Pager:
             if r ["offset"] <= off < r["offset"] + r["size"]:
                 copy_page(self.uffd, r["base_host_virt_addr"] + off - r["offset"], data, removed)
         with self.lock:
-            self.resident.add(i)
+            # a remove of this chunk that landed during the fill may have
+            # dropped the pages again, so it is not resident: its next fault
+            # fills zeros instead of being ignored.
+            if not (i in self.removed and self.removes != removes):
+                self.resident.add(i)
 
     def is_removed(self, i: int) -> bool:
         with self.lock:
@@ -255,6 +262,7 @@ class Pager:
                 with self.lock:
                     self.removed.add(i)
                     self.resident.discard(i)
+                    self.removes += 1
             addr = (addr // self.page + 1) * self.page
 
     def settled(self) -> int:
