@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 // orphanDestroyTimeout bounds one orphan destroy, the same 60s ceiling
@@ -329,10 +331,19 @@ func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *Rec
 		age    time.Duration
 	}
 
+	// a human deciding something about the env, or an extension they
+	// approved, holds the reaper the same way it holds the idle detector. if
+	// the store cannot say which envs those are, reap nothing this cycle.
+	waiting, ok := fm.pendingInterventionEnvs(ctx)
+	if !ok {
+		return
+	}
+	extended := fm.extendedEnvs(now)
+
 	fm.mu.RLock()
 	candidates := make([]drainingCandidate, 0)
 	for id, v := range fm.vms {
-		if v.state != VMStateDraining {
+		if v.state != VMStateDraining || waiting[id] || extended[id] || destroyGated(v.spec.Hitl) {
 			continue
 		}
 		age := now.Sub(v.updatedAt)
@@ -363,6 +374,20 @@ func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *Rec
 		})
 		summary.DrainingVMsDestroyed++
 	}
+}
+
+// destroyGated reports whether an env's hitl policy holds or denies destroy.
+// such an env is never reaped from draining: a human owns that destroy, and a
+// rejected one must stay rejected rather than be redone by the reaper.
+func destroyGated(spec *hitl.Spec) bool {
+	if spec == nil {
+		return false
+	}
+	switch spec.EvaluateLifecycle(hitl.ActionDestroy).Mode() {
+	case hitl.ModeAsk, hitl.ModeDeny:
+		return true
+	}
+	return false
 }
 
 // expiry describes why a VM is being torn down by a reconcile detector. The

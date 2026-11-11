@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/hitl"
 )
 
 // hangingDestroyProvider wraps mockProvider so Destroy for one name blocks
@@ -275,5 +277,84 @@ func TestReconcileOrphan_hangingDestroyIsBounded(t *testing.T) {
 	fm.mu.RUnlock()
 	if retries != 1 {
 		t.Errorf("orphan retries = %d, want 1", retries)
+	}
+}
+
+// a pending intervention means a human is deciding something about the env;
+// the reaper must not destroy it out from under them.
+func TestStuckDraining_pendingInterventionKeepsVM(t *testing.T) {
+	metrics := &captureMetrics{}
+	store := NewMemoryStateStore()
+	p := newMockProvider()
+	fm, vmID := drainingFleet(t, FleetConfig{
+		Provider:        p,
+		StateStore:      store,
+		DrainingTimeout: 10 * time.Minute,
+		Metrics:         metrics,
+	}, "task-1", 30*time.Minute)
+	if err := store.UpsertIntervention(context.Background(), InterventionRecord{
+		ID:        "int_drain",
+		EnvID:     vmID,
+		Kind:      string(hitl.KindLifecycle),
+		State:     string(hitl.StatePending),
+		Deadline:  time.Now().Add(time.Hour),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	fm.reconcile(context.Background())
+
+	if got := metrics.last().DrainingVMsDestroyed; got != 0 {
+		t.Errorf("DrainingVMsDestroyed = %d, want 0 while a human decides", got)
+	}
+	fm.mu.RLock()
+	state := fm.vms[vmID].state
+	fm.mu.RUnlock()
+	if state != VMStateDraining {
+		t.Errorf("state = %s, want draining", state)
+	}
+	if p.count() != 1 {
+		t.Errorf("provider envs = %d, want 1", p.count())
+	}
+}
+
+// an env whose destroy is gated (ask or deny) belongs to a human; a notify
+// gate holds nothing and the env is reaped as usual.
+func TestStuckDraining_destroyGateKeepsVM(t *testing.T) {
+	for _, tc := range []struct {
+		mode hitl.Mode
+		kept bool
+	}{
+		{hitl.ModeAsk, true},
+		{hitl.ModeDeny, true},
+		{hitl.ModeNotify, false},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			metrics := &captureMetrics{}
+			fm, vmID := drainingFleet(t, FleetConfig{
+				DrainingTimeout: 10 * time.Minute,
+				Metrics:         metrics,
+			}, "task-1", 30*time.Minute)
+			fm.mu.Lock()
+			fm.vms[vmID].spec.Hitl = &hitl.Spec{Gates: []hitl.Gate{{
+				Name:  "destroy",
+				On:    hitl.KindLifecycle,
+				Match: hitl.GateMatch{Action: []string{string(hitl.ActionDestroy)}},
+				Mode:  tc.mode,
+			}}}
+			fm.mu.Unlock()
+
+			fm.reconcile(context.Background())
+
+			want := 1
+			if tc.kept {
+				want = 0
+			}
+			if got := metrics.last().DrainingVMsDestroyed; got != want {
+				t.Errorf("DrainingVMsDestroyed = %d, want %d", got, want)
+			}
+		})
 	}
 }
