@@ -542,6 +542,14 @@ export interface HostCapacity {
   arch?: string;
   gpus?: number;
   gpu_kind?: string;
+  /** The firecracker release the host agent reports it runs ("v1.17.0").
+   * Probed at registration (a declared value is ignored) and only set on
+   * capacity. Live migration needs both hosts on the same release. Omitted
+   * on qemu hosts and older agents. */
+  firecracker?: string;
+  /** The firecracker release the host's fc-agent.py pins. Differs from
+   * firecracker when the host has not run fc-update since the pin moved. */
+  firecracker_pinned?: string;
   /** Fractional GPU capacity: MIG instance count by profile name (e.g.
    * {"1g.10gb": 4}). Like gpus, it requires backend "qemu". When the host
    * reports per-instance MIG inventory (mig_instances), this map is a derived

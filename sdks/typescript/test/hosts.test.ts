@@ -31,6 +31,26 @@ describe("hosts", () => {
     expect(host.id).toBe("host-1");
   });
 
+  it("get decodes firecracker and firecracker_pinned on capacity", async () => {
+    current = await serve((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        `{"id":"host-1","url":"https://h","state":"active",` +
+          `"capacity":{"cpus":4,"ram_mb":8192,"storage_gb":100,"vm_count":10,` +
+          `"firecracker":"v1.16.0","firecracker_pinned":"v1.17.0"},` +
+          `"allocated":{"cpus":0,"ram_mb":0,"storage_gb":0,"vm_count":0},` +
+          `"last_seen":"2024-01-01T00:00:00Z","created_at":"2024-01-01T00:00:00Z",` +
+          `"updated_at":"2024-01-01T00:00:00Z"}`,
+      );
+    });
+
+    const host = await current.client.hosts.get("host-1");
+
+    expect(host.capacity.firecracker).toBe("v1.16.0");
+    expect(host.capacity.firecracker_pinned).toBe("v1.17.0");
+    expect(host.allocated.firecracker).toBeUndefined();
+  });
+
   it("register decodes mig_profiles and gpu_devices on capacity", async () => {
     current = await serve((req, res) => {
       res.setHeader("Content-Type", "application/json");
