@@ -69,4 +69,9 @@ environments before retrying.
 
 `Host.State` is one of `active`, `cordoned`, or `draining`. `Host.LastSeen` is
 set once at registration and never refreshed, it is not a liveness signal.
-These mirror the [HTTP API](/reference/api) one to one.
+`Host.Capacity.Firecracker` is the firecracker release the host agent reported
+at registration and `Host.Capacity.FirecrackerPinned` the release its
+`fc-agent.py` pins. Both are probed (a declared value is ignored), read only at
+registration, set only on `Capacity`, and empty on `qemu` hosts. Live migration
+needs both hosts on the same release, so compare them across the fleet before
+migrating. These mirror the [HTTP API](/reference/api) one to one.
