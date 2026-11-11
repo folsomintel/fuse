@@ -3767,6 +3767,14 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("Authorization", ""), f"Bearer {TOKEN}"
         )
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except ConnectionResetError:
+            # a peer that hung up between keep-alive requests, such as a pull
+            # that stopped reading at a bad chunk. nothing is left to answer.
+            pass
+
     def end_headers(self) -> None:
         # a request body this handler never read would be parsed as the next
         # request on the connection, so the connection ends with this response.
