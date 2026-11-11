@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.41.0](https://github.com/folsomintel/fuse/compare/v0.40.0...v0.41.0) (2026-11-11)
+
+
+### Features
+
+* keep open tunnel streams across a token rotation ([#356](https://github.com/folsomintel/fuse/issues/356)) ([adf4855](https://github.com/folsomintel/fuse/commit/adf485536deac81304247f1a7d7f07c52300c6ad))
+* make merged delta copies movable to a third host with chunk-table mem digests ([#359](https://github.com/folsomintel/fuse/issues/359)) ([e52a487](https://github.com/folsomintel/fuse/commit/e52a4872ae3e0077b0b88c50d47cfac83a777422))
+* pick the checkpoint standby by capacity and re-pick when it is cordoned or full ([#355](https://github.com/folsomintel/fuse/issues/355)) ([09bc430](https://github.com/folsomintel/fuse/commit/09bc430c66f48f16057567605ada6ebc378efb0d))
+* serve lazy-migrate page faults concurrently over keep-alive connections ([#360](https://github.com/folsomintel/fuse/issues/360)) ([c1657b4](https://github.com/folsomintel/fuse/commit/c1657b42747187c315d46147e980840040a8c65e))
+* show each host's firecracker version and flag skew across api, cli and all four sdks ([#358](https://github.com/folsomintel/fuse/issues/358)) ([9084cca](https://github.com/folsomintel/fuse/commit/9084ccab231f9fbe0483cfd34f9393a4a62e040d))
+
+
+### Bug Fixes
+
+* bump go toolchain to 1.26.11 for GO-2026-6859 ([#364](https://github.com/folsomintel/fuse/issues/364)) ([26c0fb1](https://github.com/folsomintel/fuse/commit/26c0fb1757eb69906deeebe82e76554d62a0c7e4))
+* destroy environments stuck in draining and bound the reconcile orphan destroy ([#357](https://github.com/folsomintel/fuse/issues/357)) ([cb3edc4](https://github.com/folsomintel/fuse/commit/cb3edc41fb4420bfed5f26f435879a904e790f0a))
+
+
+### Performance Improvements
+
+* diff the rootfs by extent map during the final migrate pause ([#354](https://github.com/folsomintel/fuse/issues/354)) ([e847991](https://github.com/folsomintel/fuse/commit/e84799115c5824c8e58703e752baf94f6c5a0322))
+
 ## [0.40.0](https://github.com/folsomintel/fuse/compare/v0.39.0...v0.40.0) (2026-11-10)
 
 
