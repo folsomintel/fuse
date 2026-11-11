@@ -290,6 +290,9 @@ type relay struct {
 	mu     sync.Mutex
 	back   net.PacketConn
 	client net.Addr
+	// blocked drops every packet both ways, which to the proxy looks like a
+	// paused guest.
+	blocked atomic.Bool
 }
 
 func newRelay(t *testing.T, server net.Addr) *relay {
@@ -312,7 +315,9 @@ func newRelay(t *testing.T, server net.Addr) *relay {
 			r.client = from
 			back := r.back
 			r.mu.Unlock()
-			_, _ = back.WriteTo(buf[:n], server)
+			if !r.blocked.Load() {
+				_, _ = back.WriteTo(buf[:n], server)
+			}
 		}
 	}()
 	return r
@@ -342,7 +347,7 @@ func (r *relay) swap(t *testing.T) {
 			r.mu.Lock()
 			client := r.client
 			r.mu.Unlock()
-			if client != nil {
+			if client != nil && !r.blocked.Load() {
 				_, _ = r.front.WriteTo(buf[:n], client)
 			}
 		}
@@ -573,4 +578,63 @@ func TestDropClosesARetiredConnectionStillDraining(t *testing.T) {
 	if len(h.srv.retiring) != 0 {
 		t.Fatalf("%d guests still tracked as retiring after the drop", len(h.srv.retiring))
 	}
+}
+
+// a clone's probe of a paused guest must not close that guest if a token
+// rotation retires it while the probe is still waiting: a retired guest is
+// draining, not failed.
+func TestAProbeThatOutlivesARetireDoesNotCloseTheRetiredGuest(t *testing.T) {
+	old := keepAlive
+	t.Cleanup(func() { keepAlive = old })
+	keepAlive = 200 * time.Millisecond
+
+	h := startServer(t)
+	h.cfg.Ports = []int{echoServer(t)}
+	rl := newRelay(t, h.srv.Addr())
+	paused := h.cfg
+	paused.ProxyAddr = rl.front.LocalAddr().String()
+	runSidecar(t, paused)
+
+	c, err := open(t, h.srv, h.cfg.Ports[0], 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	r := bufio.NewReader(c)
+	roundTrip(t, c, r, "before the pause")
+	retired := registered(t, h.srv)
+
+	rl.blocked.Store(true)
+	runSidecar(t, h.cfg) // the clone, which probes the paused guest
+	deadline := time.Now().Add(5 * time.Second)
+	for h.hellos.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("the clone never said hello")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.srv.Retire("vm-1")
+
+	// wait out the probe the clone started before the retire.
+	deadline = time.Now().Add(probeTimeout + 5*time.Second)
+	for {
+		h.rec.mu.Lock()
+		dead := h.rec.probes[false]
+		h.rec.mu.Unlock()
+		if dead > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the clone's probe never finished")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case <-retired.conn.Context().Done():
+		t.Fatalf("the probe closed the retired guest: %v", context.Cause(retired.conn.Context()))
+	default:
+	}
+
+	rl.blocked.Store(false)
+	roundTrip(t, c, r, "after the pause")
 }
