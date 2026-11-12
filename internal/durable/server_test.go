@@ -65,15 +65,17 @@ func TestDiscoveryManifest(t *testing.T) {
 				Name string `json:"name"`
 				Ty   string `json:"ty"`
 			} `json:"handlers"`
+			// intervals are milliseconds on the wire.
 			RetryPolicyMaxAttempts     *int   `json:"retryPolicyMaxAttempts"`
 			RetryPolicyInitialInterval *int64 `json:"retryPolicyInitialInterval"`
+			RetryPolicyMaxInterval     *int64 `json:"retryPolicyMaxInterval"`
 		} `json:"services"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&manifest); err != nil {
 		t.Fatal(err)
 	}
 
-	got := map[string]int{}
+	got := map[string]RetryPolicy{}
 	for _, s := range manifest.Services {
 		if s.Ty != "VIRTUAL_OBJECT" {
 			t.Errorf("%s: type %q, want VIRTUAL_OBJECT", s.Name, s.Ty)
@@ -81,14 +83,21 @@ func TestDiscoveryManifest(t *testing.T) {
 		if len(s.Handlers) != 1 || s.Handlers[0].Name != "Ping" || s.Handlers[0].Ty != "SHARED" {
 			t.Errorf("%s: handlers %+v, want one shared Ping", s.Name, s.Handlers)
 		}
+		var p RetryPolicy
 		if s.RetryPolicyMaxAttempts != nil {
-			got[s.Name] = *s.RetryPolicyMaxAttempts
+			p.MaxAttempts = *s.RetryPolicyMaxAttempts
 		}
+		if s.RetryPolicyInitialInterval != nil {
+			p.InitialInterval = time.Duration(*s.RetryPolicyInitialInterval) * time.Millisecond
+		}
+		if s.RetryPolicyMaxInterval != nil {
+			p.MaxInterval = time.Duration(*s.RetryPolicyMaxInterval) * time.Millisecond
+		}
+		got[s.Name] = p
 	}
-	want := map[string]int{EnvironmentObject: DefaultRetryPolicy.MaxAttempts, HostObject: 3}
-	for name, n := range want {
-		if got[name] != n {
-			t.Errorf("%s: retry max attempts %d, want %d (manifest services: %+v)", name, got[name], n, manifest.Services)
+	for name, want := range cfg.Retry {
+		if got[name] != want {
+			t.Errorf("%s: manifest retry policy %+v, want %+v", name, got[name], want)
 		}
 	}
 }
