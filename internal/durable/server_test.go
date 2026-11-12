@@ -135,7 +135,7 @@ func TestPingThroughRestate(t *testing.T) {
 	}
 
 	body := fmt.Sprintf(`{"uri":"http://%s","force":true}`, addr)
-	res, err := http.Post(admin+"/deployments", "application/json", bytes.NewBufferString(body))
+	res, err := (&http.Client{Timeout: 30 * time.Second}).Post(admin+"/deployments", "application/json", bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
