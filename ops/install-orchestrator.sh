@@ -154,6 +154,11 @@ case "$MODE" in
   off|self|cloud) ;;
   *) die "FUSE_RESTATE_MODE must be off, self or cloud (got $MODE)" ;;
 esac
+# leaving self mode would strand whatever restate still holds for this
+# orchestrator; the installer does not do that switch.
+if [ "$(env_value FUSE_RESTATE_MODE)" = self ] && [ "$MODE" != self ]; then
+  die "$ENV_FILE runs FUSE_RESTATE_MODE=self; switching it to $MODE would strand restate invocations. drain them and edit $ENV_FILE by hand"
+fi
 DB_URL="${DATABASE_URL:-$(env_value DATABASE_URL)}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -248,11 +253,14 @@ write_restate_deploy() {
 # deployments. written by ops/install-orchestrator.sh; edits are overwritten.
 #
 #   restate-deploy register <uri> [force]  register a handler endpoint
+#   restate-deploy id <uri>                its deployment id, empty if none
 #   restate-deploy inflight <uri>          invocations pinned to it, not done
 #   restate-deploy retire <uri>            delete its deployment once nothing is
 #                                          pinned to it (exit 1 while some are)
 #   restate-deploy drain <old-binary>      run the old binary until
-#                                          RESTATE_DRAIN_URI retires
+#                                          RESTATE_DRAIN_URI retires, which
+#                                          waits for a deployment at
+#                                          RESTATE_DRAIN_AFTER_URI
 #
 #   RESTATE_ADMIN_URL    default http://127.0.0.1:9070
 #   WAIT_SECONDS         how long register waits for both ends (default 60)
@@ -329,12 +337,19 @@ retire() {
   echo "restate-deploy: retired $id ($uri)"
 }
 
+id() { deployment_id "$1"; }
+
 drain() {
-  local bin="$1" uri="${RESTATE_DRAIN_URI:?RESTATE_DRAIN_URI is not set}" pid rc=0
+  local bin="$1" uri="${RESTATE_DRAIN_URI:?RESTATE_DRAIN_URI is not set}"
+  local after="${RESTATE_DRAIN_AFTER_URI:?RESTATE_DRAIN_AFTER_URI is not set}" pid rc=0 next
   "$bin" &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
     sleep "${DRAIN_POLL_SECONDS:-60}"
+    # until the new version registers, the old deployment is the only one
+    # restate can send work to, so it must stay even when idle.
+    next=$(deployment_id "$after") || continue
+    [ -n "$next" ] || continue
     if retire "$uri"; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" || true
@@ -349,8 +364,8 @@ drain() {
 cmd="${1:-}"
 shift || true
 case "$cmd" in
-  register|inflight|retire|drain) "$cmd" "$@" ;;
-  *) die "usage: restate-deploy register|inflight|retire|drain ..." ;;
+  register|id|inflight|retire|drain) "$cmd" "$@" ;;
+  *) die "usage: restate-deploy register|id|inflight|retire|drain ..." ;;
 esac
 HELPER
   chmod 0755 "$RESTATE_DEPLOY"
@@ -428,27 +443,41 @@ EOF
   log "restate-server up, admin on $admin"
 }
 
-# plan_restate_upgrade: decide which handler address the new binary takes. by
-# default it keeps the current one and re-registers in place. when restate
-# still has invocations pinned to the running deployment, the old binary is
-# kept (DRAIN_DIR) to finish them on its address and the new one moves to the
-# other handler port. sets HANDLER_LISTEN, REGISTER_FORCE and DRAIN.
+# plan_restate_upgrade: decide which handler address the new binary takes.
+# runs after the new binary is staged, so the old one is stopped or drained
+# only for the swap itself. sets HANDLER_LISTEN, REGISTER_FORCE and DRAIN.
+#   - nothing registered yet: take the current address.
+#   - the old binary supports drain-only mode: always blue/green. it keeps its
+#     address (DRAIN_DIR) and the old deployment, the new binary takes the
+#     other handler port, and the old deployment retires only after the new
+#     one registered and nothing is pinned to it. no work can start on code
+#     that is about to change.
+#   - otherwise: stop the old orchestrator first, so nothing new starts on it,
+#     then count what is pinned to it. replace it in place when that is zero
+#     (or FUSE_RESTATE_FORCE_UPGRADE=1); start it again and refuse if not.
 plan_restate_upgrade() {
-  local cur n host port other
+  local cur cur_url id n host port other
   cur="$(env_value ORCH_RESTATE_LISTEN)"
   cur="${cur:-127.0.0.1:$HANDLER_PORT_A}"
+  cur_url="$(url_for "$cur")"
   HANDLER_LISTEN="$cur"
   REGISTER_FORCE=force
   DRAIN=""
   [ -x "$BIN" ] || return 0
-
-  n=$("$RESTATE_DEPLOY" inflight "$(url_for "$cur")") \
-    || die "could not count restate invocations on $(url_for "$cur")"
-  [ "$n" = 0 ] && return 0
+  id=$("$RESTATE_DEPLOY" id "$cur_url") || die "could not look up the restate deployment at $cur_url"
+  [ -n "$id" ] || return 0
 
   if ! grep -aq ORCH_RESTATE_DRAIN_ONLY "$BIN"; then
-    [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" = 1 ] \
-      || die "$n restate invocations are pinned to the running orchestrator ($(url_for "$cur")) and this binary cannot stay up to finish them (no ORCH_RESTATE_DRAIN_ONLY support). wait for them, or set FUSE_RESTATE_FORCE_UPGRADE=1 to replace it anyway (they then replay on the new code)"
+    systemctl stop fuse-orchestrator.service
+    n=$("$RESTATE_DEPLOY" inflight "$cur_url") || {
+      systemctl start fuse-orchestrator.service
+      die "could not count restate invocations on $cur_url; the old orchestrator was started again"
+    }
+    [ "$n" = 0 ] && return 0
+    if [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ]; then
+      systemctl start fuse-orchestrator.service
+      die "$n restate invocations are pinned to the running orchestrator ($cur_url) and this binary cannot stay up to finish them (no ORCH_RESTATE_DRAIN_ONLY support). the old orchestrator was started again. wait for them, or set FUSE_RESTATE_FORCE_UPGRADE=1 to replace it anyway (they then replay on the new code)"
+    fi
     log "FUSE_RESTATE_FORCE_UPGRADE=1: replacing a deployment with $n invocations pinned to it"
     return 0
   fi
@@ -469,14 +498,15 @@ plan_restate_upgrade() {
 # written by install-orchestrator.sh for fuse-orchestrator-drain.service
 ORCH_RESTATE_LISTEN=$cur
 ORCH_RESTATE_DRAIN_ONLY=true
-RESTATE_DRAIN_URI=$(url_for "$cur")
+RESTATE_DRAIN_URI=$cur_url
+RESTATE_DRAIN_AFTER_URI=$(url_for "$host:$other")
 RESTATE_ADMIN_URL=$RESTATE_ADMIN_URL
 EOF
   )
   HANDLER_LISTEN="$host:$other"
   REGISTER_FORCE=""
   DRAIN=1
-  log "$n restate invocations pinned to $(url_for "$cur"): the old binary keeps serving them, the new one takes $(url_for "$HANDLER_LISTEN")"
+  log "blue/green: the old binary keeps serving $cur_url until what is pinned to it finishes, the new one takes $(url_for "$HANDLER_LISTEN")"
 }
 
 if [ "$MODE" = self ]; then
@@ -490,12 +520,13 @@ if [ "$MODE" = self ]; then
     s3://*) ;;
     *) die "RESTATE_SNAPSHOT_DESTINATION must be an s3:// url (got $RESTATE_SNAPSHOT_DESTINATION)" ;;
   esac
-  restate_up
-  plan_restate_upgrade
 fi
 
-# 1. resolve and install the binary.
+# 1. resolve the binary and stage it next to the installed one. it replaces
+#    the old binary only after the restate upgrade plan, so the old one is
+#    stopped or drained for the swap alone, not for the download.
 mkdir -p "$(dirname "$BIN")"
+STAGED="$(dirname "$BIN")/.orchestrator.new"
 case "$(uname -m)" in
   x86_64)        ASSET_ARCH="x86_64" ;;
   aarch64|arm64) ASSET_ARCH="arm64" ;;
@@ -503,11 +534,11 @@ case "$(uname -m)" in
 esac
 
 if [ -n "${ORCH_BIN_SRC:-}" ] && [ -x "$ORCH_BIN_SRC" ]; then
-  install -m0755 "$ORCH_BIN_SRC" "$BIN"
-  log "installed binary from $ORCH_BIN_SRC"
+  install -m0755 "$ORCH_BIN_SRC" "$STAGED"
+  log "staged binary from $ORCH_BIN_SRC"
 elif [ -x "./orchestrator" ]; then
-  install -m0755 "./orchestrator" "$BIN"
-  log "installed binary from ./orchestrator"
+  install -m0755 "./orchestrator" "$STAGED"
+  log "staged binary from ./orchestrator"
 else
   command -v curl >/dev/null 2>&1 || die "curl is required to download a release (or set ORCH_BIN_SRC)"
   TAG="${VERSION:-}"
@@ -529,9 +560,15 @@ else
   verify_asset "$TGZ" "$ASSET" "$SUMS" || die "checksum verification failed for $ASSET ($TAG)"
   log "sha256 verified: $ASSET"
   tar -xzf "$TGZ" -C "$EXDIR" orchestrator
-  install -m0755 "$EXDIR/orchestrator" "$BIN"
-  log "installed binary from release $TAG"
+  install -m0755 "$EXDIR/orchestrator" "$STAGED"
+  log "staged binary from release $TAG"
 fi
+
+if [ "$MODE" = self ]; then
+  restate_up
+  plan_restate_upgrade
+fi
+mv -f "$STAGED" "$BIN"
 log "binary -> $BIN ($("$BIN" --version 2>/dev/null || echo '?'))"
 
 # 2. write the env file, generating secrets, only if it does not exist so a
@@ -578,6 +615,12 @@ if [ "$MODE" = self ]; then
     "$(url_for "$(grep -E '^RESTATE_INGRESS__BIND_ADDRESS=' "$RESTATE_ENV" | tail -n1 | cut -d= -f2-)")"
   set_env_key "$ENV_FILE" ORCH_RESTATE_LISTEN "$HANDLER_LISTEN"
   log "set FUSE_RESTATE_MODE=self in $ENV_FILE (handler endpoint $HANDLER_LISTEN)"
+elif [ -n "${FUSE_RESTATE_MODE:-}" ]; then
+  set_env_key "$ENV_FILE" FUSE_RESTATE_MODE "$MODE"
+  log "set FUSE_RESTATE_MODE=$MODE in $ENV_FILE"
+  if [ "$MODE" = cloud ]; then
+    log "mode cloud: set FUSE_RESTATE_INGRESS_URL (and any restate cloud credentials) in $ENV_FILE"
+  fi
 fi
 
 # 3. install the systemd unit (prefer the tracked ops/systemd/ copy, fall back

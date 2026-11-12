@@ -175,7 +175,7 @@ case "$method $url" in
   *"/health") exit 0 ;;
   "POST "*/query)
     case "$body" in
-      *sys_invocation*) v="FAKE_INFLIGHT_$port"; echo "{\"rows\":[{\"n\":${!v:-0}}]}" ;;
+      *sys_invocation*) echo "count $port" >> "$FAKE_LOG"; v="FAKE_INFLIGHT_$port"; echo "{\"rows\":[{\"n\":${!v:-0}}]}" ;;
       *sys_deployment*) v="FAKE_DEPLOYED_$port"
         if [ "${!v:-}" = 1 ]; then echo "{\"rows\":[{\"id\":\"dp_$port\"}]}"; else echo '{"rows":[]}'; fi ;;
     esac ;;
@@ -280,6 +280,8 @@ check "an idle upgrade succeeds" 'run_orch "$R" FAKE_DEPLOYED_9080=1'
 check "an idle upgrade re-registers in place, no drain" \
   'grep -qF "register {\"uri\":\"http://127.0.0.1:9080\",\"force\":true}" "$R.log" && ! grep -q "enable --now fuse-orchestrator-drain" "$R.log"'
 check "an upgrade swaps the binary" '"$R/usr/local/bin/orchestrator" | grep -q v2'
+check "the old orchestrator is stopped before its invocations are counted" \
+  '[ "$(grep -nE "stop fuse-orchestrator.service|count 9080" "$R.log" | cut -d: -f2 | tr "\n" " ")" = "systemctl stop fuse-orchestrator.service count 9080 " ]'
 
 # 6. upgrade with invocations pinned to the old deployment.
 R="$WORK/o-up-busy"
@@ -295,6 +297,15 @@ check "the new orchestrator moves to the other handler port" \
   'grep -qx ORCH_RESTATE_LISTEN=127.0.0.1:9081 "$R/etc/fuse/orchestrator.env"'
 check "the new deployment registers beside the old one, not forced" \
   'grep -qF "register {\"uri\":\"http://127.0.0.1:9081\",\"force\":false}" "$R.log"'
+check "the old deployment retires only after the new address registers" \
+  'grep -qx RESTATE_DRAIN_AFTER_URI=http://127.0.0.1:9081 "$R/var/lib/fuse/restate-drain/drain.env"'
+
+# 6b. a drain-capable old binary goes blue/green even when idle.
+R="$WORK/o-up-bg-idle"
+seed_upgrade "$R" "$WORK/orch-old-drain"
+run_orch "$R" FAKE_DEPLOYED_9080=1
+check "a drain-capable idle upgrade still goes blue/green" \
+  'grep -qx ORCH_RESTATE_LISTEN=127.0.0.1:9081 "$R/etc/fuse/orchestrator.env" && grep -q "enable --now fuse-orchestrator-drain" "$R.log"'
 
 # 7. a busy upgrade whose old binary cannot drain is refused untouched...
 R="$WORK/o-up-nodrain"
@@ -304,6 +315,8 @@ if run_orch "$R" FAKE_DEPLOYED_9080=1 FAKE_INFLIGHT_9080=2; then
 else
   check "a busy upgrade without drain support is refused, old binary kept" \
     '"$R/usr/local/bin/orchestrator" | grep -q v1'
+  check "the refused upgrade starts the old orchestrator again" \
+    'grep -q "systemctl start fuse-orchestrator.service" "$R.log"'
 fi
 # ...unless forced.
 R="$WORK/o-up-forced"
@@ -321,13 +334,28 @@ else
   check "an upgrade while an earlier one still drains is refused" 'grep -q "still draining" "$R.out"'
 fi
 
-# 9. mode off stays restate-free.
+# 9. an existing self install is not switched out of self, and an explicit
+#    mode is saved.
+R="$WORK/o-leave-self"
+seed_upgrade "$R" "$WORK/orch-old"
+if run_orch "$R" FUSE_RESTATE_MODE=off FAKE_DEPLOYED_9080=1; then
+  bad "switching a self install to off is refused"
+else
+  check "switching a self install to off is refused, old binary kept" \
+    '"$R/usr/local/bin/orchestrator" | grep -q v1 && grep -qx FUSE_RESTATE_MODE=self "$R/etc/fuse/orchestrator.env"'
+fi
+R="$WORK/o-cloud"
+check "a fresh cloud install succeeds" 'run_orch "$R" FUSE_RESTATE_MODE=cloud'
+check "a fresh cloud install saves the mode and runs no restate-server" \
+  'grep -qx FUSE_RESTATE_MODE=cloud "$R/etc/fuse/orchestrator.env" && ! grep -q "^docker" "$R.log"'
+
+# 10. mode off stays restate-free.
 R="$WORK/o-off"
 check "mode off installs" 'run_orch "$R"'
 check "mode off installs no restate pieces and calls no docker" \
   '[ -x "$R/usr/local/bin/orchestrator" ] && [ ! -e "$R/etc/fuse/restate.env" ] && ! grep -q "^docker" "$R.log" && ! grep -q FUSE_RESTATE "$R/etc/fuse/orchestrator.env"'
 
-# 10. curl'd standalone, the inline units match the tracked ones.
+# 11. curl'd standalone, the inline units match the tracked ones.
 mkdir -p "$WORK/standalone"
 cp "$ORCH_INSTALLER" "$WORK/standalone/"
 R="$WORK/o-inline"

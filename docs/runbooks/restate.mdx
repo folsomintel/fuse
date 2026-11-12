@@ -75,19 +75,25 @@ and 1d) drop step history on completion. edit `restate.env` and
 re-run the installer with the new release. it restarts restate-server (new
 image if the pin changed), then handles the orchestrator deployment:
 
-- nothing pinned to the running deployment: the new binary takes the same
-  handler address and re-registers it in place.
-- invocations pinned to it (restate never moves an in-flight invocation to new
-  code): the old binary is copied to `/var/lib/fuse/restate-drain/` and keeps
-  serving its address in drain-only mode (`fuse-orchestrator-drain.service`);
-  the new binary takes the other handler port and registers as a new
-  deployment. new invocations go to the new one. once nothing is pinned to the
-  old deployment, the drain unit deletes it and stops.
-- an old binary without drain-only support (`ORCH_RESTATE_DRAIN_ONLY`) makes
-  the installer refuse. wait for the invocations, or set
-  `FUSE_RESTATE_FORCE_UPGRADE=1` to replace it anyway (they replay on the new
-  code, which breaks them if their steps changed).
+- the new binary is downloaded and staged first, so the old one is only down
+  (or draining) for the swap.
+- old binary with drain-only support (`ORCH_RESTATE_DRAIN_ONLY`): always
+  blue/green. the old binary is copied to `/var/lib/fuse/restate-drain/` and
+  keeps serving its handler address (`fuse-orchestrator-drain.service`); the
+  new binary takes the other handler port and registers as a new deployment,
+  which gets all new invocations. once it has registered and nothing is
+  pinned to the old deployment (restate never moves an in-flight invocation
+  to new code), the drain unit deletes the old one and stops. if the new
+  binary never registers, the old deployment stays.
+- old binary without drain-only support: the installer stops it first, so
+  nothing new can start on it, then counts what is pinned to it. zero:
+  replaced in place. otherwise it is started again and the installer refuses;
+  wait, or set `FUSE_RESTATE_FORCE_UPGRADE=1` to replace it anyway (those
+  invocations replay on the new code, which breaks them if their steps
+  changed).
 - a second upgrade while the first still drains is refused.
+- an existing self install cannot be switched to `off` or `cloud` by the
+  installer; that would strand what restate holds for it.
 
 ```sh
 journalctl -u fuse-orchestrator-drain -f      # drain progress
