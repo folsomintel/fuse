@@ -1,0 +1,32 @@
+# Reference copy, written the same way as restate-server.service.
+#
+# the previous orchestrator version, kept serving restate invocations that are
+# pinned to its deployment after an upgrade (restate never moves an in-flight
+# invocation to new code). ops/install-orchestrator.sh starts it only when the
+# old deployment still has in-flight invocations. restate-deploy retires the
+# deployment and exits once they finish, so the unit ends on its own.
+[Unit]
+Description=Fuse orchestrator, previous version draining restate invocations
+Documentation=https://github.com/folsomintel/fuse
+After=restate-server.service
+Wants=restate-server.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/fuse/orchestrator.env
+# overrides ORCH_RESTATE_LISTEN with the old handler address and sets
+# ORCH_RESTATE_DRAIN_ONLY=true, so the old binary serves only that endpoint.
+EnvironmentFile=/var/lib/fuse/restate-drain/drain.env
+ExecStart=/usr/local/lib/fuse/restate-deploy drain /var/lib/fuse/restate-drain/orchestrator
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,137 @@
+# runbook: self-hosted restate-server
+
+applies to: an orchestrator installed by `ops/install-orchestrator.sh` with
+`FUSE_RESTATE_MODE=self`
+
+restate-server runs next to the orchestrator as the pinned docker image in
+`ops/systemd/restate-server.service`. it owns in-flight multi-step operations
+(timers, retries, waits). postgres stays the read model, so mode self needs
+`DATABASE_URL`.
+
+## install
+
+```sh
+FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... sudo -E ./ops/install-orchestrator.sh
+# optional partition snapshots (s3 only):
+#   RESTATE_SNAPSHOT_DESTINATION=s3://bucket/prefix
+```
+
+needs docker (https://docs.docker.com/engine/install/debian/). the installer
+writes `/etc/fuse/restate.env`, pulls and digest-checks the image, starts
+`restate-server`, then the orchestrator, then registers the orchestrator's
+handler endpoint. check it:
+
+```sh
+systemctl status restate-server fuse-orchestrator
+docker exec fuse-restate restate deployments list
+```
+
+## ports
+
+every port binds `127.0.0.1` (host networking). the admin api has no auth;
+never expose it.
+
+| port  | what                           | config                            |
+| ----- | ------------------------------ | --------------------------------- |
+| 18080 | ingress, `FUSE_RESTATE_INGRESS_URL` | `RESTATE_INGRESS__BIND_ADDRESS` |
+| 9070  | admin api, ui at `/ui`         | `RESTATE_ADMIN__BIND_ADDRESS`     |
+| 5122  | node-to-node, unused on one node | `RESTATE_BIND_ADDRESS`          |
+| 9080 / 9081 | orchestrator handler endpoint, alternating across upgrades | `ORCH_RESTATE_LISTEN` in `orchestrator.env` |
+
+reach the ui from a laptop with `ssh -L 9070:127.0.0.1:9070 <host>`.
+
+## files
+
+- `/etc/fuse/restate.env`: restate config, passed into the container. written
+  once; the installer only edits the snapshot keys when
+  `RESTATE_SNAPSHOT_DESTINATION` is given.
+- `/var/lib/restate`: log, partition state, metadata. this is the durable state.
+- `/usr/local/lib/fuse/restate-deploy`: `register`, `inflight`, `retire`
+  helper. rewritten on every install.
+- `/var/lib/fuse/restate-drain/`: the previous orchestrator binary and its env
+  while an upgrade drains.
+
+## retention
+
+`RESTATE_DEFAULT_JOURNAL_RETENTION=7d` and
+`RESTATE_DEFAULT_WORKFLOW_COMPLETION_RETENTION=7d`. restate's own defaults (0
+and 1d) drop step history on completion. edit `restate.env` and
+`systemctl restart restate-server` to change them.
+
+## backup
+
+- with `RESTATE_WORKER__SNAPSHOTS__DESTINATION` set, restate writes partition
+  snapshots to s3 every 10000 records. credentials (`AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) go in `restate.env`. snapshots let a
+  node restore without replaying the whole log; they do not replace the
+  metadata in `/var/lib/restate`.
+- for a full copy: `systemctl stop fuse-orchestrator restate-server`, archive
+  `/var/lib/restate`, start both again. a copy taken while it runs is not
+  consistent.
+- do not put snapshots on a shared filesystem.
+
+## upgrade
+
+re-run the installer with the new release. it restarts restate-server (new
+image if the pin changed), then handles the orchestrator deployment:
+
+- the new binary is downloaded and staged first, so the old one is only down
+  (or draining) for the swap.
+- old binary with drain-only support (`ORCH_RESTATE_DRAIN_ONLY`): always
+  blue/green. the old binary is copied to `/var/lib/fuse/restate-drain/` and
+  keeps serving its handler address (`fuse-orchestrator-drain.service`); the
+  new binary takes the other handler port and registers as a new deployment,
+  which gets all new invocations. once it has registered and nothing is
+  pinned to the old deployment (restate never moves an in-flight invocation
+  to new code), the drain unit deletes the old one and stops. if the new
+  binary never registers, the old deployment stays.
+- old binary without drain-only support: the installer stops it first, so
+  nothing new can start on it, then counts what is pinned to it. zero:
+  replaced in place. otherwise it is started again and the installer refuses;
+  wait, or set `FUSE_RESTATE_FORCE_UPGRADE=1` to replace it anyway (those
+  invocations replay on the new code, which breaks them if their steps
+  changed).
+- a second upgrade while the first still drains is refused.
+- an existing self install cannot be switched to `off` or `cloud` by the
+  installer; that would strand what restate holds for it.
+
+```sh
+journalctl -u fuse-orchestrator-drain -f      # drain progress
+/usr/local/lib/fuse/restate-deploy inflight http://127.0.0.1:9080
+```
+
+to bump restate itself, change the image pin in both
+`ops/systemd/restate-server.service` and `RESTATE_IMAGE` in
+`ops/install-orchestrator.sh` (`docker buildx imagetools inspect
+restatedev/restate:<tag>` prints the index digest).
+
+## inspecting invocations
+
+```sh
+q() { curl -s localhost:9070/query -H 'content-type: application/json' \
+  -H 'accept: application/json' -d "{\"query\":\"$1\"}"; echo; }
+q "SELECT id, target, status, pinned_deployment_id FROM sys_invocation WHERE status != 'completed'"
+q "SELECT id, endpoint, created_at FROM sys_deployment"
+```
+
+the image ships the `restate` cli, already pointed at the local admin api:
+
+```sh
+docker exec fuse-restate restate deployments list
+docker exec fuse-restate restate invocations list
+docker exec fuse-restate restate invocations cancel <id>   # or kill
+```
+
+or the ui at `http://127.0.0.1:9070/ui` (through the ssh tunnel).
+
+## restate-server is down
+
+- the orchestrator keeps serving its api; `/ready` reports restate degraded.
+  operations that run on restate wait and resume once it is back; nothing
+  in flight is lost, it is in `/var/lib/restate`.
+- `systemctl status restate-server`, `journalctl -u restate-server -n 200`.
+- `docker` down takes restate with it (`Requires=docker.service`):
+  `systemctl status docker`.
+- disk full on `/var/lib/restate` is the usual cause of a crash loop.
+- if the deployment is missing after a restore:
+  `/usr/local/lib/fuse/restate-deploy register http://127.0.0.1:<handler port> force`.

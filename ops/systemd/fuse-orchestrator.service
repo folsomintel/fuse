@@ -1,8 +1,10 @@
 [Unit]
 Description=Fuse orchestrator (control plane)
 Documentation=https://github.com/folsomintel/fuse
-After=network-online.target
-Wants=network-online.target
+# restate-server is only installed in FUSE_RESTATE_MODE=self; a missing unit
+# is ignored here.
+After=network-online.target restate-server.service
+Wants=network-online.target restate-server.service
 
 [Service]
 Type=simple

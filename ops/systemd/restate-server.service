@@ -1,0 +1,50 @@
+# Reference copy. ops/install-orchestrator.sh installs this file when it runs
+# from a checkout, and writes an equivalent inline unit when it runs curl'd
+# standalone. Keep the two in step, including the image pin.
+#
+# restate-server for an orchestrator in FUSE_RESTATE_MODE=self, run as a
+# pinned docker image. host networking, so restate reaches the orchestrator's
+# handler endpoint on 127.0.0.1 and its own ports bind wherever restate.env
+# says (loopback by default; the admin api has no auth).
+[Unit]
+Description=Restate server (durable execution for the Fuse orchestrator)
+Documentation=https://github.com/folsomintel/fuse
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# the image is pinned by digest: docker refuses any content that does not hash
+# to it. bump it together with RESTATE_IMAGE in ops/install-orchestrator.sh.
+Environment=FUSE_RESTATE_IMAGE=docker.io/restatedev/restate:1.8.1@sha256:fea6b4a893616fd8ec4594bd72fbf9967f9ab9242c8c75008de75edfbb58b2c7
+# restate config (bind addresses, retention, snapshots), written by the
+# installer. every RESTATE_* line is passed into the container.
+EnvironmentFile=/etc/fuse/restate.env
+# /var/lib/restate holds the log, partition state and metadata. back it up.
+StateDirectory=restate
+StateDirectoryMode=0700
+ExecStartPre=-/usr/bin/docker rm -f fuse-restate
+ExecStart=/usr/bin/docker run --rm --name fuse-restate \
+  --network host \
+  --env-file /etc/fuse/restate.env \
+  --volume /var/lib/restate:/restate-data \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --read-only --tmpfs /tmp \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  ${FUSE_RESTATE_IMAGE}
+# give restate time to flush before docker kills it.
+ExecStop=/usr/bin/docker stop --time 60 fuse-restate
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=2
+
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
