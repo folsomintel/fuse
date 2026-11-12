@@ -40,6 +40,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/api"
 	"github.com/folsomintel/fuse/internal/apikeys"
+	"github.com/folsomintel/fuse/internal/durable"
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/firecracker"
 	"github.com/folsomintel/fuse/internal/hostwire"
@@ -368,6 +369,13 @@ func run() error {
 		return err
 	}
 
+	// restate config, also resolved before anything binds: a bad mode or a
+	// missing ingress url fails here instead of after the fleet starts.
+	durableCfg, err := durable.LoadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
+
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if !useTLS && useSecureCookies {
@@ -538,6 +546,24 @@ func run() error {
 	fm.Start(rootCtx)
 	defer fm.Stop()
 
+	// errCh carries a fatal listener error from either the api server or the
+	// restate handler endpoint.
+	errCh := make(chan error, 2)
+
+	// restate handler endpoint. mode off starts nothing and leaves the
+	// readiness check out.
+	var restateClient *durable.Client
+	if durableCfg.Mode != durable.ModeOff {
+		restateClient = durable.NewClient(durableCfg.IngressURL)
+		go func() {
+			if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
+				errCh <- fmt.Errorf("restate handler endpoint: %w", err)
+			}
+		}()
+		logger.Info("restate handler endpoint listening",
+			"mode", durableCfg.Mode, "addr", durableCfg.Listen, "ingress", durableCfg.IngressURL)
+	}
+
 	// Parse CIDR allowlist.
 	var cidrList []string
 	if allowedCIDRs != "" {
@@ -605,6 +631,11 @@ func run() error {
 	// without a Bearer token. These probes intentionally do not (and
 	// shouldn't) carry credentials.
 	hc := &api.Healthcheck{Fleet: fm, Store: store, BuildVersion: version}
+	if restateClient != nil {
+		// assigned only when set, so a nil client never becomes a non-nil
+		// interface (same trap as apiKeyStoreOrNil).
+		hc.Restate = restateClient
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health", hc.Liveness)
@@ -640,7 +671,6 @@ func run() error {
 		scheme = "https"
 	}
 
-	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("orchestrator server listening",
 			"addr", listenAddr,
@@ -652,11 +682,11 @@ func run() error {
 		)
 		if useTLS {
 			if err := srv.ListenAndServeTLS(tlsCert, tlsKey); err != nil && err != http.ErrServerClosed {
-				errCh <- err
+				errCh <- fmt.Errorf("http: %w", err)
 			}
 		} else {
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- err
+				errCh <- fmt.Errorf("http: %w", err)
 			}
 		}
 	}()
@@ -665,7 +695,7 @@ func run() error {
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
 	case err := <-errCh:
-		return fmt.Errorf("http listener: %w", err)
+		return fmt.Errorf("listener: %w", err)
 	}
 
 	// Graceful shutdown bounded by shutdownTimeout.

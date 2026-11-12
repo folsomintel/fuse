@@ -100,10 +100,15 @@ paths:
         — not `/health` — for a load balancer's routing decision;
         `/health` only reports that the process is up, not that it can
         serve a request end to end.
+
+        When restate is configured (`FUSE_RESTATE_MODE` is not `off`), a
+        `restate` check reports whether restate ingress answers. Restate
+        being down is `degraded` with a 200, not a 503: nothing runs on
+        restate yet, so it must not take the orchestrator out of rotation.
       security: []
       responses:
         "200":
-          description: All checks pass.
+          description: The state store and fleet checks pass. `degraded` means restate is configured and unreachable.
           content:
             application/json:
               schema:
@@ -112,7 +117,7 @@ paths:
                 properties:
                   status:
                     type: string
-                    enum: [ready]
+                    enum: [ready, degraded]
                   checks:
                     type: object
                     additionalProperties:
@@ -120,6 +125,7 @@ paths:
                     example:
                       state_store: ok
                       fleet: ok
+                      restate: ok
         "503":
           description: One or more dependencies are unhealthy.
           content:

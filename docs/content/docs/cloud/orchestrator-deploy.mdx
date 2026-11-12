@@ -66,10 +66,26 @@ range covers the fleet.
 | `ORCH_SHUTDOWN_TIMEOUT_SECONDS` | `--shutdown-timeout` | `30` | Graceful shutdown ceiling. |
 | `ORCH_DRAINING_TIMEOUT_SECONDS` | `--draining-timeout` | `330` (5m30s) | Destroy an environment left `draining` this long with no `DELETE`. See [The reconcile loop](/docs/concepts/reconcile#stuck-draining). |
 | `ORCH_VM_PREFIX` | `--vm-prefix` | `fuse-` | Prefix applied to generated VM names. |
+| `FUSE_RESTATE_MODE` | | `off` | `off`, `self` or `cloud`. `self` serves restate handlers and checks restate in `/ready`; `cloud` is reserved and refused at startup for now. See [Restate](#restate). |
+| `FUSE_RESTATE_INGRESS_URL` | | | Restate ingress URL, required unless the mode is `off`. `http://127.0.0.1:18080` with `ops/restate/compose.yaml`. |
+| `ORCH_RESTATE_LISTEN` | | `127.0.0.1:9080` | Restate handler endpoint (h2c). Only restate-server should reach it. |
+| `FUSE_RESTATE_RETRY_<SERVICE>_INITIAL_INTERVAL` / `_MAX_INTERVAL` / `_MAX_ATTEMPTS` | | `500ms` / `30s` / `10` | Invocation retry policy per restate service; `<SERVICE>` is `ENVIRONMENT` or `HOST`. |
 
 With `FIRECRACKER_BASE_URL` unset, the orchestrator runs the in-memory stub provider
 (fine for local dev, not for production). With `DATABASE_URL` unset, state is
 in-memory and does not survive a restart.
+
+## Restate
+
+Restate is optional and off by default; nothing runs on it yet. To run it next to the orchestrator:
+
+```bash
+docker compose -f ops/restate/compose.yaml up -d
+FUSE_RESTATE_MODE=self FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080 orchestrator
+ops/restate/register.sh   # again after every orchestrator upgrade
+```
+
+The compose file uses host networking and binds every restate port to loopback: ingress `18080` (restate's default `8080` is the orchestrator), admin `9070`, node `5122`. The admin port has no auth, so keep it off the network. With restate down, `/ready` stays `200` with `status: degraded` and the `restate` check set to the error.
 
 ## Postgres is the source of truth
 

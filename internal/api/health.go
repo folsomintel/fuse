@@ -49,6 +49,16 @@ type Healthcheck struct {
 	// /v1/version. Empty renders as "dev" (matching main.version's zero
 	// value).
 	BuildVersion string
+
+	// Restate checks restate ingress. nil when FUSE_RESTATE_MODE is off,
+	// and then readiness reports no restate check at all.
+	Restate RestateChecker
+}
+
+// RestateChecker reports whether restate is reachable. *durable.Client
+// satisfies it.
+type RestateChecker interface {
+	Check(ctx context.Context) error
 }
 
 // Liveness reports that the process is up and able to serve HTTP.
@@ -81,9 +91,13 @@ func (h *Healthcheck) Version(w http.ResponseWriter, _ *http.Request) {
 //   - fleet: that the FleetManager is non-nil. (We can't easily check
 //     "Started" without poking at unexported state; a nil manager is
 //     the realistic failure mode at boot.)
+//   - restate: restate ingress health, only when restate is configured.
 //
-// On any failure the response is 503 with a per-check breakdown so
-// operators can see at a glance which dependency is unhappy.
+// On a state_store or fleet failure the response is 503 with a per-check
+// breakdown so operators can see at a glance which dependency is unhappy.
+// restate being down is "degraded" with a 200: nothing runs on restate
+// yet, so pulling the orchestrator out of rotation would turn a restate
+// outage into a full outage.
 func (h *Healthcheck) Readiness(w http.ResponseWriter, r *http.Request) {
 	timeout := h.CheckTimeout
 	if timeout <= 0 {
@@ -119,8 +133,22 @@ func (h *Healthcheck) Readiness(w http.ResponseWriter, r *http.Request) {
 		cancel()
 	}
 
+	degraded := false
+	if h.Restate != nil {
+		checks["restate"] = "ok"
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		if err := h.Restate.Check(ctx); err != nil {
+			checks["restate"] = truncateErr(err.Error())
+			degraded = true
+		}
+		cancel()
+	}
+
 	status := "ready"
 	httpStatus := http.StatusOK
+	if degraded {
+		status = "degraded"
+	}
 	if !allOK {
 		status = "not_ready"
 		httpStatus = http.StatusServiceUnavailable
