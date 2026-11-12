@@ -31,8 +31,15 @@ wait_for() {
 }
 
 wait_for "$ADMIN/health" "restate admin"
-# the handler endpoint speaks h2c only, so curl has to start in http/2.
-wait_for "$ENDPOINT/health" "orchestrator handler endpoint" --http2-prior-knowledge
+# the handler endpoint speaks h2c only, so the probe needs a curl built with
+# http/2. without one every probe fails at once and would read as the
+# endpoint being down, so skip it: registration below has restate-server dial
+# the endpoint itself and report a down endpoint in its own error.
+if curl -V 2>/dev/null | grep -qi '^features:.* http2'; then
+  wait_for "$ENDPOINT/health" "orchestrator handler endpoint" --http2-prior-knowledge
+else
+  echo "register: this curl has no http/2 support, so the handler endpoint is not probed; registering directly" >&2
+fi
 
 # force re-registers an endpoint already known at this uri, which is what an
 # upgrade on the same address needs.

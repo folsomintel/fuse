@@ -256,10 +256,18 @@ pid_running() {
 # release from before restate has no handler endpoint, and the rest of the
 # stack works without it.
 register_restate() {
-  local _
+  local _ h2=1
+  # the handler endpoint speaks h2c only. a curl without http/2 fails that
+  # probe instantly, which would read as the endpoint being down and add the
+  # whole wait to every start, so skip the probe and let registration (where
+  # restate-server dials the endpoint itself) report a down endpoint.
+  if ! curl -V 2>/dev/null | grep -qi '^features:.* http2'; then
+    h2=0
+    log "curl has no http/2 support; not probing the orchestrator handler endpoint"
+  fi
   for _ in $(seq 1 30); do
     curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${RESTATE_ADMIN_PORT}/health" 2>/dev/null \
-      && curl -fsS -o /dev/null --max-time 2 --http2-prior-knowledge "http://${ORCH_RESTATE_LISTEN}/health" 2>/dev/null \
+      && { [ "$h2" = 0 ] || curl -fsS -o /dev/null --max-time 2 --http2-prior-knowledge "http://${ORCH_RESTATE_LISTEN}/health" 2>/dev/null; } \
       && break
     sleep 1
   done
