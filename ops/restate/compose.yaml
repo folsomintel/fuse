@@ -1,0 +1,33 @@
+# restate-server for a self-hosted fuse orchestrator (FUSE_RESTATE_MODE=self).
+#
+#   docker compose -f ops/restate/compose.yaml up -d
+#   ops/restate/register.sh
+#
+# host networking, so restate-server reaches the orchestrator's handler
+# endpoint on 127.0.0.1:9080 and every restate port stays on loopback. the
+# admin port has no auth and must never be reachable from outside the host.
+#
+#   ingress  127.0.0.1:18080  FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080
+#            (restate's default 8080 is the orchestrator api)
+#   admin    127.0.0.1:9070   deployments, the ui at /ui
+#   node     127.0.0.1:5122   node-to-node; unused on a single node
+#
+# the version is pinned: keep it in step with RESTATE_VERSION in
+# host-agent/local/fuse-local-setup.sh.
+name: fuse-restate
+services:
+  restate:
+    image: docker.io/restatedev/restate:1.8.1
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      RESTATE_NODE_NAME: fuse-restate
+      RESTATE_BASE_DIR: /restate-data
+      RESTATE_LISTEN_MODE: tcp
+      RESTATE_INGRESS__BIND_ADDRESS: 127.0.0.1:18080
+      RESTATE_ADMIN__BIND_ADDRESS: 127.0.0.1:9070
+      RESTATE_BIND_ADDRESS: 127.0.0.1:5122
+    volumes:
+      - restate-data:/restate-data
+volumes:
+  restate-data: {}

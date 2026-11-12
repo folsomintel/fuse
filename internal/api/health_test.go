@@ -233,3 +233,63 @@ func TestReadiness_TruncatesLongError(t *testing.T) {
 		t.Fatalf("state_store error length = %d, want <=%d", len(msg), readinessErrorMaxLen+64)
 	}
 }
+
+type fakeRestate struct{ err error }
+
+func (f fakeRestate) Check(context.Context) error { return f.err }
+
+func TestReadiness_NoRestateCheckWhenOff(t *testing.T) {
+	hc := &Healthcheck{Fleet: newFleetForTest(t), Store: orchestrator.NewMemoryStateStore()}
+	rr := httptest.NewRecorder()
+	hc.Readiness(rr, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	checks := decodeBody(t, rr)["checks"].(map[string]any)
+	if _, ok := checks["restate"]; ok {
+		t.Fatalf("checks = %v, want no restate entry with restate off", checks)
+	}
+}
+
+func TestReadiness_RestateOK(t *testing.T) {
+	hc := &Healthcheck{Fleet: newFleetForTest(t), Store: orchestrator.NewMemoryStateStore(), Restate: fakeRestate{}}
+	rr := httptest.NewRecorder()
+	hc.Readiness(rr, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	body := decodeBody(t, rr)
+	if rr.Code != http.StatusOK || body["status"] != "ready" {
+		t.Fatalf("got %d %v, want 200 ready", rr.Code, body)
+	}
+	if body["checks"].(map[string]any)["restate"] != "ok" {
+		t.Fatalf("checks = %v, want restate ok", body["checks"])
+	}
+}
+
+// restate down must not pull the orchestrator out of rotation.
+func TestReadiness_RestateDownIsDegradedNot503(t *testing.T) {
+	hc := &Healthcheck{
+		Fleet:   newFleetForTest(t),
+		Store:   orchestrator.NewMemoryStateStore(),
+		Restate: fakeRestate{err: errors.New("restate ingress unreachable: connection refused")},
+	}
+	rr := httptest.NewRecorder()
+	hc.Readiness(rr, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	body := decodeBody(t, rr)
+	if rr.Code != http.StatusOK || body["status"] != "degraded" {
+		t.Fatalf("got %d %v, want 200 degraded", rr.Code, body)
+	}
+	msg, _ := body["checks"].(map[string]any)["restate"].(string)
+	if !strings.Contains(msg, "connection refused") {
+		t.Fatalf("restate check = %q, want the error", msg)
+	}
+}
+
+// a state store failure still wins over a degraded restate.
+func TestReadiness_StoreDownWithRestateDownIsNotReady(t *testing.T) {
+	hc := &Healthcheck{
+		Fleet:   newFleetForTest(t),
+		Store:   newErrStore(errors.New("connection refused")),
+		Restate: fakeRestate{err: errors.New("down")},
+	}
+	rr := httptest.NewRecorder()
+	hc.Readiness(rr, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if body := decodeBody(t, rr); rr.Code != http.StatusServiceUnavailable || body["status"] != "not_ready" {
+		t.Fatalf("got %d %v, want 503 not_ready", rr.Code, body)
+	}
+}

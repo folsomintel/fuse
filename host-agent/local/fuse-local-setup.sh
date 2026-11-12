@@ -12,7 +12,8 @@
 #
 # env (all consumed at install/start time):
 #   FUSE_LOCAL_DIR    state dir (required). layout:
-#                       bin/{firecracker,orchestrator}  fc/{vmlinux.bin,rootfs.ext4,ubuntu.id_rsa}
+#                       bin/{firecracker,orchestrator,restate-server}
+#                       fc/{vmlinux.bin,rootfs.ext4,ubuntu.id_rsa}  restate/ (restate data)
 #                       fc-agent.py  *.log  *.pid  env
 #   FC_AGENT_TOKEN    bearer token the orchestrator uses to call fc-agent (required by install)
 #   ORCH_AUTH_TOKEN   orchestrator master token (required by install)
@@ -22,6 +23,10 @@
 #   PUBLIC_HOST       address vm urls are published under. "auto" resolves the
 #                     primary interface ip at start time (the appliance case);
 #                     default 127.0.0.1 (the same-box dev case).
+#
+# restate-server runs next to the orchestrator (FUSE_RESTATE_MODE=self), with
+# every port on loopback: ingress 18080 (8080 is the orchestrator), admin 9070,
+# node 5122. the orchestrator's handler endpoint is 127.0.0.1:9080.
 set -euo pipefail
 
 DIR="${FUSE_LOCAL_DIR:?FUSE_LOCAL_DIR is required}"
@@ -30,6 +35,12 @@ FC_AGENT_PORT="${FC_AGENT_PORT:-8090}"
 FUSE_VERSION="${FUSE_VERSION:-latest}"
 FC_CI_VERSION="v1.10"
 FC_KERNEL="vmlinux-5.10.223"
+# keep in step with the image tag in ops/restate/compose.yaml.
+RESTATE_VERSION="v1.8.1"
+RESTATE_INGRESS_PORT=18080
+RESTATE_ADMIN_PORT=9070
+RESTATE_NODE_PORT=5122
+ORCH_RESTATE_LISTEN="127.0.0.1:9080"
 
 case "$(uname -m)" in
   x86_64)        ARCH="x86_64";  ASSET_ARCH="x86_64" ;;
@@ -148,6 +159,23 @@ install_stack() {
     log "installed firecracker $tag (was: ${have:-none})"
   fi
 
+  # restate-server, the pinned release, checksum-verified. replaced when the
+  # appliance runs any other version, like firecracker above.
+  local rs_have rs_tag rs_name
+  rs_tag="${RESTATE_VERSION#v}"
+  rs_have=$("$DIR/bin/restate-server" --version 2>/dev/null | awk 'NR==1{print $2}' || true)
+  if [ "$rs_have" != "$rs_tag" ]; then
+    tmp=$(mktemp -d)
+    rs_name="restate-server-${ARCH}-unknown-linux-musl"
+    fetch "https://github.com/restatedev/restate/releases/download/${RESTATE_VERSION}/${rs_name}.tar.xz" "$tmp/${rs_name}.tar.xz"
+    fetch "https://github.com/restatedev/restate/releases/download/${RESTATE_VERSION}/${rs_name}.tar.xz.sha256" "$tmp/${rs_name}.tar.xz.sha256"
+    verify_asset "$tmp/${rs_name}.tar.xz" "${rs_name}.tar.xz" "$tmp/${rs_name}.tar.xz.sha256" || { rm -rf "$tmp"; die "restate-server $RESTATE_VERSION failed verification"; }
+    tar -xJf "$tmp/${rs_name}.tar.xz" -C "$tmp"
+    install -m0755 "$tmp/${rs_name}/restate-server" "$DIR/bin/restate-server"
+    rm -rf "$tmp"
+    log "installed restate-server $RESTATE_VERSION (was: ${rs_have:-none})"
+  fi
+
   # guest kernel + base rootfs + guest ssh key, from the firecracker ci bucket.
   [ -f "$DIR/fc/vmlinux.bin" ] || fetch "$CI_BASE/$FC_KERNEL" "$DIR/fc/vmlinux.bin"
   [ -f "$DIR/fc/rootfs.ext4" ] || fetch "$CI_BASE/ubuntu-22.04.ext4" "$DIR/fc/rootfs.ext4"
@@ -222,12 +250,50 @@ pid_running() {
   tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$want"
 }
 
+# register_restate: tell restate-server about the orchestrator's handler
+# endpoint. runs on every start, since registration is how restate picks up
+# handler changes after an upgrade. a failure only warns: an orchestrator
+# release from before restate has no handler endpoint, and the rest of the
+# stack works without it.
+register_restate() {
+  local _
+  for _ in $(seq 1 30); do
+    curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:${RESTATE_ADMIN_PORT}/health" 2>/dev/null \
+      && curl -fsS -o /dev/null --max-time 2 --http2-prior-knowledge "http://${ORCH_RESTATE_LISTEN}/health" 2>/dev/null \
+      && break
+    sleep 1
+  done
+  if curl -fsS -o /dev/null --max-time 30 -X POST "http://127.0.0.1:${RESTATE_ADMIN_PORT}/deployments" \
+      -H 'content-type: application/json' \
+      -d "{\"uri\":\"http://${ORCH_RESTATE_LISTEN}\",\"force\":true}"; then
+    log "registered the orchestrator with restate"
+  else
+    log "warning: could not register the orchestrator with restate (see $DIR/orchestrator.log and $DIR/restate-server.log)"
+  fi
+}
+
 start_stack() {
   [ -x "$DIR/bin/orchestrator" ] || die "not installed: run install first"
+  [ -x "$DIR/bin/restate-server" ] || die "restate-server not installed: run install first"
   local public_host
   public_host=$(resolve_public_host)
 
   sudo -n sysctl -w net.ipv4.ip_forward=1 >/dev/null || die "enabling ip_forward needs passwordless sudo (or run start as root)"
+
+  if pid_running "$DIR/restate-server.pid" "bin/restate-server"; then
+    log "restate-server already running (pid $(cat "$DIR/restate-server.pid"))"
+  else
+    mkdir -p "$DIR/restate"
+    RESTATE_NODE_NAME=fuse-local \
+    RESTATE_BASE_DIR="$DIR/restate" \
+    RESTATE_LISTEN_MODE=tcp \
+    RESTATE_INGRESS__BIND_ADDRESS="127.0.0.1:${RESTATE_INGRESS_PORT}" \
+    RESTATE_ADMIN__BIND_ADDRESS="127.0.0.1:${RESTATE_ADMIN_PORT}" \
+    RESTATE_BIND_ADDRESS="127.0.0.1:${RESTATE_NODE_PORT}" \
+      nohup "$DIR/bin/restate-server" --no-logo >"$DIR/restate-server.log" 2>&1 &
+    echo $! > "$DIR/restate-server.pid"
+    log "restate-server started, ingress on 127.0.0.1:$RESTATE_INGRESS_PORT (pid $!)"
+  fi
 
   if pid_running "$DIR/orchestrator.pid" "bin/orchestrator"; then
     log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid"))"
@@ -240,6 +306,9 @@ start_stack() {
     ORCH_AUTH_TOKEN="${ORCH_AUTH_TOKEN:?ORCH_AUTH_TOKEN is required}" \
     ORCH_LISTEN=":${ORCH_PORT}" \
     ORCH_EGRESS_MOCK=true \
+    FUSE_RESTATE_MODE=self \
+    FUSE_RESTATE_INGRESS_URL="http://127.0.0.1:${RESTATE_INGRESS_PORT}" \
+    ORCH_RESTATE_LISTEN="$ORCH_RESTATE_LISTEN" \
       nohup "$DIR/bin/orchestrator" >"$DIR/orchestrator.log" 2>&1 &
     echo $! > "$DIR/orchestrator.pid"
     log "orchestrator started on :$ORCH_PORT (pid $!)"
@@ -258,11 +327,13 @@ start_stack() {
     echo $! > "$DIR/fc-agent.pid"
     log "fc-agent started on :$FC_AGENT_PORT (pid $!)"
   fi
+
+  register_restate
 }
 
 stop_stack() {
   local name
-  for name in fc-agent orchestrator; do
+  for name in fc-agent orchestrator restate-server; do
     if [ -f "$DIR/$name.pid" ]; then
       kill "$(cat "$DIR/$name.pid")" 2>/dev/null && log "stopped $name" || true
       rm -f "$DIR/$name.pid"
@@ -272,10 +343,11 @@ stop_stack() {
 
 status_stack() {
   local name want up=0
-  for name in orchestrator fc-agent; do
+  for name in orchestrator fc-agent restate-server; do
     case "$name" in
-      orchestrator) want="bin/orchestrator" ;;
-      fc-agent)     want="fc-agent.py" ;;
+      orchestrator)   want="bin/orchestrator" ;;
+      fc-agent)       want="fc-agent.py" ;;
+      restate-server) want="bin/restate-server" ;;
     esac
     if pid_running "$DIR/$name.pid" "$want"; then
       echo "$name: running (pid $(cat "$DIR/$name.pid"))"
@@ -284,7 +356,7 @@ status_stack() {
       echo "$name: stopped"
     fi
   done
-  [ "$up" = 2 ]
+  [ "$up" = 3 ]
 }
 
 case "${1:-}" in
