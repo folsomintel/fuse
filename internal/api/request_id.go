@@ -5,18 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // RequestIDHeader is the canonical HTTP header used to carry a
 // per-request correlation ID. Clients (typically the control-server)
 // may set this on inbound requests to propagate an upstream ID;
 // otherwise the middleware generates a fresh one.
-const RequestIDHeader = "X-Request-ID"
-
-// requestIDKey is the typed context key under which the per-request
-// ID is stored. Using a struct{} type avoids string-key collisions
-// across packages.
-type requestIDKey struct{}
+const RequestIDHeader = telemetry.RequestIDHeader
 
 // maxRequestIDLen bounds how much client-supplied X-Request-ID we
 // will trust. 128 bytes is far more than any sane correlation ID and
@@ -25,21 +22,11 @@ const maxRequestIDLen = 128
 
 // RequestID returns the per-request ID from ctx, or "" if absent.
 // Use this in handlers and downstream callbacks (auth/IP audit) to
-// correlate log lines and audit events with a single request.
+// correlate log lines and audit events with a single request. The id
+// lives in internal/telemetry so the fleet, the host-agent wire and the
+// restate handlers can read it too.
 func RequestID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
-// withRequestID returns a derived context carrying id under the
-// typed request-ID key.
-func withRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, id)
+	return telemetry.RequestID(ctx)
 }
 
 // validRequestID reports whether s looks like a safe correlation ID:
@@ -110,7 +97,7 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
 		// downstream handler's job.
 		w.Header().Set(RequestIDHeader, id)
 
-		ctx := withRequestID(r.Context(), id)
+		ctx := telemetry.WithRequestID(r.Context(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

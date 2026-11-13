@@ -264,6 +264,18 @@ else
   ok "a filesystem snapshot destination is refused"
 fi
 
+# 3b. one otlp endpoint configures tracing for both the orchestrator and
+# restate-server; without it neither gets a tracing key.
+R="$WORK/o-otel"
+check "a tracing install succeeds" 'run_orch "$R" FUSE_RESTATE_MODE=self DATABASE_URL=postgres://db OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.0.5:4318/'
+check "the otlp endpoint lands in orchestrator.env" \
+  'grep -qx OTEL_EXPORTER_OTLP_ENDPOINT=http://10.0.0.5:4318/ "$R/etc/fuse/orchestrator.env"'
+check "restate.env exports otlp/http traces to the same collector" \
+  'grep -qx RESTATE_TRACING_ENDPOINT=otlp+http://10.0.0.5:4318/v1/traces "$R/etc/fuse/restate.env"'
+R="$WORK/o-snap"
+check "no tracing keys without an endpoint" \
+  '! grep -q "^OTEL_EXPORTER_OTLP_ENDPOINT=" "$R/etc/fuse/orchestrator.env" && ! grep -q "^RESTATE_TRACING_ENDPOINT=" "$R/etc/fuse/restate.env"'
+
 # 4. an image that does not hash to the pin is never started.
 R="$WORK/o-digest"
 if run_orch "$R" FUSE_RESTATE_MODE=self DATABASE_URL=postgres://db FAKE_DIGEST=sha256:0000; then

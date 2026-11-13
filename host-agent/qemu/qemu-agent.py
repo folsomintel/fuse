@@ -1649,6 +1649,12 @@ def goarch() -> str:
     return {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine)
 
 
+# X-Request-ID values the agent will echo into its log: the orchestrator's own
+# req_<hex> ids and any upstream id it accepted, same rule as
+# internal/api/request_id.go.
+REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "qemu-agent/0.1"
     # socketserver applies this to the connection, so a client that opens a
@@ -1830,6 +1836,7 @@ class Handler(BaseHTTPRequestHandler):
         except KeyError as e:
             return self._text(400, f"missing field: {e}")
         except Exception as e:
+            sys.stderr.write(f"[qemu-agent] {method} {path} failed request_id={self._request_id() or '-'}\n")
             traceback.print_exc(file=sys.stderr)
             return self._text(500, f"{e}")
 
@@ -1838,8 +1845,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_PUT(self):    self._route("PUT")
     def do_DELETE(self): self._route("DELETE")
 
+    def _request_id(self) -> str:
+        """The orchestrator's X-Request-ID, or "" when absent or malformed.
+
+        Only the charset the orchestrator itself accepts is logged, so a
+        caller cannot write arbitrary text into the agent log.
+        """
+        headers = getattr(self, "headers", None)
+        rid = headers.get("X-Request-ID", "") if headers is not None else ""
+        return rid if REQUEST_ID_RE.fullmatch(rid) else ""
+
     def log_message(self, fmt, *args):
-        sys.stderr.write("[qemu-agent] " + fmt % args + "\n")
+        rid = self._request_id()
+        suffix = f" request_id={rid}" if rid else ""
+        sys.stderr.write("[qemu-agent] " + fmt % args + suffix + "\n")
 
 
 def reattach_vms() -> None:

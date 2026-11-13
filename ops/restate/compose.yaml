@@ -27,6 +27,9 @@ services:
       RESTATE_INGRESS__BIND_ADDRESS: 127.0.0.1:18080
       RESTATE_ADMIN__BIND_ADDRESS: 127.0.0.1:9070
       RESTATE_BIND_ADDRESS: 127.0.0.1:5122
+      # traces to the same otlp/http collector as the orchestrator's
+      # OTEL_EXPORTER_OTLP_ENDPOINT (see docs/content/docs/cloud/tracing.mdx):
+      # RESTATE_TRACING_ENDPOINT: otlp+http://127.0.0.1:4318/v1/traces
     volumes:
       - restate-data:/restate-data
 volumes:

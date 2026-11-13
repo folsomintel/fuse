@@ -48,6 +48,7 @@ import (
 	"github.com/folsomintel/fuse/internal/metrics"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/qemu"
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // version is stamped at release time via -ldflags "-X main.version=...".
@@ -376,7 +377,25 @@ func run() error {
 		return err
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	// context-aware log calls carry request_id and trace_id.
+	logger := slog.New(telemetry.NewLogHandler(slog.NewTextHandler(os.Stderr, nil)))
+
+	// tracing is on only when OTEL_EXPORTER_OTLP_ENDPOINT is set; otherwise
+	// spans are noops and only trace context passes through.
+	shutdownTracing, tracing, err := telemetry.Setup(context.Background(), os.Getenv, "fuse-orchestrator")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(ctx); err != nil {
+			logger.Warn("flush traces", "err", err)
+		}
+	}()
+	if tracing {
+		logger.Info("tracing: exporting otlp/http spans")
+	}
 
 	if !useTLS && useSecureCookies {
 		logger.Info("serving plaintext HTTP with Secure session cookies; " +
@@ -432,6 +451,7 @@ func run() error {
 	}
 
 	promMetrics := metrics.NewPrometheusMetrics(prometheus.DefaultRegisterer)
+	durable.SetStepMetrics(promMetrics)
 
 	// Single shared factory for per-host providers, routed by the host's
 	// virtualization backend. Used both at the API layer (POST /v1/hosts)
@@ -616,6 +636,7 @@ func run() error {
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
 		Version:                 version,
+		Logger:                  logger,
 		MetricsRequestsTotal:    promMetrics.HTTPRequestsTotal,
 		MetricsRequestDuration:  promMetrics.HTTPRequestDuration,
 		MetricsRequestsInFlight: promMetrics.HTTPRequestsInFlight,

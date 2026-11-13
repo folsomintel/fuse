@@ -1,0 +1,138 @@
+---
+title: Tracing
+sidebar:
+  icon: route
+description: Follow one API request through the orchestrator, restate and the host agents
+---
+
+Every API request gets one id and, when tracing is on, one trace. Both follow
+the request from the API into fleet operations, restate steps and host-agent
+calls, so a failed call can be followed from its response to the line on the
+host that failed.
+
+## Request ids
+
+Every response carries `X-Request-ID`. A client may send its own (up to 128
+characters of `A-Z a-z 0-9 _ -`); otherwise the orchestrator generates
+`req_<32 hex>`. The id is:
+
+- logged by the orchestrator as `request_id=` on every failed request
+  (`request failed ... status=500`) and failed lifecycle operation
+  (`operation failed op=create ...`), next to `trace_id=`.
+- stored in the payload of every `orchestrator_events` row written while the
+  request was served, as `"request_id"`.
+- sent to `fc-agent` and `qemu-agent` on every call, which log it at the end
+  of their access line and on any 500:
+
+  ```text
+  [fc-agent] "POST /v1/vm HTTP/1.1" 500 - request_id=req_1f0c...
+  [fc-agent] POST /v1/vm failed request_id=req_1f0c...
+  ```
+
+- sent to restate ingress, so a durable step sees it as well.
+
+To follow a failed call:
+
+```sh
+id=req_1f0c...                                       # from the X-Request-ID response header
+journalctl -u fuse-orchestrator | grep "$id"         # orchestrator side, with trace_id
+journalctl -u fc-agent | grep "$id"                  # on the host that served it
+psql "$DATABASE_URL" -c "select created_at, entity_id, event_type from orchestrator_events where payload_json->>'request_id' = '$id' order by id"
+```
+
+Background work (the reconcile loop, checkpoints, TTL expiry) has no request
+behind it, so its log lines and events carry no id.
+
+## Traces
+
+Tracing is off until an OTLP collector is configured. With it off, nothing is
+exported and spans are noops, but an incoming `traceparent` is still passed on
+to host agents and restate.
+
+| setting | where | |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `/etc/fuse/orchestrator.env` | OTLP/HTTP collector, e.g. `http://127.0.0.1:4318`. Setting it turns tracing on. |
+| `OTEL_SERVICE_NAME` | `/etc/fuse/orchestrator.env` | defaults to `fuse-orchestrator` |
+| `RESTATE_TRACING_ENDPOINT` | `/etc/fuse/restate.env` | the same collector for restate-server: `otlp+http://127.0.0.1:4318/v1/traces` (`otlp+http` is OTLP/HTTP; plain `http://` is OTLP/gRPC) |
+
+The other standard `OTEL_EXPORTER_OTLP_*` variables (headers, timeout,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) are read as usual. The installer sets
+both endpoints in one go:
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... \
+  sudo -E ./ops/install-orchestrator.sh
+```
+
+On an existing install, edit both env files and restart `restate-server` and
+`fuse-orchestrator`.
+
+### What a trace contains
+
+```text
+POST /v1/environments                       orchestrator, server span (route pattern, status, request_id)
+└─ fleet.create                             the lifecycle operation
+   ├─ host-agent GET  /v1/vm/fuse-t1        every call to fc-agent / qemu-agent
+   └─ host-agent POST /v1/vm
+```
+
+Operations that run on restate add restate's own spans under the call that
+started them, and a span per durable step:
+
+```text
+restate POST                                orchestrator calling ingress
+└─ ingress Environment/fuse-t1/Destroy      restate-server
+   └─ invoke Environment/fuse-t1/Destroy
+      ├─ run (release_egress)               restate's span for the step
+      │  └─ destroy.release_egress          orchestrator's span for the step body
+      │     └─ host-agent DELETE ...
+      └─ ...
+```
+
+A step replayed from the journal after a restart is not executed again, so it
+has restate's `run` span but no orchestrator span under it. Lifecycle
+operations move onto restate one at a time (epic #334); until an operation is
+ported, its trace has no restate spans.
+
+Spans covered: every API route, the `fleet.*` operations (`create`, `destroy`,
+`fork`, `migrate`, `migrate_live`, `snapshot`, `restore`), every host-agent
+call and every durable step. Exec output, the SSE event stream and desktop
+streams get one span each for the request that opened them, not per message.
+
+### Step metrics
+
+Durable steps are metered on `/metrics`:
+
+- `orchestrator_step_duration_seconds{op,step}`: one sample per execution of a
+  step body. Replayed steps are not counted.
+- `orchestrator_step_retries_total{op,step}`: executions that failed with a
+  retryable error, so restate will run them again. A step stuck retrying shows
+  up as a climbing rate here long before its operation fails.
+
+## Inspecting restate
+
+The restate ui is at `http://127.0.0.1:9070/ui` on the orchestrator host
+(`ssh -L 9070:127.0.0.1:9070 <host>`). It shows each invocation's journal:
+every step, its result, retries and the last failure.
+
+`restate sql` (or the ui's query tab) queries the same data. The invocation's
+`trace_id` is the `trace_id` in the orchestrator log, so a log line leads
+straight to its steps:
+
+```sh
+export RESTATE_ADMIN_URL=http://127.0.0.1:9070
+
+# invocations for one api request, from the trace_id in the orchestrator log
+restate sql "SELECT id, target, status, retry_count, last_failure FROM sys_invocation WHERE trace_id = '<trace_id>'"
+
+# the steps of one invocation
+restate sql "SELECT index, entry_type, name FROM sys_journal WHERE id = '<inv_...>' ORDER BY index"
+
+# what is retrying right now
+restate sql "SELECT id, target, retry_count, last_failure FROM sys_invocation WHERE status = 'backing-off'"
+```
+
+Completed invocations keep their journal for `RESTATE_DEFAULT_JOURNAL_RETENTION`
+(7 days on an installer-managed host). See the
+[restate runbook](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx)
+for ports, backups and upgrades.

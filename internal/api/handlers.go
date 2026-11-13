@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"path"
 	"slices"
@@ -48,6 +49,10 @@ type Handler struct {
 	// AuthToken is the static Bearer token required for all endpoints.
 	// Empty means no auth (insecure/dev mode).
 	AuthToken string
+
+	// Logger receives the failed-request log line written by
+	// TracingMiddleware. Nil drops it.
+	Logger *slog.Logger
 
 	// Version is the orchestrator build version, stamped into the Server
 	// response header on every request (e.g. "fuse-orchestrator/0.4.0").
@@ -122,6 +127,9 @@ func (h *Handler) Router() (http.Handler, error) {
 
 	// Request ID (outermost — every other layer can read RequestID(ctx)).
 	r.Use(RequestIDMiddleware)
+
+	// one server span per request, and a log line for every 5xx.
+	r.Use(TracingMiddleware(h.Logger))
 
 	// Metrics middleware (records all requests including those
 	// rejected by auth or CIDR).
