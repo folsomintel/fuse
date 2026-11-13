@@ -554,14 +554,19 @@ func run() error {
 	// readiness check out.
 	var restateClient *durable.Client
 	if durableCfg.Mode != durable.ModeOff {
-		restateClient = durable.NewClient(durableCfg.IngressURL)
+		restateClient = durable.NewClient(durableCfg)
 		go func() {
 			if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
 				errCh <- fmt.Errorf("restate handler endpoint: %w", err)
 			}
 		}()
-		logger.Info("restate handler endpoint listening",
-			"mode", durableCfg.Mode, "addr", durableCfg.Listen, "ingress", durableCfg.IngressURL)
+		if durableCfg.Connect == durable.ConnectTunnel {
+			logger.Info("restate handler endpoint connecting over the restate cloud tunnel",
+				"tunnel", durableCfg.TunnelName, "environment", durableCfg.EnvironmentID, "ingress", durableCfg.IngressURL)
+		} else {
+			logger.Info("restate handler endpoint listening",
+				"mode", durableCfg.Mode, "addr", durableCfg.Listen, "ingress", durableCfg.IngressURL)
+		}
 	}
 
 	// Parse CIDR allowlist.

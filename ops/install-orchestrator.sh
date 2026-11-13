@@ -42,6 +42,17 @@
 #   FUSE_RESTATE_FORCE_UPGRADE=1   replace a deployment that still has
 #                                  invocations pinned to it when the old binary
 #                                  cannot drain them
+#
+# restate options (mode cloud): no restate-server is installed; these are
+# written to the env file. the first three are required unless the env file
+# already has them. see docs/content/docs/cloud/restate-cloud.mdx.
+#   FUSE_RESTATE_INGRESS_URL       https://<id>.env.<region>.restate.cloud:8080
+#   FUSE_RESTATE_API_KEY           cloud api key (ingress + registration)
+#   FUSE_RESTATE_IDENTITY_KEY      publickeyv1_... request signing key
+#   FUSE_RESTATE_CONNECT           tunnel (default) | public
+#   FUSE_RESTATE_DEPLOYMENT_URL    https url of the handler endpoint (public)
+#   FUSE_RESTATE_ADMIN_URL, FUSE_RESTATE_ENVIRONMENT_ID, FUSE_RESTATE_REGION,
+#   FUSE_RESTATE_TUNNEL_NAME, RESTATE_INPROC_AUTH_TOKEN_FILE   optional
 set -euo pipefail
 
 # FUSE_INSTALL_ROOT is for ops/test-install-fuse.sh only: every path below is
@@ -522,6 +533,20 @@ if [ "$MODE" = self ]; then
   esac
 fi
 
+# the env keys mode cloud writes. the orchestrator validates them at startup;
+# the installer only checks that the required ones are there.
+CLOUD_KEYS="FUSE_RESTATE_INGRESS_URL FUSE_RESTATE_API_KEY FUSE_RESTATE_IDENTITY_KEY FUSE_RESTATE_CONNECT FUSE_RESTATE_DEPLOYMENT_URL FUSE_RESTATE_ADMIN_URL FUSE_RESTATE_ENVIRONMENT_ID FUSE_RESTATE_REGION FUSE_RESTATE_TUNNEL_NAME RESTATE_INPROC_AUTH_TOKEN_FILE"
+if [ "$MODE" = cloud ]; then
+  for k in FUSE_RESTATE_INGRESS_URL FUSE_RESTATE_API_KEY FUSE_RESTATE_IDENTITY_KEY; do
+    [ -n "${!k:-}" ] || [ -n "$(env_value "$k")" ] \
+      || die "FUSE_RESTATE_MODE=cloud needs $k; set it in the environment or in $ENV_FILE"
+  done
+  if [ "${FUSE_RESTATE_CONNECT:-$(env_value FUSE_RESTATE_CONNECT)}" = public ]; then
+    [ -n "${FUSE_RESTATE_DEPLOYMENT_URL:-$(env_value FUSE_RESTATE_DEPLOYMENT_URL)}" ] \
+      || die "FUSE_RESTATE_CONNECT=public needs FUSE_RESTATE_DEPLOYMENT_URL (the https url restate cloud reaches the handler endpoint at)"
+  fi
+fi
+
 # 1. resolve the binary and stage it next to the installed one. it replaces
 #    the old binary only after the restate upgrade plan, so the old one is
 #    stopped or drained for the swap alone, not for the download.
@@ -615,12 +640,17 @@ if [ "$MODE" = self ]; then
     "$(url_for "$(grep -E '^RESTATE_INGRESS__BIND_ADDRESS=' "$RESTATE_ENV" | tail -n1 | cut -d= -f2-)")"
   set_env_key "$ENV_FILE" ORCH_RESTATE_LISTEN "$HANDLER_LISTEN"
   log "set FUSE_RESTATE_MODE=self in $ENV_FILE (handler endpoint $HANDLER_LISTEN)"
+elif [ "$MODE" = cloud ]; then
+  # only the keys given to this run are written, so a re-run keeps the rest.
+  set_env_key "$ENV_FILE" FUSE_RESTATE_MODE cloud
+  for k in $CLOUD_KEYS; do
+    [ -z "${!k:-}" ] || set_env_key "$ENV_FILE" "$k" "${!k}"
+  done
+  connect="$(env_value FUSE_RESTATE_CONNECT)"
+  log "set FUSE_RESTATE_MODE=cloud in $ENV_FILE (connect ${connect:-tunnel}); the orchestrator registers itself with restate cloud"
 elif [ -n "${FUSE_RESTATE_MODE:-}" ]; then
   set_env_key "$ENV_FILE" FUSE_RESTATE_MODE "$MODE"
   log "set FUSE_RESTATE_MODE=$MODE in $ENV_FILE"
-  if [ "$MODE" = cloud ]; then
-    log "mode cloud: set FUSE_RESTATE_INGRESS_URL (and any restate cloud credentials) in $ENV_FILE"
-  fi
 fi
 
 # 3. install the systemd unit (prefer the tracked ops/systemd/ copy, fall back

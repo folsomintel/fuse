@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -27,9 +28,8 @@ const (
 	// ModeSelf talks to a restate-server the operator runs next to the
 	// orchestrator (docker, or the binary on the local appliance).
 	ModeSelf Mode = "self"
-	// ModeCloud talks to restate cloud. parsed so the value is reserved, but
-	// refused until request signing is wired: a handler endpoint reachable
-	// from the internet must reject requests cloud did not sign.
+	// ModeCloud talks to a restate cloud environment. the handler endpoint
+	// rejects any request the environment did not sign.
 	ModeCloud Mode = "cloud"
 )
 
@@ -44,6 +44,26 @@ func ParseMode(s string) (Mode, error) {
 		return "", fmt.Errorf("FUSE_RESTATE_MODE: want off, self or cloud; got %q", s)
 	}
 }
+
+// Connect is how restate cloud reaches the handler endpoint, from
+// FUSE_RESTATE_CONNECT. only read in mode cloud.
+type Connect string
+
+const (
+	// ConnectTunnel dials out to restate cloud's tunnel servers
+	// (sdk-go/x/tunnel), so the orchestrator needs no inbound port.
+	ConnectTunnel Connect = "tunnel"
+	// ConnectPublic serves the handler endpoint on ORCH_RESTATE_LISTEN behind
+	// a tls proxy, and registers FUSE_RESTATE_DEPLOYMENT_URL with cloud. the
+	// fallback while the tunnel is pre-1.0.
+	ConnectPublic Connect = "public"
+)
+
+// DefaultTunnelName is the tunnel name when FUSE_RESTATE_TUNNEL_NAME is unset.
+const DefaultTunnelName = "fuse-orchestrator"
+
+// cloudHost matches a restate cloud ingress host, <id>.env.<region>.restate.cloud.
+var cloudHost = regexp.MustCompile(`^([a-z0-9]+)\.env\.([a-z0-9-]+)\.restate\.cloud$`)
 
 // DefaultListen is where the handler endpoint listens. loopback, because in
 // self mode restate-server runs on the same machine and nothing else should
@@ -76,6 +96,28 @@ type Config struct {
 	IngressURL string
 	// Retry holds one policy per service name (EnvironmentObject, HostObject).
 	Retry map[string]RetryPolicy
+
+	// the rest is mode cloud only.
+
+	Connect Connect
+	// APIKey is the restate cloud api key, sent as a bearer token to ingress
+	// and to the admin api for registration.
+	APIKey string
+	// IdentityKey is the environment's request signing public key
+	// (publickeyv1_...). requests without a valid signature get a 401.
+	IdentityKey string
+	// AdminURL is the cloud admin api the deployment registers with.
+	AdminURL string
+	// DeploymentURL is the https url cloud reaches the endpoint at (public).
+	DeploymentURL string
+	// EnvironmentID, Region, TunnelName and TokenFile configure the tunnel.
+	EnvironmentID string
+	Region        string
+	TunnelName    string
+	// TokenFile, when set, is where the tunnel reads its api key on every
+	// reconnect, so a rotated key needs no restart. APIKey still serves
+	// ingress and registration.
+	TokenFile string
 }
 
 // LoadConfig reads the config from the environment through getenv
@@ -89,6 +131,18 @@ type Config struct {
 //	FUSE_RESTATE_RETRY_<SERVICE>_MAX_ATTEMPTS       e.g. 10
 //
 // <SERVICE> is the upper-cased service name: ENVIRONMENT or HOST.
+//
+// mode cloud also reads:
+//
+//	FUSE_RESTATE_API_KEY            cloud api key (required)
+//	FUSE_RESTATE_IDENTITY_KEY       publickeyv1_... signing key (required)
+//	FUSE_RESTATE_CONNECT            tunnel | public (default tunnel)
+//	FUSE_RESTATE_ADMIN_URL          default: the ingress host on port 9070
+//	FUSE_RESTATE_DEPLOYMENT_URL     https url of the endpoint (public only)
+//	FUSE_RESTATE_ENVIRONMENT_ID     env_... (tunnel; default from the ingress host)
+//	FUSE_RESTATE_REGION             us, eu, ... (tunnel; default from the ingress host)
+//	FUSE_RESTATE_TUNNEL_NAME        default fuse-orchestrator
+//	RESTATE_INPROC_AUTH_TOKEN_FILE  api key file the tunnel re-reads on reconnect
 func LoadConfig(getenv func(string) string) (Config, error) {
 	mode, err := ParseMode(getenv("FUSE_RESTATE_MODE"))
 	if err != nil {
@@ -98,10 +152,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 	if mode == ModeOff {
 		return cfg, nil
 	}
-	if mode == ModeCloud {
-		return Config{}, errors.New("FUSE_RESTATE_MODE=cloud is not supported yet; use self")
-	}
-
 	cfg.Listen = getenv("ORCH_RESTATE_LISTEN")
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen
@@ -124,7 +174,81 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		}
 		cfg.Retry[name] = p
 	}
+
+	if mode == ModeCloud {
+		if err := loadCloud(getenv, &cfg, u); err != nil {
+			return Config{}, err
+		}
+	}
 	return cfg, nil
+}
+
+// loadCloud fills and checks the mode cloud fields. ingress is the parsed
+// FUSE_RESTATE_INGRESS_URL.
+func loadCloud(getenv func(string) string, cfg *Config, ingress *url.URL) error {
+	get := func(k string) string { return strings.TrimSpace(getenv(k)) }
+
+	if ingress.Scheme != "https" {
+		return fmt.Errorf("FUSE_RESTATE_MODE=cloud needs an https FUSE_RESTATE_INGRESS_URL, got %q", cfg.IngressURL)
+	}
+	cfg.APIKey = get("FUSE_RESTATE_API_KEY")
+	if cfg.APIKey == "" {
+		return errors.New("FUSE_RESTATE_MODE=cloud needs FUSE_RESTATE_API_KEY")
+	}
+	cfg.IdentityKey = get("FUSE_RESTATE_IDENTITY_KEY")
+	if !strings.HasPrefix(cfg.IdentityKey, "publickeyv1_") {
+		return fmt.Errorf("FUSE_RESTATE_MODE=cloud needs FUSE_RESTATE_IDENTITY_KEY=publickeyv1_..., got %q", cfg.IdentityKey)
+	}
+
+	cfg.AdminURL = strings.TrimRight(get("FUSE_RESTATE_ADMIN_URL"), "/")
+	if cfg.AdminURL == "" {
+		cfg.AdminURL = "https://" + ingress.Hostname() + ":9070"
+	}
+	if a, err := url.Parse(cfg.AdminURL); err != nil || a.Scheme != "https" || a.Host == "" {
+		return fmt.Errorf("FUSE_RESTATE_ADMIN_URL: want an https url, got %q", cfg.AdminURL)
+	}
+
+	switch c := Connect(strings.ToLower(get("FUSE_RESTATE_CONNECT"))); c {
+	case "", ConnectTunnel:
+		cfg.Connect = ConnectTunnel
+	case ConnectPublic:
+		cfg.Connect = ConnectPublic
+	default:
+		return fmt.Errorf("FUSE_RESTATE_CONNECT: want tunnel or public, got %q", c)
+	}
+
+	if cfg.Connect == ConnectPublic {
+		cfg.DeploymentURL = strings.TrimRight(get("FUSE_RESTATE_DEPLOYMENT_URL"), "/")
+		d, err := url.Parse(cfg.DeploymentURL)
+		if err != nil || d.Scheme != "https" || d.Host == "" {
+			return fmt.Errorf("FUSE_RESTATE_CONNECT=public needs an https FUSE_RESTATE_DEPLOYMENT_URL (restate cloud only calls tls endpoints), got %q", cfg.DeploymentURL)
+		}
+		return nil
+	}
+
+	// tunnel: environment id and region default to what the ingress host
+	// says, which is every restate-managed region; byoc sets them.
+	var hostID, hostRegion string
+	if m := cloudHost.FindStringSubmatch(ingress.Hostname()); m != nil {
+		hostID, hostRegion = "env_"+m[1], m[2]
+	}
+	cfg.EnvironmentID = get("FUSE_RESTATE_ENVIRONMENT_ID")
+	if cfg.EnvironmentID == "" {
+		cfg.EnvironmentID = hostID
+	}
+	cfg.Region = get("FUSE_RESTATE_REGION")
+	if cfg.Region == "" {
+		cfg.Region = hostRegion
+	}
+	if !strings.HasPrefix(cfg.EnvironmentID, "env_") || cfg.Region == "" {
+		return fmt.Errorf("FUSE_RESTATE_CONNECT=tunnel needs FUSE_RESTATE_ENVIRONMENT_ID (env_...) and FUSE_RESTATE_REGION; %s is not a <id>.env.<region>.restate.cloud host to read them from", ingress.Hostname())
+	}
+	cfg.TunnelName = get("FUSE_RESTATE_TUNNEL_NAME")
+	if cfg.TunnelName == "" {
+		cfg.TunnelName = DefaultTunnelName
+	}
+	cfg.TokenFile = get("RESTATE_INPROC_AUTH_TOKEN_FILE")
+	return nil
 }
 
 // loadRetryPolicy starts from DefaultRetryPolicy and applies any

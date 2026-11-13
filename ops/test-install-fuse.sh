@@ -344,18 +344,44 @@ else
   check "switching a self install to off is refused, old binary kept" \
     '"$R/usr/local/bin/orchestrator" | grep -q v1 && grep -qx FUSE_RESTATE_MODE=self "$R/etc/fuse/orchestrator.env"'
 fi
-R="$WORK/o-cloud"
-check "a fresh cloud install succeeds" 'run_orch "$R" FUSE_RESTATE_MODE=cloud'
-check "a fresh cloud install saves the mode and runs no restate-server" \
-  'grep -qx FUSE_RESTATE_MODE=cloud "$R/etc/fuse/orchestrator.env" && ! grep -q "^docker" "$R.log"'
 
-# 10. mode off stays restate-free.
+# 10. mode cloud writes the cloud env and runs no restate-server.
+CLOUD="FUSE_RESTATE_MODE=cloud FUSE_RESTATE_INGRESS_URL=https://abc.env.us.restate.cloud:8080 FUSE_RESTATE_API_KEY=key_x FUSE_RESTATE_IDENTITY_KEY=publickeyv1_k"
+R="$WORK/o-cloud-missing"
+if run_orch "$R" FUSE_RESTATE_MODE=cloud FUSE_RESTATE_INGRESS_URL=https://abc.env.us.restate.cloud:8080; then
+  bad "a cloud install without an api key is refused"
+else
+  check "a cloud install without an api key is refused before installing" \
+    'grep -q FUSE_RESTATE_API_KEY "$R.out" && [ ! -e "$R/usr/local/bin/orchestrator" ]'
+fi
+R="$WORK/o-cloud"
+check "a fresh cloud install succeeds" 'run_orch "$R" $CLOUD'
+# shellcheck disable=SC2034 # read by the check strings below
+O="$R/etc/fuse/orchestrator.env"
+check "a cloud install writes the cloud env" \
+  'grep -qx FUSE_RESTATE_MODE=cloud "$O" && grep -qx FUSE_RESTATE_INGRESS_URL=https://abc.env.us.restate.cloud:8080 "$O" && grep -qx FUSE_RESTATE_API_KEY=key_x "$O" && grep -qx FUSE_RESTATE_IDENTITY_KEY=publickeyv1_k "$O"'
+check "a cloud install runs no restate-server and registers nothing itself" \
+  '! grep -q "^docker" "$R.log" && ! grep -q "^register" "$R.log" && [ ! -e "$R/etc/fuse/restate.env" ] && [ ! -e "$R/etc/systemd/system/restate-server.service" ]'
+check "a cloud re-run with only the mode keeps the saved keys" \
+  'run_orch "$R" FUSE_RESTATE_MODE=cloud && grep -qx FUSE_RESTATE_API_KEY=key_x "$O"'
+check "a cloud re-run with a new key replaces it" \
+  'run_orch "$R" FUSE_RESTATE_API_KEY=key_y && grep -qx FUSE_RESTATE_API_KEY=key_y "$O" && [ "$(grep -c ^FUSE_RESTATE_API_KEY= "$O")" = 1 ]'
+R="$WORK/o-cloud-public"
+if run_orch "$R" $CLOUD FUSE_RESTATE_CONNECT=public; then
+  bad "a public cloud install without a deployment url is refused"
+else
+  check "a public cloud install without a deployment url is refused" 'grep -q FUSE_RESTATE_DEPLOYMENT_URL "$R.out"'
+fi
+check "a public cloud install saves the deployment url" \
+  'run_orch "$R" $CLOUD FUSE_RESTATE_CONNECT=public FUSE_RESTATE_DEPLOYMENT_URL=https://orch.example.com && grep -qx FUSE_RESTATE_DEPLOYMENT_URL=https://orch.example.com "$R/etc/fuse/orchestrator.env"'
+
+# 11. mode off stays restate-free.
 R="$WORK/o-off"
 check "mode off installs" 'run_orch "$R"'
 check "mode off installs no restate pieces and calls no docker" \
   '[ -x "$R/usr/local/bin/orchestrator" ] && [ ! -e "$R/etc/fuse/restate.env" ] && ! grep -q "^docker" "$R.log" && ! grep -q FUSE_RESTATE "$R/etc/fuse/orchestrator.env"'
 
-# 11. curl'd standalone, the inline units match the tracked ones.
+# 12. curl'd standalone, the inline units match the tracked ones.
 mkdir -p "$WORK/standalone"
 cp "$ORCH_INSTALLER" "$WORK/standalone/"
 R="$WORK/o-inline"
