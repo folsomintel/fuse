@@ -138,9 +138,9 @@ type ForkOptions struct {
 // qemu provider deliberately does not (vfio gpu passthrough cannot be
 // checkpointed).
 func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
-	start := time.Now()
+	ctx, end := fm.startOperation(ctx, "fork", srcVMID)
 	id, err := fm.forkEnvironment(ctx, srcVMID, opts)
-	fm.observeOperation("fork", start, err)
+	end(err)
 	return id, err
 }
 

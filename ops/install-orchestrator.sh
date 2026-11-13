@@ -39,6 +39,11 @@
 #                                  restate-server.
 #   RESTATE_SNAPSHOT_DESTINATION   s3://bucket/prefix for partition snapshots
 #                                  (credentials go in /etc/fuse/restate.env)
+#   OTEL_EXPORTER_OTLP_ENDPOINT    otlp/http collector (e.g. http://127.0.0.1:4318)
+#                                  for traces. written to the orchestrator env
+#                                  and, in mode self, as restate-server's
+#                                  RESTATE_TRACING_ENDPOINT, so both join one
+#                                  trace. unset leaves tracing off.
 #   FUSE_RESTATE_FORCE_UPGRADE=1   replace a deployment that still has
 #                                  invocations pinned to it when the old binary
 #                                  cannot drain them
@@ -409,6 +414,10 @@ RESTATE_DEFAULT_WORKFLOW_COMPLETION_RETENTION=7d
 # AWS_ACCESS_KEY_ID=
 # AWS_SECRET_ACCESS_KEY=
 # AWS_REGION=
+
+# Traces to an otlp collector, joined with the orchestrator's spans. The
+# otlp+http scheme is otlp/http; plain http:// is otlp/grpc.
+# RESTATE_TRACING_ENDPOINT=otlp+http://127.0.0.1:4318/v1/traces
 EOF
     )
     chmod 600 "$RESTATE_ENV"
@@ -421,6 +430,10 @@ EOF
     grep -qE '^RESTATE_WORKER__SNAPSHOTS__SNAPSHOT_INTERVAL_NUM_RECORDS=' "$RESTATE_ENV" \
       || set_env_key "$RESTATE_ENV" RESTATE_WORKER__SNAPSHOTS__SNAPSHOT_INTERVAL_NUM_RECORDS 10000
     log "snapshots -> $RESTATE_SNAPSHOT_DESTINATION"
+  fi
+  if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+    set_env_key "$RESTATE_ENV" RESTATE_TRACING_ENDPOINT "otlp+${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/traces"
+    log "restate traces -> ${OTEL_EXPORTER_OTLP_ENDPOINT%/}/v1/traces"
   fi
   if grep -E '^RESTATE_[A-Z_]*BIND_ADDRESS=' "$RESTATE_ENV" | grep -vqE '=(127\.0\.0\.1|\[::1\]):'; then
     log "WARNING: $RESTATE_ENV binds a restate port beyond loopback; the admin api has no auth"
@@ -621,6 +634,9 @@ DATABASE_URL=$DB_URL
 
 # Optional: restrict which source networks may reach the API.
 # ORCH_ALLOWED_CIDRS=10.0.0.0/8,100.64.0.0/10
+
+# Optional: export traces to an otlp/http collector.
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
 EOF
   )
   chmod 600 "$ENV_FILE"
@@ -651,6 +667,11 @@ elif [ "$MODE" = cloud ]; then
 elif [ -n "${FUSE_RESTATE_MODE:-}" ]; then
   set_env_key "$ENV_FILE" FUSE_RESTATE_MODE "$MODE"
   log "set FUSE_RESTATE_MODE=$MODE in $ENV_FILE"
+fi
+
+if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
+  set_env_key "$ENV_FILE" OTEL_EXPORTER_OTLP_ENDPOINT "$OTEL_EXPORTER_OTLP_ENDPOINT"
+  log "orchestrator traces -> $OTEL_EXPORTER_OTLP_ENDPOINT"
 fi
 
 # 3. install the systemd unit (prefer the tracked ops/systemd/ copy, fall back

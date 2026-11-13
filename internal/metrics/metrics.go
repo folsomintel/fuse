@@ -5,6 +5,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/folsomintel/fuse/internal/durable"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -42,6 +43,10 @@ type PrometheusMetrics struct {
 	// lifecycle operations, through OperationMetrics.
 	operations        *prometheus.CounterVec
 	operationDuration *prometheus.HistogramVec
+
+	// durable restate steps, through durable.StepMetrics.
+	stepDuration *prometheus.HistogramVec
+	stepRetries  *prometheus.CounterVec
 
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
@@ -181,6 +186,20 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Buckets: []float64{.1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"op"}),
 
+		stepDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "step",
+			Name:      "duration_seconds",
+			Help:      "Durable (restate) step latency by op and step, one sample per execution. Replayed steps are not counted.",
+			Buckets:   []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
+		}, []string{"op", "step"}),
+		stepRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "step",
+			Name:      "retries_total",
+			Help:      "Durable (restate) step executions that failed with a retryable error, by op and step.",
+		}, []string{"op", "step"}),
+
 		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
 			Subsystem: "http",
@@ -223,6 +242,8 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.egressTeardownFailed,
 		m.operations,
 		m.operationDuration,
+		m.stepDuration,
+		m.stepRetries,
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPRequestsInFlight,
@@ -278,7 +299,18 @@ func (m *PrometheusMetrics) OperationCompleted(op string, d time.Duration, err e
 	m.operationDuration.WithLabelValues(op).Observe(d.Seconds())
 }
 
+// StepCompleted implements durable.StepMetrics.
+func (m *PrometheusMetrics) StepCompleted(op, step string, d time.Duration, _ error) {
+	m.stepDuration.WithLabelValues(op, step).Observe(d.Seconds())
+}
+
+// StepRetried implements durable.StepMetrics.
+func (m *PrometheusMetrics) StepRetried(op, step string) {
+	m.stepRetries.WithLabelValues(op, step).Inc()
+}
+
 var (
 	_ orchestrator.EgressMetrics    = (*PrometheusMetrics)(nil)
 	_ orchestrator.OperationMetrics = (*PrometheusMetrics)(nil)
+	_ durable.StepMetrics           = (*PrometheusMetrics)(nil)
 )

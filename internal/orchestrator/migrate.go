@@ -101,13 +101,13 @@ func (fm *FleetManager) pickMigrateTarget(vmID, srcHostID string, srcBackend Hos
 
 // MigrateVM moves vmID to another host and returns the new vm's id.
 func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
-	start := time.Now()
-	id, err := fm.migrateVM(ctx, vmID, opts)
 	op := "migrate"
 	if opts.Live {
 		op = "migrate_live"
 	}
-	fm.observeOperation(op, start, err)
+	ctx, end := fm.startOperation(ctx, op, vmID)
+	id, err := fm.migrateVM(ctx, vmID, opts)
+	end(err)
 	return id, err
 }
 

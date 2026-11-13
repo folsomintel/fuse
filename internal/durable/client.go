@@ -11,6 +11,8 @@ import (
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // Client calls restate ingress, and in mode cloud the admin api.
@@ -25,7 +27,9 @@ type Client struct {
 // NewClient returns a client for cfg's ingress. a non-empty cfg.APIKey is sent
 // as a bearer token on every request.
 func NewClient(cfg Config) *Client {
-	hc := &http.Client{Timeout: 30 * time.Second}
+	// the transport carries the request id and trace context, so restate's
+	// invocation joins the api request's trace and the handler sees the id.
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: &telemetry.Transport{Peer: "restate"}}
 	opts := []ingress.ClientOption{ingress.WithHttpClient(hc)}
 	if cfg.APIKey != "" {
 		opts = append(opts, ingress.WithAuthKey(cfg.APIKey))

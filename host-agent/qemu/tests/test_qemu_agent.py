@@ -1,7 +1,11 @@
+import http.client
 import importlib.util
+import io
 import os
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -743,6 +747,44 @@ class EgressTest(unittest.TestCase):
         self.assertEqual(pub["egress_mode"], "direct")
         self.assertEqual((pub["host_ip"], pub["guest_ip"]), ("10.200.1.1", "10.200.1.2"))
 
+
+
+class RequestIDLogTest(unittest.TestCase):
+    """the agent logs the orchestrator's X-Request-ID on every request."""
+
+    def setUp(self):
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), qemu_agent.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def get(self, path: str, headers: dict) -> str:
+        log = io.StringIO()
+        with mock.patch("sys.stderr", log):
+            c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=5)
+            c.request("GET", path, headers={"Authorization": "Bearer test-token", **headers})
+            c.getresponse().read()
+            c.close()
+            # the access line is written after the response; wait for it.
+            for _ in range(50):
+                if "HTTP" in log.getvalue():
+                    break
+                threading.Event().wait(0.02)
+        return log.getvalue()
+
+    def test_logs_request_id(self):
+        self.assertIn("request_id=req_0123abcd", self.get("/healthz", {"X-Request-ID": "req_0123abcd"}))
+
+    def test_drops_malformed_id(self):
+        out = self.get("/healthz", {"X-Request-ID": "bad id\x1b[31m"})
+        self.assertNotIn("request_id=", out)
+
+    def test_failure_line_carries_id(self):
+        with mock.patch.object(qemu_agent, "host_capacity", side_effect=RuntimeError("boom")):
+            out = self.get("/v1/capacity", {"X-Request-ID": "req_fail1"})
+        self.assertIn("GET /v1/capacity failed request_id=req_fail1", out)
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,7 @@ export default defineMeta({
     "warp-host-setup",
     "wireguard-host-setup",
     "monitoring",
+    "tracing",
     "security",
     "troubleshooting",
   ],

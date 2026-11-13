@@ -44,7 +44,8 @@ reach the ui from a laptop with `ssh -L 9070:127.0.0.1:9070 <host>`.
 
 - `/etc/fuse/restate.env`: restate config, passed into the container. written
   once; the installer only edits the snapshot keys when
-  `RESTATE_SNAPSHOT_DESTINATION` is given.
+  `RESTATE_SNAPSHOT_DESTINATION` is given, and `RESTATE_TRACING_ENDPOINT` when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is (see `docs/content/docs/cloud/tracing.mdx`).
 - `/var/lib/restate`: log, partition state, metadata. this is the durable state.
 - `/usr/local/lib/fuse/restate-deploy`: `register`, `inflight`, `retire`
   helper. rewritten on every install.
