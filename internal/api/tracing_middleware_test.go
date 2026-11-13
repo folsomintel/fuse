@@ -69,3 +69,29 @@ func TestTracingMiddleware(t *testing.T) {
 		}
 	}
 }
+
+// a 4xx gets its own info line and leaves the span unmarked; a 5xx keeps the
+// warn line.
+func TestTracingMiddlewareRejectedLine(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(telemetry.NewLogHandler(slog.NewTextHandler(&buf, nil)))
+	r := chi.NewRouter()
+	r.Use(RequestIDMiddleware)
+	r.Use(TracingMiddleware(logger))
+	r.Get("/v1/environments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/environments/fuse-missing", nil)
+	req.Header.Set(RequestIDHeader, "req_404")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	line := buf.String()
+	for _, want := range []string{"level=INFO", "request rejected", "status=404", "request_id=req_404"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log %q lacks %q", line, want)
+		}
+	}
+	if strings.Contains(line, "request failed") {
+		t.Errorf("a 404 was logged as a failure: %q", line)
+	}
+}

@@ -16,9 +16,10 @@ Every response carries `X-Request-ID`. A client may send its own (up to 128
 characters of `A-Z a-z 0-9 _ -`); otherwise the orchestrator generates
 `req_<32 hex>`. The id is:
 
-- logged by the orchestrator as `request_id=` on every failed request
-  (`request failed ... status=500`) and failed lifecycle operation
-  (`operation failed op=create ...`), next to `trace_id=`.
+- logged by the orchestrator as `request_id=`, next to `trace_id=`, on:
+  - every 5xx, at warn: `request failed ... status=500`
+  - every 4xx, at info: `request rejected ... status=404`
+  - every failed lifecycle operation, at warn: `operation failed op=create ...`
 - stored in the payload of every `orchestrator_events` row written while the
   request was served, as `"request_id"`.
 - sent to `fc-agent` and `qemu-agent` on every call, which log it at the end

@@ -15,11 +15,6 @@ import (
 // otherwise the middleware generates a fresh one.
 const RequestIDHeader = telemetry.RequestIDHeader
 
-// maxRequestIDLen bounds how much client-supplied X-Request-ID we
-// will trust. 128 bytes is far more than any sane correlation ID and
-// keeps log lines from blowing up on adversarial input.
-const maxRequestIDLen = 128
-
 // RequestID returns the per-request ID from ctx, or "" if absent.
 // Use this in handlers and downstream callbacks (auth/IP audit) to
 // correlate log lines and audit events with a single request. The id
@@ -27,29 +22,6 @@ const maxRequestIDLen = 128
 // restate handlers can read it too.
 func RequestID(ctx context.Context) string {
 	return telemetry.RequestID(ctx)
-}
-
-// validRequestID reports whether s looks like a safe correlation ID:
-// non-empty, ≤ maxRequestIDLen, and made up of [A-Za-z0-9_-] only.
-// Anything else is treated as adversarial / malformed and replaced
-// with a generated ID. We deliberately do not echo arbitrary client
-// strings into response headers or log lines.
-func validRequestID(s string) bool {
-	if s == "" || len(s) > maxRequestIDLen {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z':
-		case c >= 'a' && c <= 'z':
-		case c >= '0' && c <= '9':
-		case c == '_' || c == '-':
-		default:
-			return false
-		}
-	}
-	return true
 }
 
 // generateRequestID returns a fresh "req_<32hex>" identifier backed
@@ -72,7 +44,7 @@ func generateRequestID() string {
 }
 
 // RequestIDMiddleware reads X-Request-ID from the inbound request
-// (validating it against [validRequestID]) and either trusts it or
+// (validating it against [telemetry.ValidRequestID]) and either trusts it or
 // generates a fresh ID. It then:
 //
 //  1. Sets the ID on the response via [RequestIDHeader] before any
@@ -87,7 +59,7 @@ func generateRequestID() string {
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(RequestIDHeader)
-		if !validRequestID(id) {
+		if !telemetry.ValidRequestID(id) {
 			id = generateRequestID()
 		}
 

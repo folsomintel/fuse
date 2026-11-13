@@ -50,8 +50,8 @@ type Handler struct {
 	// Empty means no auth (insecure/dev mode).
 	AuthToken string
 
-	// Logger receives the failed-request log line written by
-	// TracingMiddleware. Nil drops it.
+	// Logger receives the failed and rejected request log lines written by
+	// TracingMiddleware. Nil drops them.
 	Logger *slog.Logger
 
 	// Version is the orchestrator build version, stamped into the Server

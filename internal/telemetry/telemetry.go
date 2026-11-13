@@ -7,6 +7,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
@@ -23,6 +24,23 @@ import (
 const RequestIDHeader = "X-Request-ID"
 
 const tracerName = "github.com/folsomintel/fuse"
+
+// RequestIDPattern is the one rule for a request id anyone may log or forward:
+// 1-128 of [A-Za-z0-9_-]. the api replaces anything else with a generated id,
+// durable.Run drops it, and fc-agent and qemu-agent carry the same pattern as
+// REQUEST_ID_RE (a test keeps the three in step).
+const RequestIDPattern = `[A-Za-z0-9_-]{1,128}`
+
+// MaxRequestIDLen is the length bound inside RequestIDPattern.
+const MaxRequestIDLen = 128
+
+var requestIDRE = regexp.MustCompile(`^` + RequestIDPattern + `$`)
+
+// ValidRequestID reports whether s matches RequestIDPattern. arbitrary client
+// strings are never echoed into headers, logs or event rows.
+func ValidRequestID(s string) bool {
+	return requestIDRE.MatchString(s)
+}
 
 type requestIDKey struct{}
 

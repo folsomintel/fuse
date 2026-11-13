@@ -71,13 +71,14 @@ func Run[T any](ctx restate.Context, op, step string, fn func(context.Context) (
 
 // invocationRequestID returns the X-Request-ID the invocation was started
 // with. restate keeps the ingress request's headers on the invocation; header
-// names may arrive lowercased, so the match ignores case.
+// names may arrive lowercased, so the match ignores case. any ingress client
+// can set it, so a value outside telemetry.RequestIDPattern is dropped.
 func invocationRequestID(req *restate.Request) string {
 	if req == nil || req.Headers == nil {
 		return ""
 	}
 	for k, v := range req.Headers.Iter() {
-		if strings.EqualFold(k, telemetry.RequestIDHeader) {
+		if strings.EqualFold(k, telemetry.RequestIDHeader) && telemetry.ValidRequestID(v) {
 			return v
 		}
 	}

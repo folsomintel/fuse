@@ -3750,9 +3750,9 @@ def goarch() -> str:
     return {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine)
 
 
-# X-Request-ID values the agent will echo into its log: the orchestrator's own
-# req_<hex> ids and any upstream id it accepted, same rule as
-# internal/api/request_id.go.
+# X-Request-ID values the agent will echo into its log. this is
+# telemetry.RequestIDPattern in internal/telemetry/telemetry.go; a go test fails
+# if the two differ.
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 

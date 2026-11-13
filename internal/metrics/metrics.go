@@ -44,10 +44,11 @@ type PrometheusMetrics struct {
 	operations        *prometheus.CounterVec
 	operationDuration *prometheus.HistogramVec
 
-	// HTTP handler metrics (used by the middleware).
+	// durable restate steps, through durable.StepMetrics.
 	stepDuration *prometheus.HistogramVec
 	stepRetries  *prometheus.CounterVec
 
+	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
 	HTTPRequestDuration  *prometheus.HistogramVec
 	HTTPRequestsInFlight prometheus.Gauge
