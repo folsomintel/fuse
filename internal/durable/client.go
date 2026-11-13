@@ -1,7 +1,9 @@
 package durable
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,22 +15,38 @@ import (
 	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
-// Client calls restate ingress.
+// Client calls restate ingress, and in mode cloud the admin api.
 type Client struct {
-	url     string
-	http    *http.Client
-	ingress *ingress.Client
+	url      string
+	adminURL string
+	apiKey   string
+	http     *http.Client
+	ingress  *ingress.Client
 }
 
-// NewClient returns a client for the ingress at url.
-func NewClient(url string) *Client {
+// NewClient returns a client for cfg's ingress. a non-empty cfg.APIKey is sent
+// as a bearer token on every request.
+func NewClient(cfg Config) *Client {
 	// the transport carries the request id and trace context, so restate's
 	// invocation joins the api request's trace and the handler sees the id.
 	hc := &http.Client{Timeout: 30 * time.Second, Transport: &telemetry.Transport{Peer: "restate"}}
+	opts := []ingress.ClientOption{ingress.WithHttpClient(hc)}
+	if cfg.APIKey != "" {
+		opts = append(opts, ingress.WithAuthKey(cfg.APIKey))
+	}
 	return &Client{
-		url:     url,
-		http:    hc,
-		ingress: ingress.NewClient(url, ingress.WithHttpClient(hc)),
+		url:      cfg.IngressURL,
+		adminURL: cfg.AdminURL,
+		apiKey:   cfg.APIKey,
+		http:     hc,
+		ingress:  ingress.NewClient(cfg.IngressURL, opts...),
+	}
+}
+
+// authorize adds the api key, when there is one.
+func (c *Client) authorize(req *http.Request) {
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 }
 
@@ -38,6 +56,7 @@ func (c *Client) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	c.authorize(req)
 	res, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("restate ingress unreachable: %w", err)
@@ -54,4 +73,31 @@ func (c *Client) Check(ctx context.Context) error {
 func (c *Client) Ping(ctx context.Context, object, key string) (PingResult, error) {
 	return ingress.Object[restate.Void, PingResult](c.ingress, object, key, "Ping").
 		Request(ctx, restate.Void{})
+}
+
+// Register registers the handler endpoint at uri with the admin api. force
+// replaces a deployment already registered at uri, which is what a restart
+// or upgrade on the same address needs; invocations pinned to the old one
+// then replay on the new code.
+func (c *Client) Register(ctx context.Context, uri string) error {
+	body, err := json.Marshal(map[string]any{"uri": uri, "force": true})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.adminURL+"/deployments", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+	res, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("restate admin unreachable: %w", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	msg, _ := io.ReadAll(io.LimitReader(res.Body, 4<<10))
+	if res.StatusCode/100 != 2 {
+		return fmt.Errorf("restate admin refused %s: http %d: %s", uri, res.StatusCode, bytes.TrimSpace(msg))
+	}
+	return nil
 }

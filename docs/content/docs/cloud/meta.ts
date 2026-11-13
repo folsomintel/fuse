@@ -6,6 +6,7 @@ export default defineMeta({
   pages: [
     "index",
     "orchestrator-deploy",
+    "restate-cloud",
     "firecracker-host-setup",
     "gpu-host-setup",
     "warp-host-setup",

@@ -129,7 +129,7 @@ func TestRunThroughRestate(t *testing.T) {
 
 	callCtx, span := tp.Tracer("test").Start(ctx, "api request")
 	callCtx = telemetry.WithRequestID(callCtx, "req_durable")
-	client := NewClient(ingressURL)
+	client := NewClient(Config{IngressURL: ingressURL})
 	got, err := ingress.Service[string, probeResult](client.ingress, svc, "Go").Request(callCtx, "k1")
 	span.End()
 	if err != nil {
