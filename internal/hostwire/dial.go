@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // handshakeTimeout bounds the upgrade exchange itself. It does not bound the
@@ -86,6 +88,7 @@ func Dial(ctx context.Context, baseURL, token, path, proto string) (net.Conn, er
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+	telemetry.InjectHeaders(ctx, req.Header)
 	if err := req.Write(c); err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("attach: write upgrade request: %w", err)

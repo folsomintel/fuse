@@ -113,6 +113,12 @@ to write. Watch `rate(orchestrator_operations_total{result="error"}[5m])` by
 `op`, and the p99 of the duration histogram per `op`: a cold migrate taking
 minutes is normal, a fork taking minutes is not.
 
+**Durable steps**: `orchestrator_step_duration_seconds{op,step}` and
+`orchestrator_step_retries_total{op,step}` cover operations that run on
+restate, one sample per executed step. A rising retry rate on one step is a
+host agent or dependency failing while restate keeps retrying it. See
+[Tracing](/docs/cloud/tracing) for following one request through its steps.
+
 **HTTP health**: the standard RED metrics apply directly.
 
 - `rate(orchestrator_http_requests_total{code=~"5.."}[5m])` for server error
@@ -207,6 +213,8 @@ Other things worth watching:
   a url whose guest isn't connected.
 
 ## What isn't covered
+
+Traces and request ids are covered in [Tracing](/docs/cloud/tracing).
 
 There is no per-VM metrics API: VMs are counted by state and host, never
 broken out one series per VM. For a browsable view of everything above, plus

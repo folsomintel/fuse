@@ -14,6 +14,9 @@ import (
 
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/secrets"
+	"github.com/folsomintel/fuse/internal/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Sentinel errors exposed by the FleetManager public API. Callers
@@ -322,9 +325,22 @@ type OperationMetrics interface {
 	OperationCompleted(op string, d time.Duration, err error)
 }
 
-func (fm *FleetManager) observeOperation(op string, start time.Time, err error) {
-	if om, ok := fm.metrics.(OperationMetrics); ok {
-		om.OperationCompleted(op, time.Since(start), err)
+// startOperation opens the span for a lifecycle operation and returns the
+// function that ends it: that call records the op metric, ends the span and
+// logs a failure with the request id and trace id from ctx. subject is the vm
+// the op acts on, or the task id for a create, whose vm has no id yet.
+func (fm *FleetManager) startOperation(ctx context.Context, op, subject string) (context.Context, func(error)) {
+	start := time.Now()
+	ctx, span := telemetry.Tracer().Start(ctx, "fleet."+op,
+		trace.WithAttributes(attribute.String("fuse.op", op), attribute.String("fuse.subject", subject)))
+	return ctx, func(err error) {
+		if om, ok := fm.metrics.(OperationMetrics); ok {
+			om.OperationCompleted(op, time.Since(start), err)
+		}
+		telemetry.EndSpan(span, err)
+		if err != nil {
+			fm.logger.WarnContext(ctx, "operation failed", "op", op, "subject", subject, "err", err)
+		}
 	}
 }
 
@@ -795,9 +811,9 @@ func (fm *FleetManager) Stop() {
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
 // Blocks until the VM is ready or an error occurs.
 func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
-	start := time.Now()
+	ctx, end := fm.startOperation(ctx, "create", taskID)
 	info, err := fm.provisionAndAssign(ctx, taskID, spec, manifest, secretMap, opts)
-	fm.observeOperation("create", start, err)
+	end(err)
 	return info, err
 }
 
@@ -1300,9 +1316,9 @@ func (fm *FleetManager) CompleteTask(taskID string) error {
 
 // DestroyVM forcefully tears down a VM by ID.
 func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
-	start := time.Now()
+	ctx, end := fm.startOperation(ctx, "destroy", vmID)
 	err := fm.destroyVM(ctx, vmID)
-	fm.observeOperation("destroy", start, err)
+	end(err)
 	return err
 }
 
@@ -2132,6 +2148,18 @@ func (fm *FleetManager) AuditEvent(ctx context.Context, entityType, entityID, ev
 func (fm *FleetManager) appendEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) {
 	if fm.store == nil {
 		return
+	}
+	// tie the row to the api request that caused it. the caller's map is
+	// copied rather than written to.
+	if id := telemetry.RequestID(ctx); id != "" {
+		if _, set := payload["request_id"]; !set {
+			withID := make(map[string]any, len(payload)+1)
+			for k, v := range payload {
+				withID[k] = v
+			}
+			withID["request_id"] = id
+			payload = withID
+		}
 	}
 	raw := json.RawMessage(`{}`)
 	if payload != nil {

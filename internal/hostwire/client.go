@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // Timeouts for orchestrator-to-host-agent HTTP calls. The overall Timeout is
@@ -53,7 +55,9 @@ func NewClient() *http.Client {
 		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 			return fmt.Errorf("%w: %s", ErrRedirectNotAllowed, req.URL.Redacted())
 		},
-		Transport: &http.Transport{
+		// every call carries the request id and trace context and gets a
+		// client span; see internal/telemetry.
+		Transport: &telemetry.Transport{Peer: "host-agent", Base: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   agentDialTimeout,
@@ -63,7 +67,7 @@ func NewClient() *http.Client {
 			ResponseHeaderTimeout: agentResponseHeaderTimeout,
 			IdleConnTimeout:       agentIdleConnTimeout,
 			MaxIdleConnsPerHost:   4,
-		},
+		}},
 	}
 }
 

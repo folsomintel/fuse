@@ -214,28 +214,3 @@ func TestIPRejectIncludesRequestID(t *testing.T) {
 		t.Fatalf("callback request_id: got %q, want %q", seenReqID, "ip-test-1")
 	}
 }
-
-// TestValidRequestID exercises the validator's edge cases directly so
-// future tweaks to the character class are caught immediately.
-func TestValidRequestID(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		{"", false},
-		{"abc", true},
-		{"abc-123_XYZ", true},
-		{"req_0123456789abcdef", true},
-		{"has space", false},
-		{"has.dot", false},
-		{"has/slash", false},
-		{"has:colon", false},
-		{strings.Repeat("a", maxRequestIDLen), true},
-		{strings.Repeat("a", maxRequestIDLen+1), false},
-	}
-	for _, tc := range cases {
-		if got := validRequestID(tc.in); got != tc.want {
-			t.Errorf("validRequestID(%q): got %v, want %v", tc.in, got, tc.want)
-		}
-	}
-}

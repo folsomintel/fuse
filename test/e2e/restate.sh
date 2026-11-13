@@ -11,10 +11,23 @@
 #                                              # run the outage case too
 #   ./test/e2e/restate.sh                      # restate already running
 #
+# against restate cloud (FUSE_RESTATE_MODE=cloud), from anywhere: the
+# orchestrator registers itself, so this only waits for that, pings through
+# cloud ingress and, for FUSE_RESTATE_CONNECT=public, checks that an unsigned
+# request to the handler endpoint is refused:
+#
+#   RESTATE_CLOUD=1 RESTATE_API_KEY=key_... \
+#   RESTATE_INGRESS_URL=https://<id>.env.<region>.restate.cloud:8080 \
+#   ORCH_URL=https://orch.example.com \
+#   ORCH_RESTATE_PUBLIC_URL=https://restate.orch.example.com \  # public only
+#     ./test/e2e/restate.sh
+#
 #   ORCH_URL             orchestrator api (default http://127.0.0.1:8080)
 #   RESTATE_ADMIN_URL    default http://127.0.0.1:9070
 #   RESTATE_INGRESS_URL  default http://127.0.0.1:18080
 #   ORCH_RESTATE_URL     handler endpoint (default http://127.0.0.1:9080)
+#   RESTATE_API_KEY      bearer token for cloud ingress and admin
+#   ORCH_RESTATE_PUBLIC_URL  the public handler url (cloud, connect public)
 #   RESTATE_STOP_CMD / RESTATE_START_CMD
 #                        stop and start restate-server for the outage case;
 #                        set by RESTATE_COMPOSE=1, skipped when unset
@@ -28,6 +41,13 @@ ORCH="${ORCH_URL:-http://127.0.0.1:8080}"
 ADMIN="${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}"
 INGRESS="${RESTATE_INGRESS_URL:-http://127.0.0.1:18080}"
 ENDPOINT="${ORCH_RESTATE_URL:-http://127.0.0.1:9080}"
+CLOUD="${RESTATE_CLOUD:-}"
+AUTH=()
+if [ "$CLOUD" = 1 ]; then
+  : "${RESTATE_API_KEY:?RESTATE_CLOUD=1 needs RESTATE_API_KEY}"
+  : "${RESTATE_INGRESS_URL:?RESTATE_CLOUD=1 needs RESTATE_INGRESS_URL}"
+  AUTH=(-H "Authorization: Bearer $RESTATE_API_KEY")
+fi
 
 if [ "${RESTATE_COMPOSE:-}" = 1 ]; then
   RESTATE_STOP_CMD="${RESTATE_STOP_CMD:-docker compose -f $COMPOSE stop restate}"
@@ -73,21 +93,41 @@ if [ "${RESTATE_COMPOSE:-}" = 1 ]; then
   fi
 fi
 
-if RESTATE_ADMIN_URL="$ADMIN" ORCH_RESTATE_URL="$ENDPOINT" "$ROOT/ops/restate/register.sh" >/dev/null; then
-  ok "deployment registered"
+if [ "$CLOUD" = 1 ]; then
+  # the orchestrator registers itself once the tunnel (or its listener) is
+  # up, so the first successful ping is the registration check.
+  out=""
+  for _ in $(seq 1 60); do
+    out=$(curl -sS --max-time 10 ${AUTH[@]+"${AUTH[@]}"} -X POST "$INGRESS/Environment/e2e-restate-ping/Ping" 2>/dev/null || true)
+    case "$out" in *'"object":"Environment"'*) break ;; esac
+    sleep 2
+  done
+  expect "orchestrator registered itself with restate cloud" "$out" '"object":"Environment"'
 else
-  bad "deployment registered"
-  exit 1
+  if RESTATE_ADMIN_URL="$ADMIN" ORCH_RESTATE_URL="$ENDPOINT" "$ROOT/ops/restate/register.sh" >/dev/null; then
+    ok "deployment registered"
+  else
+    bad "deployment registered"
+    exit 1
+  fi
+  deps=$(curl -sS --max-time 10 "$ADMIN/deployments" || true)
+  expect "deployments list shows the orchestrator endpoint" "$deps" "\"$ENDPOINT/\""
 fi
 
-deps=$(curl -sS --max-time 10 "$ADMIN/deployments" || true)
-expect "deployments list shows the orchestrator endpoint" "$deps" "\"$ENDPOINT/\""
-
 for obj in Environment Host; do
-  out=$(curl -sS --max-time 10 -X POST "$INGRESS/$obj/e2e-restate-ping/Ping" || true)
+  out=$(curl -sS --max-time 10 ${AUTH[@]+"${AUTH[@]}"} -X POST "$INGRESS/$obj/e2e-restate-ping/Ping" || true)
   expect "$obj/e2e-restate-ping/Ping through ingress" "$out" \
     "{\"object\":\"$obj\",\"key\":\"e2e-restate-ping\",\"known\":false}"
 done
+
+if [ "$CLOUD" = 1 ] && [ -n "${ORCH_RESTATE_PUBLIC_URL:-}" ]; then
+  # restate signs every call; anyone else reaching the public url gets a 401.
+  for path in discover invoke/Host/Ping; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 -X POST \
+      -H 'content-type: application/vnd.restate.invocation.v5' "$ORCH_RESTATE_PUBLIC_URL/$path")
+    expect "unsigned /$path on the public handler url is refused" "$code" "401"
+  done
+fi
 
 body=$(ready_restate ok)
 expect "/ready reports restate ok" "$body" '"restate":"ok"'

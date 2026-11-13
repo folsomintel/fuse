@@ -1,12 +1,18 @@
 package hostwire
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestValidateAgentURL_Accepts(t *testing.T) {
@@ -58,9 +64,13 @@ func TestNewClient_HasTimeouts(t *testing.T) {
 		t.Fatal("client has no overall timeout")
 	}
 
-	tr, ok := c.Transport.(*http.Transport)
+	wrapped, ok := c.Transport.(*telemetry.Transport)
 	if !ok {
-		t.Fatalf("transport: got %T, want *http.Transport", c.Transport)
+		t.Fatalf("transport: got %T, want *telemetry.Transport", c.Transport)
+	}
+	tr, ok := wrapped.Base.(*http.Transport)
+	if !ok {
+		t.Fatalf("base transport: got %T, want *http.Transport", wrapped.Base)
 	}
 	if tr.TLSHandshakeTimeout <= 0 {
 		t.Error("transport has no TLS handshake timeout")
@@ -131,5 +141,45 @@ func TestReadErrorBody_TrimsShortBodies(t *testing.T) {
 	got := ReadErrorBody(strings.NewReader("  vm not found\n"))
 	if got != "vm not found" {
 		t.Fatalf("error body: got %q, want %q", got, "vm not found")
+	}
+}
+
+// TestNewClient_PropagatesRequestIDAndTrace pins what #337 needs from the
+// host-agent wire: the api request id and the w3c trace context reach the
+// agent on every call, and the caller's request is not modified.
+func TestNewClient_PropagatesRequestIDAndTrace(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	tp := sdktrace.NewTracerProvider()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	var gotID, gotParent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotID = r.Header.Get(telemetry.RequestIDHeader)
+		gotParent = r.Header.Get("traceparent")
+	}))
+	defer srv.Close()
+
+	ctx, span := tp.Tracer("test").Start(context.Background(), "op")
+	defer span.End()
+	ctx = telemetry.WithRequestID(ctx, "req_abc")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/v1/vm", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewClient().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+
+	if gotID != "req_abc" {
+		t.Errorf("X-Request-ID: got %q, want req_abc", gotID)
+	}
+	traceID := span.SpanContext().TraceID().String()
+	if !strings.Contains(gotParent, traceID) {
+		t.Errorf("traceparent %q does not carry trace %s", gotParent, traceID)
+	}
+	if req.Header.Get(telemetry.RequestIDHeader) != "" || req.Header.Get("traceparent") != "" {
+		t.Error("transport modified the caller's request headers")
 	}
 }

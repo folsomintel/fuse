@@ -148,9 +148,9 @@ type snapshotCursor struct {
 // persists a first-class SnapshotRecord, and marks it ready once the
 // provider confirms the new checkpoint exists.
 func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
-	start := time.Now()
+	ctx, end := fm.startOperation(ctx, "snapshot", vmID)
 	rec, err := fm.createSnapshot(ctx, vmID, opts)
-	fm.observeOperation("snapshot", start, err)
+	end(err)
 	return rec, err
 }
 
@@ -568,9 +568,9 @@ func (fm *FleetManager) deleteSnapshotRecord(ctx context.Context, record Snapsho
 // Environment.Restore after validating the metadata record and provider
 // visibility of the checkpoint.
 func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
-	start := time.Now()
+	ctx, end := fm.startOperation(ctx, "restore", vmID)
 	err := fm.restoreSnapshot(ctx, vmID, snapshotID)
-	fm.observeOperation("restore", start, err)
+	end(err)
 	return err
 }
 

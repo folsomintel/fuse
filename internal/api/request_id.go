@@ -5,64 +5,23 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+
+	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
 // RequestIDHeader is the canonical HTTP header used to carry a
 // per-request correlation ID. Clients (typically the control-server)
 // may set this on inbound requests to propagate an upstream ID;
 // otherwise the middleware generates a fresh one.
-const RequestIDHeader = "X-Request-ID"
-
-// requestIDKey is the typed context key under which the per-request
-// ID is stored. Using a struct{} type avoids string-key collisions
-// across packages.
-type requestIDKey struct{}
-
-// maxRequestIDLen bounds how much client-supplied X-Request-ID we
-// will trust. 128 bytes is far more than any sane correlation ID and
-// keeps log lines from blowing up on adversarial input.
-const maxRequestIDLen = 128
+const RequestIDHeader = telemetry.RequestIDHeader
 
 // RequestID returns the per-request ID from ctx, or "" if absent.
 // Use this in handlers and downstream callbacks (auth/IP audit) to
-// correlate log lines and audit events with a single request.
+// correlate log lines and audit events with a single request. The id
+// lives in internal/telemetry so the fleet, the host-agent wire and the
+// restate handlers can read it too.
 func RequestID(ctx context.Context) string {
-	if ctx == nil {
-		return ""
-	}
-	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
-// withRequestID returns a derived context carrying id under the
-// typed request-ID key.
-func withRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, id)
-}
-
-// validRequestID reports whether s looks like a safe correlation ID:
-// non-empty, ≤ maxRequestIDLen, and made up of [A-Za-z0-9_-] only.
-// Anything else is treated as adversarial / malformed and replaced
-// with a generated ID. We deliberately do not echo arbitrary client
-// strings into response headers or log lines.
-func validRequestID(s string) bool {
-	if s == "" || len(s) > maxRequestIDLen {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'A' && c <= 'Z':
-		case c >= 'a' && c <= 'z':
-		case c >= '0' && c <= '9':
-		case c == '_' || c == '-':
-		default:
-			return false
-		}
-	}
-	return true
+	return telemetry.RequestID(ctx)
 }
 
 // generateRequestID returns a fresh "req_<32hex>" identifier backed
@@ -85,7 +44,7 @@ func generateRequestID() string {
 }
 
 // RequestIDMiddleware reads X-Request-ID from the inbound request
-// (validating it against [validRequestID]) and either trusts it or
+// (validating it against [telemetry.ValidRequestID]) and either trusts it or
 // generates a fresh ID. It then:
 //
 //  1. Sets the ID on the response via [RequestIDHeader] before any
@@ -100,7 +59,7 @@ func generateRequestID() string {
 func RequestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(RequestIDHeader)
-		if !validRequestID(id) {
+		if !telemetry.ValidRequestID(id) {
 			id = generateRequestID()
 		}
 
@@ -110,7 +69,7 @@ func RequestIDMiddleware(next http.Handler) http.Handler {
 		// downstream handler's job.
 		w.Header().Set(RequestIDHeader, id)
 
-		ctx := withRequestID(r.Context(), id)
+		ctx := telemetry.WithRequestID(r.Context(), id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
