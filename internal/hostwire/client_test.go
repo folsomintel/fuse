@@ -64,9 +64,13 @@ func TestNewClient_HasTimeouts(t *testing.T) {
 		t.Fatal("client has no overall timeout")
 	}
 
-	wrapped, ok := c.Transport.(*telemetry.Transport)
+	keyed, ok := c.Transport.(*idempotencyTransport)
 	if !ok {
-		t.Fatalf("transport: got %T, want *telemetry.Transport", c.Transport)
+		t.Fatalf("transport: got %T, want *idempotencyTransport", c.Transport)
+	}
+	wrapped, ok := keyed.Base.(*telemetry.Transport)
+	if !ok {
+		t.Fatalf("transport: got %T, want *telemetry.Transport", keyed.Base)
 	}
 	tr, ok := wrapped.Base.(*http.Transport)
 	if !ok {

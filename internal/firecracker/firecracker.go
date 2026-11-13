@@ -866,10 +866,9 @@ type listSnapshotsResponse struct {
 	} `json:"snapshots"`
 }
 
-// TODO: Add retry logic with exponential backoff for transient failures
-// (HTTP 500/502/503, connection reset). Idempotent operations (GET, DELETE)
-// are safe to retry immediately; POST /v1/vm should only retry if the
-// response was never received (connection error, not a 500 with a body).
+// doJSON is not retried on its own: a mutating call made under
+// hostwire.WithIdempotencyKey (every durable.Run step) is keyed and retried by
+// the hostwire client, and the agent replays its first answer to a repeat.
 func (p *Provider) doJSON(ctx context.Context, method, path string, reqBody any, respBody any) error {
 	var body io.Reader
 	if reqBody != nil {

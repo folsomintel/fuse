@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
@@ -42,13 +43,16 @@ func SetStepMetrics(m StepMetrics) {
 // fn gets a context carrying the api request id (from the invocation's
 // X-Request-ID header) and a span for the step, parented on restate's
 // invocation attempt span, so host-agent calls made inside it join the api
-// request's trace. a step replayed from the journal is not run again, so it
+// request's trace. its mutating host-agent calls are keyed on the invocation
+// id and step, so restate running the step again after a lost response gets
+// the agent's first answer back instead of a second effect. a step replayed from the journal is not run again, so it
 // opens no span and records no metric.
 func Run[T any](ctx restate.Context, op, step string, fn func(context.Context) (T, error), opts ...restate.RunOption) (T, error) {
 	opts = append([]restate.RunOption{restate.WithName(step)}, opts...)
 	out, err := restate.Run(ctx, func(rc restate.RunContext) (T, error) {
 		start := time.Now()
 		sctx := telemetry.WithRequestID(rc, invocationRequestID(rc.Request()))
+		sctx = hostwire.WithIdempotencyKey(sctx, stepIdempotencyKey(rc.Request().ID, op, step))
 		sctx, span := telemetry.Tracer().Start(sctx, op+"."+step,
 			trace.WithAttributes(
 				attribute.String("fuse.op", op),
@@ -67,6 +71,17 @@ func Run[T any](ctx restate.Context, op, step string, fn func(context.Context) (
 	}, opts...)
 	// a nil TerminalError converts to a nil error.
 	return out, err
+}
+
+// stepIdempotencyKey is the base host-agent key for one step of one
+// invocation. it is the same on every attempt of the step and different for
+// every other step, so only a retry is ever deduped. "" without an invocation
+// id, which leaves the step's calls unkeyed.
+func stepIdempotencyKey(invocationID, op, step string) string {
+	if invocationID == "" {
+		return ""
+	}
+	return invocationID + ":" + op + "." + step
 }
 
 // invocationRequestID returns the X-Request-ID the invocation was started
