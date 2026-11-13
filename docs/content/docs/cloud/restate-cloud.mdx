@@ -1,0 +1,133 @@
+---
+title: Restate Cloud
+sidebar:
+  icon: cloud
+description: Running the orchestrator's durable layer on Restate Cloud instead of a local restate-server
+---
+
+With `FUSE_RESTATE_MODE=cloud` the orchestrator uses a
+[Restate Cloud](https://restate.dev/cloud/) environment instead of a
+restate-server on the same machine. The handlers don't change; only how
+Restate reaches them does. The orchestrator registers its own deployment with
+the environment when it starts, and the handler endpoint rejects any request
+the environment did not sign.
+
+## What you need from the Cloud UI
+
+| Value | Where | Env var |
+| ----- | ----- | ------- |
+| Ingress URL, `https://<id>.env.<region>.restate.cloud:8080` | Developers | `FUSE_RESTATE_INGRESS_URL` |
+| API key with the **Full** role | Developers > API Keys | `FUSE_RESTATE_API_KEY` |
+| Request signing public key, `publickeyv1_...` | Developers > Security > HTTP endpoints | `FUSE_RESTATE_IDENTITY_KEY` |
+
+The API key authenticates ingress calls, the deployment registration and the
+tunnel. The signing key is public, so it is fine to keep it in config.
+
+## Connect over the tunnel (default)
+
+The orchestrator dials out to Restate Cloud's tunnel servers
+([`sdk-go/x/tunnel`](https://github.com/restatedev/sdk-go/tree/main/x/tunnel)),
+so it needs no inbound port and no TLS certificate. The environment id and
+region are read from the ingress URL.
+
+```bash
+FUSE_RESTATE_MODE=cloud \
+FUSE_RESTATE_INGRESS_URL=https://<id>.env.us.restate.cloud:8080 \
+FUSE_RESTATE_API_KEY=key_... \
+FUSE_RESTATE_IDENTITY_KEY=publickeyv1_... \
+DATABASE_URL=postgres://... \
+  sudo -E ./ops/install-orchestrator.sh
+```
+
+The installer writes these keys to `/etc/fuse/orchestrator.env` and installs
+no restate-server. On start the orchestrator logs
+`restate deployment registered` with the tunnel's deployment URL. A re-run
+only rewrites the keys you pass, so rotating the API key is
+`FUSE_RESTATE_API_KEY=key_new sudo -E ./ops/install-orchestrator.sh`.
+To rotate without a restart, put the key in a file and set
+`RESTATE_INPROC_AUTH_TOKEN_FILE` to its path: the tunnel re-reads it on every
+reconnect. `FUSE_RESTATE_API_KEY` is still required for ingress and
+registration.
+
+:::warning[Pre-1.0 tunnel]
+The tunnel module is pre-1.0 and its API may change. If it gives you trouble,
+switch to a public URL.
+:::
+
+## Connect over a public URL
+
+Restate Cloud calls the handler endpoint at an HTTPS URL you provide. The
+endpoint itself stays on `ORCH_RESTATE_LISTEN` (default `127.0.0.1:9080`,
+h2c), and a TLS proxy on the same host forwards to it over HTTP/2:
+
+```text
+restate.orch.example.com {
+  reverse_proxy h2c://127.0.0.1:9080
+}
+```
+
+```bash
+FUSE_RESTATE_MODE=cloud \
+FUSE_RESTATE_CONNECT=public \
+FUSE_RESTATE_DEPLOYMENT_URL=https://restate.orch.example.com \
+FUSE_RESTATE_INGRESS_URL=https://<id>.env.us.restate.cloud:8080 \
+FUSE_RESTATE_API_KEY=key_... \
+FUSE_RESTATE_IDENTITY_KEY=publickeyv1_... \
+  sudo -E ./ops/install-orchestrator.sh
+```
+
+The proxy must not buffer request bodies, because Restate keeps a stream open in
+both directions. Anyone can reach the URL, but every request without a valid
+signature from the environment's key gets a `401` before any handler runs.
+
+## Settings
+
+| Variable | Default | |
+| -------- | ------- | - |
+| `FUSE_RESTATE_CONNECT` | `tunnel` | `tunnel` or `public`. |
+| `FUSE_RESTATE_DEPLOYMENT_URL` | | Public HTTPS URL of the handler endpoint. Required for `public`. |
+| `FUSE_RESTATE_ADMIN_URL` | ingress host, port `9070` | Admin API the deployment registers with. |
+| `FUSE_RESTATE_ENVIRONMENT_ID` | from the ingress host | `env_...`. Set it for BYOC. |
+| `FUSE_RESTATE_REGION` | from the ingress host | Tunnel region. Set it for BYOC. |
+| `FUSE_RESTATE_TUNNEL_NAME` | `fuse-orchestrator` | Replicas that share a name are load-balanced by the tunnel. |
+| `RESTATE_INPROC_AUTH_TOKEN_FILE` | | API key file for the tunnel, re-read on reconnect. |
+
+The orchestrator refuses to start when a required value is missing, the
+ingress, admin or deployment URL is not HTTPS, or the signing key is malformed.
+
+## Registration and upgrades
+
+The orchestrator registers its deployment URL with `force` on every start,
+retrying with backoff until it succeeds, and logs each failure. A restart or
+upgrade therefore replaces the deployment in place. Invocations pinned to the
+old deployment replay on the new code, the same as
+`FUSE_RESTATE_FORCE_UPGRADE=1` in [self mode](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx). Nothing
+runs on Restate yet, so this costs nothing today. Blue/green drains for cloud
+come with the drain-only mode.
+
+## Observability
+
+- **Restate Cloud console**: invocations, journals, retries, the deployment
+  list and the traces Restate records for each invocation. Use it in place of
+  the self-hosted admin UI on `:9070`.
+- **Fuse**: `/metrics`, `/health` and `/ready` work the same as before.
+  `/ready` checks cloud ingress with the API key and reports `degraded`, not a
+  failure, when ingress is unreachable. Registration failures show up only in
+  the orchestrator log. See [Monitoring](/docs/cloud/monitoring).
+- The orchestrator has no OTLP exporter of its own. The handlers carry the
+  trace context Restate sends, so spans in the console line up with the
+  invocation.
+
+## Verify
+
+```bash
+RESTATE_CLOUD=1 RESTATE_API_KEY=key_... \
+RESTATE_INGRESS_URL=https://<id>.env.us.restate.cloud:8080 \
+ORCH_URL=https://orch.example.com \
+ORCH_RESTATE_PUBLIC_URL=https://restate.orch.example.com \
+  ./test/e2e/restate.sh
+```
+
+It waits for the registration, pings both objects through cloud ingress, checks
+`/ready` and, when `ORCH_RESTATE_PUBLIC_URL` is set, checks that unsigned
+requests to the handler endpoint get a `401`.

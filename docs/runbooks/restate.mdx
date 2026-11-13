@@ -93,7 +93,8 @@ image if the pin changed), then handles the orchestrator deployment:
   changed).
 - a second upgrade while the first still drains is refused.
 - an existing self install cannot be switched to `off` or `cloud` by the
-  installer; that would strand what restate holds for it.
+  installer; that would strand what restate holds for it. Restate Cloud setup
+  is in `docs/content/docs/cloud/restate-cloud.mdx`.
 
 ```sh
 journalctl -u fuse-orchestrator-drain -f      # drain progress

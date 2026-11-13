@@ -4,9 +4,11 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"time"
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/server"
+	"github.com/restatedev/sdk-go/x/tunnel"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -63,10 +65,16 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				})
 			}))
 
-	return server.NewRestate().
+	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
 		Bind(host)
+	// a request without a valid signature from this key gets a 401 before
+	// any handler runs. self mode leaves it unset: the endpoint is loopback.
+	if cfg.IdentityKey != "" {
+		srv = srv.WithIdentityV1(cfg.IdentityKey)
+	}
+	return srv
 }
 
 // ping looks the key up inside restate.Run, so the answer is journaled and a
@@ -96,9 +104,83 @@ func retryOption(cfg Config, service string) restate.ServiceDefinitionOption {
 	)
 }
 
-// Serve runs the handler endpoint on cfg.Listen until ctx is cancelled.
+// Serve runs the handler endpoint until ctx is cancelled: on cfg.Listen, or
+// over the outbound tunnel in mode cloud with FUSE_RESTATE_CONNECT=tunnel.
+// mode cloud also registers the deployment; in mode self the installer does.
 func Serve(ctx context.Context, cfg Config, fleet Fleet, logger *slog.Logger) error {
-	return NewEndpoint(cfg, fleet, logger).Start(ctx, cfg.Listen)
+	ep := NewEndpoint(cfg, fleet, logger)
+	if cfg.Mode != ModeCloud {
+		return ep.Start(ctx, cfg.Listen)
+	}
+	if cfg.Connect == ConnectTunnel {
+		return serveTunnel(ctx, cfg, ep, logger)
+	}
+	go registerLoop(ctx, NewClient(cfg), cfg.DeploymentURL, logger)
+	return ep.Start(ctx, cfg.Listen)
+}
+
+// tunnelDrainGrace is how long in-flight invocations get to finish over the
+// tunnel on shutdown, the tunnel's own default.
+const tunnelDrainGrace = 2 * time.Minute
+
+// serveTunnel connects the endpoint to restate cloud over an outbound tunnel,
+// registers the deployment url cloud hands back, and serves until ctx is
+// cancelled. the tunnel verifies every request against cfg.IdentityKey.
+func serveTunnel(ctx context.Context, cfg Config, ep *server.Restate, logger *slog.Logger) error {
+	opts := []tunnel.Option{
+		tunnel.WithRegion(cfg.Region),
+		tunnel.WithEnvironment(cfg.EnvironmentID, cfg.IdentityKey),
+		tunnel.WithTunnelName(cfg.TunnelName),
+		tunnel.WithLogger(logger),
+	}
+	if cfg.TokenFile != "" {
+		opts = append(opts, tunnel.WithAuthTokenFile(cfg.TokenFile))
+	} else {
+		opts = append(opts, tunnel.WithAuthToken(cfg.APIKey))
+	}
+	conn, err := tunnel.NewTunnel(ep, opts...).Connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = conn.Close() }()
+	if err := conn.Ready(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	go registerLoop(ctx, NewClient(cfg), conn.DeploymentURL(), logger)
+
+	select {
+	case <-ctx.Done():
+		drainCtx, cancel := context.WithTimeout(context.Background(), tunnelDrainGrace)
+		defer cancel()
+		_ = conn.Shutdown(drainCtx)
+		return nil
+	case <-conn.Done():
+		return conn.Err()
+	}
+}
+
+// registerLoop registers uri with the admin api, retrying with backoff until
+// it succeeds or ctx is cancelled. a failure is logged, not fatal: the api
+// keeps serving and /ready already reports whether ingress answers.
+func registerLoop(ctx context.Context, c *Client, uri string, logger *slog.Logger) {
+	wait := time.Second
+	for {
+		err := c.Register(ctx, uri)
+		if err == nil {
+			logger.Info("restate deployment registered", "uri", uri, "admin", c.adminURL)
+			return
+		}
+		logger.Warn("restate deployment registration failed, retrying", "uri", uri, "in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, time.Minute)
+	}
 }
 
 // Handler returns the endpoint as an http.Handler, for tests that serve it
