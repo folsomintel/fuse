@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -16,6 +17,7 @@ import (
 
 	jwt "github.com/golang-jwt/jwt/v5"
 	"github.com/mr-tron/base58"
+	"github.com/restatedev/sdk-go/server"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -304,5 +306,52 @@ func TestRegisterReportsRefusal(t *testing.T) {
 	err := NewClient(Config{AdminURL: srv.URL}).Register(context.Background(), "https://x")
 	if err == nil || !strings.Contains(err.Error(), "http 401") {
 		t.Fatalf("err = %v, want the 401", err)
+	}
+}
+
+// tunnelResult is one scripted runTunnel outcome.
+type tunnelResult struct {
+	ready bool
+	err   error
+}
+
+// fakeTunnel replaces runTunnel with a script of results and counts the
+// calls. the last result repeats.
+func fakeTunnel(t *testing.T, results ...tunnelResult) *int {
+	t.Helper()
+	calls := 0
+	orig := runTunnel
+	t.Cleanup(func() { runTunnel = orig })
+	runTunnel = func(ctx context.Context, _ Config, _ *server.Restate, _ *slog.Logger) (bool, error) {
+		r := results[min(calls, len(results)-1)]
+		calls++
+		return r.ready, r.err
+	}
+	return &calls
+}
+
+func TestServeTunnelFailsFastBeforeFirstConnect(t *testing.T) {
+	calls := fakeTunnel(t, tunnelResult{false, errors.New("unauthorized")})
+	err := serveTunnel(context.Background(), Config{}, nil, testLogger)
+	if err == nil || err.Error() != "unauthorized" || *calls != 1 {
+		t.Fatalf("err = %v after %d calls, want the startup error after 1", err, *calls)
+	}
+}
+
+// a tunnel that stops after it has connected (a revoked key on reconnect)
+// must not take the orchestrator down: serveTunnel retries, including through
+// handshakes that keep failing, until ctx ends, and then returns nil.
+func TestServeTunnelRetriesAfterConnecting(t *testing.T) {
+	calls := fakeTunnel(t,
+		tunnelResult{true, errors.New("tunnel closed")},
+		tunnelResult{false, errors.New("unauthorized")},
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if err := serveTunnel(ctx, Config{}, nil, testLogger); err != nil {
+		t.Fatalf("serveTunnel = %v, want nil once ctx ends", err)
+	}
+	if *calls < 3 {
+		t.Fatalf("tunnel connected %d times, want retries past the failed handshake", *calls)
 	}
 }

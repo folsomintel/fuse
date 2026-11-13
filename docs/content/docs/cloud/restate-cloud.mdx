@@ -113,7 +113,9 @@ come with the drain-only mode.
 - **Fuse**: `/metrics`, `/health` and `/ready` work the same as before.
   `/ready` checks cloud ingress with the API key and reports `degraded`, not a
   failure, when ingress is unreachable. Registration failures show up only in
-  the orchestrator log. See [Monitoring](/docs/cloud/monitoring).
+  the orchestrator log. A tunnel that drops after startup, for example because
+  the API key was revoked, is retried with backoff and logged; the API keeps
+  serving. A tunnel that cannot connect at startup stops the orchestrator. See [Monitoring](/docs/cloud/monitoring).
 - The orchestrator has no OTLP exporter of its own. The handlers carry the
   trace context Restate sends, so spans in the console line up with the
   invocation.

@@ -123,10 +123,43 @@ func Serve(ctx context.Context, cfg Config, fleet Fleet, logger *slog.Logger) er
 // tunnel on shutdown, the tunnel's own default.
 const tunnelDrainGrace = 2 * time.Minute
 
-// serveTunnel connects the endpoint to restate cloud over an outbound tunnel,
-// registers the deployment url cloud hands back, and serves until ctx is
-// cancelled. the tunnel verifies every request against cfg.IdentityKey.
+// serveTunnel keeps the endpoint connected to restate cloud over an outbound
+// tunnel until ctx is cancelled. a failure before the first handshake (bad
+// config, a wrong key at startup) is returned, so the orchestrator fails
+// fast. once it has connected, a tunnel that stops (a revoked or rotated key
+// on reconnect) is logged and retried with backoff: the api keeps serving and
+// /ready reports restate degraded, as for a self-hosted restate-server that
+// goes away.
 func serveTunnel(ctx context.Context, cfg Config, ep *server.Restate, logger *slog.Logger) error {
+	everReady := false
+	wait := time.Second
+	for {
+		ready, err := runTunnel(ctx, cfg, ep, logger)
+		if err == nil || ctx.Err() != nil {
+			return nil
+		}
+		if ready {
+			everReady = true
+			wait = time.Second
+		}
+		if !everReady {
+			return err
+		}
+		logger.Error("restate cloud tunnel stopped, reconnecting; the api keeps serving", "in", wait, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, time.Minute)
+	}
+}
+
+// runTunnel connects the tunnel once, registers the deployment url cloud hands
+// back, and serves until ctx is cancelled (nil) or the tunnel stops (its
+// error). ready reports whether the handshake succeeded. a var so tests can
+// stand in for restate cloud.
+var runTunnel = func(ctx context.Context, cfg Config, ep *server.Restate, logger *slog.Logger) (ready bool, err error) {
 	opts := []tunnel.Option{
 		tunnel.WithRegion(cfg.Region),
 		tunnel.WithEnvironment(cfg.EnvironmentID, cfg.IdentityKey),
@@ -140,25 +173,27 @@ func serveTunnel(ctx context.Context, cfg Config, ep *server.Restate, logger *sl
 	}
 	conn, err := tunnel.NewTunnel(ep, opts...).Connect(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = conn.Close() }()
 	if err := conn.Ready(ctx); err != nil {
 		if ctx.Err() != nil {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
-	go registerLoop(ctx, NewClient(cfg), conn.DeploymentURL(), logger)
+	regCtx, stopRegister := context.WithCancel(ctx)
+	defer stopRegister()
+	go registerLoop(regCtx, NewClient(cfg), conn.DeploymentURL(), logger)
 
 	select {
 	case <-ctx.Done():
 		drainCtx, cancel := context.WithTimeout(context.Background(), tunnelDrainGrace)
 		defer cancel()
 		_ = conn.Shutdown(drainCtx)
-		return nil
+		return true, nil
 	case <-conn.Done():
-		return conn.Err()
+		return true, conn.Err()
 	}
 }
 
