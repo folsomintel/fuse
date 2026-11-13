@@ -40,6 +40,10 @@ type PrometheusMetrics struct {
 	egressProvisionFailed *prometheus.CounterVec
 	egressTeardownFailed  *prometheus.CounterVec
 
+	// durable destroys that ran out of retries, through
+	// DestroyDeadLetterMetrics.
+	destroyDeadLetters prometheus.Counter
+
 	// lifecycle operations, through OperationMetrics.
 	operations        *prometheus.CounterVec
 	operationDuration *prometheus.HistogramVec
@@ -169,6 +173,11 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Name:      "teardown_failures_total",
 			Help:      "Total proxy egress backends that failed to release on teardown, by provider.",
 		}, []string{"provider"}),
+		destroyDeadLetters: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Name:      "destroy_dead_letters_total",
+			Help:      "Total durable destroys that ran out of retries and left their environment in destroy_failed.",
+		}),
 
 		operations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
@@ -240,6 +249,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.egressEndpoints,
 		m.egressProvisionFailed,
 		m.egressTeardownFailed,
+		m.destroyDeadLetters,
 		m.operations,
 		m.operationDuration,
 		m.stepDuration,
@@ -282,6 +292,11 @@ func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) 
 // EgressProvisionFailed implements orchestrator.EgressMetrics.
 func (m *PrometheusMetrics) EgressProvisionFailed(provider string) {
 	m.egressProvisionFailed.WithLabelValues(provider).Inc()
+}
+
+// DestroyDeadLettered implements orchestrator.DestroyDeadLetterMetrics.
+func (m *PrometheusMetrics) DestroyDeadLettered() {
+	m.destroyDeadLetters.Inc()
 }
 
 // EgressTeardownFailed implements orchestrator.EgressMetrics.

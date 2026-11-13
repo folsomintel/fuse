@@ -409,7 +409,7 @@ func (fm *FleetManager) retryFailedTeardowns(providerVMs map[string]bool) {
 	for _, id := range retry {
 		fm.logger.Warn("vm still present after destroy, retrying teardown", "vm", id)
 		fm.appendEventBackground("vm", id, "vm.destroy_retried", nil)
-		go fm.destroyAndRemove(id)
+		fm.destroyAsync(id, DestroyReasonRetry)
 	}
 }
 
@@ -523,7 +523,7 @@ func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, 
 			"ceiling_s", fmt.Sprintf("%d", int(e.ceiling.Seconds())),
 		),
 	})
-	go fm.destroyAndRemove(vmID)
+	fm.destroyAsync(vmID, DestroyReasonExpired)
 	return true
 }
 

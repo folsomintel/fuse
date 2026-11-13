@@ -692,7 +692,7 @@ func validateTimeoutSpec(s ResourceSpec) error {
 //	@Tags		environments
 //	@Produce	json
 //	@Param		task_id	query		string	false	"Filter by task ID"
-//	@Param		state	query		string	false	"Filter by state"	Enums(provisioning, running, destroying)
+//	@Param		state	query		string	false	"Filter by state"	Enums(provisioning, running, destroying, destroy_failed)
 //	@Param		host_id	query		string	false	"Filter by host ID"
 //	@Param		limit	query		int		false	"Max results per page (default 50, max 200)"
 //	@Param		cursor	query		string	false	"Opaque pagination cursor from a previous response's next_cursor"

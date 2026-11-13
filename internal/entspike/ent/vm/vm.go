@@ -156,12 +156,13 @@ type State string
 
 // State values.
 const (
-	StateProvisioning State = "provisioning"
-	StateRunning      State = "running"
-	StateDraining     State = "draining"
-	StateDestroying   State = "destroying"
-	StateDestroyed    State = "destroyed"
-	StateFailed       State = "failed"
+	StateProvisioning  State = "provisioning"
+	StateRunning       State = "running"
+	StateDraining      State = "draining"
+	StateDestroying    State = "destroying"
+	StateDestroyFailed State = "destroy_failed"
+	StateDestroyed     State = "destroyed"
+	StateFailed        State = "failed"
 )
 
 func (s State) String() string {
@@ -171,7 +172,7 @@ func (s State) String() string {
 // StateValidator is a validator for the "state" field enum values. It is called by the builders before save.
 func StateValidator(s State) error {
 	switch s {
-	case StateProvisioning, StateRunning, StateDraining, StateDestroying, StateDestroyed, StateFailed:
+	case StateProvisioning, StateRunning, StateDraining, StateDestroying, StateDestroyFailed, StateDestroyed, StateFailed:
 		return nil
 	default:
 		return fmt.Errorf("vm: invalid enum value for state field: %q", s)

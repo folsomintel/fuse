@@ -563,6 +563,13 @@ func run() error {
 	// the base url hitl webhook notifications link to, e.g.
 	// https://fuse.example.com. empty leaves the link out.
 	fm.SetPublicURL(strings.TrimRight(env("ORCH_PUBLIC_URL", ""), "/"))
+	// restate client, made before the fleet starts so the reconcile loop's
+	// first teardown already goes through restate. mode off makes none.
+	var restateClient *durable.Client
+	if durableCfg.Mode != durable.ModeOff {
+		restateClient = durable.NewClient(durableCfg)
+		fm.SetDurableDestroyer(restateClient)
+	}
 	fm.Start(rootCtx)
 	defer fm.Stop()
 
@@ -572,9 +579,7 @@ func run() error {
 
 	// restate handler endpoint. mode off starts nothing and leaves the
 	// readiness check out.
-	var restateClient *durable.Client
-	if durableCfg.Mode != durable.ModeOff {
-		restateClient = durable.NewClient(durableCfg)
+	if restateClient != nil {
 		go func() {
 			if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
 				errCh <- fmt.Errorf("restate handler endpoint: %w", err)

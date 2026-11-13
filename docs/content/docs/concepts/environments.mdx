@@ -16,6 +16,7 @@ lifecycle. A background reconcile loop catches orphans and stuck VMs.
 ```
 provisioning -> running -> draining -> destroying -> destroyed
                                                     -> failed
+                                       destroying -> destroy_failed -> destroying (on DELETE)
 ```
 
 - **provisioning**: a host has been picked and the VM is booting.
@@ -25,6 +26,10 @@ provisioning -> running -> draining -> destroying -> destroyed
   **not yet destroyed**. Only running environments can be drained; any other state
   returns a conflict.
 - **destroying / destroyed**: the VM is being (or has been) torn down.
+- **destroy_failed**: with restate on (`FUSE_RESTATE_MODE=self` or `cloud`), a
+  destroy whose host kept failing after every retry. The VM may still exist on
+  its host and still counts against the host's capacity. The last error is on
+  the environment and in a `destroy` dead letter. `DELETE` it again to retry.
 - **failed**: provisioning or an operation failed.
 
 `destroyed` and `failed` are terminal states you only ever observe on the event

@@ -174,9 +174,10 @@ const (
 	StateProvisioning = "provisioning"
 	StateRunning      = "running"
 	StateDraining     = "draining"
-	StateDestroying   = "destroying"
-	StateDestroyed    = "destroyed"
-	StateFailed       = "failed"
+	StateDestroying    = "destroying"
+	StateDestroyFailed = "destroy_failed"
+	StateDestroyed     = "destroyed"
+	StateFailed        = "failed"
 )
 
 func IsTerminalState(state string) bool

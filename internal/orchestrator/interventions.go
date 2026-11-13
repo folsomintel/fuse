@@ -101,7 +101,7 @@ func (fm *FleetManager) RequestHuman(ctx context.Context, envID string, req Huma
 	if !ok {
 		return hitl.Intervention{}, fmt.Errorf("%w: %s", ErrVMNotFound, envID)
 	}
-	if state == VMStateDestroying {
+	if state.tearingDown() {
 		return hitl.Intervention{}, fmt.Errorf("%w: environment %s is being destroyed", ErrVMNotRunning, envID)
 	}
 	if spec == nil {

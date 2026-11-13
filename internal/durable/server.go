@@ -34,6 +34,7 @@ var services = []string{EnvironmentObject, HostObject}
 type Fleet interface {
 	GetVM(vmID string) (orchestrator.VMInfo, bool)
 	GetHost(hostID string) (orchestrator.Host, bool)
+	Destroyer
 }
 
 // PingResult is what Ping returns. it never carries more than whether the
@@ -54,6 +55,10 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 					_, ok := fleet.GetVM(key)
 					return ok
 				})
+			})).
+		Handler("Destroy", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.DestroyRequest) (restate.Void, error) {
+				return restate.Void{}, destroy(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
 			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
@@ -93,15 +98,20 @@ func ping(ctx restate.ObjectSharedContext, object string, known func(string) boo
 
 // retryOption turns the service's configured policy into its restate option.
 func retryOption(cfg Config, service string) restate.ServiceDefinitionOption {
-	p, ok := cfg.Retry[service]
-	if !ok {
-		p = DefaultRetryPolicy
-	}
+	p := servicePolicy(cfg, service)
 	return restate.WithInvocationRetryPolicy(
 		restate.WithInitialRetryInterval(p.InitialInterval),
 		restate.WithMaxRetryInterval(p.MaxInterval),
 		restate.WithMaxRetryAttempts(uint(p.MaxAttempts)),
 	)
+}
+
+// servicePolicy is the service's configured retry policy, or the default.
+func servicePolicy(cfg Config, service string) RetryPolicy {
+	if p, ok := cfg.Retry[service]; ok {
+		return p
+	}
+	return DefaultRetryPolicy
 }
 
 // Serve runs the handler endpoint until ctx is cancelled: on cfg.Listen, or
