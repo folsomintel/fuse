@@ -59,7 +59,7 @@ var (
 		{Name: "vm_id", Type: field.TypeString},
 		{Name: "host_id", Type: field.TypeString, Default: ""},
 		{Name: "network_host", Type: field.TypeString, Default: ""},
-		{Name: "state", Type: field.TypeEnum, Enums: []string{"provisioning", "running", "draining", "destroying", "destroyed", "failed"}},
+		{Name: "state", Type: field.TypeEnum, Enums: []string{"provisioning", "running", "draining", "destroying", "destroy_failed", "destroyed", "failed"}},
 		{Name: "url", Type: field.TypeString, Default: ""},
 		{Name: "task_id", Type: field.TypeString, Default: ""},
 		{Name: "tenant_id", Type: field.TypeString, Default: ""},

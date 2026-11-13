@@ -766,6 +766,7 @@ func TestStatePredicates(t *testing.T) {
 		{StateRunning, false, true},
 		{StateDraining, false, false},
 		{StateDestroying, false, false},
+		{StateDestroyFailed, false, false},
 		{StateDestroyed, true, true},
 		{StateFailed, true, true},
 	}

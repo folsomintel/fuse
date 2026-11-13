@@ -452,6 +452,7 @@ paths:
         - provisioning
         - running
         - destroying
+        - destroy_failed
         in: query
         name: state
         type: string

@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -32,6 +33,15 @@ func (fakeFleet) GetVM(id string) (orchestrator.VMInfo, bool) {
 func (fakeFleet) GetHost(id string) (orchestrator.Host, bool) {
 	return orchestrator.Host{ID: id, Token: "secret"}, id == "host-known"
 }
+
+func (fakeFleet) DestroyBegin(context.Context, string, string) (orchestrator.DestroyTarget, error) {
+	return orchestrator.DestroyTarget{}, nil
+}
+func (fakeFleet) DestroyReleaseEgress(context.Context, string) error          { return nil }
+func (fakeFleet) DestroyOnHost(context.Context, string, string) error         { return nil }
+func (fakeFleet) DestroyUnpublishIngress(context.Context, string) error       { return nil }
+func (fakeFleet) DestroyFinish(context.Context, string, string) error         { return nil }
+func (fakeFleet) DestroyFailed(context.Context, string, string, string) error { return nil }
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -84,8 +94,16 @@ func TestDiscoveryManifest(t *testing.T) {
 		if s.Ty != "VIRTUAL_OBJECT" {
 			t.Errorf("%s: type %q, want VIRTUAL_OBJECT", s.Name, s.Ty)
 		}
-		if len(s.Handlers) != 1 || s.Handlers[0].Name != "Ping" || s.Handlers[0].Ty != "SHARED" {
-			t.Errorf("%s: handlers %+v, want one shared Ping", s.Name, s.Handlers)
+		handlers := map[string]string{}
+		for _, h := range s.Handlers {
+			handlers[h.Name] = h.Ty
+		}
+		want := map[string]string{"Ping": "SHARED"}
+		if s.Name == EnvironmentObject {
+			want["Destroy"] = "EXCLUSIVE"
+		}
+		if fmt.Sprint(handlers) != fmt.Sprint(want) {
+			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)
 		}
 		var p RetryPolicy
 		if s.RetryPolicyMaxAttempts != nil {

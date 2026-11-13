@@ -338,8 +338,11 @@ const (
 	StateRunning      = "running"
 	StateDraining     = "draining"
 	StateDestroying   = "destroying"
-	StateDestroyed    = "destroyed"
-	StateFailed       = "failed"
+	// StateDestroyFailed is a destroy that ran out of retries. the
+	// environment may still exist on its host; DELETE it again to retry.
+	StateDestroyFailed = "destroy_failed"
+	StateDestroyed     = "destroyed"
+	StateFailed        = "failed"
 )
 
 // IsTerminalState reports whether state is a terminal lifecycle state.

@@ -157,6 +157,15 @@ such a VM once it has been `destroying` for more than two minutes, so it goes aw
 once the host recovers. This applies to every background teardown, not only
 draining ones.
 
+With restate on, every destroy runs as the `Environment/{vm_id}/Destroy`
+handler instead, and retries the host call itself under the `Environment`
+retry policy (`FUSE_RESTATE_RETRY_ENVIRONMENT_*`). It survives an orchestrator
+restart: the handler resumes at the first unfinished step. Reconcile then only
+re-sends `Destroy` for a VM that has sat in `destroying` for two minutes with
+no attempt in flight, such as one left over from before the upgrade. A destroy
+that runs out of retries moves the VM to `destroy_failed` and writes a
+`destroy` dead letter, counted by `orchestrator_destroy_dead_letters_total`.
+
 ## Health verdicts
 
 This is the one pass that is **not** a detector. It reads and reports; it never
