@@ -121,6 +121,15 @@ there is no unauthenticated path on this agent:
 | `GET` | `/v1/capacity` | Host CPU count, total RAM, and free disk. Probed once at host registration, not polled. |
 | `GET` | `/healthz` | `{ok:true, app_name:"fc-agent"}`. `GET /` is the same handler. |
 
+Mutating calls may carry an `Idempotency-Key` header, and the orchestrator
+sends one on every call made inside a durable step. The agent keeps each keyed
+answer below 500 for 24h (`FC_AGENT_IDEMPOTENCY_TTL`, seconds): a repeat with
+the same key gets that answer back with `Idempotent-Replayed: true` instead of
+running again, and a repeat that arrives mid-request waits for the first. A
+5xx is not kept, so a retry runs again. Without a key, `DELETE /v1/vm/{id}` of
+a VM that is already gone returns `204`, and `POST /v1/vm` naming an existing
+VM with the identical body returns that VM rather than `409`.
+
 `image` on create is optional: a base-image name resolved to
 `$IMAGES_DIR/<image>.ext4`, defaulting to the baked `rootfs-fused.ext4` when
 unset. A name that resolves outside `IMAGES_DIR` and a name with no matching file

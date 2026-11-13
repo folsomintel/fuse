@@ -1,9 +1,11 @@
 import http.client
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -785,6 +787,138 @@ class RequestIDLogTest(unittest.TestCase):
         with mock.patch.object(qemu_agent, "host_capacity", side_effect=RuntimeError("boom")):
             out = self.get("/v1/capacity", {"X-Request-ID": "req_fail1"})
         self.assertIn("GET /v1/capacity failed request_id=req_fail1", out)
+
+class IdempotencyTest(unittest.TestCase):
+    """a keyed mutating request runs once: a repeat and a concurrent repeat
+    get the first answer, an expired key or a 5xx runs again."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = mock.patch.object(qemu_agent, "STATE_DIR", Path(self.tmp.name))
+        self.state.start()
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), qemu_agent.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        self.state.stop()
+        self.tmp.cleanup()
+
+    def call(self, method, path, body=None, key=None):
+        headers = {"Authorization": "Bearer test-token"}
+        if key:
+            headers["Idempotency-Key"] = key
+        data = json.dumps(body).encode() if body is not None else None
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            c.request(method, path, body=data, headers=headers)
+            r = c.getresponse()
+            return r.status, r.read(), r.getheader("Idempotent-Replayed")
+        finally:
+            c.close()
+
+    def test_repeat_create_makes_one_vm(self):
+        with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:
+            first = self.call("POST", "/v1/vm", {"name": "a"}, key="inv_1:create.boot/1")
+            second = self.call("POST", "/v1/vm", {"name": "a"}, key="inv_1:create.boot/1")
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(second[:2], first[:2])
+        self.assertEqual(second[2], "true")
+
+    def test_concurrent_repeat_waits_for_the_first(self):
+        started, release = threading.Event(), threading.Event()
+
+        def slow_create(req):
+            started.set()
+            release.wait(5)
+            return {"vm_id": "a", "url": "u"}
+
+        results = []
+        with mock.patch.object(qemu_agent, "create_vm", side_effect=slow_create) as create:
+            t1 = threading.Thread(target=lambda: results.append(self.call("POST", "/v1/vm", {"name": "a"}, key="k1")))
+            t1.start()
+            self.assertTrue(started.wait(5))
+            t2 = threading.Thread(target=lambda: results.append(self.call("POST", "/v1/vm", {"name": "a"}, key="k1")))
+            t2.start()
+            time.sleep(0.2)
+            self.assertEqual(results, [])
+            release.set()
+            t1.join(5)
+            t2.join(5)
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0][:2], results[1][:2])
+
+    def test_expired_key_runs_again(self):
+        with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:
+            self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
+            with mock.patch.object(qemu_agent, "IDEMPOTENCY_TTL", 0.0):
+                time.sleep(0.01)
+                self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
+        self.assertEqual(create.call_count, 2)
+
+    def test_server_error_is_not_stored(self):
+        with mock.patch.object(qemu_agent, "create_vm", side_effect=[RuntimeError("boom"), {"vm_id": "a", "url": ""}]) as create, \
+                mock.patch("sys.stderr", io.StringIO()):
+            first, _, _ = self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
+            second, _, _ = self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
+        self.assertEqual((first, second), (500, 200))
+        self.assertEqual(create.call_count, 2)
+
+    def test_repeat_destroy_replays(self):
+        with mock.patch.object(qemu_agent, "destroy_vm") as destroy:
+            first = self.call("DELETE", "/v1/vm/a", key="k1")
+            second = self.call("DELETE", "/v1/vm/a", key="k1")
+        self.assertEqual(destroy.call_count, 1)
+        self.assertEqual(first[0], 204)
+        self.assertEqual(second[:2], first[:2])
+
+    def test_key_reused_for_another_request_is_a_422(self):
+        with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}), \
+                mock.patch.object(qemu_agent, "destroy_vm") as destroy:
+            self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
+            code, _, _ = self.call("DELETE", "/v1/vm/a", key="k1")
+        self.assertEqual(code, 422)
+        destroy.assert_not_called()
+
+
+class NaturalIdempotencyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.vms = mock.patch.object(qemu_agent, "VMS_DIR", Path(self.tmp.name))
+        self.vms.start()
+
+    def tearDown(self):
+        self.vms.stop()
+        self.tmp.cleanup()
+
+    def test_destroy_of_missing_vm_succeeds(self):
+        self.assertIsNone(qemu_agent.destroy_vm("nope"))
+
+    def test_create_with_same_spec_returns_existing_vm(self):
+        # a gpu create: its own vm holds the devices, so a repeat must return
+        # before picking them again.
+        req = {"name": "a", "gpus": 1}
+        meta = {"vm_id": "a", "name": "a", "create_spec": qemu_agent.create_spec_digest(req)}
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        qemu_agent.save_meta(meta)
+        with mock.patch.object(qemu_agent, "pick_gpu_slots") as pick:
+            self.assertEqual(qemu_agent.create_vm(dict(req)), meta)
+        pick.assert_not_called()
+
+    def test_create_with_other_spec_is_a_conflict(self):
+        meta = {"vm_id": "a", "name": "a", "create_spec": qemu_agent.create_spec_digest({"name": "a"})}
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        qemu_agent.save_meta(meta)
+        rootfs = Path(self.tmp.name) / "rootfs.qcow2"
+        rootfs.write_bytes(b"")
+        with mock.patch.object(qemu_agent, "BASE_ROOTFS", rootfs), \
+                mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]):
+            with self.assertRaises(qemu_agent.HTTPError) as e:
+                qemu_agent.create_vm({"name": "a", "cpus": 4})
+        self.assertEqual(e.exception.code, 409)
+
 
 if __name__ == "__main__":
     unittest.main()

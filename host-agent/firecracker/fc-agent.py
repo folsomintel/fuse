@@ -1273,6 +1273,12 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     egress_mode = parse_egress_mode(req)
     vm_id = sanitize_name(name)
+    # the same create sent again (a retry that lost its response) gets the vm
+    # it made, before any allocation that vm itself would now fail. a
+    # different spec under the name is still the 409 below.
+    existing = load_meta(vm_id)
+    if existing and existing.get("create_spec") == create_spec_digest(req):
+        return existing
 
     # Resolve the source rootfs before any allocation, so an unknown named
     # image fails fast with no vm dir/tap/forward left to roll back. Unset
@@ -1359,6 +1365,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "host_port": host_port,
         "url": host_authority(PUBLIC_HOST, host_port),
         "created_at": now_iso(),
+        "create_spec": create_spec_digest(req),
         "snapshots": [],
     }
     save_meta(meta)
@@ -1390,10 +1397,17 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     return meta
 
 
+def create_spec_digest(req: dict) -> str:
+    """the digest a create is remembered by, so the same create sent again
+    can be told from a different one under the same name."""
+    return hashlib.sha256(json.dumps(req, sort_keys=True).encode()).hexdigest()
+
+
 def destroy_vm(vm_id: str) -> None:
     meta = load_meta(vm_id)
     if not meta:
-        raise HTTPError(404, "vm not found")
+        # already gone: a retried destroy succeeds rather than 404ing.
+        return
     stop_firecracker(meta)
     if "host_port" in meta:
         del_agent_forward(meta["host_port"], meta["guest_ip"])
@@ -3756,6 +3770,100 @@ def goarch() -> str:
 REQUEST_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
+# idempotency. a mutating request carrying Idempotency-Key runs once per key:
+# a repeat gets the first response back, and a repeat that arrives while the
+# first is still running waits for it. answers below 500 are kept on disk for
+# IDEMPOTENCY_TTL seconds, so a retry after a lost response or an agent restart
+# still replays; a 5xx is not kept, so the retry runs again. the key is scoped
+# to one method and path: reusing it for another request is a 422.
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+IDEMPOTENCY_KEY_RE = re.compile(r"[A-Za-z0-9_.:/-]{1,256}")
+IDEMPOTENCY_TTL = float(os.environ.get("FC_AGENT_IDEMPOTENCY_TTL", str(24 * 3600)))
+IDEMPOTENCY_SWEEP_INTERVAL = 3600.0
+_idem_lock = threading.Lock()
+_idem_inflight: dict[str, threading.Event] = {}
+_idem_last_sweep = 0.0
+
+
+def idem_dir() -> Path:
+    return STATE_DIR / "idempotency"
+
+
+def _idem_path(key: str) -> Path:
+    return idem_dir() / (hashlib.sha256(key.encode()).hexdigest() + ".json")
+
+
+def idem_load(key: str) -> dict | None:
+    """the stored response for key, or None when there is none or it expired."""
+    p = _idem_path(key)
+    try:
+        rec = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return None
+    if time.time() - float(rec.get("at", 0)) > IDEMPOTENCY_TTL:
+        p.unlink(missing_ok=True)
+        return None
+    return rec
+
+
+def idem_save(key: str, request: str, code: int, ctype: str, body: bytes) -> None:
+    d = idem_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    rec = {"at": time.time(), "request": request, "code": code, "ctype": ctype,
+           "body": base64.b64encode(body).decode()}
+    p = _idem_path(key)
+    # a fresh file renamed into place, so a reader never sees a partial record.
+    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
+    tmp.write_text(json.dumps(rec))
+    os.replace(tmp, p)
+    idem_sweep()
+
+
+def idem_sweep(now: float | None = None) -> None:
+    """delete expired records, at most once per IDEMPOTENCY_SWEEP_INTERVAL."""
+    global _idem_last_sweep
+    now = time.time() if now is None else now
+    with _idem_lock:
+        if now - _idem_last_sweep < IDEMPOTENCY_SWEEP_INTERVAL:
+            return
+        _idem_last_sweep = now
+    try:
+        entries = list(idem_dir().iterdir())
+    except OSError:
+        return
+    for p in entries:
+        try:
+            if now - p.stat().st_mtime > IDEMPOTENCY_TTL:
+                p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def idem_begin(key: str, request: str) -> dict | None:
+    """claim key for request. returns the stored response to replay, or None
+    when the caller now owns the key and must run the request, then call
+    idem_end. a repeat of an in-flight key waits for it to finish."""
+    while True:
+        with _idem_lock:
+            ev = _idem_inflight.get(key)
+            if ev is None:
+                rec = idem_load(key)
+                if rec is None:
+                    _idem_inflight[key] = threading.Event()
+                    return None
+                if rec.get("request") != request:
+                    raise HTTPError(422, f"{IDEMPOTENCY_HEADER} was already used for {rec.get('request')}")
+                return rec
+        ev.wait()
+
+
+def idem_end(key: str) -> None:
+    with _idem_lock:
+        ev = _idem_inflight.pop(key, None)
+    if ev is not None:
+        ev.set()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "fc-agent/0.1"
     # keep-alive, so fc-uffd's page fetches reuse one connection each instead
@@ -3805,6 +3913,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self, code: int, obj) -> None:
         body = json.dumps(obj).encode()
+        self._remember(code, "application/json", body)
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -3814,10 +3923,12 @@ class Handler(BaseHTTPRequestHandler):
     def _text(self, code: int, msg: str) -> None:
         if code == 204:
             # a 204 has no body and no Content-Length.
+            self._remember(code, "", b"")
             self.send_response(code)
             self.end_headers()
             return
         body = msg.encode()
+        self._remember(code, "text/plain", body)
         self.send_response(code)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
@@ -3934,7 +4045,57 @@ class Handler(BaseHTTPRequestHandler):
             # its digest check would have rejected the body regardless.
             self.close_connection = True
 
+    def _idem_claim(self, method: str, path: str) -> dict | None:
+        """take the request's Idempotency-Key, if it is a mutating request
+        that carries one. returns a stored response to replay, or None to run
+        the request; a run's answer is stored by _remember."""
+        headers = getattr(self, "headers", None)
+        key = headers.get(IDEMPOTENCY_HEADER, "") if headers is not None else ""
+        if not key or method not in ("POST", "PUT", "DELETE"):
+            return None
+        if not IDEMPOTENCY_KEY_RE.fullmatch(key):
+            raise HTTPError(400, f"invalid {IDEMPOTENCY_HEADER}")
+        request = f"{method} {path}"
+        rec = idem_begin(key, request)
+        if rec is None:
+            self._idem = (key, request)
+        return rec
+
+    def _remember(self, code: int, ctype: str, body: bytes) -> None:
+        # stored before the response is written, so a client that drops the
+        # connection mid-response still gets this answer on its retry.
+        idem = getattr(self, "_idem", None)
+        if idem is None or code >= 500:
+            return
+        try:
+            idem_save(idem[0], idem[1], code, ctype, body)
+        except OSError as e:
+            # the request already ran; failing its answer now would only
+            # invite the retry this store exists to absorb.
+            sys.stderr.write(f"[fc-agent] idempotency record not saved: {e}\n")
+
+    def _replay(self, rec: dict) -> None:
+        code = int(rec["code"])
+        body = base64.b64decode(rec.get("body", ""))
+        self.send_response(code)
+        self.send_header("Idempotent-Replayed", "true")
+        if code != 204:
+            self.send_header("Content-Type", rec.get("ctype") or "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if code != 204:
+            self.wfile.write(body)
+
     def _route(self, method: str):
+        self._idem = None
+        try:
+            return self._dispatch(method)
+        finally:
+            if self._idem is not None:
+                idem_end(self._idem[0])
+                self._idem = None
+
+    def _dispatch(self, method: str):
         # the handler lives as long as the connection, so this is per request.
         self._body_read = False
         path = self.path.split("?", 1)[0]
@@ -3959,6 +4120,11 @@ class Handler(BaseHTTPRequestHandler):
                     if "=" in kv:
                         k, v = kv.split("=", 1)
                         query[k] = v
+
+            # a keyed repeat replays the first answer instead of running again.
+            replay = self._idem_claim(method, path)
+            if replay is not None:
+                return self._replay(replay)
 
             # /v1/vm collection
             if path == "/v1/vm" and method == "POST":

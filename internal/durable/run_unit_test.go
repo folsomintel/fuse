@@ -47,3 +47,17 @@ func TestInvocationRequestID(t *testing.T) {
 		}
 	}
 }
+
+// every step of an invocation gets its own key and a retry of the step gets
+// the same one; no invocation id means no key.
+func TestStepIdempotencyKey(t *testing.T) {
+	if got := stepIdempotencyKey("inv_1", "create", "boot"); got != "inv_1:create.boot" {
+		t.Errorf("got %q", got)
+	}
+	if stepIdempotencyKey("inv_1", "create", "boot") == stepIdempotencyKey("inv_1", "create", "agent") {
+		t.Error("two steps share a key")
+	}
+	if got := stepIdempotencyKey("", "create", "boot"); got != "" {
+		t.Errorf("no invocation: got %q, want empty", got)
+	}
+}
