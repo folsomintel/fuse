@@ -201,7 +201,8 @@
                         "enum": [
                             "provisioning",
                             "running",
-                            "destroying"
+                            "destroying",
+                            "destroy_failed"
                         ],
                         "type": "string",
                         "description": "Filter by state",

@@ -42,7 +42,7 @@ func (VM) Fields() []ent.Field {
 		field.String("host_id").Default(""),
 		field.String("network_host").Default(""),
 		field.Enum("state").Values(
-			"provisioning", "running", "draining", "destroying",
+			"provisioning", "running", "draining", "destroying", "destroy_failed",
 			// terminal states written by the event path
 			"destroyed", "failed",
 		),

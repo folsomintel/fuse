@@ -120,6 +120,12 @@ fn unknown_enum_values_pass_through() {
     assert!(!state.is_terminal());
 
     assert_eq!(EnvironmentState::from("failed"), EnvironmentState::Failed);
+    // destroy_failed is known, and not terminal: the environment still exists.
+    assert_eq!(
+        EnvironmentState::from("destroy_failed"),
+        EnvironmentState::DestroyFailed
+    );
+    assert!(!EnvironmentState::DestroyFailed.is_terminal());
     assert!(EnvironmentState::Failed.is_terminal());
     assert!(EnvironmentState::Running.is_settled());
     assert!(!EnvironmentState::Provisioning.is_settled());

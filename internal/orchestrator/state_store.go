@@ -230,6 +230,10 @@ const (
 	// DeadLetterDrainTimeout records an environment torn down because it
 	// stayed in draining past the draining timeout with no DELETE.
 	DeadLetterDrainTimeout DeadLetterKind = "drain_timeout"
+
+	// DeadLetterDestroy records a durable destroy that ran out of retries
+	// and left its environment in destroy_failed.
+	DeadLetterDestroy DeadLetterKind = "destroy"
 )
 
 // DeadLetterRecord is a failure the reconciler has given up on retrying.

@@ -222,7 +222,7 @@ func stateStyle(state string) string {
 	switch state {
 	case fuse.StateRunning:
 		return styleGood.Render(state)
-	case fuse.StateFailed:
+	case fuse.StateFailed, fuse.StateDestroyFailed:
 		return styleBad.Render(state)
 	case fuse.StateProvisioning, fuse.StateDraining, fuse.StateDestroying:
 		return styleWarn.Render(state)

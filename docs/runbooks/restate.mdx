@@ -126,11 +126,20 @@ docker exec fuse-restate restate invocations cancel <id>   # or kill
 
 or the ui at `http://127.0.0.1:9070/ui` (through the ssh tunnel).
 
+destroys run as `Environment/<vm_id>/Destroy`. one stuck retrying a host shows
+its last error in the ui; one that ran out of retries left the environment in
+`destroy_failed` with a `destroy` dead letter
+(`orchestrator_destroy_dead_letters_total`). fix the host, then `DELETE` the
+environment again.
+
 ## restate-server is down
 
 - the orchestrator keeps serving its api; `/ready` reports restate degraded.
   operations that run on restate wait and resume once it is back; nothing
   in flight is lost, it is in `/var/lib/restate`.
+- a `DELETE /v1/environments/{id}` fails with a 500 until restate is back.
+  background teardowns (task completion, reconcile) stay `destroying` and
+  are re-sent by reconcile once it answers.
 - `systemctl status restate-server`, `journalctl -u restate-server -n 200`.
 - `docker` down takes restate with it (`Requires=docker.service`):
   `systemctl status docker`.

@@ -681,6 +681,8 @@ export const State = {
   Running: "running",
   Draining: "draining",
   Destroying: "destroying",
+  /** A destroy that ran out of retries. The environment may still exist on its host; destroy it again to retry. */
+  DestroyFailed: "destroy_failed",
   Destroyed: "destroyed",
   Failed: "failed",
 } as const;
