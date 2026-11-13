@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { pathOf, queryOf, readBody, serve, type TestServer } from "./server.js";
-import { FuseApiError, isConflict, isFuseApiError, isTerminalState, State } from "../src/index.js";
+import {
+  FuseApiError,
+  isConflict,
+  isFuseApiError,
+  isTerminalState,
+  State,
+} from "../src/index.js";
 
 let current: TestServer | undefined;
 afterEach(async () => {
@@ -116,7 +122,9 @@ describe("environments", () => {
   it("get decodes destroy_failed as a live, non-terminal state", async () => {
     current = await serve((req, res) => {
       res.setHeader("Content-Type", "application/json");
-      res.end(`{"id":"vm-1","state":"destroy_failed","task_id":"","url":"u","error":"host down"}`);
+      res.end(
+        `{"id":"vm-1","state":"destroy_failed","task_id":"","url":"u","error":"host down"}`,
+      );
     });
 
     const env = await current.client.environments.get("vm-1");
