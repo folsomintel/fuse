@@ -330,7 +330,13 @@ def test_environments_get_destroy_failed() -> None:
     respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
         return_value=httpx.Response(
             200,
-            json={"id": "vm-1", "state": "destroy_failed", "task_id": "", "url": "u", "error": "host down"},
+            json={
+                "id": "vm-1",
+                "state": "destroy_failed",
+                "task_id": "",
+                "url": "u",
+                "error": "host down",
+            },
         )
     )
     with new_client() as client:
