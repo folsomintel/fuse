@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.42.0](https://github.com/folsomintel/fuse/compare/v0.41.0...v0.42.0) (2026-11-13)
+
+
+### Features
+
+* restate cloud mode with signed handler requests over the tunnel or a public url ([#369](https://github.com/folsomintel/fuse/issues/369)) ([08463b5](https://github.com/folsomintel/fuse/commit/08463b51e6d8df345800dd4bce26791c8288d1ca))
+* run a pinned restate-server in docker from the orchestrator installer with drain-aware upgrades ([#366](https://github.com/folsomintel/fuse/issues/366)) ([6337862](https://github.com/folsomintel/fuse/commit/6337862785f5536652f7d9bae207f293ec81cc37))
+* trace api requests through fleet ops, restate steps and host agents with request-id propagation ([#368](https://github.com/folsomintel/fuse/issues/368)) ([05186fb](https://github.com/folsomintel/fuse/commit/05186fba7d6e3b9c3be0cfac30a9f3dd7ebe22a1))
+* wire restate sdk-go with a durable handler endpoint and a local restate-server ([#365](https://github.com/folsomintel/fuse/issues/365)) ([10e7cd4](https://github.com/folsomintel/fuse/commit/10e7cd4a0e9529340fe4760e72d8eab84c153faa))
+
 ## [0.41.0](https://github.com/folsomintel/fuse/compare/v0.40.0...v0.41.0) (2026-11-11)
 
 
