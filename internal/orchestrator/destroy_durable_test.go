@@ -333,3 +333,32 @@ func TestRetryFailedTeardownsResendsDurably(t *testing.T) {
 		t.Fatal("re-sent destroy did not reach the host")
 	}
 }
+
+// a destroy_failed vm that later vanishes from its host is reaped with its
+// keys revoked: the failed destroy never reached DestroyFinish to do it.
+func TestReapDestroyFailedRevokesKeys(t *testing.T) {
+	p := &destroyErrProvider{mockProvider: newMockProvider(), err: errors.New("host down")}
+	fm, _, _ := newDurableFleet(t, p)
+	keys := &fakeEnvKeys{}
+	fm.SetEnvKeyStore(keys)
+	ctx := context.Background()
+	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.DestroyVM(ctx, "fuse-task-1"); err == nil {
+		t.Fatal("destroy succeeded against a failing host")
+	}
+	if len(keys.revoked) != 0 {
+		t.Fatalf("keys revoked before the vm is gone: %v", keys.revoked)
+	}
+
+	fm.reapDestroyedVMs(ctx, map[string]bool{})
+	if _, ok := fm.GetVM("fuse-task-1"); ok {
+		t.Fatal("destroy_failed vm not reaped")
+	}
+	keys.mu.Lock()
+	defer keys.mu.Unlock()
+	if len(keys.revoked) != 1 || keys.revoked[0] != "fuse-task-1" {
+		t.Fatalf("revoked %v, want the reaped vm", keys.revoked)
+	}
+}
