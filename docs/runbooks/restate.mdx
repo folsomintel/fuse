@@ -138,10 +138,21 @@ pull is retried under the `ARTIFACTS` policy with the host-agent idempotency
 key, so a restart mid-copy resumes it instead of starting a second one. a pull
 that fails for good deletes the partial copy on the destination. while a move
 runs, every snapshot it reads or writes is pinned in `ArtifactPin/<snapshot
-id>` state, which artifact gc reads before it deletes anything; a pin nothing
-releases (a killed invocation) lapses after 24h, a lazy migrate's after 35m.
+id>` state, which artifact gc reads before it deletes anything. a move's pins
+have no timer: every way the move ends (done, failed, cancelled) releases
+them, so only a killed invocation leaves them behind. release those by hand
+with the holder the state query below shows:
+
+```sh
+curl -s localhost:18080/ArtifactPin/<snapshot id>/Release \
+  -H 'content-type: application/json' -d '"move:<invocation id>"'
+```
+
+a lazy migrate's seed pin lapses after 35m if its watcher never releases it.
 gc skips an artifact whose pin it cannot read, so with restate down nothing
-is collected.
+is collected. a caller that stops waiting on a move (a restart, or an hour
+with no answer) leaves the files that move uses alone; the checkpoint loop
+forgets its chain instead of deleting it.
 
 ```sh
 q "SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'ArtifactPin'"
