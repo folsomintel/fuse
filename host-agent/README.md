@@ -223,6 +223,36 @@ dual-stack host and falling back to IPv6; an IPv6 host is bracketed
 with `PUBLIC_HOST=...` in the env — an IP or a hostname. Anything else fails at
 agent startup rather than emitting a URL nobody can reach.
 
+### Retries and idempotency
+
+Every mutating call (`POST`, `PUT`, `DELETE`) may carry an `Idempotency-Key`
+header. The orchestrator sends one on every call made inside a durable step
+(the restate invocation id + step name, then `/1`, `/2`, ... per call in the
+step) and retries keyed calls on a transport error or a 5xx, up to 3 attempts.
+Unkeyed calls are sent once, as before.
+
+The agent keeps each keyed answer below 500 in `agent-state/idempotency/` for
+24h (`FC_AGENT_IDEMPOTENCY_TTL` / `QEMU_AGENT_IDEMPOTENCY_TTL`, seconds). A
+repeat with the same key gets that answer back with `Idempotent-Replayed: true`
+and does not run again; a repeat that arrives while the first is still running
+waits for it. A 5xx is not kept, so its retry runs again. A key is bound to one
+method and path; reusing it for another is a `422`. The answer is stored before
+it is written, so a client that loses the connection mid-response still gets it
+on retry.
+
+Covered by the key: create, create-from-checkpoint (`seed_snapshot`), fork,
+destroy, snapshot (cold / live / diff / shrunk), restore, artifact pull (move
+and delta move), egress provision / release, upload, start-agent /
+start-surfd, exec, pause / resume and snapshot delete.
+
+Safe to repeat without a key:
+
+- `DELETE /v1/vm/{id}` of a vm that is already gone returns `204`.
+- `POST /v1/vm` naming an existing vm with the identical request body returns
+  that vm; a different body under the name is still `409`.
+- `DELETE /v1/vm/{id}/egress` and snapshot deletes answer `404` once the thing
+  is gone, which the orchestrator already treats as done.
+
 ## Networking model
 
 - One TAP per VM (`fcv<N>`), /30 subnet `10.200.<N>.0/30`, host `.1`, guest `.2`.
