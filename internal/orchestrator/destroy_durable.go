@@ -175,11 +175,17 @@ func (fm *FleetManager) DestroyBegin(ctx context.Context, vmID, reason string) (
 	}
 
 	fm.mu.Lock()
+	priorState := v.state
 	v.state = VMStateDestroying
 	v.taskID = ""
 	v.updatedAt = time.Now()
 	fm.mu.Unlock()
 	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		// put the state back, so the retry still sees a vm that has not
+		// started destroying and sends the vm.destroying event.
+		fm.mu.Lock()
+		v.state = priorState
+		fm.mu.Unlock()
 		return DestroyTarget{}, fmt.Errorf("persist vm %s destroying state: %w", vmID, err)
 	}
 	if !already {
@@ -235,6 +241,13 @@ func (fm *FleetManager) DestroyUnpublishIngress(ctx context.Context, vmID string
 // DestroyFinish returns the vm's host allocation, deletes its row and closes
 // out what belonged to it: pending interventions, grants and scoped keys.
 func (fm *FleetManager) DestroyFinish(ctx context.Context, vmID, reason string) error {
+	// the row goes first: a failed delete leaves the vm tracked, so the
+	// retry still finds it and sends the vm.removed and terminal events.
+	if fm.store != nil {
+		if err := fm.store.DeleteVM(ctx, vmID); err != nil {
+			return fmt.Errorf("delete vm %s row: %w", vmID, err)
+		}
+	}
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if ok {
@@ -244,11 +257,6 @@ func (fm *FleetManager) DestroyFinish(ctx context.Context, vmID, reason string) 
 		delete(fm.vms, vmID)
 	}
 	fm.mu.Unlock()
-	if fm.store != nil {
-		if err := fm.store.DeleteVM(ctx, vmID); err != nil {
-			return fmt.Errorf("delete vm %s row: %w", vmID, err)
-		}
-	}
 	if ok {
 		fm.appendEvent(ctx, "vm", vmID, "vm.removed", map[string]any{"reason": reason})
 		fm.publishTerminalEvent(vmID, VMStateDestroyed, "")

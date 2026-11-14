@@ -229,6 +229,87 @@ func TestDestroyFinishIsIdempotent(t *testing.T) {
 	}
 }
 
+// failOnceStore fails the next DeleteVM or UpsertVM once.
+type failOnceStore struct {
+	*MemoryStateStore
+	mu         sync.Mutex
+	failDelete bool
+	failUpsert bool
+}
+
+func (s *failOnceStore) DeleteVM(ctx context.Context, vmID string) error {
+	s.mu.Lock()
+	fail := s.failDelete
+	s.failDelete = false
+	s.mu.Unlock()
+	if fail {
+		return errors.New("injected delete failure")
+	}
+	return s.MemoryStateStore.DeleteVM(ctx, vmID)
+}
+
+func (s *failOnceStore) UpsertVM(ctx context.Context, rec VMRecord) error {
+	s.mu.Lock()
+	fail := s.failUpsert
+	s.failUpsert = false
+	s.mu.Unlock()
+	if fail {
+		return errors.New("injected upsert failure")
+	}
+	return s.MemoryStateStore.UpsertVM(ctx, rec)
+}
+
+// waitForState reads ch until an event in state want arrives.
+func waitForState(t *testing.T, ch <-chan EnvironmentEvent, want VMState) {
+	t.Helper()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if ev.State == want {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("no %s event", want)
+		}
+	}
+}
+
+// a step that fails a write and is retried must still send the events the
+// first attempt never reached.
+func TestDestroyStepRetriesKeepEvents(t *testing.T) {
+	store := &failOnceStore{MemoryStateStore: NewMemoryStateStore()}
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), StateStore: store, Prefix: "fuse-"})
+	ctx := context.Background()
+	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ch, cancel := fm.SubscribeEnvironmentEvents("fuse-task-1")
+	defer cancel()
+
+	store.mu.Lock()
+	store.failUpsert = true
+	store.mu.Unlock()
+	if _, err := fm.DestroyBegin(ctx, "fuse-task-1", DestroyReasonManual); err == nil {
+		t.Fatal("begin succeeded with a failing persist")
+	}
+	if _, err := fm.DestroyBegin(ctx, "fuse-task-1", DestroyReasonManual); err != nil {
+		t.Fatalf("retried begin: %v", err)
+	}
+	waitForState(t, ch, VMStateDestroying)
+
+	store.mu.Lock()
+	store.failDelete = true
+	store.mu.Unlock()
+	if err := fm.DestroyFinish(ctx, "fuse-task-1", DestroyReasonManual); err == nil {
+		t.Fatal("finish succeeded with a failing delete")
+	}
+	if err := fm.DestroyFinish(ctx, "fuse-task-1", DestroyReasonManual); err != nil {
+		t.Fatalf("retried finish: %v", err)
+	}
+	waitForState(t, ch, VMStateDestroyed)
+}
+
 func TestRetryFailedTeardownsResendsDurably(t *testing.T) {
 	p := newMockProvider()
 	fm, d, _ := newDurableFleet(t, p)
