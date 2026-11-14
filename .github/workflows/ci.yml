@@ -211,7 +211,7 @@ jobs:
         run: python -m unittest test_qemu_agent -v
       - name: Test Firecracker agent
         working-directory: host-agent/firecracker/tests
-        run: python -m unittest test_fc_agent_public_host test_fc_agent_sock_path test_fc_agent_egress test_fc_agent_live_artifact test_fc_agent_tunnel test_fc_agent_lazy_mem test_fc_agent_delta test_fc_agent_keepalive test_fc_agent_request_id test_fc_uffd_workers -v
+        run: python -m unittest test_fc_agent_public_host test_fc_agent_sock_path test_fc_agent_egress test_fc_agent_live_artifact test_fc_agent_tunnel test_fc_agent_lazy_mem test_fc_agent_delta test_fc_agent_keepalive test_fc_agent_request_id test_fc_agent_idempotency test_fc_uffd_workers -v
 
   # Rust SDK (sdks/rust): fmt, clippy, test. Independent of the Go, TS, and
   # Python jobs.

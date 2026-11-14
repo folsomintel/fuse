@@ -55,9 +55,10 @@ func NewClient() *http.Client {
 		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 			return fmt.Errorf("%w: %s", ErrRedirectNotAllowed, req.URL.Redacted())
 		},
-		// every call carries the request id and trace context and gets a
-		// client span; see internal/telemetry.
-		Transport: &telemetry.Transport{Peer: "host-agent", Base: &http.Transport{
+		// mutating calls made under WithIdempotencyKey carry a key and are
+		// retried on a lost response; every attempt carries the request id
+		// and trace context and gets a client span; see internal/telemetry.
+		Transport: &idempotencyTransport{Base: &telemetry.Transport{Peer: "host-agent", Base: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   agentDialTimeout,
@@ -67,7 +68,7 @@ func NewClient() *http.Client {
 			ResponseHeaderTimeout: agentResponseHeaderTimeout,
 			IdleConnTimeout:       agentIdleConnTimeout,
 			MaxIdleConnsPerHost:   4,
-		}},
+		}}},
 	}
 }
 
