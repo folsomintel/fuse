@@ -31,6 +31,10 @@ type checkpointChain struct {
 	// size, so it is not updated per tick (the merged record only carries
 	// the delta that moved).
 	bytes int64
+	// pending is set on restate while a tick's copy to the standby runs.
+	// there the chain's state lives on the Environment object, and this
+	// struct only mirrors it (MirrorChain).
+	pending bool
 }
 
 // setStandbyLocked records where the chain's base lives and how big it is.
@@ -161,6 +165,10 @@ func (fm *FleetManager) checkpointLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if d := fm.durableSnapshotsClient(); d != nil {
+				fm.checkpointTickDurable(ctx, d)
+				continue
+			}
 			fm.checkpointTick(ctx)
 		}
 	}
@@ -349,7 +357,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		}
 	}
 	if keep {
-		child, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+		child, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 			Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 			Live: true, Diff: true, Parent: c.head.SnapshotID, NoLineage: true,
 		})
@@ -394,7 +402,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	if standby == "" {
 		return
 	}
-	full, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+	full, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 		Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 		Live: true, NoLineage: true,
 	})

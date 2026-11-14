@@ -27,7 +27,8 @@ type Destroyer interface {
 // crash the handler resumes at the first unfinished one. the host destroy
 // retries under policy; when it runs out the vm is left destroy_failed with a
 // dead letter, and the invocation fails with the last error.
-func destroy(ctx restate.ObjectContext, fleet Destroyer, policy RetryPolicy, req orchestrator.DestroyRequest) error {
+// the last step drops what the vm's checkpoint chain held.
+func destroy(ctx restate.ObjectContext, fleet destroyFleet, policy RetryPolicy, req orchestrator.DestroyRequest) error {
 	vmID := restate.Key(ctx)
 
 	target, err := Run(ctx, opDestroy, "begin", func(c context.Context) (orchestrator.DestroyTarget, error) {
@@ -44,7 +45,8 @@ func destroy(ctx restate.ObjectContext, fleet Destroyer, policy RetryPolicy, req
 	if !target.Tracked {
 		if req.HostID == "" {
 			// neither tracked nor placed: an earlier destroy finished it.
-			return nil
+			// any checkpoint chain the object still keeps for it goes too.
+			return dropChain(ctx, fleet)
 		}
 		hostID = req.HostID
 	}
@@ -78,9 +80,19 @@ func destroy(ctx restate.ObjectContext, fleet Destroyer, policy RetryPolicy, req
 	}); err != nil {
 		return err
 	}
-	return step(ctx, "finish", func(c context.Context) error {
+	if err := step(ctx, "finish", func(c context.Context) error {
 		return fleet.DestroyFinish(c, vmID, req.Reason)
-	})
+	}); err != nil {
+		return err
+	}
+	return dropChain(ctx, fleet)
+}
+
+// destroyFleet is what the destroy handler drives: its own steps, and the
+// checkpoint chain it drops at the end.
+type destroyFleet interface {
+	Destroyer
+	Checkpoints
 }
 
 // step is Run for a step with no result.

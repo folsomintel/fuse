@@ -30,6 +30,11 @@ type ArtifactMoveJob struct {
 	Base     string `json:"base,omitempty"`
 	DropBase bool   `json:"drop_base,omitempty"`
 
+	// Notify names the vm whose checkpoint chain waits on this move. its end
+	// is sent to Environment/{Notify}.ChainMoved instead of being awaited,
+	// so the chain does not hold the vm's object for the whole copy.
+	Notify string `json:"notify,omitempty"`
+
 	// what the copy's record takes from the moved record.
 	TenantID  string       `json:"tenant_id"`
 	LayerKey  string       `json:"layer_key,omitempty"`

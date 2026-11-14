@@ -571,6 +571,7 @@ func run() error {
 		restateClient = durable.NewClient(durableCfg)
 		fm.SetDurableDestroyer(restateClient)
 		fm.SetDurableArtifacts(restateClient)
+		fm.SetDurableSnapshots(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()

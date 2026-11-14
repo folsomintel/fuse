@@ -625,6 +625,11 @@ type FleetManager struct {
 	// nil in mode off. see artifacts_durable.go.
 	durableArtifacts DurableArtifacts
 
+	// durableSnapshots runs snapshots, restores, the checkpoint chain and
+	// retention gc on restate; nil in mode off. see snapshot_durable.go and
+	// checkpoints_durable.go.
+	durableSnapshots DurableSnapshots
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
