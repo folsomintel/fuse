@@ -269,7 +269,8 @@ func (fm *FleetManager) DestroyFinish(ctx context.Context, vmID, reason string) 
 
 // DestroyFailed records a destroy that ran out of retries: the vm moves to
 // destroy_failed with the last error, and a dead letter is written. a later
-// DELETE retries it.
+// DELETE retries it. unlike reconcile's best-effort recordDeadLetter, a failed
+// dead-letter write fails the step, so restate retries it.
 func (fm *FleetManager) DestroyFailed(ctx context.Context, vmID, reason, lastErr string) error {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
@@ -285,12 +286,19 @@ func (fm *FleetManager) DestroyFailed(ctx context.Context, vmID, reason, lastErr
 		}
 		fm.publishStateChange(vmID, "")
 	}
-	fm.recordDeadLetter(ctx, DeadLetterRecord{
-		Kind:     DeadLetterDestroy,
-		EntityID: vmID,
-		Reason:   lastErr,
-		Payload:  dlPayload("reason", reason),
-	})
+	if fm.store != nil {
+		now := time.Now()
+		if err := fm.store.UpsertDeadLetter(ctx, DeadLetterRecord{
+			Kind:        DeadLetterDestroy,
+			EntityID:    vmID,
+			Reason:      lastErr,
+			Payload:     dlPayload("reason", reason),
+			FirstSeenAt: now,
+			LastSeenAt:  now,
+		}); err != nil {
+			return fmt.Errorf("record destroy dead letter for vm %s: %w", vmID, err)
+		}
+	}
 	fm.appendEvent(ctx, "vm", vmID, "vm.destroy_failed", map[string]any{"reason": reason, "error": lastErr})
 	if m, ok := fm.metrics.(DestroyDeadLetterMetrics); ok {
 		m.DestroyDeadLettered()
