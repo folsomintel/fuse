@@ -105,3 +105,18 @@ func TestOperationCompletedCountsByResult(t *testing.T) {
 		t.Fatalf("duration series = %d, want 1", n)
 	}
 }
+
+func TestArtifactMoveCompletedCountsBytesAndFailures(t *testing.T) {
+	m := NewPrometheusMetrics(prometheus.NewRegistry())
+	m.ArtifactMoveCompleted("h-a", "h-b", 4096, time.Second, nil)
+	m.ArtifactMoveCompleted("h-a", "h-b", 0, time.Second, errors.New("peer reset"))
+	if n := testutil.ToFloat64(m.artifactMoveBytes.WithLabelValues("h-a", "h-b")); n != 4096 {
+		t.Fatalf("bytes = %v, want 4096", n)
+	}
+	if n := testutil.ToFloat64(m.artifactMoveFailures.WithLabelValues("h-a", "h-b")); n != 1 {
+		t.Fatalf("failures = %v, want 1", n)
+	}
+	if n := testutil.CollectAndCount(m.artifactMoveDuration); n != 2 {
+		t.Fatalf("duration series = %d, want 2 (ok and error)", n)
+	}
+}
