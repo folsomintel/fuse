@@ -36,6 +36,10 @@ func destroy(ctx restate.ObjectContext, fleet Destroyer, policy RetryPolicy, req
 	if err != nil {
 		return err
 	}
+	if target.Replaced {
+		// a create cleanup whose vm id a retried create now holds.
+		return nil
+	}
 	hostID := target.HostID
 	if !target.Tracked {
 		if req.HostID == "" {

@@ -25,6 +25,9 @@ func (d *inlineDestroyer) run(ctx context.Context, vmID string, req DestroyReque
 	if err != nil {
 		return err
 	}
+	if target.Replaced {
+		return nil
+	}
 	hostID := target.HostID
 	if !target.Tracked {
 		if req.HostID == "" {
@@ -146,6 +149,27 @@ func TestDurableCreateCleanupCarriesHost(t *testing.T) {
 	sent, _ := d.requests()
 	if len(sent) != 1 || sent[0].Reason != DestroyReasonCreateCleanup {
 		t.Fatalf("sent %+v, want one create_cleanup destroy", sent)
+	}
+}
+
+// a retried create reuses the vm id; the first attempt's cleanup arriving
+// after it must not destroy the replacement.
+func TestCreateCleanupSparesReplacement(t *testing.T) {
+	p := newMockProvider()
+	fm, d, _ := newDurableFleet(t, p)
+	ctx := context.Background()
+	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SendDestroy(ctx, "fuse-task-1", DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: "h1"}); err != nil {
+		t.Fatal(err)
+	}
+	info, ok := fm.GetVM("fuse-task-1")
+	if !ok || info.State != VMStateRunning {
+		t.Fatalf("vm %+v (tracked %v), want the replacement still running", info, ok)
+	}
+	if p.count() != 1 {
+		t.Fatal("cleanup destroyed the replacement on the host")
 	}
 }
 
