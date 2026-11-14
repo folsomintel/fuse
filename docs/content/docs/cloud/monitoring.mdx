@@ -119,6 +119,13 @@ restate, one sample per executed step. A rising retry rate on one step is a
 host agent or dependency failing while restate keeps retrying it. See
 [Tracing](/docs/cloud/tracing) for following one request through its steps.
 
+**Artifact moves**: `orchestrator_artifact_move_duration_seconds{source_host,target_host,result}`,
+`orchestrator_artifact_move_bytes_total{source_host,target_host}` and
+`orchestrator_artifact_move_failures_total{source_host,target_host}` record each
+attempt at a host-to-host artifact copy (create seeding, off-host fork,
+migrate, checkpoint deltas), with restate on or off. Failures concentrated on
+one host pair point at the network between them or one agent.
+
 **HTTP health**: the standard RED metrics apply directly.
 
 - `rate(orchestrator_http_requests_total{code=~"5.."}[5m])` for server error
