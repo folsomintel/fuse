@@ -2,6 +2,8 @@ package durable
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	restate "github.com/restatedev/sdk-go"
@@ -12,12 +14,6 @@ import (
 
 // opArtifactMove is the op label on a move's step spans and metrics.
 const opArtifactMove = "artifact_move"
-
-// movePinTTL is how long a move's pins last if the move never releases them,
-// as when its invocation is killed. a move that finishes, fails or is
-// cancelled releases them itself; this only stops a dead one holding an
-// artifact forever.
-const movePinTTL = 24 * time.Hour
 
 // defaultPullAttemptBound is how long one pull attempt can take with no
 // ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS: the agent client's 10 minute request
@@ -51,7 +47,27 @@ func moveAbortTimeout(pullTimeout time.Duration) time.Duration {
 // state for the whole move, so gc leaves them alone across a restart. a pull
 // or record that fails for good deletes what reached the destination, so no
 // copy is left there that nothing records.
+//
+// the pins have no lapse timer: a move can outlast any fixed one while its
+// pull retries, and every way it ends (done, failed, cancelled) releases them.
+// only a killed invocation leaves them, for an operator to release.
 func move(ctx restate.ObjectContext, fleet Artifacts, policy RetryPolicy, job orchestrator.ArtifactMoveJob) (string, error) {
+	id, err := moveSteps(ctx, fleet, policy, job)
+	if err != nil && restate.IsTerminalError(err) {
+		// the code is what tells the waiting caller that the move itself
+		// ended, whichever restate-server version answers.
+		return "", restate.ToTerminalError(err, restate.WithErrorCode(moveFailedCode))
+	}
+	return id, err
+}
+
+// moveFailedCode is the error code a move that ended in failure answers its
+// caller with. a caller that gets any other error stopped waiting without
+// a result. not every restate-server marks an invocation's own failure with
+// the x-restate-error-source header, so the code carries it instead.
+const moveFailedCode restate.Code = 422
+
+func moveSteps(ctx restate.ObjectContext, fleet Artifacts, policy RetryPolicy, job orchestrator.ArtifactMoveJob) (string, error) {
 	if key := restate.Key(ctx); job.LocalID != key {
 		return "", restate.TerminalErrorf("move into %s sent to Artifacts/%s", job.LocalID, key)
 	}
@@ -67,7 +83,7 @@ func move(ctx restate.ObjectContext, fleet Artifacts, policy RetryPolicy, job or
 	ids := job.PinIDs()
 	for _, id := range ids {
 		if _, err := restate.Object[restate.Void](ctx, ArtifactPinObject, id, "Pin").
-			Request(PinRequest{Holder: holder, TTL: movePinTTL}); err != nil {
+			Request(PinRequest{Holder: holder}); err != nil {
 			return "", err
 		}
 	}
@@ -114,6 +130,7 @@ func releasePins(ctx restate.Context, holder string, ids []string) {
 }
 
 // PinRequest holds an ArtifactPin for Holder, until released or TTL passes.
+// a zero TTL never lapses.
 type PinRequest struct {
 	Holder string        `json:"holder"`
 	TTL    time.Duration `json:"ttl"`
@@ -133,8 +150,8 @@ const pinHoldersKey = "holders"
 // than a sleeping invocation, so a pin held for hours pins nothing to this
 // deployment.
 func pin(ctx restate.ObjectContext, req PinRequest) error {
-	if req.Holder == "" || req.TTL <= 0 {
-		return restate.TerminalErrorf("pin needs a holder and a positive ttl")
+	if req.Holder == "" || req.TTL < 0 {
+		return restate.TerminalErrorf("pin needs a holder and a ttl that is not negative")
 	}
 	now, err := restate.Run(ctx, func(restate.RunContext) (int64, error) {
 		return time.Now().UnixMilli(), nil
@@ -149,6 +166,12 @@ func pin(ctx restate.ObjectContext, req PinRequest) error {
 	if holders == nil {
 		holders = map[string]int64{}
 	}
+	if req.TTL == 0 {
+		// held until released. 0 is never a deadline, so no lapse matches it.
+		holders[req.Holder] = 0
+		restate.Set(ctx, pinHoldersKey, holders)
+		return nil
+	}
 	deadline := now + req.TTL.Milliseconds()
 	holders[req.Holder] = deadline
 	restate.Set(ctx, pinHoldersKey, holders)
@@ -159,23 +182,23 @@ func pin(ctx restate.ObjectContext, req PinRequest) error {
 
 // release is ArtifactPin/{snapshot_id}.Release.
 func release(ctx restate.ObjectContext, holder string) error {
-	return dropHolder(ctx, holder, 0)
+	return dropHolder(ctx, holder, 0, false)
 }
 
 // expire is ArtifactPin/{snapshot_id}.Expire, the pin's timer.
 func expire(ctx restate.ObjectContext, e pinExpiry) error {
-	return dropHolder(ctx, e.Holder, e.Deadline)
+	return dropHolder(ctx, e.Holder, e.Deadline, true)
 }
 
-// dropHolder removes holder, or with a deadline only the pin that deadline
-// belongs to. the last holder out clears the object.
-func dropHolder(ctx restate.ObjectContext, holder string, deadline int64) error {
+// dropHolder removes holder (lapse false), or on a lapse only the pin that
+// deadline belongs to. the last holder out clears the object.
+func dropHolder(ctx restate.ObjectContext, holder string, deadline int64, lapse bool) error {
 	holders, err := restate.Get[map[string]int64](ctx, pinHoldersKey)
 	if err != nil {
 		return err
 	}
 	got, ok := holders[holder]
-	if !ok || (deadline != 0 && got != deadline) {
+	if !ok || (lapse && (got == 0 || got != deadline)) {
 		return nil
 	}
 	delete(holders, holder)
@@ -201,8 +224,20 @@ func pinned(ctx restate.ObjectSharedContext) (bool, error) {
 // request timeout of its own; ctx bounds the wait, and the move keeps running
 // if ctx ends first.
 func (c *Client) MoveArtifact(ctx context.Context, job orchestrator.ArtifactMoveJob) (string, error) {
-	return ingress.Object[orchestrator.ArtifactMoveJob, string](c.longIngress, ArtifactsObject, job.LocalID, "Move").
+	id, err := ingress.Object[orchestrator.ArtifactMoveJob, string](c.longIngress, ArtifactsObject, job.LocalID, "Move").
 		Request(ctx, job)
+	if err != nil && !moveEnded(err) {
+		// no answer from the move itself: it may still be running.
+		return "", fmt.Errorf("%w: %w", orchestrator.ErrArtifactMoveUnsettled, err)
+	}
+	return id, err
+}
+
+// moveEnded reports whether err is the move's own failure, answered with
+// moveFailedCode.
+func moveEnded(err error) bool {
+	var ierr ingress.Error
+	return errors.As(err, &ierr) && ierr.Code() == moveFailedCode
 }
 
 // PinArtifacts pins each id for holder, for at most ttl.

@@ -148,6 +148,13 @@ func TestMoveThroughRestate(t *testing.T) {
 			t.Fatalf("%s not pinned during the pull", job.PinIDs()[i])
 		}
 	}
+	// a caller that stops waiting gets an unsettled error, not a failure.
+	short, stop := context.WithTimeout(ctx, 200*time.Millisecond)
+	_, err := client.MoveArtifact(short, job)
+	stop()
+	if !errors.Is(err, orchestrator.ErrArtifactMoveUnsettled) {
+		t.Fatalf("abandoned wait: %v, want ErrArtifactMoveUnsettled", err)
+	}
 	close(fleet.block)
 
 	if err := <-done; err != nil {
@@ -174,6 +181,9 @@ func TestMoveDiscardsAfterPermanentFailure(t *testing.T) {
 	_, err := client.MoveArtifact(ctx, job)
 	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("move error %v, want the agent's refusal", err)
+	}
+	if errors.Is(err, orchestrator.ErrArtifactMoveUnsettled) {
+		t.Fatalf("the move's own failure %v reads as unsettled", err)
 	}
 	if got, want := fleet.steps(), "check,pull,discard"; got != want {
 		t.Fatalf("steps %s, want %s", got, want)
