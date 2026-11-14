@@ -22,6 +22,10 @@ type Client struct {
 	apiKey   string
 	http     *http.Client
 	ingress  *ingress.Client
+	// longIngress has no request timeout, for calls that wait on an
+	// invocation as long as its work takes (an artifact move). the caller's
+	// ctx bounds them.
+	longIngress *ingress.Client
 }
 
 // NewClient returns a client for cfg's ingress. a non-empty cfg.APIKey is sent
@@ -30,17 +34,23 @@ func NewClient(cfg Config) *Client {
 	// the transport carries the request id and trace context, so restate's
 	// invocation joins the api request's trace and the handler sees the id.
 	hc := &http.Client{Timeout: 30 * time.Second, Transport: &telemetry.Transport{Peer: "restate"}}
+	long := &http.Client{Transport: &telemetry.Transport{Peer: "restate"}}
+	return &Client{
+		url:         cfg.IngressURL,
+		adminURL:    cfg.AdminURL,
+		apiKey:      cfg.APIKey,
+		http:        hc,
+		ingress:     ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, hc)...),
+		longIngress: ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, long)...),
+	}
+}
+
+func ingressOptions(cfg Config, hc *http.Client) []ingress.ClientOption {
 	opts := []ingress.ClientOption{ingress.WithHttpClient(hc)}
 	if cfg.APIKey != "" {
 		opts = append(opts, ingress.WithAuthKey(cfg.APIKey))
 	}
-	return &Client{
-		url:      cfg.IngressURL,
-		adminURL: cfg.AdminURL,
-		apiKey:   cfg.APIKey,
-		http:     hc,
-		ingress:  ingress.NewClient(cfg.IngressURL, opts...),
-	}
+	return opts
 }
 
 // authorize adds the api key, when there is one.

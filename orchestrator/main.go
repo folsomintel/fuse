@@ -254,7 +254,8 @@ func run() error {
 		"largest startup script bound a request may ask for; must stay under -write-timeout")
 	flag.DurationVar(&artifactPullTimeout, "artifact-pull-timeout",
 		time.Duration(envInt("ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS", 0))*time.Second,
-		"bound on one host-to-host artifact copy (0 = bound only by the request context)")
+		"bound on one attempt at a host-to-host artifact copy; with restate on it is the pull step's timeout, "+
+			"not the request's (0 = bound only by the request context, or the agent client's timeout on restate)")
 	flag.DurationVar(&checkpointInterval, "checkpoint-interval",
 		time.Duration(envInt("ORCH_CHECKPOINT_INTERVAL_SECONDS", 0))*time.Second,
 		"take a background diff checkpoint of every firecracker vm this often and keep it merged on "+
@@ -569,6 +570,7 @@ func run() error {
 	if durableCfg.Mode != durable.ModeOff {
 		restateClient = durable.NewClient(durableCfg)
 		fm.SetDurableDestroyer(restateClient)
+		fm.SetDurableArtifacts(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()
