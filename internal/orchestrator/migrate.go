@@ -421,9 +421,11 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	if opts.Lazy {
 		// the seed on the source is now the only copy of every page the new
 		// vm has not touched yet, so it is held until the target has them all.
-		// taken before the source vm goes, and released by the watcher.
-		fm.beginArtifactPull(seed.SnapshotID)
-		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID)
+		// taken before the source vm goes, and released by the watcher. on
+		// restate the pin outlives a restart that loses the watcher, and
+		// lapses once no chunk could still arrive.
+		release := fm.holdArtifact(ctx, "lazy:"+newVMID, lazyMemoryPinTTL, seed.SnapshotID)
+		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID, release)
 	}
 
 	// from here the target is the guest; the source is only torn down.
@@ -453,6 +455,10 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 // target's grant is dead and no further chunk can arrive.
 const lazyMemoryWatchTimeout = 30 * time.Minute
 
+// lazyMemoryPinTTL is how long a durable lazy-memory pin lasts when no
+// watcher releases it: a little past the grant.
+const lazyMemoryPinTTL = lazyMemoryWatchTimeout + 5*time.Minute
+
 // lazyMemoryPollInterval is how often the target is asked how far along it is.
 var lazyMemoryPollInterval = 2 * time.Second
 
@@ -460,8 +466,9 @@ var lazyMemoryPollInterval = 2 * time.Second
 // target, then releases the seed it was paging from. the outcome is an event
 // either way: a failed transfer leaves a guest that will hang on its next
 // missing page, and the only thing the orchestrator can do is say so.
-func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string) {
-	defer fm.endArtifactPull(seedID)
+// release drops the pin on the seed.
+func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string, release func()) {
+	defer release()
 	w, ok := provider.(MemoryWatcher)
 	if !ok {
 		return

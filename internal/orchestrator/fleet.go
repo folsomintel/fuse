@@ -621,6 +621,10 @@ type FleetManager struct {
 	destroySendSlots chan struct{}
 	destroySends     sync.WaitGroup
 
+	// durableArtifacts runs artifact moves and holds pull pins on restate;
+	// nil in mode off. see artifacts_durable.go.
+	durableArtifacts DurableArtifacts
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
