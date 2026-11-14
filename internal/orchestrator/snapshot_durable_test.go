@@ -53,7 +53,7 @@ func (f *fakeDurableSnapshots) HoldChain(_ context.Context, vmID string, _ time.
 	return f.hold, f.holdErr
 }
 
-func (f *fakeDurableSnapshots) ReleaseChain(_ context.Context, _ string, reset bool) error {
+func (f *fakeDurableSnapshots) ReleaseChain(_ context.Context, _, _ string, reset bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.releases = append(f.releases, reset)
@@ -239,6 +239,24 @@ func TestReconcileSnapshots_durableSendsCollect(t *testing.T) {
 	}
 	if n := len(provider.envs[vmID].checkpoints); n != 2 {
 		t.Fatalf("%d checkpoints, want both still there", n)
+	}
+
+	// a move that pinned it after the marking keeps it, back in ready.
+	da := newFakeDurableArtifacts()
+	fm.SetDurableArtifacts(da)
+	if err := da.PinArtifacts(ctx, "move:x", 0, first.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.SnapshotCollect(ctx, first.SnapshotID); err != nil {
+		t.Fatalf("collect pinned: %v", err)
+	}
+	if rec, _ := fm.GetSnapshotByID(ctx, first.SnapshotID); rec.State != SnapshotStateReady {
+		t.Fatalf("pinned row %s after collect, want ready", rec.State)
+	}
+	_ = da.ReleaseArtifacts(ctx, "move:x", first.SnapshotID)
+	rec.State = SnapshotStateDeleting
+	if err := fm.upsertSnapshotRecord(ctx, rec); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := fm.SnapshotCollect(ctx, first.SnapshotID); err != nil {

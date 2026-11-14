@@ -469,7 +469,21 @@ func TestHoldChainKeepsTheTickOff(t *testing.T) {
 	if got := fleet.steps(); got != "" {
 		t.Fatalf("held tick ran steps %s", got)
 	}
-	if err := client.ReleaseChain(ctx, vm, false); err != nil {
+	// a second hold is refused while the first is live.
+	if again, err := client.HoldChain(ctx, vm, time.Hour); err != nil || !again.Busy {
+		t.Fatalf("second hold = %+v, %v; want busy", again, err)
+	}
+	// a release naming another hold changes nothing.
+	if err := client.ReleaseChain(ctx, vm, "not-the-holder", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Checkpoint(ctx, vm); err != nil {
+		t.Fatal(err)
+	}
+	if got := fleet.steps(); got != "" {
+		t.Fatalf("tick ran steps %s after a stranger's release", got)
+	}
+	if err := client.ReleaseChain(ctx, vm, hold.Holder, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Checkpoint(ctx, vm); err != nil {

@@ -38,6 +38,8 @@ type chainObject struct {
 	// HeldUntil is a migrate's hold, unix ms. ticks skip the chain until it
 	// passes or the migrate releases it.
 	HeldUntil int64 `json:"held_until,omitempty"`
+	// HeldBy is the hold's id, which its release has to name.
+	HeldBy string `json:"held_by,omitempty"`
 	// Dropped is a vm destroyed while a copy or a hold was in flight: what
 	// the chain holds is removed when that ends.
 	Dropped bool `json:"dropped,omitempty"`
@@ -144,7 +146,7 @@ func checkpointTick(ctx restate.ObjectContext, fleet Fleet, policy RetryPolicy) 
 		// a migrate of this vm is in progress.
 		return nil
 	}
-	st.HeldUntil = 0
+	st.HeldUntil, st.HeldBy = 0, ""
 
 	plan, err := Run(ctx, opCheckpoint, "plan", func(c context.Context) (orchestrator.ChainPlan, error) {
 		return fleet.ChainBegin(c, vmID, st.Chain)
@@ -344,9 +346,25 @@ func dropChain(ctx restate.ObjectContext, fleet Checkpoints) error {
 	if st.Pending != nil || st.HeldUntil > now {
 		st.Dropped = true
 		restate.Set(ctx, chainKey, st)
+		// the copy's report or the hold's release normally ends it. this
+		// delayed retry comes back when the hold or the copy's lapse is due,
+		// so a migrate or a move that died with its process does not leave
+		// the chain dropped forever.
+		restate.ObjectSend(ctx, EnvironmentObject, vmID, "RetireChain").
+			Send(restate.Void{}, restate.WithDelay(dropRetryDelay(st, now)))
 		return nil
 	}
 	return dropChainNow(ctx, fleet, vmID, st)
+}
+
+// dropRetryDelay is how long until a dropped chain's hold lapses or its copy
+// counts as never reporting back, whichever comes later, plus a margin.
+func dropRetryDelay(st chainObject, now int64) time.Duration {
+	due := st.HeldUntil
+	if st.Pending != nil {
+		due = max(due, st.Pending.Since+pendingLapse.Milliseconds())
+	}
+	return time.Duration(max(due-now, 0))*time.Millisecond + time.Minute
 }
 
 // holdChain is Environment/{vm_id}.HoldChain, taken by a delta migrate.
@@ -362,21 +380,30 @@ func holdChain(ctx restate.ObjectContext, fleet Checkpoints, lease time.Duration
 	if err != nil {
 		return orchestrator.ChainHold{}, err
 	}
-	st.HeldUntil = now + lease.Milliseconds()
+	if st.HeldUntil > now {
+		// another migrate holds it: one chain, one consumer of its base.
+		return orchestrator.ChainHold{Busy: true}, nil
+	}
+	st.HeldUntil, st.HeldBy = now+lease.Milliseconds(), ctx.Request().ID
 	saveChain(ctx, fleet, st)
-	return orchestrator.ChainHold{Chain: st.Chain}, nil
+	return orchestrator.ChainHold{Holder: st.HeldBy, Chain: st.Chain}, nil
 }
 
 // releaseChain is Environment/{vm_id}.ReleaseChain. reset forgets the chain
 // without deleting its base, which the migrate consumed or will leave to gc.
-func releaseChain(ctx restate.ObjectContext, fleet Checkpoints, reset bool) error {
+// a release that names any other hold than the current one (one that lapsed
+// and was taken again) changes nothing.
+func releaseChain(ctx restate.ObjectContext, fleet Checkpoints, req ReleaseRequest) error {
 	vmID := restate.Key(ctx)
 	st, err := loadChain(ctx)
 	if err != nil {
 		return err
 	}
-	st.HeldUntil = 0
-	if reset {
+	if req.Holder == "" || req.Holder != st.HeldBy {
+		return nil
+	}
+	st.HeldUntil, st.HeldBy = 0, ""
+	if req.Reset {
 		if st.Chain.Base != "" {
 			restate.ObjectSend(ctx, ArtifactPinObject, st.Chain.Base, "Release").Send(chainHolder(vmID))
 		}
@@ -392,6 +419,13 @@ func releaseChain(ctx restate.ObjectContext, fleet Checkpoints, reset bool) erro
 // HoldRequest is the input of HoldChain.
 type HoldRequest struct {
 	Lease time.Duration `json:"lease"`
+}
+
+// ReleaseRequest is the input of ReleaseChain: the hold it ends, and whether
+// the chain is forgotten with it.
+type ReleaseRequest struct {
+	Holder string `json:"holder"`
+	Reset  bool   `json:"reset,omitempty"`
 }
 
 // Checkpoint runs Environment/{vmID}.Checkpoint and waits for it.
@@ -412,9 +446,9 @@ func (c *Client) HoldChain(ctx context.Context, vmID string, lease time.Duration
 // ReleaseChain enqueues Environment/{vmID}.ReleaseChain without waiting: it
 // may queue behind a long op on the vm, and a hold that is not released only
 // lapses on its lease.
-func (c *Client) ReleaseChain(ctx context.Context, vmID string, reset bool) error {
-	_, err := ingress.ObjectSend[bool](c.ingress, EnvironmentObject, vmID, "ReleaseChain").
-		Send(ctx, reset)
+func (c *Client) ReleaseChain(ctx context.Context, vmID, holder string, reset bool) error {
+	_, err := ingress.ObjectSend[ReleaseRequest](c.ingress, EnvironmentObject, vmID, "ReleaseChain").
+		Send(ctx, ReleaseRequest{Holder: holder, Reset: reset})
 	return err
 }
 
