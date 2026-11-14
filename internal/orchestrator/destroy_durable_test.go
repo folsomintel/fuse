@@ -212,6 +212,26 @@ func TestDurableDestroyFailureDeadLetters(t *testing.T) {
 	}
 }
 
+// deadLetterErrStore fails every dead-letter write.
+type deadLetterErrStore struct{ *MemoryStateStore }
+
+func (deadLetterErrStore) UpsertDeadLetter(context.Context, DeadLetterRecord) error {
+	return errors.New("injected dead letter failure")
+}
+
+// the dead letter is the record of a destroy that gave up, so a failed write
+// fails the step for restate to retry instead of being dropped.
+func TestDestroyFailedReturnsDeadLetterError(t *testing.T) {
+	fm := NewFleetManager(FleetConfig{
+		Provider:   newMockProvider(),
+		StateStore: deadLetterErrStore{NewMemoryStateStore()},
+		Prefix:     "fuse-",
+	})
+	if err := fm.DestroyFailed(context.Background(), "fuse-gone", DestroyReasonManual, "host down"); err == nil {
+		t.Fatal("dead letter write failed but the step succeeded")
+	}
+}
+
 func TestDestroyFinishIsIdempotent(t *testing.T) {
 	p := newMockProvider()
 	fm, _, _ := newDurableFleet(t, p)
