@@ -855,12 +855,25 @@ class IdempotencyTest(unittest.TestCase):
         # from memory instead of running the command again.
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create, \
                 mock.patch.dict(qemu_agent._idem_unsaved, clear=True), \
-                mock.patch.object(Path, "write_text", side_effect=OSError(28, "no space left on device")):
+                mock.patch.object(qemu_agent.os, "replace", side_effect=OSError(28, "no space left on device")):
             first = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
             second = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
         self.assertEqual(create.call_count, 1)
         self.assertEqual(second[:2], first[:2])
         self.assertEqual(second[2], "true")
+
+    def test_records_are_private(self):
+        old = os.umask(0o022)
+        try:
+            with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}):
+                self.call("POST", "/v1/vm", {"name": "a"}, key="k-private")
+        finally:
+            os.umask(old)
+        d = qemu_agent.idem_dir()
+        self.assertEqual(d.stat().st_mode & 0o777, 0o700)
+        records = list(d.iterdir())
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].stat().st_mode & 0o777, 0o600)
 
     def test_expired_key_runs_again(self):
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:

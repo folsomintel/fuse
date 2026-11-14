@@ -1718,12 +1718,17 @@ def idem_save(key: str, request: str, code: int, ctype: str, body: bytes) -> Non
     rec = {"at": time.time(), "request": request, "code": code, "ctype": ctype,
            "body": base64.b64encode(body).decode()}
     try:
+        # records hold full responses, exec output included, so only the
+        # agent's user may read them, whatever the umask.
         d = idem_dir()
-        d.mkdir(parents=True, exist_ok=True)
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
         p = _idem_path(key)
         # a fresh file renamed into place, so a reader never sees a partial record.
         tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
-        tmp.write_text(json.dumps(rec))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(rec))
         os.replace(tmp, p)
     except OSError:
         with _idem_lock:
