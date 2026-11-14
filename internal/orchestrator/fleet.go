@@ -615,8 +615,11 @@ type FleetManager struct {
 	webhooks  webhookSender
 
 	// durableDestroy runs destroys on restate; nil in mode off. see
-	// destroy_durable.go.
-	durableDestroy DurableDestroyer
+	// destroy_durable.go. destroySendSlots bounds the one-way sends in
+	// flight and destroySends tracks them.
+	durableDestroy   DurableDestroyer
+	destroySendSlots chan struct{}
+	destroySends     sync.WaitGroup
 
 	cancel context.CancelFunc
 	done   chan struct{}

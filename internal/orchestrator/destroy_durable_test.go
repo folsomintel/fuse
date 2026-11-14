@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 	"testing"
@@ -108,6 +109,56 @@ func TestDurableDestroyVM(t *testing.T) {
 	}
 }
 
+// blockingDestroyer holds every send until release is closed.
+type blockingDestroyer struct {
+	inlineDestroyer
+	release chan struct{}
+	mu      sync.Mutex
+	active  int
+	peak    int
+}
+
+func (d *blockingDestroyer) SendDestroy(ctx context.Context, vmID string, req DestroyRequest) error {
+	d.mu.Lock()
+	d.active++
+	if d.active > d.peak {
+		d.peak = d.active
+	}
+	d.mu.Unlock()
+	<-d.release
+	d.mu.Lock()
+	d.active--
+	d.mu.Unlock()
+	return nil
+}
+
+// a restate that never answers must not hold up the caller, and holds at
+// most maxDestroySends sends at once.
+func TestDestroyAsyncDoesNotBlockAndIsBounded(t *testing.T) {
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	d := &blockingDestroyer{release: make(chan struct{})}
+	fm.SetDurableDestroyer(d)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 3*maxDestroySends; i++ {
+			fm.destroyAsync(fmt.Sprintf("fuse-%d", i), DestroyReasonExpired)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("destroyAsync blocked on a send")
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(d.release)
+	fm.destroySends.Wait()
+	if d.peak > maxDestroySends {
+		t.Fatalf("%d sends in flight, want at most %d", d.peak, maxDestroySends)
+	}
+}
+
 func TestDurableDestroyVMUnknownIsNotFound(t *testing.T) {
 	fm, d, _ := newDurableFleet(t, newMockProvider())
 	err := fm.DestroyVM(context.Background(), "fuse-missing")
@@ -129,6 +180,7 @@ func TestDurableCompleteTaskSendsDestroy(t *testing.T) {
 	if err := fm.CompleteTask("task-1"); err != nil {
 		t.Fatal(err)
 	}
+	fm.destroySends.Wait()
 	if sent, _ := d.requests(); len(sent) != 1 || sent[0].Reason != DestroyReasonTaskCompleted {
 		t.Fatalf("sent %+v, want one task_completed destroy", sent)
 	}
@@ -346,6 +398,7 @@ func TestRetryFailedTeardownsResendsDurably(t *testing.T) {
 	fm.mu.Unlock()
 
 	fm.retryFailedTeardowns(map[string]bool{"fuse-task-1": true})
+	fm.destroySends.Wait()
 	if sent, _ := d.requests(); len(sent) != 1 || sent[0].Reason != DestroyReasonRetry {
 		t.Fatalf("sent %+v, want one teardown_retry destroy", sent)
 	}

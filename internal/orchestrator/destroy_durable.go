@@ -20,6 +20,10 @@ const (
 // destroyAndRemove puts on the whole teardown.
 const destroyStepTimeout = 60 * time.Second
 
+// maxDestroySends bounds the one-way destroy sends in flight, so a restate
+// that accepts connections and never answers holds at most this many.
+const maxDestroySends = 8
+
 // DestroyRequest is the input of the durable Environment/{vm_id}.Destroy
 // handler.
 type DestroyRequest struct {
@@ -59,6 +63,9 @@ type DestroyDeadLetterMetrics interface {
 func (fm *FleetManager) SetDurableDestroyer(d DurableDestroyer) {
 	fm.mu.Lock()
 	fm.durableDestroy = d
+	if fm.destroySendSlots == nil {
+		fm.destroySendSlots = make(chan struct{}, maxDestroySends)
+	}
 	fm.mu.Unlock()
 }
 
@@ -69,19 +76,27 @@ func (fm *FleetManager) durableDestroyer() DurableDestroyer {
 }
 
 // destroyAsync starts a teardown without waiting for it: a one-way send to
-// restate, or the in-process destroyAndRemove in mode off. a send that fails
-// leaves the vm in destroying, where reconcile re-sends it.
+// restate, or the in-process destroyAndRemove in mode off. the send runs off
+// the caller's goroutine, at most maxDestroySends at a time, so a slow restate
+// never holds up reconcile. a send that fails leaves the vm in destroying,
+// where reconcile re-sends it.
 func (fm *FleetManager) destroyAsync(vmID, reason string) {
 	d := fm.durableDestroyer()
 	if d == nil {
 		go fm.destroyAndRemove(vmID)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := d.SendDestroy(ctx, vmID, DestroyRequest{Reason: reason}); err != nil {
-		fm.logger.Error("send durable destroy failed, reconcile will retry", "vm", vmID, "reason", reason, "err", err)
-	}
+	fm.destroySends.Add(1)
+	go func() {
+		defer fm.destroySends.Done()
+		fm.destroySendSlots <- struct{}{}
+		defer func() { <-fm.destroySendSlots }()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := d.SendDestroy(ctx, vmID, DestroyRequest{Reason: reason}); err != nil {
+			fm.logger.Error("send durable destroy failed, reconcile will retry", "vm", vmID, "reason", reason, "err", err)
+		}
+	}()
 }
 
 // cleanupFailedCreate tears down a vm a failed create already dropped from
