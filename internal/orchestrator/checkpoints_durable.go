@@ -50,8 +50,10 @@ type ChainMove struct {
 
 // ChainHold is what HoldChain hands a migrate.
 type ChainHold struct {
-	Busy  bool       `json:"busy,omitempty"`
-	Chain ChainState `json:"chain"`
+	Busy bool `json:"busy,omitempty"`
+	// Holder names the hold, for its release.
+	Holder string     `json:"holder,omitempty"`
+	Chain  ChainState `json:"chain"`
 }
 
 // ChainMoveResult is the end of a chain's move, sent by the Artifacts move
@@ -232,29 +234,30 @@ func (fm *FleetManager) ChainAdvanced(ctx context.Context, vmID string, chain Ch
 }
 
 // holdDurableChain holds vmID's chain on restate for a delta migrate and
-// returns a copy of it, or nil when it cannot be held: restate refused, or a
-// tick's copy is still running. a migrate without the hold takes a full seed
+// returns a copy of it and the hold's id, or nil when it cannot be held:
+// restate refused, a tick's copy is still running, or another migrate holds
+// it. a migrate without the hold takes a full seed
 // instead, which only costs the chain its next diff.
-func (fm *FleetManager) holdDurableChain(ctx context.Context, d DurableSnapshots, vmID string) *checkpointChain {
+func (fm *FleetManager) holdDurableChain(ctx context.Context, d DurableSnapshots, vmID string) (*checkpointChain, string) {
 	hold, err := d.HoldChain(ctx, vmID, chainHoldLease)
 	if err != nil {
 		fm.logger.WarnContext(ctx, "hold checkpoint chain failed; migrating without it", "vm", vmID, "err", err)
-		return nil
+		return nil, ""
 	}
 	if hold.Busy {
-		fm.logger.InfoContext(ctx, "checkpoint chain copy in flight; migrating without it", "vm", vmID)
-		return nil
+		fm.logger.InfoContext(ctx, "checkpoint chain busy (a copy in flight or another migrate); migrating without it", "vm", vmID)
+		return nil, ""
 	}
 	c := hold.Chain
-	return &checkpointChain{standby: c.Standby, head: c.Head, base: c.Base, bytes: c.Bytes}
+	return &checkpointChain{standby: c.Standby, head: c.Head, base: c.Base, bytes: c.Bytes}, hold.Holder
 }
 
 // releaseDurableChain ends a migrate's hold. reset forgets the chain, whose
 // base the migrate consumed or put out of step.
-func (fm *FleetManager) releaseDurableChain(d DurableSnapshots, vmID string, reset bool) {
+func (fm *FleetManager) releaseDurableChain(d DurableSnapshots, vmID, holder string, reset bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := d.ReleaseChain(ctx, vmID, reset); err != nil {
+	if err := d.ReleaseChain(ctx, vmID, holder, reset); err != nil {
 		fm.logger.Warn("release checkpoint chain failed; the hold lapses on its lease", "vm", vmID, "err", err)
 	}
 }

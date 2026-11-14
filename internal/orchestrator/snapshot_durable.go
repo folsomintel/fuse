@@ -71,11 +71,11 @@ type DurableSnapshots interface {
 	Checkpoint(ctx context.Context, vmID string) error
 	// HoldChain keeps the checkpoint loop off vmID's chain for lease, or
 	// until ReleaseChain, and returns the chain. Busy is set while a tick's
-	// copy is still running; nothing is held then.
+	// copy is still running or another hold is live; nothing is held then.
 	HoldChain(ctx context.Context, vmID string, lease time.Duration) (ChainHold, error)
-	// ReleaseChain ends a hold. reset forgets the chain, whose base the
-	// holder consumed or put out of step.
-	ReleaseChain(ctx context.Context, vmID string, reset bool) error
+	// ReleaseChain ends the hold named holder. reset forgets the chain,
+	// whose base the holder consumed or put out of step.
+	ReleaseChain(ctx context.Context, vmID, holder string, reset bool) error
 	// SendRetireChain enqueues the removal of what a gone vm's chain holds.
 	SendRetireChain(ctx context.Context, vmID string) error
 	// SendCollectSnapshot enqueues the deletion of a snapshot retention gc
@@ -147,13 +147,26 @@ func (fm *FleetManager) sendCollectSnapshot(ctx context.Context, d DurableSnapsh
 
 // SnapshotCollect deletes a snapshot retention gc marked deleting: its host
 // artifact, then its row. a row that is gone or no longer deleting was dealt
-// with already. a host that no longer has the artifact is not an error.
+// with already, and a pinned one is handed back. a host that no longer has
+// the artifact is not an error.
 func (fm *FleetManager) SnapshotCollect(ctx context.Context, snapshotID string) error {
 	record, found, err := fm.lookupSnapshotRecord(ctx, snapshotID)
 	if err != nil {
 		return err
 	}
 	if !found || record.State != SnapshotStateDeleting {
+		return nil
+	}
+	// the collection may have queued behind other ops on the vm while a move
+	// pinned the snapshot. a pinned one goes back to ready, and a later sweep
+	// marks it again once the pin is released.
+	if fm.snapshotPinned(ctx, snapshotID) {
+		record.State = SnapshotStateReady
+		record.UpdatedAt = time.Now()
+		if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
+			return fmt.Errorf("unmark pinned snapshot %s: %w", snapshotID, err)
+		}
+		fm.logger.InfoContext(ctx, "snapshot gc skipped a pinned snapshot", "snapshot", snapshotID)
 		return nil
 	}
 	if err := fm.deleteSnapshotArtifact(ctx, record); err != nil && !IsNotFound(err) {

@@ -171,7 +171,8 @@ and its base is pinned in `ArtifactPin` with holder `chain:<vm_id>`. the copy
 to the standby is a one-way `Artifacts` move that reports back to
 `Environment/<vm_id>/ChainMoved`, so a long copy does not hold the
 environment's other ops. a delta migrate takes `HoldChain` (a 1h lease) for
-the whole migrate; a tick on a held chain does nothing. a destroy drops the
+the whole migrate; a tick on a held chain does nothing, and a second migrate
+finds it busy and takes a full seed. a destroy drops the
 chain. a copy that never reports back (a killed `Artifacts` invocation) is
 forgotten after 2h without deleting anything.
 

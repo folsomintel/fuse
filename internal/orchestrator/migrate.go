@@ -195,12 +195,13 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	if d := fm.durableSnapshotsClient(); delta && d != nil {
 		// on restate the chain lives on the vm's Environment object, and
 		// the hold is what keeps the checkpoint loop off it.
-		chain = fm.holdDurableChain(ctx, d, vmID)
+		var holder string
+		chain, holder = fm.holdDurableChain(ctx, d, vmID)
 		if chain == nil {
 			delta = false
 		} else {
 			held := chain.base
-			defer func() { fm.releaseDurableChain(d, vmID, held != "" && chain.base == "") }()
+			defer func() { fm.releaseDurableChain(d, vmID, holder, held != "" && chain.base == "") }()
 		}
 	} else if delta {
 		// held for the whole migrate so the checkpoint loop cannot take a live

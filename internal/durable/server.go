@@ -99,8 +99,8 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return holdChain(ctx, fleet, req.Lease)
 			})).
 		Handler("ReleaseChain", restate.NewObjectHandler(
-			func(ctx restate.ObjectContext, reset bool) (restate.Void, error) {
-				return restate.Void{}, releaseChain(ctx, fleet, reset)
+			func(ctx restate.ObjectContext, req ReleaseRequest) (restate.Void, error) {
+				return restate.Void{}, releaseChain(ctx, fleet, req)
 			})).
 		Handler("RetireChain", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
