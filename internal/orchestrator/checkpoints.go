@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -362,6 +363,13 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		if err != nil {
 			fm.logger.Warn("move checkpoint delta failed; chain reset", "vm", vmID, "host", c.standby, "err", err)
 			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{"error": err.Error()})
+			if errors.Is(err, ErrArtifactMoveUnsettled) {
+				// the merge may still be reading the child and writing onto
+				// the base, so neither is deleted: the chain is only
+				// forgotten. retention gc takes the child later.
+				fm.resetChainLocked(c)
+				return
+			}
 			// the base may or may not have been merged and dropped; either way
 			// the chain no longer has an agreed state.
 			fm.deleteCheckpoint(ctx, child)
@@ -397,7 +405,11 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	base, err := fm.ensureArtifactOnHost(ctx, full, standby, false)
 	if err != nil {
 		fm.logger.Warn("copy full checkpoint to standby failed", "vm", vmID, "host", standby, "err", err)
-		fm.deleteCheckpoint(ctx, full)
+		if !errors.Is(err, ErrArtifactMoveUnsettled) {
+			// an unsettled copy may still be reading it; retention gc takes
+			// it later instead.
+			fm.deleteCheckpoint(ctx, full)
+		}
 		return
 	}
 	fm.beginArtifactPull(base)

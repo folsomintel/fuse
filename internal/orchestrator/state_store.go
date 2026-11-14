@@ -556,13 +556,23 @@ func (s *MemoryStateStore) UpsertSnapshot(_ context.Context, snapshot SnapshotRe
 	return nil
 }
 
+// snapshotMissingError is a store's answer for a snapshot id it has no row
+// for. it matches ErrSnapshotNotFound, so a caller can tell a missing row
+// apart from a failed read.
+type snapshotMissingError struct{ id string }
+
+func (e snapshotMissingError) Error() string        { return "snapshot " + e.id + " not found" }
+func (e snapshotMissingError) Is(target error) bool { return target == ErrSnapshotNotFound }
+
+func snapshotMissing(id string) error { return snapshotMissingError{id: id} }
+
 func (s *MemoryStateStore) GetSnapshot(_ context.Context, snapshotID string) (SnapshotRecord, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	snapshot, ok := s.snapshots[snapshotID]
 	if !ok {
-		return SnapshotRecord{}, fmt.Errorf("snapshot %s not found", snapshotID)
+		return SnapshotRecord{}, snapshotMissing(snapshotID)
 	}
 	return snapshot, nil
 }

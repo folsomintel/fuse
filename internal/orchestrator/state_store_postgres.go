@@ -438,7 +438,7 @@ func (s *PostgresStateStore) GetSnapshot(ctx context.Context, snapshotID string)
 	record, err := scanSnapshotRow(row.Scan)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return SnapshotRecord{}, fmt.Errorf("snapshot %s not found", snapshotID)
+			return SnapshotRecord{}, snapshotMissing(snapshotID)
 		}
 		return SnapshotRecord{}, fmt.Errorf("get snapshot %s: %w", snapshotID, err)
 	}
