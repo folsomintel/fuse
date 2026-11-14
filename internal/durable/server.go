@@ -22,10 +22,16 @@ const (
 	EnvironmentObject = "Environment"
 	// HostObject is keyed by host id, for allocation and cordon.
 	HostObject = "Host"
+	// ArtifactsObject is keyed by the snapshot id a move commits on its
+	// destination, so one move into a given copy runs at a time.
+	ArtifactsObject = "Artifacts"
+	// ArtifactPinObject is keyed by snapshot id and holds the pins that keep
+	// artifact gc off it.
+	ArtifactPinObject = "ArtifactPin"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -35,6 +41,7 @@ type Fleet interface {
 	GetVM(vmID string) (orchestrator.VMInfo, bool)
 	GetHost(hostID string) (orchestrator.Host, bool)
 	Destroyer
+	Artifacts
 }
 
 // PingResult is what Ping returns. it never carries more than whether the
@@ -70,10 +77,36 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				})
 			}))
 
+	artifacts := restate.NewObject(ArtifactsObject, retryOption(cfg, ArtifactsObject)).
+		Handler("Move", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, job orchestrator.ArtifactMoveJob) (string, error) {
+				return move(ctx, fleet, servicePolicy(cfg, ArtifactsObject), job)
+			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout()))))
+
+	pins := restate.NewObject(ArtifactPinObject, retryOption(cfg, ArtifactPinObject)).
+		Handler("Pin", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req PinRequest) (restate.Void, error) {
+				return restate.Void{}, pin(ctx, req)
+			})).
+		Handler("Release", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, holder string) (restate.Void, error) {
+				return restate.Void{}, release(ctx, holder)
+			})).
+		Handler("Expire", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, e pinExpiry) (restate.Void, error) {
+				return restate.Void{}, expire(ctx, e)
+			})).
+		Handler("Pinned", restate.NewObjectSharedHandler(
+			func(ctx restate.ObjectSharedContext, _ restate.Void) (bool, error) {
+				return pinned(ctx)
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
-		Bind(host)
+		Bind(host).
+		Bind(artifacts).
+		Bind(pins)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {

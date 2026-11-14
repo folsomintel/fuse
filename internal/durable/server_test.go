@@ -43,6 +43,18 @@ func (fakeFleet) DestroyUnpublishIngress(context.Context, string) error       { 
 func (fakeFleet) DestroyFinish(context.Context, string, string) error         { return nil }
 func (fakeFleet) DestroyFailed(context.Context, string, string, string) error { return nil }
 
+func (fakeFleet) ArtifactMoveCommitted(context.Context, orchestrator.ArtifactMoveJob) (string, error) {
+	return "", nil
+}
+func (fakeFleet) ArtifactPull(context.Context, orchestrator.ArtifactMoveJob) (orchestrator.ArtifactMoved, error) {
+	return orchestrator.ArtifactMoved{}, nil
+}
+func (fakeFleet) ArtifactRecord(_ context.Context, job orchestrator.ArtifactMoveJob, _ orchestrator.ArtifactMoved) (string, error) {
+	return job.LocalID, nil
+}
+func (fakeFleet) ArtifactDiscard(context.Context, orchestrator.ArtifactMoveJob) error { return nil }
+func (fakeFleet) ArtifactPullTimeout() time.Duration                                  { return 0 }
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -99,8 +111,13 @@ func TestDiscoveryManifest(t *testing.T) {
 			handlers[h.Name] = h.Ty
 		}
 		want := map[string]string{"Ping": "SHARED"}
-		if s.Name == EnvironmentObject {
+		switch s.Name {
+		case EnvironmentObject:
 			want["Destroy"] = "EXCLUSIVE"
+		case ArtifactsObject:
+			want = map[string]string{"Move": "EXCLUSIVE"}
+		case ArtifactPinObject:
+			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
 		}
 		if fmt.Sprint(handlers) != fmt.Sprint(want) {
 			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)

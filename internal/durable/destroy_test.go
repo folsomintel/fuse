@@ -101,11 +101,7 @@ func (f *scriptedFleet) DestroyFailed(_ context.Context, vm, _, lastErr string) 
 // registers it, and returns a client. skips without restate-server.
 func serveFleet(t *testing.T, fleet Fleet, policy RetryPolicy) *Client {
 	t.Helper()
-	admin := os.Getenv("FUSE_RESTATE_TEST_ADMIN_URL")
-	ingressURL := os.Getenv("FUSE_RESTATE_TEST_INGRESS_URL")
-	if admin == "" || ingressURL == "" {
-		t.Skip("set FUSE_RESTATE_TEST_ADMIN_URL and FUSE_RESTATE_TEST_INGRESS_URL to run against restate-server")
-	}
+	admin, ingressURL := restateTestURLs(t)
 	host := os.Getenv("FUSE_RESTATE_TEST_HANDLER_HOST")
 	if host == "" {
 		host = "127.0.0.1"
@@ -118,7 +114,7 @@ func serveFleet(t *testing.T, fleet Fleet, policy RetryPolicy) *Client {
 	_ = ln.Close()
 
 	cfg := Config{Mode: ModeSelf, Listen: addr, IngressURL: ingressURL, AdminURL: admin,
-		Retry: map[string]RetryPolicy{EnvironmentObject: policy, HostObject: DefaultRetryPolicy}}
+		Retry: map[string]RetryPolicy{EnvironmentObject: policy, HostObject: DefaultRetryPolicy, ArtifactsObject: policy}}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = NewEndpoint(cfg, fleet, testLogger).Start(ctx, addr) }()
@@ -129,6 +125,18 @@ func serveFleet(t *testing.T, fleet Fleet, policy RetryPolicy) *Client {
 		t.Fatalf("register: %v", err)
 	}
 	return client
+}
+
+// restateTestURLs returns the admin and ingress urls of the restate-server
+// named by the test env, and skips without one.
+func restateTestURLs(t *testing.T) (admin, ingressURL string) {
+	t.Helper()
+	admin = os.Getenv("FUSE_RESTATE_TEST_ADMIN_URL")
+	ingressURL = os.Getenv("FUSE_RESTATE_TEST_INGRESS_URL")
+	if admin == "" || ingressURL == "" {
+		t.Skip("set FUSE_RESTATE_TEST_ADMIN_URL and FUSE_RESTATE_TEST_INGRESS_URL to run against restate-server")
+	}
+	return admin, ingressURL
 }
 
 var fastPolicy = RetryPolicy{InitialInterval: 20 * time.Millisecond, MaxInterval: 50 * time.Millisecond, MaxAttempts: 4}
