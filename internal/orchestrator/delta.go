@@ -47,20 +47,35 @@ func (fm *FleetManager) forgetSnapshotRecord(ctx context.Context, snapshotID str
 // none: it can be the base of the next delta or a seed on that host, and
 // ensureArtifactOnHost refuses it as a source for want of live_files.
 func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecord, base, hostID string, dropBase bool) (string, error) {
+	job, err := fm.planDeltaMove(child, base, hostID, dropBase)
+	if err != nil {
+		return "", err
+	}
+	return fm.runArtifactMove(ctx, job, func(err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("move delta %s to host %s: %w", child.SnapshotID, hostID, ctxErr)
+		}
+		return fmt.Errorf("%w: move delta %s from host %s onto %s on host %s: %w",
+			ErrArtifactTransferFailed, child.SnapshotID, job.SourceHostID, base, hostID, err)
+	})
+}
+
+// planDeltaMove is the move moveDeltaToHost runs.
+func (fm *FleetManager) planDeltaMove(child SnapshotRecord, base, hostID string, dropBase bool) (ArtifactMoveJob, error) {
 	if diffParent(child) == "" {
-		return "", fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)
+		return ArtifactMoveJob{}, fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)
 	}
 	if fm.artifactMover == nil {
-		return "", fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
+		return ArtifactMoveJob{}, fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
 	}
 	files := liveFiles(child)
 	if len(files) == 0 {
-		return "", fmt.Errorf("%w: diff snapshot %s has no recorded digests for its delta files", ErrArtifactImmovable, child.SnapshotID)
+		return ArtifactMoveJob{}, fmt.Errorf("%w: diff snapshot %s has no recorded digests for its delta files", ErrArtifactImmovable, child.SnapshotID)
 	}
 	holders := map[string]ArtifactHolder{child.HostID: {HostID: child.HostID, SnapshotID: child.SnapshotID}}
 	source, _, err := fm.artifactEndpoints(child, holders, hostID)
 	if err != nil {
-		return "", err
+		return ArtifactMoveJob{}, err
 	}
 
 	job := ArtifactMoveJob{
@@ -77,13 +92,7 @@ func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecor
 		Arch:             child.Arch,
 		Kind:             SnapshotKindLive,
 	}
-	return fm.runArtifactMove(ctx, job, func(err error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("move delta %s to host %s: %w", child.SnapshotID, hostID, ctxErr)
-		}
-		return fmt.Errorf("%w: move delta %s from host %s onto %s on host %s: %w",
-			ErrArtifactTransferFailed, child.SnapshotID, source.endpoint.HostID, base, hostID, err)
-	})
+	return job, nil
 }
 
 // completeLiveFiles reports whether files names a digest for every file a
