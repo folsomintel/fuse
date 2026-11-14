@@ -1652,7 +1652,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
 	fm.retryFailedTeardowns(providerVMs)
-	fm.reapDestroyedVMs(providerVMs)
+	fm.reapDestroyedVMs(ctx, providerVMs)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan
 	// is untracked by definition, so it has no persisted Spec for
@@ -1718,10 +1718,13 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 // reapDestroyedVMs removes tracked VMs that are in the Destroying state
 // and are no longer present in the provider (set provided by reconcile).
 // VM resources are returned to their host, the VM is removed from the
-// in-memory fleet, and the persisted record is deleted.
-func (fm *FleetManager) reapDestroyedVMs(providerVMs map[string]bool) {
+// in-memory fleet, and the persisted record is deleted. what belonged to the
+// vm is closed out as a finished destroy would: a destroy_failed vm has no
+// destroy left running to do it.
+func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool) {
 	fm.mu.Lock()
 	toRemove := make([]string, 0)
+	removed := make([]*vm, 0)
 	for id, v := range fm.vms {
 		if !v.state.tearingDown() {
 			continue
@@ -1734,12 +1737,16 @@ func (fm *FleetManager) reapDestroyedVMs(providerVMs map[string]bool) {
 		}
 		delete(fm.vms, id)
 		toRemove = append(toRemove, id)
+		removed = append(removed, v)
 	}
 	fm.mu.Unlock()
-	for _, id := range toRemove {
+	for i, id := range toRemove {
 		fm.deleteVMBackground(id)
 		fm.appendEventBackground("vm", id, "vm.removed", map[string]any{"reason": "destroyed"})
 		fm.publishTerminalEvent(id, VMStateDestroyed, "")
+		fm.cancelEnvInterventions(ctx, removed[i], id, "environment destroyed")
+		fm.dropEnvGrants(ctx, id)
+		fm.revokeEnvKeys(ctx, id)
 	}
 }
 
