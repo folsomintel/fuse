@@ -146,8 +146,24 @@ type snapshotCursor struct {
 
 // CreateSnapshot quiesces the given VM, invokes Environment.Checkpoint,
 // persists a first-class SnapshotRecord, and marks it ready once the
-// provider confirms the new checkpoint exists.
+// provider confirms the new checkpoint exists. on restate it runs as the
+// Environment/{vm_id}.Snapshot handler; see snapshot_durable.go.
 func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
+	if d := fm.durableSnapshotsClient(); d != nil {
+		ctx, end := fm.startOperation(ctx, "snapshot", vmID)
+		ctx, cancel := durableWait(ctx)
+		defer cancel()
+		rec, err := d.Snapshot(ctx, vmID, opts)
+		end(err)
+		return rec, err
+	}
+	return fm.snapshotInProcess(ctx, vmID, opts)
+}
+
+// snapshotInProcess takes a snapshot in this process whatever the restate
+// mode: what fork and migrate use for their seeds, and the checkpoint chain
+// in mode off.
+func (fm *FleetManager) snapshotInProcess(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
 	ctx, end := fm.startOperation(ctx, "snapshot", vmID)
 	rec, err := fm.createSnapshot(ctx, vmID, opts)
 	end(err)
@@ -155,11 +171,53 @@ func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts Sn
 }
 
 func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
+	plan, err := fm.SnapshotBegin(ctx, vmID, opts)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	created, err := fm.SnapshotCheckpoint(ctx, vmID, plan)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	record, err := fm.SnapshotRecordCreating(ctx, vmID, plan, created)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	listed, err := fm.SnapshotList(ctx, vmID, record.SnapshotID)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	return fm.SnapshotReady(ctx, record, listed)
+}
+
+// SnapshotPlan is what SnapshotBegin settled before the host checkpoint:
+// everything the record takes that does not come back from the host.
+type SnapshotPlan struct {
+	Options          SnapshotOptions `json:"options"`
+	TaskID           string          `json:"task_id,omitempty"`
+	HostID           string          `json:"host_id,omitempty"`
+	TenantID         string          `json:"tenant_id"`
+	ParentSnapshotID string          `json:"parent_snapshot_id,omitempty"`
+	Arch             string          `json:"arch,omitempty"`
+	Mode             SnapshotMode    `json:"mode"`
+	RetentionUntil   *time.Time      `json:"retention_until,omitempty"`
+	Metadata         json.RawMessage `json:"metadata"`
+	StartedAt        time.Time       `json:"started_at"`
+}
+
+// the methods below are the steps of a snapshot, in order. the durable
+// Environment/{vm_id}.Snapshot handler runs each inside a journaled restate
+// step; createSnapshot calls them directly. each must be safe to run again.
+
+// SnapshotBegin checks the vm can be snapshotted as asked and settles the
+// record's fields: tenant, quota, lineage parent and metadata. it writes
+// nothing.
+func (fm *FleetManager) SnapshotBegin(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotPlan, error) {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]
 	if !ok {
 		fm.mu.RUnlock()
-		return SnapshotRecord{}, fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+		return SnapshotPlan{}, fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
 	}
 	env := v.env
 	state := v.state
@@ -192,10 +250,13 @@ func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts Sn
 	// means first deciding whether pause is a fleet-visible state at all.
 	// Behaviour is unchanged here; the question is recorded, not settled.
 	if state != VMStateRunning {
-		return SnapshotRecord{}, fmt.Errorf("%w: vm %s in state %s: snapshots require running", ErrVMNotRunning, vmID, state)
+		return SnapshotPlan{}, fmt.Errorf("%w: vm %s in state %s: snapshots require running", ErrVMNotRunning, vmID, state)
 	}
 	if env == nil {
-		return SnapshotRecord{}, fmt.Errorf("vm %s has no active environment handle", vmID)
+		return SnapshotPlan{}, fmt.Errorf("%w: vm %s", errNoEnvironment, vmID)
+	}
+	if err := snapshotCapability(env, vmID, gpus, opts); err != nil {
+		return SnapshotPlan{}, err
 	}
 
 	now := time.Now()
@@ -232,12 +293,12 @@ func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts Sn
 	// tenant that starts taking live snapshots will hit an unchanged limit far
 	// sooner than before. Those limits need re-tuning alongside enabling this.
 	if err := fm.enforceSnapshotQuota(ctx, tenantID); err != nil {
-		return SnapshotRecord{}, err
+		return SnapshotPlan{}, err
 	}
 
 	vmSnapshots, err := fm.loadSnapshotsByVM(ctx, vmID)
 	if err != nil {
-		return SnapshotRecord{}, err
+		return SnapshotPlan{}, err
 	}
 	parentSnapshotID := latestReadySnapshotID(vmSnapshots, vmID)
 	if opts.NoLineage {
@@ -245,134 +306,225 @@ func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts Sn
 	}
 	metadataJSON, err := marshalSnapshotMetadata(opts.Comment, opts.Metadata)
 	if err != nil {
-		return SnapshotRecord{}, fmt.Errorf("marshal snapshot metadata: %w", err)
+		return SnapshotPlan{}, fmt.Errorf("marshal snapshot metadata: %w", err)
 	}
+	return SnapshotPlan{
+		Options:          opts,
+		TaskID:           taskID,
+		HostID:           hostID,
+		TenantID:         tenantID,
+		ParentSnapshotID: parentSnapshotID,
+		Arch:             arch,
+		Mode:             mode,
+		RetentionUntil:   retentionUntil,
+		Metadata:         metadataJSON,
+		StartedAt:        now,
+	}, nil
+}
 
-	sc, ok := env.(SnapshotCapable)
-	if !ok {
+// snapshotCapability says why env cannot take the snapshot opts asks for,
+// or nil if it can.
+func snapshotCapability(env Environment, vmID string, gpus int32, opts SnapshotOptions) error {
+	if _, ok := env.(SnapshotCapable); !ok {
 		// gpu environments run under a backend that passes the device through
 		// via vfio, which cannot be checkpointed (d4). the env deliberately
 		// omits SnapshotCapable; surface that reason rather than a generic one.
 		if gpus > 0 {
-			return SnapshotRecord{}, fmt.Errorf("%w: vm %s has a gpu passthrough device: snapshots are not supported for gpu environments", ErrGPUUnsupported, vmID)
+			return fmt.Errorf("%w: vm %s has a gpu passthrough device: snapshots are not supported for gpu environments", ErrGPUUnsupported, vmID)
 		}
-		return SnapshotRecord{}, fmt.Errorf("%w: provider does not support snapshots for vm %s", ErrSnapshotUnsupported, vmID)
+		return fmt.Errorf("%w: provider does not support snapshots for vm %s", ErrSnapshotUnsupported, vmID)
 	}
 	// The live path is a second, narrower capability rather than a flag on
 	// Checkpoint, and it is asserted AFTER the SnapshotCapable block above so
 	// a gpu env still fails with the gpu explanation: a gpu env implements
 	// neither interface, and "your gpu cannot be checkpointed at all" is the
 	// useful answer to `--live` on one, not "live snapshots are unsupported".
+	switch {
+	case opts.Diff && !opts.Live:
+		return fmt.Errorf("%w: diff snapshot of vm %s requires live", errSnapshotOptions, vmID)
+	case opts.Diff:
+		if _, ok := env.(DeltaSnapshotCapable); !ok {
+			return fmt.Errorf("%w: provider does not support diff snapshots for vm %s", ErrSnapshotUnsupported, vmID)
+		}
+	case opts.Live:
+		if _, ok := env.(LiveSnapshotCapable); !ok {
+			return fmt.Errorf("%w: provider does not support live snapshots for vm %s: retry without live to take a disk snapshot", ErrSnapshotUnsupported, vmID)
+		}
+	}
+	return nil
+}
+
+// SnapshotCheckpoint takes the checkpoint on the vm's host. on restate the
+// call carries the step's idempotency key, so a retry after a lost answer
+// gets the first checkpoint back instead of a second one.
+func (fm *FleetManager) SnapshotCheckpoint(ctx context.Context, vmID string, plan SnapshotPlan) (Checkpoint, error) {
+	fm.mu.RLock()
+	v, ok := fm.vms[vmID]
+	var env Environment
+	var gpus int32
+	if ok {
+		env, gpus = v.env, v.spec.GPUs
+	}
+	fm.mu.RUnlock()
+	if !ok {
+		return Checkpoint{}, fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+	}
+	if env == nil {
+		return Checkpoint{}, fmt.Errorf("%w: vm %s", errNoEnvironment, vmID)
+	}
+	opts := plan.Options
+	if err := snapshotCapability(env, vmID, gpus, opts); err != nil {
+		return Checkpoint{}, err
+	}
+
 	var created Checkpoint
-	if opts.Diff && opts.Live {
-		dc, ok := env.(DeltaSnapshotCapable)
-		if !ok {
-			return SnapshotRecord{}, fmt.Errorf("%w: provider does not support diff snapshots for vm %s", ErrSnapshotUnsupported, vmID)
-		}
-		created, err = dc.CheckpointDiff(ctx, opts.Comment, opts.Parent, opts.KeepPaused)
+	var err error
+	switch {
+	case opts.Diff:
+		created, err = env.(DeltaSnapshotCapable).CheckpointDiff(ctx, opts.Comment, opts.Parent, opts.KeepPaused)
 		if err != nil {
-			return SnapshotRecord{}, fmt.Errorf("diff checkpoint %s: %w", vmID, err)
+			return Checkpoint{}, fmt.Errorf("diff checkpoint %s: %w", vmID, err)
 		}
-	} else if opts.Diff {
-		return SnapshotRecord{}, fmt.Errorf("diff snapshot of vm %s requires live", vmID)
-	} else if opts.Live {
-		lc, ok := env.(LiveSnapshotCapable)
-		if !ok {
-			return SnapshotRecord{}, fmt.Errorf("%w: provider does not support live snapshots for vm %s: retry without live to take a disk snapshot", ErrSnapshotUnsupported, vmID)
-		}
+	case opts.Live:
 		if mc, ok := env.(MemoryShrinkCapable); ok && opts.ShrinkMemory {
 			created, err = mc.CheckpointLiveShrunk(ctx, opts.Comment)
 		} else {
-			created, err = lc.CheckpointLive(ctx, opts.Comment)
+			created, err = env.(LiveSnapshotCapable).CheckpointLive(ctx, opts.Comment)
 		}
 		if err != nil {
-			return SnapshotRecord{}, fmt.Errorf("live checkpoint %s: %w", vmID, err)
+			return Checkpoint{}, fmt.Errorf("live checkpoint %s: %w", vmID, err)
 		}
-	} else {
-		id, digest, cErr := checkpointWithDigest(ctx, sc, opts.Comment)
+	default:
+		id, digest, cErr := checkpointWithDigest(ctx, env.(SnapshotCapable), opts.Comment)
 		if cErr != nil {
-			return SnapshotRecord{}, fmt.Errorf("checkpoint %s: %w", vmID, cErr)
+			return Checkpoint{}, fmt.Errorf("checkpoint %s: %w", vmID, cErr)
 		}
 		created = Checkpoint{ID: id, Digest: digest, Kind: SnapshotKindDisk}
 	}
-	snapshotID, digest := created.ID, created.Digest
 	// The kind is whatever the provider says it wrote, not what was asked
 	// for: an agent too old to know about live snapshots answers a live
 	// request with a disk snapshot, and recording the request instead of the
 	// result would file a cold-booting artifact as a resumable one.
-	kind := created.Kind
-	if kind == "" {
-		kind = SnapshotKindDisk
+	if created.Kind == "" {
+		created.Kind = SnapshotKindDisk
 	}
+	return created, nil
+}
+
+// SnapshotRecordCreating persists the record of a checkpoint the host just
+// took, in state creating.
+func (fm *FleetManager) SnapshotRecordCreating(ctx context.Context, vmID string, plan SnapshotPlan, created Checkpoint) (SnapshotRecord, error) {
+	metadataJSON := plan.Metadata
 	if len(created.Files) > 0 {
 		// same reasoning as the digest: this response is the only moment the
 		// per-file digests exist, and a live snapshot recorded without them can
 		// never be verified on another host, so it can never leave this one.
-		metadata := withLiveFiles(opts.Metadata, created.Files)
+		metadata := withLiveFiles(plan.Options.Metadata, created.Files)
 		if created.Parent != "" {
 			metadata[diffParentMetadataKey] = created.Parent
 		}
-		metadataJSON, err = marshalSnapshotMetadata(opts.Comment, metadata)
+		var err error
+		metadataJSON, err = marshalSnapshotMetadata(plan.Options.Comment, metadata)
 		if err != nil {
 			return SnapshotRecord{}, fmt.Errorf("marshal snapshot metadata: %w", err)
 		}
 	}
-	checkpoint, _ := lookupCheckpoint(ctx, env, snapshotID)
-	sizeBytes := checkpoint.SizeBytes
-	if sizeBytes == 0 {
-		// The listing stays the primary source so nothing about existing disk
-		// snapshot accounting moves. The create response only fills the gap it
-		// leaves: an agent that lists snapshots without sizes would otherwise
-		// record a live artifact, memory image and all, as zero bytes and hand
-		// the quota a number it knows to be wrong.
-		sizeBytes = created.SizeBytes
-	}
-
-	createdAt := now
-	if !checkpoint.CreatedAt.IsZero() {
-		createdAt = checkpoint.CreatedAt
-	}
 	record := SnapshotRecord{
-		SnapshotID:       snapshotID,
+		SnapshotID:       created.ID,
 		VMID:             vmID,
-		TaskID:           taskID,
-		HostID:           hostID,
-		TenantID:         tenantID,
-		ParentSnapshotID: parentSnapshotID,
-		Mode:             mode,
-		LayerKey:         opts.LayerKey,
-		Arch:             arch,
-		Digest:           digest,
-		Kind:             kind,
+		TaskID:           plan.TaskID,
+		HostID:           plan.HostID,
+		TenantID:         plan.TenantID,
+		ParentSnapshotID: plan.ParentSnapshotID,
+		Mode:             plan.Mode,
+		LayerKey:         plan.Options.LayerKey,
+		Arch:             plan.Arch,
+		Digest:           created.Digest,
+		Kind:             created.Kind,
 		State:            SnapshotStateCreating,
-		SizeBytes:        sizeBytes,
-		RetentionUntil:   retentionUntil,
+		SizeBytes:        created.SizeBytes,
+		RetentionUntil:   plan.RetentionUntil,
 		Metadata:         metadataJSON,
-		Exports:          cloneSnapshotExports(opts.Exports),
-		CreatedAt:        createdAt,
-		UpdatedAt:        now,
+		Exports:          cloneSnapshotExports(plan.Options.Exports),
+		CreatedAt:        plan.StartedAt,
+		UpdatedAt:        time.Now(),
 	}
-
 	if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
-		return SnapshotRecord{}, fmt.Errorf("persist snapshot %s: %w", snapshotID, err)
+		return SnapshotRecord{}, fmt.Errorf("persist snapshot %s: %w", created.ID, err)
 	}
+	return record, nil
+}
 
+// SnapshotList reads the new checkpoint back from the host's listing, for
+// its size and creation time. a listing that fails or leaves it out is not
+// an error: the record keeps what the create response said.
+func (fm *FleetManager) SnapshotList(ctx context.Context, vmID, snapshotID string) (Checkpoint, error) {
+	fm.mu.RLock()
+	var env Environment
+	if v, ok := fm.vms[vmID]; ok {
+		env = v.env
+	}
+	fm.mu.RUnlock()
+	if env == nil {
+		return Checkpoint{}, nil
+	}
+	checkpoint, _ := lookupCheckpoint(ctx, env, snapshotID)
+	return checkpoint, nil
+}
+
+// SnapshotReady marks the record ready with what the listing reported.
+func (fm *FleetManager) SnapshotReady(ctx context.Context, record SnapshotRecord, listed Checkpoint) (SnapshotRecord, error) {
+	// The listing stays the primary source so nothing about existing disk
+	// snapshot accounting moves. The create response only fills the gap it
+	// leaves: an agent that lists snapshots without sizes would otherwise
+	// record a live artifact, memory image and all, as zero bytes and hand
+	// the quota a number it knows to be wrong.
+	if listed.SizeBytes != 0 {
+		record.SizeBytes = listed.SizeBytes
+	}
+	if !listed.CreatedAt.IsZero() {
+		record.CreatedAt = listed.CreatedAt
+	}
 	record.State = SnapshotStateReady
 	record.LastError = ""
 	record.UpdatedAt = time.Now()
 	if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
-		return SnapshotRecord{}, fmt.Errorf("mark snapshot %s ready: %w", snapshotID, err)
+		return SnapshotRecord{}, fmt.Errorf("mark snapshot %s ready: %w", record.SnapshotID, err)
 	}
 
-	fm.appendEvent(ctx, "vm", vmID, "snapshot.created", map[string]any{
-		"snapshot_id":        snapshotID,
-		"mode":               string(mode),
-		"parent_snapshot_id": parentSnapshotID,
-		"size_bytes":         sizeBytes,
-		"kind":               string(kind),
+	fm.appendEvent(ctx, "vm", record.VMID, "snapshot.created", map[string]any{
+		"snapshot_id":        record.SnapshotID,
+		"mode":               string(record.Mode),
+		"parent_snapshot_id": record.ParentSnapshotID,
+		"size_bytes":         record.SizeBytes,
+		"kind":               string(record.Kind),
 	})
-
 	return record, nil
+}
+
+// SnapshotAbort is the compensation of a snapshot whose checkpoint the host
+// took but whose record could not be finished: the host artifact is deleted
+// and the row, if one was written, is marked error with the cause.
+func (fm *FleetManager) SnapshotAbort(ctx context.Context, vmID string, plan SnapshotPlan, created Checkpoint, cause string) error {
+	record := SnapshotRecord{SnapshotID: created.ID, VMID: vmID, HostID: plan.HostID}
+	if err := fm.deleteSnapshotArtifact(ctx, record); err != nil && !IsNotFound(err) {
+		return err
+	}
+	existing, found, err := fm.lookupSnapshotRecord(ctx, created.ID)
+	if err != nil {
+		return err
+	}
+	if found {
+		existing.State = SnapshotStateError
+		existing.LastError = cause
+		existing.UpdatedAt = time.Now()
+		if err := fm.upsertSnapshotRecord(ctx, existing); err != nil {
+			return fmt.Errorf("mark snapshot %s error: %w", created.ID, err)
+		}
+	}
+	fm.appendEvent(ctx, "vm", vmID, "snapshot.failed", map[string]any{"snapshot_id": created.ID, "error": cause})
+	fm.logger.WarnContext(ctx, "snapshot aborted, host artifact deleted", "vm", vmID, "snapshot", created.ID, "err", cause)
+	return nil
 }
 
 // ListSnapshots returns all snapshots known to the state store for the
@@ -566,20 +718,50 @@ func (fm *FleetManager) deleteSnapshotRecord(ctx context.Context, record Snapsho
 
 // RestoreSnapshot rolls a VM back to a prior snapshot via
 // Environment.Restore after validating the metadata record and provider
-// visibility of the checkpoint.
+// visibility of the checkpoint. on restate it runs as the
+// Environment/{vm_id}.Restore handler, so a restart resumes it.
 func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
 	ctx, end := fm.startOperation(ctx, "restore", vmID)
-	err := fm.restoreSnapshot(ctx, vmID, snapshotID)
+	var err error
+	if d := fm.durableSnapshotsClient(); d != nil {
+		wctx, cancel := durableWait(ctx)
+		err = d.Restore(wctx, vmID, snapshotID)
+		cancel()
+	} else {
+		err = fm.restoreSnapshot(ctx, vmID, snapshotID)
+	}
 	end(err)
 	return err
 }
 
 func (fm *FleetManager) restoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
+	record, err := fm.RestoreValidate(ctx, vmID, snapshotID)
+	if err != nil {
+		return err
+	}
+	if err := fm.RestoreBegin(ctx, record); err != nil {
+		return err
+	}
+	if err := fm.RestoreOnHost(ctx, vmID, snapshotID); err != nil {
+		_ = fm.RestoreFailed(ctx, record, err.Error())
+		return err
+	}
+	return fm.RestoreFinish(ctx, record)
+}
+
+// the methods below are the steps of a restore, in order. the durable
+// Environment/{vm_id}.Restore handler runs each inside a journaled restate
+// step; restoreSnapshot calls them directly. each must be safe to run again.
+
+// RestoreValidate checks the vm can be restored to snapshotID and that its
+// host still holds the checkpoint, and returns the record. a checkpoint the
+// host no longer has marks the record error.
+func (fm *FleetManager) RestoreValidate(ctx context.Context, vmID, snapshotID string) (SnapshotRecord, error) {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]
 	if !ok {
 		fm.mu.RUnlock()
-		return fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+		return SnapshotRecord{}, fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
 	}
 	env := v.env
 	state := v.state
@@ -592,64 +774,86 @@ func (fm *FleetManager) restoreSnapshot(ctx context.Context, vmID, snapshotID st
 	// Left as is deliberately, for the same reason: there is no fleet-visible
 	// paused state to admit.
 	if state != VMStateRunning {
-		return fmt.Errorf("%w: vm %s in state %s: restore requires running", ErrVMNotRunning, vmID, state)
+		return SnapshotRecord{}, fmt.Errorf("%w: vm %s in state %s: restore requires running", ErrVMNotRunning, vmID, state)
 	}
 	if env == nil {
-		return fmt.Errorf("vm %s has no active environment handle", vmID)
+		return SnapshotRecord{}, fmt.Errorf("%w: vm %s", errNoEnvironment, vmID)
 	}
 
 	record, err := fm.getSnapshotRecord(ctx, snapshotID)
 	if err != nil {
-		return err
+		return SnapshotRecord{}, err
 	}
 	if record.VMID != vmID {
-		return fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
+		return SnapshotRecord{}, fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
 	}
 	if record.State != SnapshotStateReady {
-		return fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, snapshotID, record.State)
+		return SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, snapshotID, record.State)
+	}
+	if _, ok := env.(SnapshotCapable); !ok {
+		return SnapshotRecord{}, fmt.Errorf("%w: restore %s on vm %s: provider does not support snapshots", ErrSnapshotUnsupported, snapshotID, vmID)
 	}
 	if _, ok := lookupCheckpoint(ctx, env, snapshotID); !ok {
 		record.State = SnapshotStateError
 		record.LastError = "snapshot missing from provider"
 		record.UpdatedAt = time.Now()
 		_ = fm.upsertSnapshotRecord(ctx, record)
-		return fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
+		return SnapshotRecord{}, fmt.Errorf("%w: %s", ErrSnapshotNotFound, snapshotID)
 	}
+	return record, nil
+}
 
+// RestoreBegin marks the record restoring.
+func (fm *FleetManager) RestoreBegin(ctx context.Context, record SnapshotRecord) error {
 	record.State = SnapshotStateRestoring
 	record.LastError = ""
 	record.UpdatedAt = time.Now()
 	if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
-		return fmt.Errorf("mark snapshot %s restoring: %w", snapshotID, err)
+		return fmt.Errorf("mark snapshot %s restoring: %w", record.SnapshotID, err)
 	}
+	return nil
+}
 
+// RestoreOnHost has the vm's host restore the checkpoint.
+func (fm *FleetManager) RestoreOnHost(ctx context.Context, vmID, snapshotID string) error {
+	fm.mu.RLock()
+	var env Environment
+	if v, ok := fm.vms[vmID]; ok {
+		env = v.env
+	}
+	fm.mu.RUnlock()
 	sc, ok := env.(SnapshotCapable)
 	if !ok {
-		record.State = SnapshotStateError
-		record.LastError = "provider does not support snapshots"
-		record.UpdatedAt = time.Now()
-		_ = fm.upsertSnapshotRecord(ctx, record)
-		return fmt.Errorf("%w: restore %s on vm %s: provider does not support snapshots", ErrSnapshotUnsupported, snapshotID, vmID)
+		return fmt.Errorf("%w: restore %s on vm %s: no environment that can restore it", ErrSnapshotUnsupported, snapshotID, vmID)
 	}
 	if err := sc.Restore(ctx, snapshotID); err != nil {
-		record.State = SnapshotStateError
-		record.LastError = err.Error()
-		record.UpdatedAt = time.Now()
-		_ = fm.upsertSnapshotRecord(ctx, record)
 		return fmt.Errorf("restore %s on vm %s: %w", snapshotID, vmID, err)
 	}
+	return nil
+}
 
+// RestoreFinish marks the record ready again once the vm runs from it.
+func (fm *FleetManager) RestoreFinish(ctx context.Context, record SnapshotRecord) error {
 	record.State = SnapshotStateReady
 	record.LastError = ""
 	record.UpdatedAt = time.Now()
 	if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
-		return fmt.Errorf("mark snapshot %s ready after restore: %w", snapshotID, err)
+		return fmt.Errorf("mark snapshot %s ready after restore: %w", record.SnapshotID, err)
 	}
-
-	fm.appendEvent(ctx, "vm", vmID, "snapshot.restored", map[string]any{
-		"snapshot_id": snapshotID,
+	fm.appendEvent(ctx, "vm", record.VMID, "snapshot.restored", map[string]any{
+		"snapshot_id": record.SnapshotID,
 	})
+	return nil
+}
 
+// RestoreFailed marks the record error with the restore's last error.
+func (fm *FleetManager) RestoreFailed(ctx context.Context, record SnapshotRecord, lastErr string) error {
+	record.State = SnapshotStateError
+	record.LastError = lastErr
+	record.UpdatedAt = time.Now()
+	if err := fm.upsertSnapshotRecord(ctx, record); err != nil {
+		return fmt.Errorf("mark snapshot %s error after a failed restore: %w", record.SnapshotID, err)
+	}
 	return nil
 }
 
@@ -673,6 +877,7 @@ func (fm *FleetManager) reconcileSnapshots(ctx context.Context) {
 	}
 
 	now := time.Now()
+	d := fm.durableSnapshotsClient()
 	children := make(map[string]int, len(all))
 	latestPerVM := make(map[string]SnapshotRecord)
 	for _, snapshot := range all {
@@ -701,6 +906,11 @@ func (fm *FleetManager) reconcileSnapshots(ctx context.Context) {
 			if latest, ok := latestPerVM[snapshot.VMID]; ok && latest.SnapshotID == snapshot.SnapshotID {
 				continue
 			}
+			// a checkpoint a move is still reading, or a chain's base, stays
+			// until its pin is released.
+			if fm.snapshotPinned(ctx, snapshot.SnapshotID) {
+				continue
+			}
 			snapshot.State = SnapshotStateDeleting
 			snapshot.UpdatedAt = now
 			snapshot.LastError = ""
@@ -710,6 +920,12 @@ func (fm *FleetManager) reconcileSnapshots(ctx context.Context) {
 			}
 		}
 
+		if d != nil && snapshot.VMID != "" {
+			// restate retries the deletion under the Environment policy, and
+			// only marks the row error once that runs out.
+			fm.sendCollectSnapshot(ctx, d, snapshot)
+			continue
+		}
 		if err := fm.deleteSnapshotArtifact(ctx, snapshot); err != nil {
 			snapshot.State = SnapshotStateError
 			snapshot.LastError = err.Error()

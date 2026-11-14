@@ -192,7 +192,17 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	srcDelta, _ := srcEnv.(DeltaSnapshotCapable)
 	delta := opts.Live && !opts.Lazy && srcDelta != nil && fm.artifactMover != nil
 	var chain *checkpointChain
-	if delta {
+	if d := fm.durableSnapshotsClient(); delta && d != nil {
+		// on restate the chain lives on the vm's Environment object, and
+		// the hold is what keeps the checkpoint loop off it.
+		chain = fm.holdDurableChain(ctx, d, vmID)
+		if chain == nil {
+			delta = false
+		} else {
+			held := chain.base
+			defer func() { fm.releaseDurableChain(d, vmID, held != "" && chain.base == "") }()
+		}
+	} else if delta {
 		// held for the whole migrate so the checkpoint loop cannot take a live
 		// snapshot of this vm in between, which would break the diff's parent.
 		chain = fm.chainFor(vmID)
@@ -220,7 +230,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	} else {
 		// a live seed is the bulk of what moves, so the guest gives back what
 		// it is not using first.
-		seed, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
+		seed, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
 		if err != nil {
 			return "", err
 		}
@@ -279,7 +289,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		}
 		if err == nil && delta {
 			var child SnapshotRecord
-			child, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+			child, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 				Comment: "migration delta", Live: true, Diff: true,
 				Parent: seed.SnapshotID, KeepPaused: true, NoLineage: true,
 			})

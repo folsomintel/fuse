@@ -53,6 +53,15 @@ func moveAbortTimeout(pullTimeout time.Duration) time.Duration {
 // only a killed invocation leaves them, for an operator to release.
 func move(ctx restate.ObjectContext, fleet Artifacts, policy RetryPolicy, job orchestrator.ArtifactMoveJob) (string, error) {
 	id, err := moveSteps(ctx, fleet, policy, job)
+	if job.Notify != "" && (err == nil || restate.IsTerminalError(err)) {
+		// a checkpoint chain's copy: its vm's object waits for this instead
+		// of the caller.
+		res := orchestrator.ChainMoveResult{LocalID: job.LocalID, ID: id}
+		if err != nil {
+			res.Err = err.Error()
+		}
+		restate.ObjectSend(ctx, EnvironmentObject, job.Notify, "ChainMoved").Send(res)
+	}
 	if err != nil && restate.IsTerminalError(err) {
 		// the code is what tells the waiting caller that the move itself
 		// ended, whichever restate-server version answers.

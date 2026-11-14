@@ -42,7 +42,14 @@ type Fleet interface {
 	GetHost(hostID string) (orchestrator.Host, bool)
 	Destroyer
 	Artifacts
+	Snapshots
+	Checkpoints
 }
+
+// snapshotAbortTimeout is how long restate lets a snapshot, restore or
+// checkpoint attempt run without journal progress before it aborts and
+// retries it. a live snapshot writes the whole memory image in one step.
+const snapshotAbortTimeout = 30 * time.Minute
 
 // PingResult is what Ping returns. it never carries more than whether the
 // fleet knows the key: a Host carries its agent token, which must not leave
@@ -66,6 +73,38 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("Destroy", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req orchestrator.DestroyRequest) (restate.Void, error) {
 				return restate.Void{}, destroy(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			})).
+		Handler("Snapshot", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
+				return snapshot(ctx, fleet, servicePolicy(cfg, EnvironmentObject), opts)
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("Restore", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, snapshotID string) (restate.Void, error) {
+				return restate.Void{}, restore(ctx, fleet, servicePolicy(cfg, EnvironmentObject), snapshotID)
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("CollectSnapshot", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, snapshotID string) (restate.Void, error) {
+				return restate.Void{}, collectSnapshot(ctx, fleet, servicePolicy(cfg, EnvironmentObject), snapshotID)
+			})).
+		Handler("Checkpoint", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, checkpointTick(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("ChainMoved", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, res orchestrator.ChainMoveResult) (restate.Void, error) {
+				return restate.Void{}, chainMovedHandler(ctx, fleet, res)
+			})).
+		Handler("HoldChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req HoldRequest) (orchestrator.ChainHold, error) {
+				return holdChain(ctx, fleet, req.Lease)
+			})).
+		Handler("ReleaseChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, reset bool) (restate.Void, error) {
+				return restate.Void{}, releaseChain(ctx, fleet, reset)
+			})).
+		Handler("RetireChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, dropChain(ctx, fleet)
 			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).

@@ -187,7 +187,7 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	// belongs to the source and is ready.
 	var seed SnapshotRecord
 	if opts.ReuseSnapshotID == "" {
-		created, err := fm.CreateSnapshot(ctx, srcVMID, SnapshotOptions{Comment: opts.Comment})
+		created, err := fm.snapshotInProcess(ctx, srcVMID, SnapshotOptions{Comment: opts.Comment})
 		if err != nil {
 			return "", err
 		}
