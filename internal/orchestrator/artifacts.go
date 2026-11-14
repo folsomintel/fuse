@@ -535,7 +535,7 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		return holder.SnapshotID, nil
 	}
 
-	source, target, err := fm.artifactEndpoints(record, holders, hostID)
+	source, _, err := fm.artifactEndpoints(record, holders, hostID)
 	if err != nil {
 		return "", err
 	}
@@ -549,113 +549,37 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		localID = liveReplicaSnapshotID(record.SnapshotID, hostID)
 	}
 
-	// Both ends are held for the duration: the source is being read and the
-	// destination is being written, and collecting either mid-flight leaves a
-	// torn rootfs that a later create would happily boot.
-	fm.beginArtifactPull(record.SnapshotID, source.snapshotID, localID)
-	defer fm.endArtifactPull(record.SnapshotID, source.snapshotID, localID)
-
-	pullCtx := ctx
-	if fm.artifactPullTimeout > 0 {
-		var cancel context.CancelFunc
-		pullCtx, cancel = context.WithTimeout(ctx, fm.artifactPullTimeout)
-		defer cancel()
-	}
-
 	fm.logger.Info("copying artifact between hosts",
 		"digest", record.Digest, "from", source.endpoint.HostID, "to", hostID, "snapshot", localID)
 
-	moved, err := fm.artifactMover.MoveArtifact(pullCtx, ArtifactMove{
-		Digest:     record.Digest,
-		SnapshotID: localID,
-		From:       source.endpoint,
-		To:         target,
-		Files:      files,
-		Lazy:       lazy,
-
+	// Both ends are held for the duration: the source is being read and the
+	// destination is being written, and collecting either mid-flight leaves a
+	// torn rootfs that a later create would happily boot.
+	job := ArtifactMoveJob{
+		SnapshotID:       record.SnapshotID,
+		Digest:           record.Digest,
+		SourceHostID:     source.endpoint.HostID,
 		SourceSnapshotID: source.snapshotID,
-	})
-	if err == nil && record.Kind == SnapshotKindLive && moved.Kind != SnapshotKindLive {
-		// the target took the rootfs and dropped the rest. nothing is recorded,
-		// so nothing can seed from the half it committed.
-		err = fmt.Errorf("host %s committed only the rootfs of a live snapshot; its host agent cannot receive memory images", hostID)
+		HostID:           hostID,
+		LocalID:          localID,
+		Files:            files,
+		Lazy:             lazy,
+		TenantID:         record.TenantID,
+		LayerKey:         record.LayerKey,
+		Arch:             record.Arch,
+		Kind:             record.Kind,
+		SizeBytes:        record.SizeBytes,
 	}
-	if err != nil {
+	return fm.runArtifactMove(ctx, job, func(err error) error {
 		// Cancellation is reported as itself rather than as a transfer failure:
 		// the caller gave up, the peer did nothing wrong, and a dead-lettered
 		// "transfer failed" would send an operator looking at the network.
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", fmt.Errorf("copy artifact %s to host %s: %w", record.Digest, hostID, ctxErr)
+			return fmt.Errorf("copy artifact %s to host %s: %w", record.Digest, hostID, ctxErr)
 		}
-		return "", fmt.Errorf("%w: copy artifact %s from host %s to host %s: %w",
+		return fmt.Errorf("%w: copy artifact %s from host %s to host %s: %w",
 			ErrArtifactTransferFailed, record.Digest, source.endpoint.HostID, hostID, err)
-	}
-
-	committedID := moved.SnapshotID
-	if committedID == "" {
-		committedID = localID
-	}
-	if lazy {
-		// the target holds no memory image, so it can never be the source of
-		// the next move or a seed for anything else, and its agent deletes the
-		// seed once the vm has resumed. recording it would say otherwise.
-		return committedID, nil
-	}
-	size := moved.SizeBytes
-	if size <= 0 {
-		size = record.SizeBytes
-	}
-
-	now := time.Now()
-	replicaMetadata := map[string]string{
-		"source_snapshot_id": record.SnapshotID,
-		"source_host_id":     source.endpoint.HostID,
-	}
-	if len(files) > 0 {
-		// the copy can be a source for the next move, so it carries the digests.
-		replicaMetadata = withLiveFiles(replicaMetadata, files)
-	}
-	metadata, _ := marshalSnapshotMetadata("", replicaMetadata)
-	replica := SnapshotRecord{
-		SnapshotID: committedID,
-		// No VM: this copy was not checkpointed from anything running here, it
-		// arrived over the wire. Leaving VMID empty is what marks it as a
-		// free-standing artifact rather than a vm's checkpoint.
-		VMID:     "",
-		HostID:   hostID,
-		TenantID: record.TenantID,
-		// ParentSnapshotID is deliberately NOT the source. Lineage means "this
-		// snapshot descends from that one", and deleting a snapshot with
-		// children is refused; pointing at the source would make every origin
-		// artifact undeletable the moment anything pulled a copy of it.
-		Mode:      SnapshotModeBuild,
-		LayerKey:  record.LayerKey,
-		Arch:      record.Arch,
-		Digest:    record.Digest,
-		Kind:      record.Kind,
-		State:     SnapshotStateReady,
-		SizeBytes: size,
-		Metadata:  metadata,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := fm.upsertSnapshotRecord(ctx, replica); err != nil {
-		// The bytes are on the host but nothing records them. Failing is the
-		// consistent choice: the create that triggered this would fail at its
-		// own next persist anyway, and the id is derived from (digest, host) so
-		// the next attempt re-commits over the same directory rather than
-		// leaving one orphan per try.
-		return "", fmt.Errorf("persist pulled artifact %s on host %s: %w", committedID, hostID, err)
-	}
-
-	fm.appendEventBackground("host", hostID, "artifact.pulled", map[string]any{
-		"digest":             record.Digest,
-		"snapshot_id":        committedID,
-		"source_host_id":     source.endpoint.HostID,
-		"source_snapshot_id": record.SnapshotID,
-		"size_bytes":         size,
 	})
-	return committedID, nil
 }
 
 // artifactSource is a chosen peer to pull from, plus the id it holds the
@@ -836,6 +760,10 @@ func (fm *FleetManager) reconcileArtifacts(ctx context.Context) {
 	if fm.artifactMaxPerTenant > 0 {
 		collect = append(collect, overflowArtifacts(candidates, protected, fm.artifactMaxPerTenant)...)
 	}
+
+	// a move running on restate holds its pins there, where they outlive a
+	// restart of this process.
+	collect = fm.dropDurablyPinned(ctx, collect)
 
 	for _, record := range collect {
 		fm.evictArtifact(ctx, record)
