@@ -101,6 +101,17 @@ Restore is **in-place only** for both kinds: it restores the snapshot onto its
 original VM, which must still be running. There is no cross-host restore, clone,
 or standalone restore into a new VM.
 
+### With restate on
+
+With `FUSE_RESTATE_MODE=self` or `cloud`, a snapshot and a restore each run as
+one durable operation on the environment, one at a time per environment. If the
+orchestrator restarts mid-way, the operation picks up where it stopped: a
+snapshot whose host checkpoint was taken still gets its record, and a restore
+finishes instead of leaving the snapshot in `restoring`. A snapshot whose record
+cannot be written is undone: the host artifact is deleted and the snapshot is
+left in `error` with the cause in `last_error`. The API, its fields and its
+status codes are the same in both modes.
+
 ### The guest clock after a live restore
 
 A resumed guest's clock is frozen at the moment the snapshot was taken, and

@@ -71,7 +71,7 @@ range covers the fleet.
 | `FUSE_RESTATE_INGRESS_URL` | | | Restate ingress URL, required unless the mode is `off`. `http://127.0.0.1:18080` with `ops/restate/compose.yaml`. |
 | `FUSE_RESTATE_API_KEY` / `FUSE_RESTATE_IDENTITY_KEY` | | | Mode `cloud` only: the Cloud API key and the `publickeyv1_...` signing key. Other cloud settings are on [Restate Cloud](/docs/cloud/restate-cloud#settings). |
 | `ORCH_RESTATE_LISTEN` | | `127.0.0.1:9080` | Restate handler endpoint (h2c). Only restate-server, or the TLS proxy in front of it in cloud public mode, should reach it. |
-| `FUSE_RESTATE_RETRY_<SERVICE>_INITIAL_INTERVAL` / `_MAX_INTERVAL` / `_MAX_ATTEMPTS` | | `500ms` / `30s` / `10` | Invocation retry policy per restate service; `<SERVICE>` is `ENVIRONMENT`, `HOST`, `ARTIFACTS` or `ARTIFACTPIN`. The `ARTIFACTS` policy also bounds the retries of an artifact move's pull. |
+| `FUSE_RESTATE_RETRY_<SERVICE>_INITIAL_INTERVAL` / `_MAX_INTERVAL` / `_MAX_ATTEMPTS` | | `500ms` / `30s` / `10` | Invocation retry policy per restate service; `<SERVICE>` is `ENVIRONMENT`, `HOST`, `ARTIFACTS` or `ARTIFACTPIN`. The `ARTIFACTS` policy also bounds the retries of an artifact move's pull; the `ENVIRONMENT` policy bounds the host steps of a destroy, snapshot or restore, and the retries of a snapshot gc deletion. |
 
 With `FIRECRACKER_BASE_URL` unset, the orchestrator runs the in-memory stub provider
 (fine for local dev, not for production). With `DATABASE_URL` unset, state is
@@ -79,7 +79,7 @@ in-memory and does not survive a restart.
 
 ## Restate
 
-Restate is optional and off by default; nothing runs on it yet. To run it next to the orchestrator:
+Restate is optional and off by default. With it on, destroys, artifact moves, snapshots, restores, the checkpoint chain and snapshot gc run on it. To run it next to the orchestrator:
 
 ```bash
 docker compose -f ops/restate/compose.yaml up -d
