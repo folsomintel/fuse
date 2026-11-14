@@ -301,3 +301,44 @@ func TestArtifactPull_metrics(t *testing.T) {
 		t.Fatalf("metrics %v", m.got)
 	}
 }
+
+// flakySnapshotStore fails every snapshot read.
+type flakySnapshotStore struct{ *MemoryStateStore }
+
+func (flakySnapshotStore) GetSnapshot(context.Context, string) (SnapshotRecord, error) {
+	return SnapshotRecord{}, errors.New("connection refused")
+}
+
+// TestArtifactDiscard_unreadableRecordKeepsBytes: a record that cannot be
+// read may exist, so the copy is not deleted and the step fails to retry.
+func TestArtifactDiscard_unreadableRecordKeepsBytes(t *testing.T) {
+	ctx := context.Background()
+	stub := &deletingProvider{stubLoadProvider: newStubProvider()}
+	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", StateStore: flakySnapshotStore{NewMemoryStateStore()}})
+	if err := fm.RegisterHost(ctx, artifactHost("h-b", 8), stub); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.ArtifactDiscard(ctx, ArtifactMoveJob{HostID: "h-b", LocalID: "art-x"}); err == nil {
+		t.Fatal("discard succeeded with the record unreadable")
+	}
+	if len(stub.deleted) != 0 {
+		t.Fatalf("deleted %v with the record unreadable", stub.deleted)
+	}
+	if _, err := fm.ArtifactMoveCommitted(ctx, ArtifactMoveJob{HostID: "h-b", LocalID: "art-x"}); err == nil {
+		t.Fatal("commit check hid a failed read")
+	}
+}
+
+// TestEnsureArtifactOnHost_unsettledIsDistinct: a durable move the caller
+// stopped waiting on stays recognisable, so cleanup can leave its files.
+func TestEnsureArtifactOnHost_unsettledIsDistinct(t *testing.T) {
+	ctx := context.Background()
+	fm, _ := twoHostFleet(t, &recordingMover{})
+	d := newFakeDurableArtifacts()
+	d.moveErr = fmt.Errorf("%w: context deadline exceeded", ErrArtifactMoveUnsettled)
+	fm.SetDurableArtifacts(d)
+	_, err := fm.ensureArtifactOnHost(ctx, seedArtifactRecord(t, fm, "art-1", "tenant-1", "h-a", "d1"), "h-b", false)
+	if !errors.Is(err, ErrArtifactMoveUnsettled) || !errors.Is(err, ErrArtifactTransferFailed) {
+		t.Fatalf("err %v, want it to stay unsettled", err)
+	}
+}

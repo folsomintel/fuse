@@ -59,12 +59,20 @@ func containsString(list []string, s string) bool {
 	return false
 }
 
+// ErrArtifactMoveUnsettled is a durable move the caller stopped waiting on
+// without a result: the wait timed out or lost its connection to restate. the
+// move may still be running, so nothing it reads or writes may be cleaned up
+// on the strength of this error.
+var ErrArtifactMoveUnsettled = errors.New("artifact move still running")
+
 // DurableArtifacts runs artifact moves as the restate Artifacts/{local_id}.Move
 // handler and keeps pull pins in restate state, so neither is lost when the
 // orchestrator restarts. *durable.Client satisfies it.
 type DurableArtifacts interface {
 	// MoveArtifact runs the move and waits for it, returning the snapshot id
-	// committed on the destination. the move keeps running if ctx ends first.
+	// committed on the destination. the move keeps running if ctx ends first;
+	// an error that is not the move's own failure wraps
+	// ErrArtifactMoveUnsettled.
 	MoveArtifact(ctx context.Context, job ArtifactMoveJob) (string, error)
 	// PinArtifacts holds ids against gc for holder until ReleaseArtifacts, or
 	// until ttl passes.
@@ -195,14 +203,30 @@ func (fm *FleetManager) ArtifactMoveCommitted(ctx context.Context, job ArtifactM
 		// a lazy copy is never recorded.
 		return "", nil
 	}
-	record, err := fm.getSnapshotRecord(ctx, job.LocalID)
-	if err != nil {
-		return "", nil
+	record, found, err := fm.lookupSnapshotRecord(ctx, job.LocalID)
+	if err != nil || !found {
+		return "", err
 	}
 	if record.HostID == job.HostID && record.State == SnapshotStateReady {
 		return record.SnapshotID, nil
 	}
 	return "", nil
+}
+
+// lookupSnapshotRecord reads a snapshot record, telling a missing row
+// (found false, nil error) apart from a failed read (an error).
+func (fm *FleetManager) lookupSnapshotRecord(ctx context.Context, snapshotID string) (SnapshotRecord, bool, error) {
+	if fm.store == nil {
+		return SnapshotRecord{}, false, nil
+	}
+	record, err := fm.store.GetSnapshot(ctx, snapshotID)
+	if errors.Is(err, ErrSnapshotNotFound) {
+		return SnapshotRecord{}, false, nil
+	}
+	if err != nil {
+		return SnapshotRecord{}, false, fmt.Errorf("read snapshot %s: %w", snapshotID, err)
+	}
+	return record, true, nil
 }
 
 // errArtifactKindMismatch is a destination that committed something other
@@ -405,9 +429,14 @@ func (fm *FleetManager) recordMergedDelta(ctx context.Context, job ArtifactMoveJ
 
 // ArtifactDiscard deletes what a failed move may have left on the
 // destination. a copy that did get recorded is kept: the record step can
-// commit on an attempt whose answer was lost.
+// commit on an attempt whose answer was lost. a record that cannot be read
+// fails the step, so the bytes stay until the row is known to be absent.
 func (fm *FleetManager) ArtifactDiscard(ctx context.Context, job ArtifactMoveJob) error {
-	if record, err := fm.getSnapshotRecord(ctx, job.LocalID); err == nil && record.HostID == job.HostID {
+	record, found, err := fm.lookupSnapshotRecord(ctx, job.LocalID)
+	if err != nil {
+		return err
+	}
+	if found && record.HostID == job.HostID {
 		return nil
 	}
 	if err := fm.deleteFreeArtifact(ctx, job.HostID, job.LocalID); err != nil && !IsNotFound(err) {
