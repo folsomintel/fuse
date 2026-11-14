@@ -55,6 +55,50 @@ func (fakeFleet) ArtifactRecord(_ context.Context, job orchestrator.ArtifactMove
 func (fakeFleet) ArtifactDiscard(context.Context, orchestrator.ArtifactMoveJob) error { return nil }
 func (fakeFleet) ArtifactPullTimeout() time.Duration                                  { return 0 }
 
+func (fakeFleet) SnapshotBegin(_ context.Context, _ string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotPlan, error) {
+	return orchestrator.SnapshotPlan{Options: opts}, nil
+}
+func (fakeFleet) SnapshotCheckpoint(context.Context, string, orchestrator.SnapshotPlan) (orchestrator.Checkpoint, error) {
+	return orchestrator.Checkpoint{ID: "snap-1"}, nil
+}
+func (fakeFleet) SnapshotRecordCreating(_ context.Context, vm string, _ orchestrator.SnapshotPlan, cp orchestrator.Checkpoint) (orchestrator.SnapshotRecord, error) {
+	return orchestrator.SnapshotRecord{SnapshotID: cp.ID, VMID: vm, State: orchestrator.SnapshotStateCreating}, nil
+}
+func (fakeFleet) SnapshotList(context.Context, string, string) (orchestrator.Checkpoint, error) {
+	return orchestrator.Checkpoint{}, nil
+}
+func (fakeFleet) SnapshotReady(_ context.Context, rec orchestrator.SnapshotRecord, _ orchestrator.Checkpoint) (orchestrator.SnapshotRecord, error) {
+	rec.State = orchestrator.SnapshotStateReady
+	return rec, nil
+}
+func (fakeFleet) SnapshotAbort(context.Context, string, orchestrator.SnapshotPlan, orchestrator.Checkpoint, string) error {
+	return nil
+}
+func (fakeFleet) RestoreValidate(_ context.Context, vm, id string) (orchestrator.SnapshotRecord, error) {
+	return orchestrator.SnapshotRecord{SnapshotID: id, VMID: vm}, nil
+}
+func (fakeFleet) RestoreBegin(context.Context, orchestrator.SnapshotRecord) error  { return nil }
+func (fakeFleet) RestoreOnHost(context.Context, string, string) error              { return nil }
+func (fakeFleet) RestoreFinish(context.Context, orchestrator.SnapshotRecord) error { return nil }
+func (fakeFleet) RestoreFailed(context.Context, orchestrator.SnapshotRecord, string) error {
+	return nil
+}
+func (fakeFleet) SnapshotCollect(context.Context, string) error               { return nil }
+func (fakeFleet) SnapshotCollectFailed(context.Context, string, string) error { return nil }
+
+func (fakeFleet) ChainBegin(context.Context, string, orchestrator.ChainState) (orchestrator.ChainPlan, error) {
+	return orchestrator.ChainPlan{}, nil
+}
+func (fakeFleet) ChainMovePlan(context.Context, orchestrator.ChainState, orchestrator.ChainPlan, orchestrator.SnapshotRecord) (orchestrator.ChainMove, error) {
+	return orchestrator.ChainMove{}, nil
+}
+func (fakeFleet) ChainRetire(context.Context, string, orchestrator.ChainState) error { return nil }
+func (fakeFleet) ChainReset(context.Context, string, string) error                   { return nil }
+func (fakeFleet) ChainAdvanced(context.Context, string, orchestrator.ChainState, bool) error {
+	return nil
+}
+func (fakeFleet) MirrorChain(string, orchestrator.ChainState, bool) {}
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -113,7 +157,9 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			want["Destroy"] = "EXCLUSIVE"
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain"} {
+				want[h] = "EXCLUSIVE"
+			}
 		case ArtifactsObject:
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:
