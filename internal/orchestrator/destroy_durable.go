@@ -34,6 +34,10 @@ type DestroyTarget struct {
 	// Tracked is false when the fleet has no record of the vm.
 	Tracked bool   `json:"tracked"`
 	HostID  string `json:"host_id"`
+	// Replaced is set on a create cleanup that finds the vm id tracked
+	// again: a retried create reused it, and the vm there is not the one
+	// the cleanup was sent for. the destroy stops without touching it.
+	Replaced bool `json:"replaced,omitempty"`
 }
 
 // DurableDestroyer runs a destroy as the restate Environment/{vm_id}.Destroy
@@ -138,6 +142,13 @@ func (fm *FleetManager) DestroyBegin(ctx context.Context, vmID, reason string) (
 	if !ok {
 		fm.mu.RUnlock()
 		return DestroyTarget{}, nil
+	}
+	// a failed create drops its vm before sending the cleanup, so a tracked
+	// vm here is a later create's.
+	if reason == DestroyReasonCreateCleanup {
+		fm.mu.RUnlock()
+		fm.logger.InfoContext(ctx, "create cleanup skipped, vm id reused by a later create", "vm", vmID)
+		return DestroyTarget{Replaced: true}, nil
 	}
 	target := DestroyTarget{Tracked: true, HostID: v.hostID}
 	priorTaskID := v.taskID
