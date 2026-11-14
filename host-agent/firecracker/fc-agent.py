@@ -3783,6 +3783,9 @@ IDEMPOTENCY_SWEEP_INTERVAL = 3600.0
 _idem_lock = threading.Lock()
 _idem_inflight: dict[str, threading.Event] = {}
 _idem_last_sweep = 0.0
+# answers whose disk write failed. kept for this process's lifetime, so a
+# waiting or later repeat still replays instead of running the request again.
+_idem_unsaved: dict[str, dict] = {}
 
 
 def idem_dir() -> Path:
@@ -3796,26 +3799,36 @@ def _idem_path(key: str) -> Path:
 def idem_load(key: str) -> dict | None:
     """the stored response for key, or None when there is none or it expired."""
     p = _idem_path(key)
-    try:
-        rec = json.loads(p.read_text())
-    except (OSError, ValueError):
-        return None
+    rec = _idem_unsaved.get(key)
+    if rec is None:
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            return None
     if time.time() - float(rec.get("at", 0)) > IDEMPOTENCY_TTL:
+        _idem_unsaved.pop(key, None)
         p.unlink(missing_ok=True)
         return None
     return rec
 
 
 def idem_save(key: str, request: str, code: int, ctype: str, body: bytes) -> None:
-    d = idem_dir()
-    d.mkdir(parents=True, exist_ok=True)
+    """store the answer for key. a failed disk write keeps it in memory and
+    re-raises, so the caller can log it and repeats in this process replay."""
     rec = {"at": time.time(), "request": request, "code": code, "ctype": ctype,
            "body": base64.b64encode(body).decode()}
-    p = _idem_path(key)
-    # a fresh file renamed into place, so a reader never sees a partial record.
-    tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
-    tmp.write_text(json.dumps(rec))
-    os.replace(tmp, p)
+    try:
+        d = idem_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        p = _idem_path(key)
+        # a fresh file renamed into place, so a reader never sees a partial record.
+        tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(json.dumps(rec))
+        os.replace(tmp, p)
+    except OSError:
+        with _idem_lock:
+            _idem_unsaved[key] = rec
+        raise
     idem_sweep()
 
 
@@ -4072,7 +4085,7 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as e:
             # the request already ran; failing its answer now would only
             # invite the retry this store exists to absorb.
-            sys.stderr.write(f"[fc-agent] idempotency record not saved: {e}\n")
+            sys.stderr.write(f"[fc-agent] idempotency record not saved to disk, kept in memory: {e}\n")
 
     def _replay(self, rec: dict) -> None:
         code = int(rec["code"])

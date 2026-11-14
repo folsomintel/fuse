@@ -850,6 +850,18 @@ class IdempotencyTest(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertEqual(results[0][:2], results[1][:2])
 
+    def test_failed_save_still_replays(self):
+        # a full disk after the command ran: the repeat gets the first answer
+        # from memory instead of running the command again.
+        with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create, \
+                mock.patch.dict(qemu_agent._idem_unsaved, clear=True), \
+                mock.patch.object(Path, "write_text", side_effect=OSError(28, "no space left on device")):
+            first = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
+            second = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
+        self.assertEqual(create.call_count, 1)
+        self.assertEqual(second[:2], first[:2])
+        self.assertEqual(second[2], "true")
+
     def test_expired_key_runs_again(self):
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:
             self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
