@@ -326,7 +326,7 @@ type EgressMetrics interface {
 
 // OperationMetrics is an optional extension of ReconcileMetrics for
 // lifecycle operations: create, destroy, fork, migrate, migrate_live,
-// snapshot and restore. destroy is DestroyVM only: the reconcile loop's own
+// snapshot, restore and rotate_token. destroy is DestroyVM only: the reconcile loop's own
 // teardowns and the one after CompleteTask go through destroyAndRemove and are
 // not counted. snapshot includes the snapshots fork, migrate and checkpoint
 // chains take internally, since each is a real checkpoint the host had to
@@ -629,6 +629,10 @@ type FleetManager struct {
 	// retention gc on restate; nil in mode off. see snapshot_durable.go and
 	// checkpoints_durable.go.
 	durableSnapshots DurableSnapshots
+
+	// durableTokens runs token rotation on restate; nil in mode off. see
+	// token_rotation.go.
+	durableTokens DurableTokenRotator
 
 	cancel context.CancelFunc
 	done   chan struct{}
