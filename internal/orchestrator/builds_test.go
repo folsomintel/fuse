@@ -414,3 +414,67 @@ func TestBuildArchNeedsOneAnswer(t *testing.T) {
 		t.Errorf("mixed fleet plan = %+v, want one exec of the whole setup", plan)
 	}
 }
+
+// of many requests for one build id at once, exactly one runs the build and
+// the rest get its record back.
+func TestSubmitBuildClaimsTheIDOnce(t *testing.T) {
+	ctx := context.Background()
+	p := &buildProvider{}
+	fm := newBuildFleet(t, p)
+	in := testBuildInput("bld_race", "k0")
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	started := 0
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, replayed, err := fm.SubmitBuild(ctx, in, nil)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if !replayed {
+				mu.Lock()
+				started++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if started != 1 {
+		t.Fatalf("%d submits started the build, want 1", started)
+	}
+	if rec := waitBuild(t, fm, in.ID); rec.State != BuildSucceeded {
+		t.Fatalf("build %s: %s", rec.State, rec.Error)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.envs) != 1 {
+		t.Errorf("%d builders created, want 1", len(p.envs))
+	}
+}
+
+// restate does not run a build whose record a restart would lose: with the
+// memory store it runs in process instead.
+func TestDurableBuildNeedsAPersistentStore(t *testing.T) {
+	fm := newBuildFleet(t, &buildProvider{})
+	fm.SetDurableBuilds(failingBuilds{})
+	rec, _, err := fm.SubmitBuild(context.Background(), testBuildInput("bld_mem"), nil)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if rec.Durable {
+		t.Errorf("build on the memory store marked durable")
+	}
+	if got := waitBuild(t, fm, rec.ID); got.State != BuildSucceeded {
+		t.Errorf("build %s: %s", got.State, got.Error)
+	}
+}
+
+type failingBuilds struct{}
+
+func (failingBuilds) SubmitBuild(context.Context, BuildInput) error {
+	return errors.New("restate is not used for this build")
+}

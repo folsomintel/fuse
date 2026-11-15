@@ -119,6 +119,9 @@ type BuildRecord struct {
 
 // BuildStore keeps build records. both state stores implement it.
 type BuildStore interface {
+	// InsertBuild stores rec unless a build with its id exists, atomically.
+	// claimed is false when one does, and prev is that build.
+	InsertBuild(ctx context.Context, rec BuildRecord) (prev BuildRecord, claimed bool, err error)
 	UpsertBuild(ctx context.Context, rec BuildRecord) error
 	// GetBuild returns one build, or an error wrapping ErrBuildNotFound.
 	GetBuild(ctx context.Context, id string) (BuildRecord, error)
@@ -180,8 +183,10 @@ type DurableBuilds interface {
 type buildRegistry struct {
 	mu      sync.Mutex
 	durable DurableBuilds
-	// local is the in-process builds running in this process.
-	local map[string]bool
+	// local counts, per build id, the in-process runs of this process and
+	// the submits about to start one. a count, since a submit that loses
+	// the claim to a concurrent one must not unmark the winner.
+	local map[string]int
 }
 
 // SetDurableBuilds runs builds on restate. nil (mode off, the default) runs
@@ -259,16 +264,14 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 	if len(in.Setup.Steps) == 0 {
 		return BuildRecord{}, false, errors.New("build: no setup steps")
 	}
-	if prev, err := bs.GetBuild(ctx, in.ID); err == nil {
-		if prev.Fingerprint != in.Fingerprint {
-			return BuildRecord{}, false, fmt.Errorf("%w: %s", ErrBuildConflict, in.ID)
-		}
-		return fm.liveBuild(ctx, bs, prev), true, nil
-	} else if !errors.Is(err, ErrBuildNotFound) {
-		return BuildRecord{}, false, err
-	}
-
 	d := fm.durableBuilds()
+	if _, memory := bs.(*MemoryStateStore); d != nil && memory {
+		// a restart would lose the record while restate resumed the build,
+		// and the steps it replays from the journal would not write it
+		// again.
+		fm.logger.WarnContext(ctx, "builds need a persistent state store to run on restate, running it in process", "build", in.ID)
+		d = nil
+	}
 	if d != nil && len(secretMap) > 0 && len(fm.tokenEncryptionKey) != 32 {
 		// the secrets could not be sealed for the journal.
 		fm.logger.WarnContext(ctx, "build has secrets and no TOKEN_ENCRYPTION_KEY, running it in process", "build", in.ID)
@@ -286,8 +289,25 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 
 	rec = newBuildRecord(in, time.Now().UTC())
 	rec.Durable = d != nil
-	if err := bs.UpsertBuild(ctx, rec); err != nil {
-		return BuildRecord{}, false, fmt.Errorf("persist build %s: %w", in.ID, err)
+	if d == nil {
+		// marked local before the record exists, so a concurrent read never
+		// takes it for a build whose process went away.
+		fm.setLocalBuild(in.ID, true)
+	}
+	// the claim is atomic: of two requests for one id, one inserts the
+	// record and runs the build, the other gets that record back.
+	prev, claimed, err := bs.InsertBuild(ctx, rec)
+	if err != nil || !claimed {
+		if d == nil {
+			fm.setLocalBuild(in.ID, false)
+		}
+		if err != nil {
+			return BuildRecord{}, false, fmt.Errorf("persist build %s: %w", in.ID, err)
+		}
+		if prev.Fingerprint != in.Fingerprint {
+			return BuildRecord{}, false, fmt.Errorf("%w: %s", ErrBuildConflict, in.ID)
+		}
+		return fm.liveBuild(ctx, bs, prev), true, nil
 	}
 	fm.appendEvent(ctx, "build", in.ID, "build.submitted", map[string]any{"name": in.Name, "durable": rec.Durable})
 
@@ -303,23 +323,30 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 	}
 
 	in.secrets = secretMap
-	fm.builds.mu.Lock()
-	if fm.builds.local == nil {
-		fm.builds.local = map[string]bool{}
-	}
-	fm.builds.local[in.ID] = true
-	fm.builds.mu.Unlock()
 	// a build outlives its request and is not waited for on shutdown: one
 	// cut short is failed by the next read of its record.
 	go func() {
-		defer func() {
-			fm.builds.mu.Lock()
-			delete(fm.builds.local, in.ID)
-			fm.builds.mu.Unlock()
-		}()
+		defer fm.setLocalBuild(in.ID, false)
 		fm.runBuild(context.WithoutCancel(ctx), in)
 	}()
 	return rec, false, nil
+}
+
+// setLocalBuild counts a run of build id in this process in (running) or
+// out.
+func (fm *FleetManager) setLocalBuild(id string, running bool) {
+	fm.builds.mu.Lock()
+	defer fm.builds.mu.Unlock()
+	if fm.builds.local == nil {
+		fm.builds.local = map[string]int{}
+	}
+	if running {
+		fm.builds.local[id]++
+		return
+	}
+	if fm.builds.local[id]--; fm.builds.local[id] <= 0 {
+		delete(fm.builds.local, id)
+	}
 }
 
 // GetBuild returns a build's record.
@@ -343,7 +370,7 @@ func (fm *FleetManager) liveBuild(ctx context.Context, bs BuildStore, rec BuildR
 		return rec
 	}
 	fm.builds.mu.Lock()
-	local := fm.builds.local[rec.ID]
+	local := fm.builds.local[rec.ID] > 0
 	fm.builds.mu.Unlock()
 	if local {
 		return rec

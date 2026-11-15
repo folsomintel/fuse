@@ -423,6 +423,8 @@ func TestBuildSentinels(t *testing.T) {
 	}
 }
 
+type persistentStore struct{ *orchestrator.MemoryStateStore }
+
 // refusingBuilds is a restate that does not take a build.
 type refusingBuilds struct{}
 
@@ -431,7 +433,11 @@ func (refusingBuilds) SubmitBuild(context.Context, orchestrator.BuildInput) erro
 }
 
 func TestCreateBuild_restateDownReturns503(t *testing.T) {
-	h, fm, _ := newTestHandler(t)
+	// restate only runs a build whose record outlives the process, so the
+	// memory store is wrapped to stand in for postgres.
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-",
+		StateStore: persistentStore{orchestrator.NewMemoryStateStore()}})
+	h := &Handler{Fleet: fm}
 	fm.SetDurableBuilds(refusingBuilds{})
 	r := mustRouter(t, h)
 

@@ -19,6 +19,19 @@ func cloneBuildRecord(rec BuildRecord) BuildRecord {
 	return rec
 }
 
+func (s *MemoryStateStore) InsertBuild(_ context.Context, rec BuildRecord) (BuildRecord, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev, ok := s.builds[rec.ID]; ok {
+		return cloneBuildRecord(prev), false, nil
+	}
+	if s.builds == nil {
+		s.builds = map[string]BuildRecord{}
+	}
+	s.builds[rec.ID] = cloneBuildRecord(rec)
+	return BuildRecord{}, true, nil
+}
+
 func (s *MemoryStateStore) UpsertBuild(_ context.Context, rec BuildRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -44,6 +57,28 @@ func (s *MemoryStateStore) DeleteBuild(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	delete(s.builds, id)
 	return nil
+}
+
+func (s *PostgresStateStore) InsertBuild(ctx context.Context, rec BuildRecord) (BuildRecord, bool, error) {
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return BuildRecord{}, false, fmt.Errorf("encode build %s: %w", rec.ID, err)
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO orchestrator_builds (build_id, tenant_id, state, record, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (build_id) DO NOTHING
+	`, rec.ID, rec.TenantID, rec.State, string(raw), rec.CreatedAt.UTC(), rec.UpdatedAt.UTC())
+	if err != nil {
+		return BuildRecord{}, false, fmt.Errorf("insert build %s: %w", rec.ID, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return BuildRecord{}, false, fmt.Errorf("insert build %s: %w", rec.ID, err)
+	} else if n == 1 {
+		return BuildRecord{}, true, nil
+	}
+	prev, err := s.GetBuild(ctx, rec.ID)
+	return prev, false, err
 }
 
 func (s *PostgresStateStore) UpsertBuild(ctx context.Context, rec BuildRecord) error {

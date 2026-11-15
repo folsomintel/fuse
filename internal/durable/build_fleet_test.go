@@ -109,6 +109,8 @@ func (p *guestProvider) List(context.Context, string) ([]orchestrator.Environmen
 }
 func (*guestProvider) Close() error { return nil }
 
+type persistentStore struct{ *orchestrator.MemoryStateStore }
+
 // TestBuildOnFleetResumesAfterEndpointRestart runs a real FleetManager's
 // build through restate, layer snapshots and the builder destroy included,
 // and drops the endpoint while the tail runs, standing in for kill -9 of the
@@ -117,7 +119,10 @@ func (*guestProvider) Close() error { return nil }
 // builder is destroyed at the end.
 func TestBuildOnFleetResumesAfterEndpointRestart(t *testing.T) {
 	p := &guestProvider{holdOn: "date >", held: make(chan struct{}), envs: map[string]*guestEnv{}}
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-"})
+	// a store that is not the memory one stands in for postgres: a durable
+	// build needs a record that outlives the process.
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-",
+		StateStore: persistentStore{orchestrator.NewMemoryStateStore()}})
 	ctx := context.Background()
 	if err := fm.RegisterHost(ctx, orchestrator.Host{
 		ID: "h1", URL: "http://h1.test", Backend: orchestrator.BackendFirecracker,

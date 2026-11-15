@@ -26,8 +26,14 @@ func TestBuildStoreRoundTrip(t *testing.T) {
 			rec.Durable = true
 			rec.Layers[0].SnapshotID = "snap-0"
 			rec.FinishedAt = &now
-			if err := bs.UpsertBuild(ctx, rec); err != nil {
-				t.Fatal(err)
+			if _, claimed, err := bs.InsertBuild(ctx, rec); err != nil || !claimed {
+				t.Fatalf("first insert: claimed=%v err=%v", claimed, err)
+			}
+			other := rec
+			other.Fingerprint = "another request"
+			prev, claimed, err := bs.InsertBuild(ctx, other)
+			if err != nil || claimed || prev.Fingerprint != rec.Fingerprint {
+				t.Fatalf("second insert: claimed=%v prev=%q err=%v, want the first record back", claimed, prev.Fingerprint, err)
 			}
 			got, err := bs.GetBuild(ctx, id)
 			if err != nil {
