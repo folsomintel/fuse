@@ -27,10 +27,10 @@ const (
 // sentinel (a vm not running, a cross-backend target) crosses restate as, so
 // the client hands the api the fleet's message unchanged. migrateErrorBase+i
 // carries orchestrator.MigrateRefusals[i]. clear of the 480s, which other
-// handlers number from.
+// handlers number from, and of create's 529-539.
 const (
-	migrateRefusedCode restate.Code = 530
-	migrateErrorBase   restate.Code = 531
+	migrateRefusedCode restate.Code = 540
+	migrateErrorBase   restate.Code = 541
 )
 
 // the lazy-memory watcher's polls start at memoryPollFirst and back off to

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	restate "github.com/restatedev/sdk-go"
+
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -455,6 +457,25 @@ func waitStep(t *testing.T, ctx context.Context, fleet *migFleet, step string) {
 		case <-ctx.Done():
 			t.Fatalf("%s never ran; steps %s", step, fleet.steps())
 		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+// TestMigrateErrorCodesStayInTheirRange: migrate's codes run from 540, clear
+// of the snapshot sentinels, the other handlers' refusals and create's
+// 529-539.
+func TestMigrateErrorCodesStayInTheirRange(t *testing.T) {
+	last := migrateErrorBase + restate.Code(len(orchestrator.MigrateRefusals)) - 1
+	if migrateRefusedCode != 540 || migrateErrorBase != 541 || last > 549 {
+		t.Fatalf("migrate codes %d, %d..%d, want 540, 541.. within the 540s", migrateRefusedCode, migrateErrorBase, last)
+	}
+	others := []restate.Code{moveFailedCode, rotateRefusedCode, drainFailedCode}
+	for i := range orchestrator.SnapshotFleetErrors {
+		others = append(others, fleetErrorBase+restate.Code(i))
+	}
+	for _, c := range others {
+		if c >= migrateRefusedCode && c <= last {
+			t.Fatalf("code %d is in migrate's range", c)
 		}
 	}
 }
