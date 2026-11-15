@@ -233,7 +233,11 @@ func followBuild(ctx context.Context, cl *fuse.Client, b *fuse.Build) (*fuse.Bui
 		if b.Done() {
 			return b, nil
 		}
-		next, err := cl.Builds.Get(ctx, b.ID, fuse.GetBuildOptions{Wait: buildPollWait})
+		select {
+		case <-ctx.Done():
+		case <-time.After(buildPollInterval):
+		}
+		next, err := cl.Builds.Get(ctx, b.ID, fuse.GetBuildOptions{})
 		if err != nil {
 			if ctx.Err() != nil {
 				warnf("stopped following build %s; it keeps running on the orchestrator", b.ID)
@@ -244,5 +248,7 @@ func followBuild(ctx context.Context, cl *fuse.Client, b *fuse.Build) (*fuse.Bui
 	}
 }
 
-// buildPollWait is the ?wait= of each poll while following a build.
-const buildPollWait = 30 * time.Second
+// buildPollInterval is how often a followed build is read. a short poll
+// rather than a long ?wait=, which answers only when the build finishes, so
+// each step shows as the build reaches it.
+var buildPollInterval = time.Second

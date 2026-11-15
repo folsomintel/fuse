@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/folsomintel/fuse/internal/fusefile"
 	fuse "github.com/folsomintel/fuse/sdks/go"
@@ -52,6 +53,9 @@ const succeededBuild = `{"id":"bld_1","name":"app","state":"succeeded","step":"d
 
 func runBuild(t *testing.T, srv *buildServer, args ...string) (string, string, error) {
 	t.Helper()
+	prev := buildPollInterval
+	buildPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { buildPollInterval = prev })
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	cfg := writeConfig(t, ts.URL)
