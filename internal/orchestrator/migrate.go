@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
-
-	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 func (fm *FleetManager) discardProvisionedVM(vmID, hostID string, spec Spec) {
@@ -112,119 +109,38 @@ func (fm *FleetManager) MigrateVM(ctx context.Context, vmID string, opts Migrate
 }
 
 func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts MigrateOptions) (string, error) {
-	targetHostID := opts.TargetHostID
-	fm.mu.RLock()
-	src, ok := fm.vms[vmID]
-	if !ok {
-		fm.mu.RUnlock()
-		return "", fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+	if d := fm.durableMigrator(); d != nil {
+		return fm.durableMigrateVM(ctx, d, vmID, opts)
 	}
-	state := src.state
-	srcSpec := src.spec
-	srcHitlKeys, srcHitlKeysEncrypted := src.hitlKeys, src.hitlKeysEncrypted
-	srcHostID := src.hostID
-	srcEnv := src.env
-	provider := fm.provider
-	if srcHostID != "" {
-		if hostProvider, ok := fm.providerForHost(srcHostID); ok {
-			provider = hostProvider
-		}
+	plan, err := fm.MigrateBegin(ctx, vmID, MigrateRequest(opts))
+	if err != nil {
+		return "", err
 	}
-
-	srcBackend := HostBackend("")
-	if h, ok := fm.hosts[srcHostID]; ok {
-		srcBackend = h.Backend
-	}
-	if targetHostID != "" {
-		targetBackend := HostBackend("")
-		if h, ok := fm.hosts[targetHostID]; ok {
-			targetBackend = h.Backend
-		}
-		if targetBackend == "" {
-			fm.mu.RUnlock()
-			return "", fmt.Errorf("%w: target host %s is not registered", ErrArtifactImmovable, targetHostID)
-		}
-		if srcBackend != "" && targetBackend != srcBackend {
-			fm.mu.RUnlock()
-			return "", fmt.Errorf("source host %s runs %s backend, target host %s runs %s backend: cross-backend migration is not supported", srcHostID, srcBackend, targetHostID, targetBackend)
-		}
-	}
-	fm.mu.RUnlock()
-
-	if state != VMStateRunning {
-		return "", fmt.Errorf("vm %s in state %s: migrate requires running", vmID, state)
-	}
-
-	if srcSpec.GPUs > 0 {
-		return "", fmt.Errorf("%w: vm %s has a gpu passthrough device: migrate is not supported for gpu environments", ErrGPUUnsupported, vmID)
-	}
-
-	forkable, ok := provider.(SnapshotForkable)
-	if !ok {
-		return "", fmt.Errorf("provider does not support migrate for vm %s", vmID)
-	}
-
-	// an empty target means the orchestrator picks one. a vm with no host is
-	// on the single-provider path, where there is nowhere else to go.
-	if targetHostID == "" && srcHostID != "" {
-		picked, err := fm.pickMigrateTarget(vmID, srcHostID, srcBackend, srcSpec)
-		if err != nil {
-			return "", err
-		}
-		targetHostID = picked
-	}
-
-	if opts.Live && (targetHostID == "" || targetHostID == srcHostID) {
-		return "", fmt.Errorf("%w: it needs a target host other than the source's (%s)", ErrLiveMigrateRefused, srcHostID)
-	}
-	if opts.Lazy && !opts.Live {
-		return "", fmt.Errorf("%w: lazy needs live", ErrLiveMigrateRefused)
-	}
-	if opts.Lazy && !srcSpec.HugePages {
-		return "", fmt.Errorf("%w: vm %s was not booted with huge pages, which a lazy migrate needs", ErrLiveMigrateRefused, vmID)
-	}
-
-	// a live, non-lazy migrate from a source that can take diff snapshots
-	// copies the bulk while the guest keeps running, then pauses it only for
-	// the pages and blocks that changed since, so nothing the guest writes
-	// during the copy is lost and the pause is as long as the diff, not the
-	// whole image.
-	srcDelta, _ := srcEnv.(DeltaSnapshotCapable)
-	delta := opts.Live && !opts.Lazy && srcDelta != nil && fm.artifactMover != nil
+	delta := plan.Delta
 	var chain *checkpointChain
-	if d := fm.durableSnapshotsClient(); delta && d != nil {
-		// on restate the chain lives on the vm's Environment object, and
-		// the hold is what keeps the checkpoint loop off it.
-		var holder string
-		chain, holder = fm.holdDurableChain(ctx, d, vmID)
-		if chain == nil {
-			delta = false
-		} else {
-			held := chain.base
-			defer func() { fm.releaseDurableChain(d, vmID, holder, held != "" && chain.base == "") }()
-		}
-	} else if delta {
+	if delta {
 		// held for the whole migrate so the checkpoint loop cannot take a live
 		// snapshot of this vm in between, which would break the diff's parent.
+		// on restate the migrate runs on the vm's Environment object instead,
+		// which the checkpoint loop's ticks queue behind.
 		chain = fm.chainFor(vmID)
 		chain.mu.Lock()
 		defer chain.mu.Unlock()
 	}
+	var frozenAt time.Time
 	frozen, committed := false, false
 	defer func() {
 		if frozen && !committed {
 			// a failed migrate must never leave the source stopped: until the
 			// target is running it is the only copy of the guest.
-			if err := srcDelta.Resume(context.Background()); err != nil {
-				fm.logger.Error("resume source vm after a failed delta migrate", "vm", vmID, "err", err)
-			}
+			_ = fm.MigrateResumeSource(context.Background(), plan)
+			_ = fm.MigrateFrozen(context.Background(), plan, time.Since(frozenAt), "rolled_back")
 		}
 	}()
 
 	var seed SnapshotRecord
 	var stagedBase string
-	var err error
-	if delta && chain.standby == targetHostID && chain.base != "" {
+	if delta && chain.standby == plan.TargetHostID && chain.base != "" {
 		// the checkpoint loop already keeps a merged copy of this vm on the
 		// target, so the bulk copy happened before this call did.
 		seed, stagedBase = chain.head, chain.base
@@ -238,225 +154,98 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		}
 		if opts.Live && seed.Kind != SnapshotKindLive {
 			// an agent too old for live snapshots answers with a disk one.
-			return "", fmt.Errorf("%w: host %s took a %s snapshot for a live migrate of vm %s", ErrSnapshotUnsupported, srcHostID, seed.Kind, vmID)
+			return "", fmt.Errorf("%w: host %s took a %s snapshot for a live migrate of vm %s", ErrSnapshotUnsupported, plan.SourceHostID, seed.Kind, vmID)
 		}
 	}
 
-	migrateTaskID := "migrate-" + NewEventID()
-	newVMID := fm.prefix + migrateTaskID
-	spec := srcSpec
-	spec.Name = newVMID
-	spec.SeedSnapshotID = ""
-	spec.PinnedHostID = ""
-	spec.HostID = ""
-	spec.Labels = nil
-
-	targetProvider := provider
-	if targetHostID != srcHostID {
+	v, err := fm.addMigratePlaceholder(plan)
+	if err != nil {
+		return "", err
+	}
+	discard := func() {
 		fm.mu.RLock()
-		if hostProvider, ok := fm.providerForHost(targetHostID); ok {
-			targetProvider = hostProvider
-		}
+		spec := v.spec
 		fm.mu.RUnlock()
+		fm.discardProvisionedVM(plan.NewVMID, plan.TargetHostID, spec)
 	}
 
-	now := time.Now()
-	v := &vm{
-		id:                newVMID,
-		state:             VMStateProvisioning,
-		taskID:            migrateTaskID,
-		hostID:            targetHostID,
-		spec:              spec,
-		createdAt:         now,
-		updatedAt:         now,
-		lastActivityAt:    now,
-		hitlKeys:          srcHitlKeys,
-		hitlKeysEncrypted: srcHitlKeysEncrypted,
-	}
-
-	fm.mu.Lock()
-	fm.vms[newVMID] = v
-	if targetHostID != "" {
-		fm.allocateOnHost(targetHostID, v)
-	}
-	fm.mu.Unlock()
-
-	var newEnv Environment
-	if targetHostID == srcHostID {
-		reportStep(ctx, "boot")
-		newEnv, err = forkable.CreateFromCheckpoint(ctx, spec, vmID, seed.SnapshotID)
-	} else {
-		localID := stagedBase
+	localID := stagedBase
+	if !plan.SameHost() {
 		if localID == "" {
 			reportStep(ctx, "transfer")
-			localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, opts.Lazy)
+			localID, err = fm.ensureArtifactOnHost(ctx, seed, plan.TargetHostID, opts.Lazy)
 		}
 		if err == nil && delta {
 			reportStep(ctx, "delta")
+			// the host pauses the guest before it writes the diff, so the
+			// pause is timed from the request.
+			diffAt := time.Now()
 			var child SnapshotRecord
 			child, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 				Comment: "migration delta", Live: true, Diff: true,
 				Parent: seed.SnapshotID, KeepPaused: true, NoLineage: true,
 			})
 			if err == nil {
-				frozen = true
-				localID, err = fm.moveDeltaToHost(ctx, child, localID, targetHostID, true)
+				frozen, frozenAt = true, diffAt
+				localID, err = fm.moveDeltaToHost(ctx, child, localID, plan.TargetHostID, true)
 			}
 			// the chain's base on the target was consumed by the merge, or is
 			// out of step with a source that just took another live snapshot.
 			fm.resetChainLocked(chain)
 		}
-		if err == nil {
-			spec.SeedSnapshotID = localID
-			spec.PinnedHostID = targetHostID
-			spec.ResumeSeed = opts.Live
-			fm.mu.Lock()
-			v.spec.SeedSnapshotID = localID
-			v.spec.PinnedHostID = targetHostID
-			v.spec.ResumeSeed = opts.Live
-			fm.mu.Unlock()
-			fm.touchArtifact(localID, seed.SnapshotID)
-			reportStep(ctx, "boot")
-			newEnv, err = targetProvider.Create(ctx, spec)
-		}
 	}
-
-	if err != nil {
-		fm.discardProvisionedVM(newVMID, targetHostID, spec)
-		var httpErr *HTTPStatusError
-		if opts.Live && errors.As(err, &httpErr) && httpErr.Code == http.StatusConflict {
-			// the target agent's resume checks all answer 409; see resume_plan.
-			return "", fmt.Errorf("%w: host %s cannot resume vm %s: %w", ErrLiveMigrateRefused, targetHostID, vmID, err)
-		}
-		return "", fmt.Errorf("migrate vm %s from snapshot %s: %w", vmID, seed.SnapshotID, err)
-	}
-
-	// published under ports of its own first. the source's ports are adopted
-	// at the very end (adoptIngress), once nothing can fail any more.
-	reportStep(ctx, "cutover")
-	var plan *ingressPlan
-	if fm.ingressSupported(targetHostID, spec) {
-		plan, err = fm.publishIngress(ctx, newVMID, nil, "")
+	if err == nil {
+		reportStep(ctx, "boot")
+		err = fm.MigrateCreate(ctx, plan, seed, localID)
 	}
 	if err != nil {
-		fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
+		discard()
 		return "", err
 	}
 
-	var encToken []byte
-	drainCommand := DefaultFusedDrainCommand
-	if len(fm.tokenEncryptionKey) == 32 {
-		creds, credErr := secrets.GenerateVMCredentials(newVMID)
-		if credErr != nil {
-			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-			return "", fmt.Errorf("generate credentials for migrated vm %s: %w", newVMID, credErr)
-		}
-		if upErr := uploadFiles(ctx, newEnv, plan.withTunnelFiles(fusedCredentialFiles(creds))); upErr != nil {
-			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-			return "", fmt.Errorf("upload credentials to migrated vm %s: %w", newVMID, upErr)
-		}
-		setTokenIfSupported(newEnv, creds)
-		encToken, err = secrets.EncryptToken(creds.AuthToken, fm.tokenEncryptionKey)
-		if err != nil {
-			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-			return "", fmt.Errorf("encrypt token for migrated vm %s: %w", newVMID, err)
-		}
-		if agentErr := newEnv.StartAgent(ctx, AgentSpec{
-			AuthToken:        creds.AuthToken,
-			DrainCommand:     drainCommand,
-			TunnelConfigPath: plan.tunnelConfigPath(),
-		}); agentErr != nil {
-			fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-			return "", fmt.Errorf("restart guest agent on migrated vm %s with its own credentials: %w", newVMID, agentErr)
-		}
-	} else if tunnelErr := fm.retunnelWithoutCredentials(ctx, newEnv, plan, drainCommand); tunnelErr != nil {
-		fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-		return "", fmt.Errorf("start tunnel on migrated vm %s: %w", newVMID, tunnelErr)
+	// published under ports of its own first. the source's ports are adopted
+	// at the very end (MigrateCutover), once nothing can fail any more.
+	reportStep(ctx, "cutover")
+	var started MigrateStarted
+	started.Ingress, err = fm.MigrateIngress(ctx, plan)
+	if err == nil {
+		started.Credentials, err = fm.MigrateCredentials(ctx, plan)
 	}
-
-	fm.mu.Lock()
-	v.state = VMStateRunning
-	v.env = newEnv
-	v.url = newEnv.URL()
-	v.authTokenEncrypted = encToken
-	v.drainCommand = drainCommand
-	v.updatedAt = time.Now()
-	fm.mu.Unlock()
-
-	if err := fm.persistVMByID(ctx, newVMID); err != nil {
-		fm.abandonProvisionedVM(ctx, targetProvider, targetHostID, newVMID, spec)
-		return "", fmt.Errorf("persist migrated vm %s running state: %w", newVMID, err)
+	if err == nil {
+		err = fm.MigrateUpload(ctx, plan, started)
 	}
-	if fm.store != nil {
-		if err := fm.store.UpsertTask(ctx, TaskRecord{
-			TaskID:     migrateTaskID,
-			VMID:       newVMID,
-			RunStatus:  TaskRunRunning,
-			AssignedAt: now,
-			UpdatedAt:  now,
-		}); err != nil {
-			fm.logger.Warn("persist migrated task running state failed", "vm", newVMID, "task", migrateTaskID, "err", err)
-		}
+	if err == nil {
+		err = fm.MigrateStartAgent(ctx, plan, started)
 	}
-	// the cutover: from here a client of the source's url reaches the new vm.
-	fm.adoptIngress(ctx, plan, vmID)
-	if plan != nil {
-		fm.mu.Lock()
-		v.applyIngress(plan.grant)
-		fm.mu.Unlock()
+	if err == nil {
+		err = fm.MigratePersist(ctx, plan, started)
 	}
-	fm.publishStateChange(newVMID, "")
-
-	lineageMeta, _ := marshalSnapshotMetadata("", nil)
-	lineage := SnapshotRecord{
-		SnapshotID:       "migrate-seed-" + NewEventID(),
-		VMID:             newVMID,
-		TaskID:           migrateTaskID,
-		HostID:           targetHostID,
-		TenantID:         snapshotTenantID(migrateTaskID, newVMID),
-		ParentSnapshotID: seed.SnapshotID,
-		Mode:             SnapshotModeAuto,
-		State:            SnapshotStateReady,
-		Metadata:         lineageMeta,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+	if err != nil {
+		fm.abandonMigrateTarget(ctx, plan, v)
+		return "", err
 	}
-	if err := fm.upsertSnapshotRecord(ctx, lineage); err != nil {
-		fm.logger.Warn("persist migrate lineage record failed", "vm", newVMID, "parent", seed.SnapshotID, "err", err)
+	if frozen {
+		_ = fm.MigrateFrozen(ctx, plan, time.Since(frozenAt), "cutover")
 	}
-
-	fm.appendEvent(ctx, "vm", newVMID, "vm.migrated", map[string]any{
-		"source_vm_id":     vmID,
-		"source_host_id":   srcHostID,
-		"target_host_id":   targetHostID,
-		"seed_snapshot_id": seed.SnapshotID,
-		"live":             opts.Live,
-		"lazy":             opts.Lazy,
-		"delta":            delta,
-	})
+	_ = fm.MigrateTask(ctx, plan)
+	_ = fm.MigrateCutover(ctx, plan, started)
+	_ = fm.MigrateLineage(ctx, plan, seed, delta)
 
 	if opts.Lazy {
 		// the seed on the source is now the only copy of every page the new
 		// vm has not touched yet, so it is held until the target has them all.
-		// taken before the source vm goes, and released by the watcher. on
-		// restate the pin outlives a restart that loses the watcher, and
-		// lapses once no chunk could still arrive.
-		release := fm.holdArtifact(ctx, "lazy:"+newVMID, lazyMemoryPinTTL, seed.SnapshotID)
-		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID, release)
+		// taken before the source vm goes, and released by the watcher.
+		release := fm.holdArtifact(ctx, LazyMemoryHolder(plan.NewVMID), LazyMemoryPinTTL, seed.SnapshotID)
+		go fm.watchLazyMemory(plan.NewVMID, seed.SnapshotID, release)
 	}
 
 	// from here the target is the guest; the source is only torn down.
 	committed = true
-	// a pending decision belongs to the logical environment, which now lives
-	// at the new id. moved before the source is destroyed, which would
-	// otherwise cancel it.
-	fm.moveInterventions(ctx, vmID, newVMID)
-	fm.rebindEnvKeys(ctx, vmID, newVMID)
-	if frozen {
+	_ = fm.MigrateHandover(ctx, plan)
+	if !frozen {
 		// drain runs a command inside the guest, which a frozen guest cannot
 		// do. nothing needs flushing either: its state is already on the target.
-	} else if drainErr := fm.Drain(ctx, vmID); drainErr != nil {
-		fm.logger.Warn("drain source vm during migration failed; destroying anyway", "vm", vmID, "err", drainErr)
+		_ = fm.MigrateDrainSource(ctx, plan)
 	}
 	if destroyErr := fm.DestroyVM(ctx, vmID); destroyErr != nil {
 		fm.logger.Warn("destroy source vm during migration failed", "vm", vmID, "err", destroyErr)
@@ -465,68 +254,48 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		fm.dropChain(vmID, chain)
 	}
 
-	return newVMID, nil
+	return plan.NewVMID, nil
 }
 
-// lazyMemoryWatchTimeout matches hostwire.LazyArtifactGrantTTL: past it the
-// target's grant is dead and no further chunk can arrive.
-const lazyMemoryWatchTimeout = 30 * time.Minute
+// abandonMigrateTarget destroys a new vm a failed in-process migrate created.
+func (fm *FleetManager) abandonMigrateTarget(ctx context.Context, plan MigratePlan, v *vm) {
+	fm.mu.RLock()
+	spec := v.spec
+	fm.mu.RUnlock()
+	fm.abandonProvisionedVM(ctx, fm.migrateProvider(plan.TargetHostID), plan.TargetHostID, plan.NewVMID, spec)
+}
 
-// lazyMemoryPinTTL is how long a durable lazy-memory pin lasts when no
+// LazyMemoryWatchTimeout matches hostwire.LazyArtifactGrantTTL: past it the
+// target's grant is dead and no further chunk can arrive.
+const LazyMemoryWatchTimeout = 30 * time.Minute
+
+// LazyMemoryPinTTL is how long a durable lazy-memory pin lasts when no
 // watcher releases it: a little past the grant.
-const lazyMemoryPinTTL = lazyMemoryWatchTimeout + 5*time.Minute
+const LazyMemoryPinTTL = LazyMemoryWatchTimeout + 5*time.Minute
 
 // lazyMemoryPollInterval is how often the target is asked how far along it is.
 var lazyMemoryPollInterval = 2 * time.Second
 
 // watchLazyMemory polls a lazily resumed vm until its memory is all on the
 // target, then releases the seed it was paging from. the outcome is an event
-// either way: a failed transfer leaves a guest that will hang on its next
-// missing page, and the only thing the orchestrator can do is say so.
-// release drops the pin on the seed.
-func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string, release func()) {
+// either way (see MigrateMemorySettled). release drops the pin on the seed.
+// on restate the watcher is Migrate/{migration_id}.WatchMemory instead.
+func (fm *FleetManager) watchLazyMemory(vmID, seedID string, release func()) {
 	defer release()
-	w, ok := provider.(MemoryWatcher)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), lazyMemoryWatchTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), LazyMemoryWatchTimeout)
 	defer cancel()
 	t := time.NewTicker(lazyMemoryPollInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			fm.appendEventBackground("vm", vmID, "vm.memory_transfer_failed", map[string]any{
-				"seed_snapshot_id": seedID,
-				"error":            "timed out waiting for the memory image",
-			})
+			_ = fm.MigrateMemorySettled(context.Background(), vmID, seedID, MemoryPoll{}, true)
 			return
 		case <-t.C:
 		}
-		st, err := w.MemoryStatus(ctx, vmID)
-		var httpErr *HTTPStatusError
-		if errors.As(err, &httpErr) && httpErr.Code == http.StatusNotFound {
-			// the vm was destroyed before its memory finished arriving; nothing
-			// depends on the seed any more.
-			return
-		}
-		if err != nil {
-			// transient: the agent may be restarting. the timeout bounds it.
-			continue
-		}
-		if st.Error != "" {
-			fm.appendEventBackground("vm", vmID, "vm.memory_transfer_failed", map[string]any{
-				"seed_snapshot_id": seedID,
-				"error":            st.Error,
-			})
-			return
-		}
-		if st.Done {
-			fm.appendEventBackground("vm", vmID, "vm.memory_resident", map[string]any{
-				"seed_snapshot_id": seedID,
-				"chunks":           st.TotalChunks,
-			})
+		poll, _ := fm.MigrateMemoryPoll(ctx, vmID)
+		if poll.Settled() {
+			_ = fm.MigrateMemorySettled(context.Background(), vmID, seedID, poll, false)
 			return
 		}
 	}

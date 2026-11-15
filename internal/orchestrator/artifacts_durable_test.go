@@ -269,7 +269,7 @@ func TestHoldArtifact(t *testing.T) {
 	d := newFakeDurableArtifacts()
 	fm.SetDurableArtifacts(d)
 
-	release := fm.holdArtifact(ctx, "lazy:vm-1", lazyMemoryPinTTL, "seed-1")
+	release := fm.holdArtifact(ctx, "lazy:vm-1", LazyMemoryPinTTL, "seed-1")
 	if p, _ := d.ArtifactPinned(ctx, "seed-1"); !p || len(fm.artifactPulls) != 0 {
 		t.Fatalf("durable pin %v, in-memory pins %v", p, fm.artifactPulls)
 	}
@@ -279,7 +279,7 @@ func TestHoldArtifact(t *testing.T) {
 	}
 
 	d.pinErr = errors.New("restate down")
-	release = fm.holdArtifact(ctx, "lazy:vm-2", lazyMemoryPinTTL, "seed-2")
+	release = fm.holdArtifact(ctx, "lazy:vm-2", LazyMemoryPinTTL, "seed-2")
 	if fm.artifactPulls["seed-2"] != 1 {
 		t.Fatalf("in-memory pins %v, want seed-2 held", fm.artifactPulls)
 	}

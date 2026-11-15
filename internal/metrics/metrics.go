@@ -70,6 +70,10 @@ type PrometheusMetrics struct {
 	hitlDeciderLatency *prometheus.HistogramVec
 	hitlRunDuration    *prometheus.HistogramVec
 
+	// how long a delta migrate kept its source paused, through
+	// orchestrator.MigrateMetrics.
+	migrateFrozen *prometheus.HistogramVec
+
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
 	HTTPRequestDuration  *prometheus.HistogramVec
@@ -299,6 +303,13 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Help:      "Time from approving a gated action to its result, by action and result (ok or error).",
 			Buckets:   []float64{.1, .5, 1, 5, 10, 30, 60, 300, 600, 1800},
 		}, []string{"action", "result"}),
+		migrateFrozen: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "migrate",
+			Name:      "frozen_seconds",
+			Help:      "How long a delta migrate kept its source paused, by outcome: cutover (the target took over) or rolled_back (the source was resumed).",
+			Buckets:   []float64{.05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300},
+		}, []string{"outcome"}),
 
 		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
@@ -356,6 +367,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.hitlDecision,
 		m.hitlDeciderLatency,
 		m.hitlRunDuration,
+		m.migrateFrozen,
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPRequestsInFlight,
@@ -506,3 +518,8 @@ var (
 	_ durable.StepMetrics              = (*PrometheusMetrics)(nil)
 	_ orchestrator.StepMetrics         = (*PrometheusMetrics)(nil)
 )
+
+// MigrateFrozen implements orchestrator.MigrateMetrics.
+func (m *PrometheusMetrics) MigrateFrozen(outcome string, d time.Duration) {
+	m.migrateFrozen.WithLabelValues(outcome).Observe(d.Seconds())
+}

@@ -34,10 +34,14 @@ const (
 	// InterventionObject is keyed by hitl intervention id: the run of an
 	// approved action and the timer of its deadline.
 	InterventionObject = "Intervention"
+	// MigrateObject is keyed by migration id: the lazy-memory watch a lazy
+	// migrate leaves running once its source is gone. the migrate itself
+	// runs on the source's Environment object.
+	MigrateObject = "Migrate"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject, MigrateObject}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -53,6 +57,7 @@ type Fleet interface {
 	Tokens
 	Webhooks
 	Hitl
+	Migrator
 	Expiry
 	Creator
 }
@@ -105,14 +110,6 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 			func(ctx restate.ObjectContext, res orchestrator.ChainMoveResult) (restate.Void, error) {
 				return restate.Void{}, chainMovedHandler(ctx, fleet, res)
 			})).
-		Handler("HoldChain", restate.NewObjectHandler(
-			func(ctx restate.ObjectContext, req HoldRequest) (orchestrator.ChainHold, error) {
-				return holdChain(ctx, fleet, req.Lease)
-			})).
-		Handler("ReleaseChain", restate.NewObjectHandler(
-			func(ctx restate.ObjectContext, req ReleaseRequest) (restate.Void, error) {
-				return restate.Void{}, releaseChain(ctx, fleet, req)
-			})).
 		Handler("RetireChain", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
 				return restate.Void{}, dropChain(ctx, fleet)
@@ -121,6 +118,10 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
 				return restate.Void{}, rotateToken(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
 			})).
+		Handler("Migrate", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.MigrateRequest) (string, error) {
+				return migrate(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
 		Handler("Drain", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
 				return restate.Void{}, drain(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
@@ -188,6 +189,12 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return restate.Void{}, hitlExpire(ctx, fleet, servicePolicy(cfg, InterventionObject))
 			}))
 
+	migrations := restate.NewObject(MigrateObject, retryOption(cfg, MigrateObject)).
+		Handler("WatchMemory", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, w orchestrator.MemoryWatch) (restate.Void, error) {
+				return restate.Void{}, watchMemory(ctx, fleet, w)
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
@@ -195,7 +202,8 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Bind(artifacts).
 		Bind(pins).
 		Bind(hooks).
-		Bind(interventions)
+		Bind(interventions).
+		Bind(migrations)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {

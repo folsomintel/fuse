@@ -170,9 +170,9 @@ the chain (head, base, standby) is that object's state, so a restart keeps it,
 and its base is pinned in `ArtifactPin` with holder `chain:<vm_id>`. the copy
 to the standby is a one-way `Artifacts` move that reports back to
 `Environment/<vm_id>/ChainMoved`, so a long copy does not hold the
-environment's other ops. a delta migrate takes `HoldChain` (a 1h lease) for
-the whole migrate; a tick on a held chain does nothing, and a second migrate
-finds it busy and takes a full seed. a destroy drops the
+environment's other ops. a migrate runs on the same object, so no tick runs
+while it does; a delta migrate onto the chain's standby seeds from the chain
+and forgets it, since the merge consumed its base. a destroy drops the
 chain. a copy that never reports back (a killed `Artifacts` invocation) is
 forgotten after 2h without deleting anything.
 
@@ -185,6 +185,37 @@ retention gc marks an expired snapshot `deleting` and sends
 `ENVIRONMENT` policy and only then moves the row to `error`
 (`snapshot.gc_failed`); the next sweep marks it again. gc skips a snapshot any
 pin holds, in process or in `ArtifactPin`.
+
+migrates run as `Environment/<source vm_id>/Migrate`: plan, a provisioning
+placeholder row for the target (so neither reconcile nor a restart takes it
+for an orphan), the seed snapshot (`op="migrate_seed"`), the copy as an
+`Artifacts` move, for a delta the diff with the source paused
+(`op="migrate_delta"`) and its move, create, ingress, credentials, upload,
+start agent and persist. a restart resumes at the first unfinished step, so a
+source paused when the orchestrator died is either resumed or the migrate
+completes. a step that fails for good runs the compensation: the target is
+destroyed through `Environment/<target vm_id>/Destroy` (reason
+`migrate_rollback`), then a paused source is resumed (retried with no attempt
+bound), then a seed the migrate took is deleted. from the persist on the
+target is the guest: the task, cutover (the source's ingress ports),
+lineage and handover of interventions and keys run, then the source is drained
+(not after a delta, whose guest is frozen) and destroyed by the destroy steps
+inline (reason `migrated`). a source destroy that runs out of retries leaves it
+`destroy_failed` as any destroy does. a target whose rollback destroy ran out
+of retries is `destroy_failed` too, and the source is resumed anyway: check
+that host before deleting it. the credentials and the tunnel token are
+journaled as ciphertext under `TOKEN_ENCRYPTION_KEY`; on a fleet without one
+the guest gets no credentials and its tunnel token is journaled as is.
+
+a lazy migrate pins its seed for `lazy:<new vm_id>` and sends
+`Migrate/<migration_id>/WatchMemory`, which polls the target with durable
+sleeps (2s, backing off to 30s) for up to 30m, records `vm.memory_resident` or
+`vm.memory_transfer_failed`, and releases the pin. a restart resumes the
+watch.
+
+```sh
+q "SELECT id, target, status FROM sys_invocation WHERE target LIKE 'Environment/%/Migrate' OR target_service_name = 'Migrate'"
+```
 
 token rotation runs as `Environment/<vm_id>/RotateToken`: generate, upload,
 persist. generate is journaled, so a restart between the upload and the

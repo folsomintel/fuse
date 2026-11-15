@@ -109,7 +109,10 @@ finishes, so a long call simply takes longer to return. Leaving early (a
 cancelled context, an interrupted CLI) leaves the operation running; pick it
 up with [`fuse operation wait`](/reference/cli/operation/wait) or the SDKs'
 `operations.wait`. While a migrate runs, its operation's `step` reports how
-far it got: `snapshot`, `transfer`, `delta`, `boot`, then `cutover`.
+far it got: `snapshot`, `transfer`, `delta`, `boot`, then `cutover`. With
+[restate](/docs/cloud/orchestrator-deploy#restate) on, the migrate runs on
+restate and `step` stays empty; its steps show in the restate ui and in
+`orchestrator_step_duration_seconds{op="migrate_live"}` instead.
 
 An `Idempotency-Key` header makes a mutating call safe to retry. A retry of
 the same request with the same key attaches to the first call's operation
@@ -126,11 +129,11 @@ call that cannot provision a second environment. The rules:
   with a 5xx is not kept, so its retry runs again.
 - Operations and keys live in the orchestrator's memory, and a restart forgets
   them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a create,
-  destroy, snapshot or restore also hands the key to restate as the invocation's
-  idempotency key, so a retry after a restart still attaches to the same
-  invocation. A destroy that already finished is the exception: its vm is
-  gone, so that retry answers `404`. Fork, migrate and drain have no such
-  fallback.
+  destroy, snapshot, restore or migrate also hands the key to restate as the
+  invocation's idempotency key, so a retry after a restart still attaches to
+  the same invocation. A destroy or migrate that already finished is the
+  exception: the vm it acted on is gone, so that retry answers `404`. Fork and
+  drain have no such fallback.
 
 The SDKs send a random key on every call and take your own for retries:
 `WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in
