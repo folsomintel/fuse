@@ -65,6 +65,11 @@ type PrometheusMetrics struct {
 	stepDuration *prometheus.HistogramVec
 	stepRetries  *prometheus.CounterVec
 
+	// hitl gated actions, through orchestrator.HitlMetrics.
+	hitlDecision       *prometheus.HistogramVec
+	hitlDeciderLatency *prometheus.HistogramVec
+	hitlRunDuration    *prometheus.HistogramVec
+
 	// HTTP handler metrics (used by the middleware).
 	HTTPRequestsTotal    *prometheus.CounterVec
 	HTTPRequestDuration  *prometheus.HistogramVec
@@ -273,6 +278,28 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Help:      "Durable (restate) step executions that failed with a retryable error, by op and step.",
 		}, []string{"op", "step"}),
 
+		hitlDecision: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl",
+			Name:      "decision_seconds",
+			Help:      "Time from a gate holding an action to its decision by a human or the deadline, by kind and outcome.",
+			Buckets:   []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 4 * 3600, 24 * 3600},
+		}, []string{"kind", "outcome"}),
+		hitlDeciderLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl",
+			Name:      "decider_duration_seconds",
+			Help:      "Gate decider call latency by verdict (allow, deny, ask, or error when the call failed).",
+			Buckets:   []float64{.05, .1, .25, .5, 1, 2, 5, 10},
+		}, []string{"verdict"}),
+		hitlRunDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl",
+			Name:      "run_duration_seconds",
+			Help:      "Time from approving a gated action to its result, by action and result (ok or error).",
+			Buckets:   []float64{.1, .5, 1, 5, 10, 30, 60, 300, 600, 1800},
+		}, []string{"action", "result"}),
+
 		HTTPRequestsTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
 			Subsystem: "http",
@@ -326,6 +353,9 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.operationDuration,
 		m.stepDuration,
 		m.stepRetries,
+		m.hitlDecision,
+		m.hitlDeciderLatency,
+		m.hitlRunDuration,
 		m.HTTPRequestsTotal,
 		m.HTTPRequestDuration,
 		m.HTTPRequestsInFlight,
@@ -429,7 +459,27 @@ func (m *PrometheusMetrics) StepRetried(op, step string) {
 	m.stepRetries.WithLabelValues(op, step).Inc()
 }
 
+// HitlDecided implements orchestrator.HitlMetrics.
+func (m *PrometheusMetrics) HitlDecided(kind, outcome string, d time.Duration) {
+	m.hitlDecision.WithLabelValues(kind, outcome).Observe(d.Seconds())
+}
+
+// HitlDeciderAsked implements orchestrator.HitlMetrics.
+func (m *PrometheusMetrics) HitlDeciderAsked(verdict string, d time.Duration) {
+	m.hitlDeciderLatency.WithLabelValues(verdict).Observe(d.Seconds())
+}
+
+// HitlRunFinished implements orchestrator.HitlMetrics.
+func (m *PrometheusMetrics) HitlRunFinished(action string, d time.Duration, failed bool) {
+	result := "ok"
+	if failed {
+		result = "error"
+	}
+	m.hitlRunDuration.WithLabelValues(action, result).Observe(d.Seconds())
+}
+
 var (
+	_ orchestrator.HitlMetrics         = (*PrometheusMetrics)(nil)
 	_ orchestrator.EgressMetrics       = (*PrometheusMetrics)(nil)
 	_ orchestrator.OperationMetrics    = (*PrometheusMetrics)(nil)
 	_ orchestrator.ArtifactMoveMetrics = (*PrometheusMetrics)(nil)
