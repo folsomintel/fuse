@@ -120,8 +120,10 @@ func (fakeFleet) WebhookDeadLetter(context.Context, orchestrator.WebhookDelivery
 func (fakeFleet) HitlRunBegin(context.Context, string) (orchestrator.HitlRunPlan, error) {
 	return orchestrator.HitlRunPlan{}, nil
 }
-func (fakeFleet) HitlRunInProcess(context.Context, string) error            { return nil }
-func (fakeFleet) HitlRunFinish(context.Context, string, hitl.Result) error  { return nil }
+func (fakeFleet) HitlRunInProcess(context.Context, string) error { return nil }
+func (fakeFleet) HitlRunFinish(context.Context, string, orchestrator.HitlRunPlan, hitl.Result) error {
+	return nil
+}
 func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))

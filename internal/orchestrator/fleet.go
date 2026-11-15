@@ -658,6 +658,9 @@ type FleetManager struct {
 	hitlSends       sync.WaitGroup
 	hitlResend      atomic.Bool
 	hitlUnstored    map[string]hitl.Result
+	// hitlQueued is the interventions with a run send queued or in flight,
+	// guarded by hitlMu.
+	hitlQueued map[string]bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
