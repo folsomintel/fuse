@@ -103,7 +103,7 @@ reported rather than freezing at its last value:
 
 **Lifecycle operations**: `orchestrator_operations_total{op,result}` and
 `orchestrator_operations_duration_seconds{op}` cover `create`, `destroy`,
-`fork`, `migrate`, `migrate_live`, `snapshot` and `restore`. `destroy` counts
+`fork`, `migrate`, `migrate_live`, `snapshot`, `restore` and `rotate_token`. `destroy` counts
 explicit destroys, from the API or a migrate removing its source. Teardowns the
 reconcile loop does on its own (stuck, idle, orphaned) and the teardown after a
 task completes aren't included; the reconcile counters above cover the first
