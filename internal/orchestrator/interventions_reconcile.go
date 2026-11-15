@@ -19,7 +19,17 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 	if fm.store == nil {
 		return
 	}
-	fm.hitlOrphans.Do(func() { fm.recoverOrphanRuns(ctx) })
+	if d := fm.durableHitl(); d != nil {
+		// restate resumes a run that was in flight; this hands it the ones
+		// that never reached it.
+		ran := false
+		fm.hitlOrphans.Do(func() { ran = true; fm.resumeApprovedRuns(ctx, d) })
+		if !ran && fm.hitlResend.Load() {
+			fm.resumeApprovedRuns(ctx, d)
+		}
+	} else {
+		fm.hitlOrphans.Do(func() { fm.recoverOrphanRuns(ctx) })
+	}
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
 	if err != nil {
 		fm.logger.Warn("list pending interventions failed", "err", err)

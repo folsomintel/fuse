@@ -195,6 +195,7 @@ func (fm *FleetManager) raiseIntervention(ctx context.Context, in hitl.Intervent
 	})
 	fm.publishInterventionEvent(in)
 	fm.auditIntervention(ctx, in, auditMeta{remoteAddr: remoteAddr})
+	fm.scheduleExpiry(in)
 	return nil
 }
 
@@ -422,6 +423,9 @@ func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl
 // returns the stored intervention and ErrInterventionResolved when it was
 // already terminal.
 func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta auditMeta, apply func(hitl.Intervention, time.Time) (hitl.Intervention, error)) (hitl.Intervention, error) {
+	// in modes self and cloud restate runs an approval; otherwise this
+	// process does.
+	durable := fm.durableHitl()
 	fm.hitlMu.Lock()
 	rec, err := fm.store.GetIntervention(ctx, id)
 	if err != nil {
@@ -454,11 +458,17 @@ func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta
 		close(ch)
 		delete(fm.hitlWaiters, id)
 	}
-	run := fm.claimRun(next)
+	run := durable == nil && fm.claimRun(next)
 	fm.dropLockLocked(next.EnvID, id)
 	fm.hitlMu.Unlock()
-	if run {
+	switch {
+	case run:
 		fm.launchRun(next)
+	case durable != nil && needsRun(next):
+		fm.sendHitlRun(durable, id)
+	}
+	if m := fm.hitlMetrics(); m != nil && current.State == hitl.StatePending && next.Gate != "" && next.Decision != nil {
+		m.HitlDecided(string(next.Kind), string(next.Decision.Outcome), next.Decision.DecidedAt.Sub(next.CreatedAt))
 	}
 
 	fm.appendEvent(ctx, "intervention", id, "intervention."+string(next.State), map[string]any{
@@ -518,9 +528,13 @@ func (fm *FleetManager) publishInterventionEvent(in hitl.Intervention) {
 
 // interventionResult is the sealed result column: an ask's answer, or what
 // running an approved gated action produced.
+// Started is when a durable run of an action with no idempotency key began,
+// so a retry knows not to run it again (see markRunStarted); the result
+// replaces it.
 type interventionResult struct {
-	Answer string       `json:"answer,omitempty"`
-	Run    *hitl.Result `json:"run,omitempty"`
+	Answer  string       `json:"answer,omitempty"`
+	Run     *hitl.Result `json:"run,omitempty"`
+	Started *time.Time   `json:"started,omitempty"`
 }
 
 // interventionPayload is the sealed payload column. the ask fields keep the
