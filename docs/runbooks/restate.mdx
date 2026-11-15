@@ -186,6 +186,20 @@ retention gc marks an expired snapshot `deleting` and sends
 (`snapshot.gc_failed`); the next sweep marks it again. gc skips a snapshot any
 pin holds, in process or in `ArtifactPin`.
 
+token rotation runs as `Environment/<vm_id>/RotateToken`: generate, upload,
+persist. generate is journaled, so a restart between the upload and the
+persist writes the token already in the guest to the state store instead of
+making a second one. the journaled value is ciphertext under
+`TOKEN_ENCRYPTION_KEY` (the token, cert and key), and the steps decrypt it
+themselves; no plaintext token reaches the journal. a rotation left unfinished
+across a `TOKEN_ENCRYPTION_KEY` change fails, since its ciphertext no longer
+decrypts; run it again. a rotation's journal can be read with the query below. rotations are counted as
+`orchestrator_operations_total{op="rotate_token"}`.
+
+```sh
+q "SELECT j.index, j.name, j.entry_json FROM sys_journal j JOIN sys_invocation i ON j.id = i.id WHERE i.target_handler_name = 'RotateToken'"
+```
+
 copies are metered by `orchestrator_artifact_move_duration_seconds`,
 `orchestrator_artifact_move_bytes_total` and
 `orchestrator_artifact_move_failures_total`, labeled `source_host` and
