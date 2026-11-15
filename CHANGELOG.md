@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.45.0](https://github.com/folsomintel/fuse/compare/v0.44.0...v0.45.0) (2026-11-15)
+
+
+### Features
+
+* create as a durable restate workflow with compensation ([#386](https://github.com/folsomintel/fuse/issues/386)) ([9d4afbb](https://github.com/folsomintel/fuse/commit/9d4afbbb40988f4ae4a87d667c5417b34d7c6b66))
+* drain, ttl and idle expiry on restate durable timers ([#385](https://github.com/folsomintel/fuse/issues/385)) ([4e0751d](https://github.com/folsomintel/fuse/commit/4e0751d0074c1e1e501145fa0e87b769ff4bdba7))
+* live and delta migrate as a durable restate workflow ([#387](https://github.com/folsomintel/fuse/issues/387)) ([fe75f8b](https://github.com/folsomintel/fuse/commit/fe75f8b0fc3bbb750cbcfb93a8e9abd6472a101d))
+* server-side fusefile build workflow across api, cli and all four sdks ([#388](https://github.com/folsomintel/fuse/issues/388)) ([97890a4](https://github.com/folsomintel/fuse/commit/97890a4ef47036592de2b15df6ad4651346138df))
+
+
+### Bug Fixes
+
+* resend an interrupted build submit, carry the outcome on the builder's last event and finish with the snapshot step's artifact ([#393](https://github.com/folsomintel/fuse/issues/393)) ([52be136](https://github.com/folsomintel/fuse/commit/52be136c2d3d5c1b1930c1eb040158ae87f7201c))
+* stale environment create sweep on restate asks only about vms recovered provisioning, never a fork or migrate in flight ([#392](https://github.com/folsomintel/fuse/issues/392)) ([8798012](https://github.com/folsomintel/fuse/commit/8798012fb2e4c3807f4652faa911fdbbb4ac2302))
+
 ## [0.44.0](https://github.com/folsomintel/fuse/compare/v0.43.0...v0.44.0) (2026-11-15)
 
 
