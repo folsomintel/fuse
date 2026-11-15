@@ -84,6 +84,10 @@ func (f *createFleet) CreateUnpublishIngress(ctx context.Context, _ string) erro
 	return f.enter(ctx, "unpublish_ingress")
 }
 
+func (f *createFleet) CreateBeginFailed(ctx context.Context, _ string, _ orchestrator.CreateRequest, _ string) error {
+	return f.enter(ctx, "begin_failed")
+}
+
 func (f *createFleet) CreateAbandon(ctx context.Context, _ string, _ orchestrator.CreateRequest, cause string) error {
 	f.mu.Lock()
 	f.failed = cause
@@ -257,4 +261,40 @@ func TestCreateJournalOverhead(t *testing.T) {
 		total += time.Since(start)
 	}
 	t.Logf("restate create overhead: %s mean over %d creates of 11 journaled steps", total/n, n)
+}
+
+// a create holds its in-flight mark while it runs and drops it once it ends,
+// so reconcile can tell it from a provisioning vm no create will finish. a
+// begin that fails for good cleans up after itself without a rollback.
+func TestCreateInFlightThroughRestate(t *testing.T) {
+	fleet := newCreateFleet()
+	fleet.block["upload"] = make(chan struct{})
+	client := serveFleet(t, fleet, fastPolicy)
+	vm := uniqueVM("create-mark")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- client.Create(ctx, vm, createRequest(t)) }()
+	<-fleet.entered
+	if inFlight, err := client.CreateInFlight(ctx, vm); err != nil || !inFlight {
+		t.Fatalf("in flight during the create: %v %v, want true", inFlight, err)
+	}
+	close(fleet.block["upload"])
+	if err := <-done; err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if inFlight, err := client.CreateInFlight(ctx, vm); err != nil || inFlight {
+		t.Fatalf("in flight after the create: %v %v, want false", inFlight, err)
+	}
+
+	refused := newCreateFleet()
+	refused.fail["begin"] = []error{fmt.Errorf("%w: task t", orchestrator.ErrTaskAlreadyAssigned)}
+	client = serveFleet(t, refused, fastPolicy)
+	if err := client.Create(ctx, uniqueVM("create-refused"), createRequest(t)); !errors.Is(err, orchestrator.ErrTaskAlreadyAssigned) {
+		t.Fatalf("create: %v, want ErrTaskAlreadyAssigned", err)
+	}
+	if got := refused.steps(); got != "begin,begin_failed" {
+		t.Fatalf("steps %s, want begin,begin_failed", got)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +20,10 @@ var createTestKey = bytes.Repeat([]byte{9}, 32)
 // createEnv is a guest that remembers what a create put in it.
 type createEnv struct {
 	*mockEnv
-	mu     sync.Mutex
-	files  map[string][]byte
-	agents int
+	mu       sync.Mutex
+	files    map[string][]byte
+	agents   int
+	agentErr error
 }
 
 func (e *createEnv) Upload(_ context.Context, data []byte, path string) error {
@@ -35,7 +37,7 @@ func (e *createEnv) StartAgent(context.Context, AgentSpec) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.agents++
-	return nil
+	return e.agentErr
 }
 
 func (e *createEnv) state() (files map[string][]byte, agents int) {
@@ -56,6 +58,7 @@ type createProvider struct {
 	creates  int
 	specs    []Spec
 	execErr  error
+	agentErr error
 	destroys []string
 }
 
@@ -68,7 +71,7 @@ func (p *createProvider) Create(_ context.Context, spec Spec) (Environment, erro
 	defer p.mu.Unlock()
 	p.creates++
 	p.specs = append(p.specs, spec)
-	e := &createEnv{mockEnv: &mockEnv{name: spec.Name, url: "http://" + spec.Name + ".test", execErr: p.execErr}, files: map[string][]byte{}}
+	e := &createEnv{mockEnv: &mockEnv{name: spec.Name, url: "http://" + spec.Name + ".test", execErr: p.execErr}, files: map[string][]byte{}, agentErr: p.agentErr}
 	p.envs[spec.Name] = e
 	return e, nil
 }
@@ -121,10 +124,17 @@ type inlineCreator struct {
 	destroys   *inlineDestroyer
 	crashAfter string
 
-	mu   sync.Mutex
-	req  CreateRequest
-	st   CreateState
-	done []string
+	mu       sync.Mutex
+	req      CreateRequest
+	st       CreateState
+	done     []string
+	inFlight bool
+}
+
+func (c *inlineCreator) CreateInFlight(context.Context, string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inFlight, nil
 }
 
 func (c *inlineCreator) Create(ctx context.Context, vmID string, req CreateRequest) error {
@@ -567,5 +577,89 @@ func TestDurableCreateRunningArmsExpiry(t *testing.T) {
 	fm.expirySends.Wait()
 	if got := d.armed(); len(got) != 1 || got[0] != "fuse-t8" {
 		t.Fatalf("arms %v, want one for fuse-t8", got)
+	}
+}
+
+// a provisioning vm no create will finish (one left by an in-process create
+// before restate was on) is failed by reconcile and destroyed; one restate
+// still holds a create for is left alone.
+func TestStaleCreateIsAbandoned(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	p := newCreateProvider()
+	fm, c := newCreateFleet(t, store, p, FleetConfig{})
+	c.crashAfter = "boot"
+	if _, err := fm.ProvisionAndAssign(ctx, "t9", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); !errors.Is(err, errCrash) {
+		t.Fatalf("create: %v, want the crash", err)
+	}
+	fm2, c2 := newCreateFleet(t, store, p, FleetConfig{})
+	fm2.mu.Lock()
+	fm2.vms["fuse-t9"].updatedAt = time.Now().Add(-time.Hour)
+	fm2.mu.Unlock()
+
+	c2.inFlight = true
+	fm2.reconcileStaleCreates(ctx)
+	if v, ok := fm2.GetVM("fuse-t9"); !ok || v.State != VMStateProvisioning {
+		t.Fatalf("vm %+v with a create in flight, want it left provisioning", v)
+	}
+
+	c2.inFlight = false
+	fm2.reconcileStaleCreates(ctx)
+	if _, ok := fm2.GetVM("fuse-t9"); ok {
+		t.Fatal("stale create left its vm tracked")
+	}
+	tasks, _ := store.ListTasks(ctx)
+	if len(tasks) != 1 || tasks[0].RunStatus != TaskRunFailed {
+		t.Fatalf("tasks %+v, want t9 failed", tasks)
+	}
+	if sent, _ := c2.destroys.requests(); len(sent) != 1 || sent[0].HostID != "h1" {
+		t.Fatalf("destroys %+v, want one on h1", sent)
+	}
+	if h, _ := fm2.GetHost("h1"); h.Allocated.CPUs != 0 {
+		t.Fatalf("stale create kept its reservation %+v", h.Allocated)
+	}
+}
+
+// a begin that fails for good abandons a vm an earlier attempt recorded for
+// its task, and leaves anything else under the id alone.
+func TestCreateBeginFailed(t *testing.T) {
+	ctx := context.Background()
+	p := newCreateProvider()
+	fm, c := newCreateFleet(t, NewMemoryStateStore(), p, FleetConfig{})
+	c.req = CreateRequest{TaskID: "t10", Sealed: sealCreate(t, fm, createInputs{Spec: Spec{CPUs: 1}})}
+	if _, err := fm.CreateBegin(ctx, "fuse-t10", c.req); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.CreateBeginFailed(ctx, "fuse-t10", CreateRequest{TaskID: "other"}, "x"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fm.GetVM("fuse-t10"); !ok {
+		t.Fatal("begin_failed for another task dropped the vm")
+	}
+	if err := fm.CreateBeginFailed(ctx, "fuse-t10", c.req, "refused"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fm.GetVM("fuse-t10"); ok {
+		t.Fatal("begin_failed left its own provisioning vm")
+	}
+}
+
+// a failing step's error is journaled, so it carries no gateway credential
+// or auth token, which the host agent can echo back in its launch command.
+func TestCreateErrorsRedactGatewayAndToken(t *testing.T) {
+	ctx := context.Background()
+	p := newCreateProvider()
+	fm, _ := newCreateFleet(t, NewMemoryStateStore(), p, FleetConfig{})
+	gateway := "wss://user:gw-password-123@gateway.test/ws"
+	p.agentErr = fmt.Errorf("ssh timed out: fused --gateway %s --gateway-token tok-abcdefgh", gateway)
+	_, err := fm.ProvisionAndAssign(ctx, "t11", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil,
+		BootOptions{GatewayURL: gateway, GatewayToken: "tok-abcdefgh"})
+	if err == nil {
+		t.Fatal("create succeeded with an agent that fails")
+	}
+	for _, leak := range []string{gateway, "tok-abcdefgh"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("error %q carries %q", err, leak)
+		}
 	}
 }

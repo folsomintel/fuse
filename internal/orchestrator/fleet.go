@@ -1734,6 +1734,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileStuckDraining(ctx, &summary)
 	fm.armExpiries()
+	fm.reconcileStaleCreates(ctx)
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)

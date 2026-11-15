@@ -169,6 +169,9 @@ func (fakeFleet) CreateUnpublishIngress(context.Context, string) error { return 
 func (fakeFleet) CreateAbandon(context.Context, string, orchestrator.CreateRequest, string) error {
 	return nil
 }
+func (fakeFleet) CreateBeginFailed(context.Context, string, orchestrator.CreateRequest, string) error {
+	return nil
+}
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -235,6 +238,7 @@ func TestDiscoveryManifest(t *testing.T) {
 			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken", "Drain", "Expire", "Create"} {
 				want[h] = "EXCLUSIVE"
 			}
+			want["CreateInFlight"] = "SHARED"
 		case ArtifactsObject:
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:

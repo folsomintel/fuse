@@ -132,8 +132,12 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		// the artifact step can wait on a whole artifact move.
 		Handler("Create", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req orchestrator.CreateRequest) (restate.Void, error) {
-				return restate.Void{}, create(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
-			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout()))))
+				return restate.Void{}, createMarked(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout())))).
+		Handler("CreateInFlight", restate.NewObjectSharedHandler(
+			func(ctx restate.ObjectSharedContext, _ restate.Void) (bool, error) {
+				return createInFlight(ctx)
+			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
 		Handler("Ping", restate.NewObjectSharedHandler(

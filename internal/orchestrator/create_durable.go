@@ -91,6 +91,23 @@ type redactedError struct {
 func (e *redactedError) Error() string { return e.msg }
 func (e *redactedError) Unwrap() error { return e.cause }
 
+// sensitive is every value of the run an error string must not carry: the
+// caller's secrets, the gateway url and token (a url can embed credentials,
+// and the host agent echoes its launch command into a timeout error) and the
+// vm's auth token.
+func (r *createRun) sensitive() map[string]string {
+	out := make(map[string]string, len(r.in.Secrets)+3)
+	for k, v := range r.in.Secrets {
+		out[k] = v
+	}
+	out["\x00gateway_url"] = r.in.GatewayURL
+	out["\x00gateway_token"] = r.in.GatewayToken
+	if r.creds != nil {
+		out["\x00auth_token"] = r.creds.AuthToken
+	}
+	return out
+}
+
 // provisionErr names err after the vm and redacts it.
 func provisionErr(vmID string, err error, secretMap map[string]string) error {
 	if err == nil {
@@ -159,6 +176,9 @@ type CreateIngress struct {
 // *durable.Client satisfies it.
 type DurableCreator interface {
 	Create(ctx context.Context, vmID string, req CreateRequest) error
+	// CreateInFlight reports whether restate holds an unfinished create of
+	// vmID.
+	CreateInFlight(ctx context.Context, vmID string) (bool, error)
 }
 
 // SetDurableCreator routes creates through restate. nil (mode off, the
@@ -494,6 +514,22 @@ func (fm *FleetManager) CreateBegin(ctx context.Context, vmID string, req Create
 	return CreateState{Credentials: sealedCreds}, nil
 }
 
+// CreateBeginFailed cleans up after a begin that failed for good: a vm
+// provisioning for this task that an earlier attempt of begin recorded is
+// abandoned. anything else under the vm id, such as the running vm of a
+// task already assigned, is left alone.
+func (fm *FleetManager) CreateBeginFailed(ctx context.Context, vmID string, req CreateRequest, cause string) error {
+	fm.mu.RLock()
+	v, ok := fm.vms[vmID]
+	ours := ok && v.state == VMStateProvisioning && v.taskID == req.TaskID
+	fm.mu.RUnlock()
+	if !ours {
+		fm.dropCreateRun(vmID)
+		return nil
+	}
+	return fm.CreateAbandon(ctx, vmID, req, cause)
+}
+
 // CreatePlace schedules the vm and reserves its capacity, and persists the
 // placement so a restart re-derives the reservation. a vm already placed by
 // an earlier run of this step keeps its host. every scheduling failure is
@@ -615,7 +651,7 @@ func (fm *FleetManager) CreateRestoreOrCreate(ctx context.Context, vmID string, 
 	}
 	env, fromCache, err := restoreOrCreate(ctx, b.p, b.in.spec, true)
 	if err != nil {
-		return false, provisionErr(vmID, err, run.in.Secrets)
+		return false, provisionErr(vmID, err, run.sensitive())
 	}
 	setTokenIfSupported(env, run.creds)
 	run.env = env
@@ -632,7 +668,7 @@ func (fm *FleetManager) CreateProvisionEgress(ctx context.Context, vmID string, 
 		return err
 	}
 	if err := b.provisionEgress(ctx, true); err != nil {
-		redacted := secrets.RedactSecretValues(err.Error(), run.in.Secrets)
+		redacted := secrets.RedactSecretValues(err.Error(), run.sensitive())
 		var egressErr *egress.ProvisionError
 		if errors.As(err, &egressErr) {
 			fm.appendEvent(ctx, "vm", vmID, "vm.egress_failed", map[string]any{
@@ -644,7 +680,7 @@ func (fm *FleetManager) CreateProvisionEgress(ctx context.Context, vmID string, 
 				em.EgressProvisionFailed(egressErr.Provider)
 			}
 		}
-		return provisionErr(vmID, createPermanentErr(err), run.in.Secrets)
+		return provisionErr(vmID, createPermanentErr(err), run.sensitive())
 	}
 	fm.mu.Lock()
 	v.egress = b.egress
@@ -666,7 +702,7 @@ func (fm *FleetManager) CreateUpload(ctx context.Context, vmID string, req Creat
 	if err != nil {
 		return err
 	}
-	return provisionErr(vmID, b.upload(ctx), run.in.Secrets)
+	return provisionErr(vmID, b.upload(ctx), run.sensitive())
 }
 
 // CreateStartupScript runs the caller's startup script. a script that exits
@@ -685,7 +721,7 @@ func (fm *FleetManager) CreateStartupScript(ctx context.Context, vmID string, re
 	if err != nil && !unreachable(err) {
 		err = createPermanentErr(err)
 	}
-	return provisionErr(vmID, err, run.in.Secrets)
+	return provisionErr(vmID, err, run.sensitive())
 }
 
 // unreachable reports whether err is a failure to reach the host agent, or
@@ -710,7 +746,7 @@ func (fm *FleetManager) CreateStartAgent(ctx context.Context, vmID string, req C
 		return nil, err
 	}
 	endpoints, err := b.startAgent(ctx)
-	return endpoints, provisionErr(vmID, err, run.in.Secrets)
+	return endpoints, provisionErr(vmID, err, run.sensitive())
 }
 
 // CreateRunning records the vm running and its task running. it is the one
@@ -893,4 +929,50 @@ func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req Crea
 	fm.appendEvent(ctx, "task", req.TaskID, "task.failed", map[string]any{"vm_id": vmID, "error": cause})
 	fm.publishTerminalEvent(vmID, VMStateFailed, cause)
 	return nil
+}
+
+// staleCreateAfter is how long a provisioning vm this process runs no create
+// for may sit before reconcile asks restate whether a create still owns it.
+const staleCreateAfter = 2 * time.Minute
+
+// reconcileStaleCreates fails provisioning vms no create will finish: on
+// restate, a create interrupted while restate was off (an in-process create
+// before the switch) has no invocation to resume it, and would otherwise hold
+// its task and its host's capacity forever, since the rest of reconcile skips
+// provisioning vms. restate is asked about each one; a vm it cannot answer
+// for is left for the next cycle.
+func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
+	d := fm.durableCreator()
+	if d == nil {
+		return
+	}
+	type stale struct{ id, taskID, hostID string }
+	var candidates []stale
+	cutoff := time.Now().Add(-staleCreateAfter)
+	fm.mu.RLock()
+	for id, v := range fm.vms {
+		if _, running := fm.createRuns[id]; v.state == VMStateProvisioning && !running && v.updatedAt.Before(cutoff) {
+			candidates = append(candidates, stale{id, v.taskID, v.hostID})
+		}
+	}
+	fm.mu.RUnlock()
+	for _, c := range candidates {
+		askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		inFlight, err := d.CreateInFlight(askCtx, c.id)
+		cancel()
+		if err != nil {
+			fm.logger.Warn("ask restate about a provisioning vm failed, retrying next cycle", "vm", c.id, "err", err)
+			continue
+		}
+		if inFlight {
+			continue
+		}
+		cause := "provisioning interrupted with no create to finish it"
+		if err := fm.CreateAbandon(ctx, c.id, CreateRequest{TaskID: c.taskID}, cause); err != nil {
+			fm.logger.Warn("abandon stale create failed, retrying next cycle", "vm", c.id, "err", err)
+			continue
+		}
+		provider, _ := fm.providerForVM(c.hostID)
+		fm.cleanupFailedCreate(provider, nil, c.id, c.hostID)
+	}
 }

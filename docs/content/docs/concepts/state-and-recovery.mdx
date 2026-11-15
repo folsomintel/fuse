@@ -53,7 +53,10 @@ to dispatch correctly, then walks the persisted VMs and triages them:
   whatever files, startup script run and agent the create got to before the
   crash. With restate on, it stays `provisioning` with its task assigned: the
   create is a restate invocation, which resumes at its first unfinished step
-  and either finishes the VM (files, startup script, agent) or rolls it back.
+  and either finishes the VM (files, startup script, agent) or rolls it back. A
+  provisioning VM restate holds no create for, such as one left by an
+  in-process create before restate was turned on, is failed and destroyed by
+  reconcile once it has sat for two minutes.
 - Host allocation counters are then **recomputed from the live VMs** rather than
   trusted from the database, which repairs the drift a crash mid-allocation
   leaves behind.

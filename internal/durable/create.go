@@ -40,6 +40,29 @@ type Creator interface {
 	CreateReleaseEgress(ctx context.Context, vmID string) error
 	CreateUnpublishIngress(ctx context.Context, vmID string) error
 	CreateAbandon(ctx context.Context, vmID string, req orchestrator.CreateRequest, cause string) error
+	CreateBeginFailed(ctx context.Context, vmID string, req orchestrator.CreateRequest, cause string) error
+}
+
+// createKey is the Environment object state that marks a create in flight,
+// so reconcile can tell a provisioning vm restate will finish from one left
+// by a create that ran before restate was on.
+const createKey = "create"
+
+// createMarked is create with its in-flight mark: set before the first step,
+// cleared once the create has ended either way.
+func createMarked(ctx restate.ObjectContext, fleet Creator, policy RetryPolicy, req orchestrator.CreateRequest) error {
+	restate.Set(ctx, createKey, true)
+	err := create(ctx, fleet, policy, req)
+	if err == nil || restate.IsTerminalError(err) {
+		restate.Clear(ctx, createKey)
+	}
+	return err
+}
+
+// createInFlight is Environment/{vm_id}.CreateInFlight.
+func createInFlight(ctx restate.ObjectSharedContext) (bool, error) {
+	marked, err := restate.Get[bool](ctx, createKey)
+	return marked, err
 }
 
 // createPermanent marks err terminal when a retry cannot change it, carrying
@@ -80,6 +103,17 @@ func create(ctx restate.ObjectContext, fleet Creator, policy RetryPolicy, req or
 	}, restate.WithInitialRetryInterval(policy.InitialInterval),
 		restate.WithMaxRetryInterval(policy.MaxInterval))
 	if err != nil {
+		if restate.IsTerminalError(err) {
+			msg := err.Error()
+			if cerr := createStep(ctx, "begin_failed", []restate.RunOption{
+				restate.WithInitialRetryInterval(policy.InitialInterval),
+				restate.WithMaxRetryInterval(policy.MaxInterval),
+			}, func(c context.Context) error {
+				return fleet.CreateBeginFailed(c, vmID, req, msg)
+			}); cerr != nil {
+				return cerr
+			}
+		}
 		return err
 	}
 	err = createSteps(ctx, fleet, retry, vmID, req, &st)
@@ -243,5 +277,12 @@ type sentinelError struct {
 
 func (e *sentinelError) Error() string { return e.msg }
 func (e *sentinelError) Unwrap() error { return e.sentinel }
+
+// CreateInFlight asks Environment/{vmID}.CreateInFlight whether a create of
+// vmID is unfinished.
+func (c *Client) CreateInFlight(ctx context.Context, vmID string) (bool, error) {
+	return ingress.Object[restate.Void, bool](c.ingress, EnvironmentObject, vmID, "CreateInFlight").
+		Request(ctx, restate.Void{})
+}
 
 var _ orchestrator.DurableCreator = (*Client)(nil)
