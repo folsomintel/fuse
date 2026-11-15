@@ -62,9 +62,11 @@ func rotateToken(ctx restate.ObjectContext, fleet Tokens, policy RetryPolicy) er
 }
 
 // RotateToken runs Environment/{vmID}.RotateToken and waits for it. the
+// rotation may queue behind a long snapshot on the same vm, so it goes through
+// the client with no request timeout of its own; ctx bounds the wait, and the
 // rotation keeps running if ctx ends first.
 func (c *Client) RotateToken(ctx context.Context, vmID string) error {
-	_, err := ingress.Object[restate.Void, restate.Void](c.ingress, EnvironmentObject, vmID, "RotateToken").
+	_, err := ingress.Object[restate.Void, restate.Void](c.longIngress, EnvironmentObject, vmID, "RotateToken").
 		Request(ctx, restate.Void{})
 	var ierr ingress.Error
 	if errors.As(err, &ierr) && ierr.Code() == rotateRefusedCode {
