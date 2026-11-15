@@ -1,0 +1,141 @@
+---
+title: Builds
+sidebar:
+  icon: hammer
+description: Run setup steps on a builder environment and snapshot the result
+---
+
+A build boots a builder environment, runs a setup prelude and its steps, and
+snapshots the result. Steps with a `key` are cached as layers: a later build
+whose step has the same key reuses that layer's snapshot instead of running
+it again.
+
+## client.builds
+
+```python
+def create(self, request: CreateBuildRequest, *, idempotency_key: Optional[str] = None) -> Build: ...
+def get(self, build_id: str, wait: Optional[float] = None) -> Build: ...
+def wait(self, build_id: str, timeout: Optional[float] = None) -> Build: ...
+```
+
+`create` sends `POST /v1/builds` and returns the build while it is still
+running (the server answers `202`). It sends `idempotency_key` as the
+`Idempotency-Key` header, or a fresh random key without one. A retry with the
+same key and body returns the same build; the same key with a different body
+is a `409` `conflict`.
+
+`get` fetches a build at once, or, with `wait` (seconds) set, attaches until
+it is no longer running for at most that long (the server caps it at 50s).
+An unknown id raises `fuse.ApiError` with `code == "not_found"`.
+
+`wait` polls `get` with `wait=30s`, never longer than what is left of
+`timeout`, until the build finishes. With `timeout` (seconds) it raises
+`TimeoutError` once that passes; the build keeps running either way. A failed
+build is returned, not raised: check `state`, then `error` and `output`.
+
+```python
+build = client.builds.create(
+    fuse.CreateBuildRequest(
+        name="web",
+        spec=fuse.Spec(cpus=2, ram_mb=2048),
+        setup=fuse.BuildSetup(
+            prelude="set -e",
+            steps=[
+                fuse.BuildStep(script="apt-get update && apt-get install -y curl", key="curl-v1"),
+                fuse.BuildStep(script="./configure.sh"),
+            ],
+        ),
+    )
+)
+build = client.builds.wait(build.id, timeout=600)
+if build.state == fuse.BUILD_FAILED:
+    raise RuntimeError(f"{build.error}\n{build.output}")
+print(build.snapshot_id, build.cache_hits)
+```
+
+## CreateBuildRequest
+
+```python
+class BuildStep(BaseModel):
+    script: str = ""
+    key: Optional[str] = None
+
+class BuildSetup(BaseModel):
+    prelude: str = ""
+    files: Optional[str] = None
+    steps: list[BuildStep] = Field(default_factory=list)
+
+class CreateBuildRequest(BaseModel):
+    name: str = ""
+    setup: BuildSetup = Field(default_factory=BuildSetup)
+    spec: Optional[Spec] = None
+    manifest_inline: Optional[str] = None
+    secrets: Optional[dict[str, str]] = None
+    arch: Optional[str] = None
+    keep: Optional[bool] = None
+```
+
+- `name` and `setup.prelude` are required, and `setup.steps` needs at least
+  one step.
+- `key` is a step's layer cache key; a step without one, and every step after it, is not cached.
+- `spec` is the same `Spec` `environments.create` takes.
+- `manifest_inline` is a base64 manifest.
+- `arch` is the arch layers are looked up and filed under; unset lets the
+  server derive it.
+- `keep` keeps the builder environment instead of destroying it.
+
+## Build
+
+```python
+class BuildLayer(BaseModel):
+    index: int = 0
+    key: str = ""
+    status: str = ""
+    snapshot_id: str = ""
+
+class Build(BaseModel):
+    id: str = ""
+    name: str = ""
+    state: str = ""
+    step: str = ""
+    builder_id: str = ""
+    arch: str = ""
+    cache_hits: int = 0
+    seed_snapshot_id: str = ""
+    layers: list[BuildLayer] = Field(default_factory=list)
+    snapshot_id: str = ""
+    error: str = ""
+    output: str = ""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+    @property
+    def done(self) -> bool: ...
+
+BUILD_RUNNING = "running"
+BUILD_SUCCEEDED = "succeeded"
+BUILD_FAILED = "failed"
+```
+
+- `step` is the step the build is on: `resolve_cache`, `create_builder`,
+  `layer_<n>`, `tail`, `snapshot`, `destroy_builder` or `done`.
+- `layers` has one entry per setup step; `status` is `hit`, `miss` or `skip`.
+- `snapshot_id` is the final artifact once the build succeeded.
+- `output` is the redacted tail of the failing setup exec.
+
+## Build events
+
+An environment event whose `kind` is `build` carries a `build` member:
+
+```python
+class BuildEvent(BaseModel):
+    id: str = ""
+    state: str = ""
+    step: str = ""
+```
+
+`Event.build` is `None` on every other event.
+
+`Build`, `BuildLayer`, `BuildSetup`, `BuildStep`, `CreateBuildRequest`,
+`BuildEvent` and the three state constants are exported from `fuse`.

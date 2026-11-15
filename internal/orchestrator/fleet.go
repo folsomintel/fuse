@@ -696,6 +696,10 @@ type FleetManager struct {
 	// guarded by hitlMu.
 	hitlQueued map[string]bool
 
+	// builds is the fusefile builds this process runs or submits. see
+	// builds.go.
+	builds buildRegistry
+
 	// durableExpiries runs drain and environment expiry on restate; nil in
 	// mode off. see expiry_durable.go. expirySendSlots bounds the one-way
 	// arms in flight and expirySends tracks them. expiryArmed is the create

@@ -970,24 +970,50 @@ func compileBuildScript(f *Fusefile) string {
 // byte for byte. That equivalence is what lets the stepped path and the
 // single-blob path coexist without drifting, and there is a test pinning it.
 func SetupScriptRange(f *Fusefile, from, to int, includeFiles bool) string {
-	scripts := setupScripts(f)
+	return NewSetupPlan(f).Range(from, to, includeFiles)
+}
+
+// SetupPlan is the setup phase cut into the pieces a build execs: the prelude
+// every exec starts with, the file block, and one fragment per step. a build
+// that runs on the orchestrator gets these instead of the Fusefile, since only
+// the client can read the files the Fusefile names.
+type SetupPlan struct {
+	Prelude string
+	Files   string
+	Steps   []string
+}
+
+// NewSetupPlan cuts f's setup phase into a SetupPlan.
+func NewSetupPlan(f *Fusefile) SetupPlan {
+	return SetupPlan{
+		Prelude: scriptPrelude(f),
+		Files:   renderFiles(f.Files),
+		Steps:   setupScripts(f),
+	}
+}
+
+// Range renders steps [from, to) as one runnable script, the file block first
+// when includeFiles is set. see SetupScriptRange.
+func (p SetupPlan) Range(from, to int, includeFiles bool) string {
 	if from < 0 {
 		from = 0
 	}
-	if to > len(scripts) {
-		to = len(scripts)
+	if to > len(p.Steps) {
+		to = len(p.Steps)
 	}
 	if from >= to && !includeFiles {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(scriptPrelude(f))
+	b.WriteString(p.Prelude)
 	if includeFiles {
-		b.WriteString(renderFiles(f.Files))
+		b.WriteString(p.Files)
 	}
-	for _, script := range scripts[from:to] {
-		b.WriteString(script)
-		b.WriteString("\n")
+	if from < to {
+		for _, script := range p.Steps[from:to] {
+			b.WriteString(script)
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
 }

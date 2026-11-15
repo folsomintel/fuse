@@ -9,9 +9,10 @@ description: Run a Fusefile's setup phase once and snapshot the result
 fuse build [path] [flags]
 ```
 
-Boots a throwaway environment, runs the [Fusefile](/docs/concepts/fusefile)'s
-`setup:` phase inside it, snapshots the resulting disk, destroys the
-environment, and prints the snapshot ID. Pass that ID to
+Has the orchestrator boot a throwaway environment, run the
+[Fusefile](/docs/concepts/fusefile)'s `setup:` phase inside it, snapshot the
+resulting disk and destroy the environment, follows the build, and prints the
+snapshot ID. Pass that ID to
 [`fuse up --from-build`](/reference/cli/up) to boot an environment with the
 setup work already done.
 
@@ -24,7 +25,25 @@ fuse up --from-build "$id"
 ```
 
 Only the ID goes to stdout, so `$(fuse build)` captures it cleanly. Progress
-and warnings go to stderr.
+(the build id, the builder environment, each step as the build reaches it) and
+warnings go to stderr.
+
+## The build runs on the orchestrator
+
+The CLI parses the Fusefile, derives the layer plan and submits it with
+[`POST /v1/builds`](/reference/api); everything after that runs on the
+orchestrator. Stopping the command (Ctrl-C, a closed laptop, a dropped
+connection) stops only the following: the build still finishes and still
+destroys its builder. `--detach` submits the build, prints its id and exits at
+once; read it later with `GET /v1/builds/{id}` or the SDKs' `builds.get` and
+`builds.wait`.
+
+With restate on (`FUSE_RESTATE_MODE=self` or `cloud`) and a postgres state
+store (`DATABASE_URL`), the build runs as the `Build/{build_id}` workflow, so an orchestrator restart resumes it at the step
+it was on: a setup step that was running runs again on the same builder, and
+nothing before it repeats. Otherwise (mode off, no postgres, or secrets with no
+`TOKEN_ENCRYPTION_KEY` to seal them for restate's journal) it runs inside the
+orchestrator process, and a restart fails it.
 
 ## Why this exists
 
@@ -34,7 +53,7 @@ ceiling that is not configurable in the shipped binary. Any real setup step, an
 `apt-get install` included, routinely exceeds it.
 
 `fuse build` runs the same lines through the exec path instead, which allows
-600 seconds, and shows their output so a failing build is debuggable. The
+600 seconds, and shows a failing step's output so a failed build is debuggable. The
 result is captured once rather than re-run on every boot.
 
 An artifact is a rootfs file on the host that produced it, and Fuse has no object
@@ -72,6 +91,7 @@ accumulate without a ceiling.
 | `--keep` | Leave the builder environment running instead of destroying it. For debugging a failed build. |
 | `--plan` | Print the derived [setup layer cache](/docs/concepts/fusefile#the-setup-layer-cache) plan and exit without building anything. |
 | `--no-cache` | Ignore the Fusefile's `cache` block and run every setup step. |
+| `--detach` | Submit the build, print its id and exit without following it. With `-o json`, print the build. |
 
 Path resolution matches [`fuse up`](/reference/cli/up#path-resolution):
 `-f/--file`, then a positional argument, then the first discovered Fusefile in
@@ -107,7 +127,7 @@ Fusefile's `cache` block for one run. The plan is the same one
 [`fuse up --plan`](/reference/cli/up) prints for the same Fusefile: there is one
 key derivation, not one per command.
 
-With caching enabled, the command resolves the chain **deepest first** and stops
+With caching enabled, the orchestrator resolves the chain **deepest first** and stops
 at the first hit. A hit at step *N* means every step before it is satisfied by
 that same artifact, so the first hit found walking backwards is the most work
 that can be skipped, and a warm cache costs one lookup rather than one per step.
@@ -142,6 +162,9 @@ rootfs to boot from.
 ## Exit status
 
 `fuse build` exits non-zero if the builder fails to come up, if the setup phase
-exits non-zero, or if the snapshot cannot be taken. In each case the builder
-environment is destroyed before returning unless `--keep` is set, so a failed
-build does not leave a VM holding host capacity.
+exits non-zero, or if the snapshot cannot be taken. A setup step that exits
+non-zero has the tail of its output (secrets redacted) printed to stderr. In
+each case the orchestrator destroys the builder environment before the build is
+recorded failed, unless `--keep` is set, so a failed build does not leave a VM
+holding host capacity. With `-o json`, a successful build prints the artifact's
+snapshot.

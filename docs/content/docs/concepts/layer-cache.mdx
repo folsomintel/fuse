@@ -55,8 +55,11 @@ it cannot boot. A key that lies is worse than a key that misses.
 
 Instead it is recorded on the artifact by the host that actually built it, and
 every lookup filters on it. The CLI determines the target architecture from the
-fleet: a host scoped with `fuse host <id>` answers directly, and a
-single-architecture fleet answers unambiguously. A **mixed-architecture fleet has
+fleet and sends it with the build: a host scoped with `fuse host <id>` answers
+directly, and a single-architecture fleet answers unambiguously. A build
+submitted without one (`POST /v1/builds` with no `arch`) gets the same answer
+from the orchestrator: the spec's pinned host or arch, or the one arch every
+host shares. A **mixed-architecture fleet has
 no safe answer**, so the build runs cold rather than filing a layer under a coin
 flip.
 

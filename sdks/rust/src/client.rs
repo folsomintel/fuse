@@ -6,6 +6,7 @@ use serde::Deserialize;
 use url::Url;
 
 use crate::apikeys::ApiKeys;
+use crate::builds::Builds;
 use crate::environments::Environments;
 use crate::error::Error;
 use crate::gates::{HitlWait, OnHeld};
@@ -100,6 +101,11 @@ impl Client {
     /// The operations service.
     pub fn operations(&self) -> Operations {
         Operations::new(self.transport.clone())
+    }
+
+    /// The builds service.
+    pub fn builds(&self) -> Builds {
+        Builds::new(self.transport.clone())
     }
 
     /// Probes `GET /v1/version` (unauthenticated) and reports what the

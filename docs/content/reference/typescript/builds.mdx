@@ -1,0 +1,141 @@
+---
+title: Builds
+sidebar:
+  icon: hammer
+description: Bake a setup into a snapshot with the builds service
+---
+
+A build runs a setup on a builder environment, caching each keyed step as a
+layer snapshot, and files the result as a snapshot you can boot from.
+`client.builds` starts builds and follows them.
+
+## client.builds
+
+```ts
+create(req: CreateBuildRequest, opts?: MutatingCallOptions): Promise<Build>
+get(id: string, options?: { wait?: string }, opts?: CallOptions): Promise<Build>
+wait(id: string, options?: { timeout?: number }, opts?: CallOptions): Promise<Build>
+```
+
+`create` sends `POST /v1/builds` and resolves at once with the running build
+(a `202`). It sends a fresh random `Idempotency-Key` unless you pass
+`idempotencyKey`. The same key with the same body returns the same build;
+the same key with a different body rejects with a `409` `conflict`.
+
+`get` fetches a build at once, or, with `wait` set to a duration such as
+`"30s"`, attaches until it is no longer running for at most that long (the
+server caps it at 50s). An unknown id rejects with a `FuseApiError` whose
+`code` is `not_found`.
+
+`wait` polls `get` with `wait=30s`, never longer than the remaining
+`timeout`, until `state` is no longer `running`. `timeout` (milliseconds) and
+`opts.signal` bound it, and the build keeps running if either ends it first.
+A failed build is returned, not thrown: check `state`, then `error` and
+`output`.
+
+```ts
+const started = await client.builds.create({
+  name: "app",
+  setup: {
+    prelude: "set -e",
+    steps: [
+      { script: "apt-get update && apt-get install -y git", key: "deps-v1" },
+      { script: "git clone https://example.com/app /app" },
+    ],
+  },
+});
+const build = await client.builds.wait(started.id, { timeout: 15 * 60_000 });
+if (build.state !== "succeeded") throw new Error(build.error);
+const env = await client.environments.create({
+  task_id: "t",
+  seed_snapshot_id: build.snapshot_id,
+});
+```
+
+## CreateBuildRequest
+
+```ts
+interface CreateBuildRequest {
+  name: string;
+  spec?: Spec;
+  manifest_inline?: string;
+  secrets?: Record<string, string>;
+  arch?: string;
+  keep?: boolean;
+  setup: BuildSetup;
+}
+
+interface BuildSetup {
+  prelude: string;
+  files?: string;
+  steps: BuildStep[];
+}
+
+interface BuildStep {
+  script: string;
+  key?: string;
+}
+```
+
+- `spec` is the same spec `environments.create` takes.
+- `manifest_inline` is a base64 manifest.
+- `arch` is the arch layer artifacts are looked up and filed under. Empty lets
+  the server derive it.
+- `keep` keeps the builder environment instead of destroying it.
+- `steps` needs at least one. A step's `key` is its layer cache key; a step
+  without one, and every step after it, is not cached.
+
+## Build
+
+```ts
+interface Build {
+  id: string;
+  name: string;
+  state: string;
+  step?: string;
+  builder_id?: string;
+  arch?: string;
+  cache_hits: number;
+  seed_snapshot_id?: string;
+  layers: BuildLayer[];
+  snapshot_id?: string;
+  error?: string;
+  output?: string;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string;
+}
+
+interface BuildLayer {
+  index: number;
+  key?: string;
+  status: string;
+  snapshot_id?: string;
+}
+
+const BuildState = {
+  Running: "running",
+  Succeeded: "succeeded",
+  Failed: "failed",
+} as const;
+```
+
+- `step` is where the build is: `resolve_cache`, `create_builder`,
+  `layer_0` and so on, `tail`, `snapshot`, `destroy_builder`, `done`.
+- `layers[].status` is `hit`, `miss` or `skip`.
+- `snapshot_id` is the final artifact; boot it with `seed_snapshot_id` (or
+  `--from-build` in the CLI).
+- `output` is the redacted tail of the failing setup exec.
+
+## Build events
+
+An environment's event stream carries `event: "build"` events whose `build`
+member is a `BuildEvent`:
+
+```ts
+interface BuildEvent {
+  id: string;
+  state: string;
+  step?: string;
+}
+```

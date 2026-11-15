@@ -117,23 +117,3 @@ func resolveDeepestLayer(ctx context.Context, cl *fuse.Client, p *layerPlan, arc
 	}
 	return nil, nil
 }
-
-// cacheablePrefixLen returns how many leading setup steps can produce a layer.
-//
-// Cacheable steps are always a prefix, because the chain breaks permanently at
-// the first step that opts out (fusefile.LayerKeys sets chainBroken and never
-// clears it). That is what bounds the stepped build loop: everything from here
-// to the end runs as one exec, since none of it can be snapshotted anyway.
-func cacheablePrefixLen(p *layerPlan) int {
-	if p == nil {
-		return 0
-	}
-	n := 0
-	for _, k := range p.Steps {
-		if !k.Cacheable {
-			break
-		}
-		n++
-	}
-	return n
-}

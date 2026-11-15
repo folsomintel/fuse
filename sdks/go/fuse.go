@@ -47,6 +47,7 @@ type Client struct {
 	APIKeys       *APIKeysService
 	Interventions *InterventionsService
 	Operations    *OperationsService
+	Builds        *BuildsService
 }
 
 // clientConfig holds the resolved options for New.
@@ -163,6 +164,7 @@ func newClient(t *transport) *Client {
 		APIKeys:       newAPIKeysService(t),
 		Interventions: newInterventionsService(t),
 		Operations:    newOperationsService(t),
+		Builds:        &BuildsService{t: t},
 	}
 }
 

@@ -473,6 +473,7 @@ type MemoryStateStore struct {
 	audit       []hitl.AuditEntry
 	grants      []hitl.Grant
 	recordings  map[string]RecordingRecord
+	builds      map[string]BuildRecord
 	nextID      int64
 	nextDLQID   int64
 }

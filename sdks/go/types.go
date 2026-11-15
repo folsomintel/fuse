@@ -383,6 +383,18 @@ type Event struct {
 	MissDetail []string `json:"miss_detail,omitempty"`
 	DurationMS int64    `json:"duration_ms,omitempty"`
 	ExitCode   int      `json:"exit_code,omitempty"`
+
+	// Build is set only on EventKindBuild events, sent on a builder's
+	// stream when the build it runs moves to a new step or state.
+	Build *BuildEvent `json:"build,omitempty"`
+}
+
+// BuildEvent is the build an EventKindBuild event reports: ids and states
+// only, Builds.Get has the rest.
+type BuildEvent struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Step  string `json:"step,omitempty"`
 }
 
 // Event kinds carried in Event.Kind. An empty kind means "state": older
@@ -390,6 +402,7 @@ type Event struct {
 const (
 	EventKindState = "state"
 	EventKindStep  = "step"
+	EventKindBuild = "build"
 )
 
 // IsStateEvent reports whether kind is a lifecycle state event, which is the

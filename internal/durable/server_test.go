@@ -134,6 +134,25 @@ func (fakeFleet) ExpiryCheck(context.Context, string, string) (orchestrator.Expi
 	return orchestrator.ExpiryVerdict{}, nil
 }
 
+func (fakeFleet) BuildResolveCache(context.Context, orchestrator.BuildInput) (orchestrator.BuildPlan, error) {
+	return orchestrator.BuildPlan{}, nil
+}
+func (fakeFleet) BuildCreateBuilder(context.Context, orchestrator.BuildInput, orchestrator.BuildPlan) (string, error) {
+	return "", nil
+}
+func (fakeFleet) BuildExec(context.Context, orchestrator.BuildInput, string, orchestrator.BuildExec) error {
+	return nil
+}
+func (fakeFleet) BuildSnapshotLayer(context.Context, orchestrator.BuildInput, string, int) (string, error) {
+	return "", nil
+}
+func (fakeFleet) BuildSnapshot(context.Context, orchestrator.BuildInput, string) (string, error) {
+	return "", nil
+}
+func (fakeFleet) BuildDestroyBuilder(context.Context, orchestrator.BuildInput) error { return nil }
+func (fakeFleet) BuildFinish(context.Context, orchestrator.BuildInput) error         { return nil }
+func (fakeFleet) BuildFailed(context.Context, orchestrator.BuildInput, string) error { return nil }
+
 func (fakeFleet) MigrateBegin(context.Context, string, orchestrator.MigrateRequest) (orchestrator.MigratePlan, error) {
 	return orchestrator.MigratePlan{}, nil
 }
@@ -270,8 +289,11 @@ func TestDiscoveryManifest(t *testing.T) {
 	got := map[string]RetryPolicy{}
 	for _, s := range manifest.Services {
 		wantTy := "VIRTUAL_OBJECT"
-		if s.Name == WebhooksService {
+		switch s.Name {
+		case WebhooksService:
 			wantTy = "SERVICE"
+		case BuildWorkflow:
+			wantTy = "WORKFLOW"
 		}
 		if s.Ty != wantTy {
 			t.Errorf("%s: type %q, want %s", s.Name, s.Ty, wantTy)
@@ -298,6 +320,8 @@ func TestDiscoveryManifest(t *testing.T) {
 		case WebhooksService:
 			// a plain service's handlers carry no type.
 			want = map[string]string{"Deliver": ""}
+		case BuildWorkflow:
+			want = map[string]string{"Run": "WORKFLOW"}
 		}
 		if fmt.Sprint(handlers) != fmt.Sprint(want) {
 			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)

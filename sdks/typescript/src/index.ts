@@ -30,6 +30,8 @@ export type {
 
 export { OperationsService } from "./operations.js";
 export type { GetOperationOptions, WaitOperationOptions } from "./operations.js";
+export { BuildsService } from "./builds.js";
+export type { GetBuildOptions, WaitBuildOptions } from "./builds.js";
 
 // Per-call options and the fetch type.
 export type { CallOptions, MutatingCallOptions, FetchLike } from "./transport.js";
@@ -99,6 +101,12 @@ export type {
   Operation,
   OperationAccepted,
   OperationError,
+  Build,
+  BuildEvent,
+  BuildLayer,
+  BuildSetup,
+  BuildStep,
+  CreateBuildRequest,
 } from "./types.js";
 export {
   State,
@@ -120,6 +128,7 @@ export {
   ReviewFormat,
   TakeoverVia,
   OperationState,
+  BuildState,
 } from "./types.js";
 
 // Errors and code helpers.
