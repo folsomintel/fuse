@@ -149,8 +149,10 @@ func (fakeFleet) BuildSnapshotLayer(context.Context, orchestrator.BuildInput, st
 func (fakeFleet) BuildSnapshot(context.Context, orchestrator.BuildInput, string) (string, error) {
 	return "", nil
 }
-func (fakeFleet) BuildDestroyBuilder(context.Context, orchestrator.BuildInput) error { return nil }
-func (fakeFleet) BuildFinish(context.Context, orchestrator.BuildInput) error         { return nil }
+func (fakeFleet) BuildDestroyBuilder(context.Context, orchestrator.BuildInput, string) error {
+	return nil
+}
+func (fakeFleet) BuildFinish(context.Context, orchestrator.BuildInput, string) error { return nil }
 func (fakeFleet) BuildFailed(context.Context, orchestrator.BuildInput, string) error { return nil }
 
 func (fakeFleet) MigrateBegin(context.Context, string, orchestrator.MigrateRequest) (orchestrator.MigratePlan, error) {
