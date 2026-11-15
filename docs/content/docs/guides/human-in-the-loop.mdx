@@ -298,6 +298,21 @@ approved action failed. `GET
 answers `403` with `details.reason: hitl_denied`, the gate in
 `details.gate`, and the gate's `reason` as the message.
 
+**Across an orchestrator restart.** With restate off, an approved action the
+orchestrator was running when it stopped is settled with `result.error` saying
+it may or may not have run. With restate on (`FUSE_RESTATE_MODE=self` or
+`cloud`), the approval is a restate `Intervention/{id}.Run` invocation and
+the restarted orchestrator carries it on: an exec runs once (the host agent
+replays a command it already finished instead of running it again; an exec
+whose first attempt is more than an hour old gets the may-or-may-not error
+instead, since the agent may have forgotten it), and a
+destroy, snapshot or token rotation runs as that operation's own durable
+handler. A computer action, drain, fork or migrate that was already under way
+when the orchestrator died still gets the may-or-may-not-have-run error, so
+it is never done twice. A waiting `?wait=` or SDK call gets the result once
+it is stored. Each pending intervention's deadline is a restate timer too, so
+`on_timeout` applies on time after a restart, even with nobody reading it.
+
 The SDKs wait on a `202` for you: `exec` returns the approved command's
 result, `computer` the action's output and screenshot, `fork` the new
 environment, and so on. A rejection raises
@@ -1253,10 +1268,21 @@ def verify_fuse(secret: bytes, header: str, raw_body: bytes, tolerance: int = 30
     return hmac.compare_digest(want, v1)
 ```
 
-A delivery is tried up to 4 times: at once, then after 1s, 4s and 16s, on
-any transport error or non-2xx answer, with a 10s timeout per try. Redirects
-are not followed. Deliveries are best-effort and not stored; the audit log is
-the record, the webhook is a nudge.
+A delivery is retried on any transport error or non-2xx answer, with a 10s
+timeout per try. Redirects are not followed. With restate off it is tried up
+to 4 times: at once, then after 1s, 4s and 16s, in the orchestrator process,
+so a restart drops it; the audit log is the record, the webhook is a nudge.
+
+With restate on (`FUSE_RESTATE_MODE=self` or `cloud`) and `TOKEN_ENCRYPTION_KEY`
+set, each delivery is a restate `Webhooks.Deliver` invocation and survives an
+orchestrator restart. It is retried after 1s, then four times longer each try
+up to once an hour, for 24 hours from the event; a delivery still failing
+after that is recorded as a `hitl_webhook` dead letter. The same notification
+can arrive more than once if the orchestrator dies mid-post, so dedupe on
+`intervention_id` and `event`. Restate journals the delivery, but the
+endpoint url and signing secret go in sealed with `TOKEN_ENCRYPTION_KEY`;
+the journal holds the notification's ids, gate, deadline and link. Without
+the key, deliveries stay in process as with restate off.
 
 The signing secrets are sealed with `TOKEN_ENCRYPTION_KEY`. Without it they
 are kept in memory only, so deliveries stop after an orchestrator restart

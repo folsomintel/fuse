@@ -130,7 +130,8 @@ type Config struct {
 //	FUSE_RESTATE_RETRY_<SERVICE>_MAX_INTERVAL       e.g. 30s
 //	FUSE_RESTATE_RETRY_<SERVICE>_MAX_ATTEMPTS       e.g. 10
 //
-// <SERVICE> is the upper-cased service name: ENVIRONMENT or HOST.
+// <SERVICE> is the upper-cased service name: ENVIRONMENT, HOST, ARTIFACTS,
+// ARTIFACTPIN or WEBHOOKS.
 //
 // mode cloud also reads:
 //

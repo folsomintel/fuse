@@ -20,6 +20,7 @@ import (
 	"github.com/mr-tron/base58"
 	"github.com/restatedev/sdk-go/server"
 
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -99,6 +100,32 @@ func (fakeFleet) ChainAdvanced(context.Context, string, orchestrator.ChainState,
 }
 func (fakeFleet) MirrorChain(string, orchestrator.ChainState, bool) {}
 
+func (fakeFleet) RotateTokenGenerate(context.Context, string) (orchestrator.RotatedCredentials, error) {
+	return orchestrator.RotatedCredentials{}, nil
+}
+func (fakeFleet) RotateTokenUpload(context.Context, string, orchestrator.RotatedCredentials) error {
+	return nil
+}
+func (fakeFleet) RotateTokenPersist(context.Context, string, orchestrator.RotatedCredentials) error {
+	return nil
+}
+
+func (fakeFleet) WebhookPost(context.Context, orchestrator.WebhookDelivery) (orchestrator.WebhookAttempt, error) {
+	return orchestrator.WebhookAttempt{Delivered: true}, nil
+}
+func (fakeFleet) WebhookDeadLetter(context.Context, orchestrator.WebhookDelivery, string) error {
+	return nil
+}
+
+func (fakeFleet) HitlRunBegin(context.Context, string) (orchestrator.HitlRunPlan, error) {
+	return orchestrator.HitlRunPlan{}, nil
+}
+func (fakeFleet) HitlRunInProcess(context.Context, string) error { return nil }
+func (fakeFleet) HitlRunFinish(context.Context, string, orchestrator.HitlRunPlan, hitl.Result) error {
+	return nil
+}
+func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -147,8 +174,12 @@ func TestDiscoveryManifest(t *testing.T) {
 
 	got := map[string]RetryPolicy{}
 	for _, s := range manifest.Services {
-		if s.Ty != "VIRTUAL_OBJECT" {
-			t.Errorf("%s: type %q, want VIRTUAL_OBJECT", s.Name, s.Ty)
+		wantTy := "VIRTUAL_OBJECT"
+		if s.Name == WebhooksService {
+			wantTy = "SERVICE"
+		}
+		if s.Ty != wantTy {
+			t.Errorf("%s: type %q, want %s", s.Name, s.Ty, wantTy)
 		}
 		handlers := map[string]string{}
 		for _, h := range s.Handlers {
@@ -157,13 +188,18 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken"} {
 				want[h] = "EXCLUSIVE"
 			}
 		case ArtifactsObject:
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:
 			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
+		case InterventionObject:
+			want = map[string]string{"Run": "EXCLUSIVE", "Expire": "EXCLUSIVE"}
+		case WebhooksService:
+			// a plain service's handlers carry no type.
+			want = map[string]string{"Deliver": ""}
 		}
 		if fmt.Sprint(handlers) != fmt.Sprint(want) {
 			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)

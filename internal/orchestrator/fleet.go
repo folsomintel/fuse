@@ -10,9 +10,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/egress"
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/secrets"
 	"github.com/folsomintel/fuse/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -326,7 +328,7 @@ type EgressMetrics interface {
 
 // OperationMetrics is an optional extension of ReconcileMetrics for
 // lifecycle operations: create, destroy, fork, migrate, migrate_live,
-// snapshot and restore. destroy is DestroyVM only: the reconcile loop's own
+// snapshot, restore and rotate_token. destroy is DestroyVM only: the reconcile loop's own
 // teardowns and the one after CompleteTask go through destroyAndRemove and are
 // not counted. snapshot includes the snapshots fork, migrate and checkpoint
 // chains take internally, since each is a real checkpoint the host had to
@@ -629,6 +631,36 @@ type FleetManager struct {
 	// retention gc on restate; nil in mode off. see snapshot_durable.go and
 	// checkpoints_durable.go.
 	durableSnapshots DurableSnapshots
+
+	// durableTokens runs token rotation on restate; nil in mode off. see
+	// token_rotation.go.
+	durableTokens DurableTokenRotator
+
+	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
+	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in
+	// flight and webhookSends tracks them. webhookBacklog is the deliveries
+	// not yet delivered or dead-lettered, by endpoint and delivery id,
+	// guarded by webhookMu.
+	durableHooks     DurableWebhooks
+	webhookSendSlots chan struct{}
+	webhookSends     sync.WaitGroup
+	webhookMu        sync.Mutex
+	webhookBacklog   map[string]map[string]struct{}
+
+	// durableHitlRuns runs approved hitl actions and intervention deadlines
+	// on restate; nil in mode off. see hitl_durable.go. hitlSendSlots
+	// bounds the one-way sends in flight and hitlSends tracks them.
+	// hitlResend asks the next reconcile to send every approved action
+	// still owed a result again, after a send failed. hitlUnstored holds a
+	// result whose write failed, for the step's retry; guarded by hitlMu.
+	durableHitlRuns DurableHitl
+	hitlSendSlots   chan struct{}
+	hitlSends       sync.WaitGroup
+	hitlResend      atomic.Bool
+	hitlUnstored    map[string]hitl.Result
+	// hitlQueued is the interventions with a run send queued or in flight,
+	// guarded by hitlMu.
+	hitlQueued map[string]bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
