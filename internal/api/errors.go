@@ -36,7 +36,8 @@ func classifyFleetError(err error) (status int, code string) {
 	switch {
 	case err == nil:
 		return http.StatusOK, ""
-	case errors.Is(err, orchestrator.ErrTaskAlreadyAssigned):
+	case errors.Is(err, orchestrator.ErrTaskAlreadyAssigned),
+		errors.Is(err, orchestrator.ErrBuildConflict):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrEnvLocked):
 		return http.StatusLocked, CodeLocked
@@ -47,13 +48,15 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrHostNotFound),
 		errors.Is(err, orchestrator.ErrSnapshotNotFound),
 		errors.Is(err, orchestrator.ErrInterventionNotFound),
-		errors.Is(err, orchestrator.ErrRecordingNotFound):
+		errors.Is(err, orchestrator.ErrRecordingNotFound),
+		errors.Is(err, orchestrator.ErrBuildNotFound):
 		return http.StatusNotFound, CodeNotFound
 	case errors.Is(err, orchestrator.ErrNoCapacity),
 		errors.Is(err, orchestrator.ErrNoHosts),
 		errors.Is(err, orchestrator.ErrHostPinUnschedulable),
 		errors.Is(err, orchestrator.ErrNoLabelMatch),
-		errors.Is(err, orchestrator.ErrGuestUnavailable):
+		errors.Is(err, orchestrator.ErrGuestUnavailable),
+		errors.Is(err, orchestrator.ErrBuildNotStarted):
 		return http.StatusServiceUnavailable, CodeUnavailable
 	case errors.Is(err, orchestrator.ErrSnapshotQuotaExceeded),
 		errors.Is(err, orchestrator.ErrSnapshotInvalidState),

@@ -276,6 +276,9 @@ func (h *Handler) register(r chi.Router) {
 	// create, destroy, fork, migrate, snapshot, restore and drain. See
 	// operations.go.
 	r.Get("/v1/operations/{operationId}", h.getOperation)
+
+	r.Post("/v1/builds", h.createBuild)
+	r.Get("/v1/builds/{buildId}", h.getBuild)
 }
 
 // resolver returns h.Resolver or the default inline resolver.

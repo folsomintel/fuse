@@ -56,6 +56,8 @@ tags:
     description: Session-cookie login/logout for browser callers
   - name: operations
     description: Mutating calls (create, destroy, fork, migrate, snapshot, restore, drain) run past their own request
+  - name: builds
+    description: Fusefile setup phases run on the orchestrator, with the setup layer cache
 
 paths:
   /health:
@@ -2323,6 +2325,108 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/builds:
+    post:
+      tags: [builds]
+      operationId: createBuild
+      summary: Create build
+      description: |
+        Runs a Fusefile's setup phase on the orchestrator: resolves the
+        setup layer cache, boots a builder (seeded from the deepest stored
+        layer), runs each remaining setup step (snapshotting each cacheable
+        one as a layer), snapshots the result as the build artifact and
+        destroys the builder. A failure destroys the builder too; layers
+        already snapshotted stay, so a retry resumes from the last good
+        one.
+
+        The client plans the setup: it renders the scripts and derives
+        each step's layer key, since only it can read the files a step's
+        `inputs` name. `fuse build` does this from a Fusefile.
+
+        Answers 202 with the build at once and keeps running when the
+        caller goes away; follow it with GET /v1/builds/{buildId}. With
+        restate on (`FUSE_RESTATE_MODE`), the build runs as the
+        `Build/{build_id}` workflow and resumes at the step it was on after
+        an orchestrator restart; in mode off it runs in the orchestrator's
+        process and an orchestrator restart fails it.
+
+        An `Idempotency-Key` names the build: a retry with the same key
+        and body returns it (with `Idempotent-Replayed: true`) instead of
+        starting another, and the same key with a different body is a 409.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema:
+            type: string
+          description: 1 to 255 visible ascii characters naming the build.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateBuildRequest"
+      responses:
+        "202":
+          description: The build, just started or replayed.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/builds/{buildId}
+            Idempotent-Replayed:
+              schema:
+                type: string
+              description: "\"true\" when an earlier request with the same key started this build."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Build"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /v1/builds/{buildId}:
+    parameters:
+      - name: buildId
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [builds]
+      operationId: getBuild
+      summary: Get build
+      description: |
+        Reports a build from the orchestrator's state store: its state, the
+        step it is on, each setup layer's cache status and, once finished,
+        the artifact (`snapshot_id`) or the error with the failing step's
+        output. `?wait=` attaches until the build is no longer running,
+        bounded below the server's write timeout. A build is readable by
+        the credential that started it and by the master token; any other
+        caller gets 404.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: string
+          description: How long to wait for the build to finish, e.g. `30s`. Capped at the server's attach bound.
+      responses:
+        "200":
+          description: The build, finished or still running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Build"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3237,8 +3341,11 @@ components:
           description: Opaque 128-bit hex event identifier. Round-trip via Last-Event-ID for resume.
         event:
           type: string
-          enum: [state]
-          description: Event kind. Currently only "state" is emitted.
+          enum: [state, intervention, build]
+          description: |
+            Event kind. `build` events are sent on a builder's stream when
+            the fusefile build it runs moves to a new step or state, and
+            carry `build`.
         vm_id:
           type: string
         state:
@@ -3259,6 +3366,18 @@ components:
         updated_at:
           type: string
           format: date-time
+        build:
+          type: object
+          description: Set on `build` events. Ids and states only; GET /v1/builds/{buildId} has the rest.
+          required: [id, state]
+          properties:
+            id:
+              type: string
+            state:
+              type: string
+              enum: [running, succeeded, failed]
+            step:
+              type: string
 
     ExecEnvironmentRequest:
       type: object
@@ -4948,3 +5067,123 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HostInfo"
+
+    CreateBuildRequest:
+      type: object
+      required: [name, setup]
+      properties:
+        name:
+          type: string
+          description: Labels the build artifact and its layers.
+        spec:
+          $ref: "#/components/schemas/ResourceSpec"
+        manifest_inline:
+          type: string
+          description: The builder's base64 manifest, as on create.
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+          description: The builder's secrets. Sealed before restate journals the build; redacted from its error and output.
+        arch:
+          type: string
+          description: |
+            The arch layers are looked up and filed under. Empty derives it
+            from the spec's host or arch, or the one arch every host shares;
+            a fleet of mixed arches then builds without the cache.
+        keep:
+          type: boolean
+          description: Leave the builder running instead of destroying it.
+        setup:
+          $ref: "#/components/schemas/BuildSetup"
+
+    BuildSetup:
+      type: object
+      required: [prelude, steps]
+      description: |
+        The setup phase cut into what the builder execs. Each exec runs the
+        prelude, then (on a cold build's first exec) the file block, then
+        its steps' scripts, each followed by a newline.
+      properties:
+        prelude:
+          type: string
+        files:
+          type: string
+        steps:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BuildStep"
+
+    BuildStep:
+      type: object
+      required: [script]
+      properties:
+        script:
+          type: string
+        key:
+          type: string
+          description: The step's layer cache key. A step without one, and every step after it, is not cached.
+
+    Build:
+      type: object
+      required: [id, name, state, cache_hits, layers, created_at, updated_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        state:
+          type: string
+          enum: [running, succeeded, failed]
+        step:
+          type: string
+          description: queued, resolve_cache, create_builder, layer_<i>, tail, snapshot, destroy_builder or done.
+        builder_id:
+          type: string
+          description: The builder environment, once created.
+        arch:
+          type: string
+        cache_hits:
+          type: integer
+          description: How many setup steps the seed artifact covered.
+        seed_snapshot_id:
+          type: string
+          description: The layer the builder booted from, on a cache hit.
+        layers:
+          type: array
+          items:
+            $ref: "#/components/schemas/BuildLayer"
+        snapshot_id:
+          type: string
+          description: The build artifact. Boot it with `seed_snapshot_id` on create, or `fuse up --from-build`.
+        error:
+          type: string
+        output:
+          type: string
+          description: The redacted tail of the setup exec that failed.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+
+    BuildLayer:
+      type: object
+      required: [index, status]
+      properties:
+        index:
+          type: integer
+        key:
+          type: string
+        status:
+          type: string
+          enum: [hit, miss, skip]
+          description: hit is covered by the seed and does not run, miss runs and is snapshotted, skip cannot be cached.
+        snapshot_id:
+          type: string
+          description: The layer this build snapshotted for the step.
