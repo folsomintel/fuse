@@ -109,6 +109,13 @@ func (fakeFleet) RotateTokenPersist(context.Context, string, orchestrator.Rotate
 	return nil
 }
 
+func (fakeFleet) WebhookPost(context.Context, orchestrator.WebhookDelivery) (orchestrator.WebhookAttempt, error) {
+	return orchestrator.WebhookAttempt{Delivered: true}, nil
+}
+func (fakeFleet) WebhookDeadLetter(context.Context, orchestrator.WebhookDelivery, string) error {
+	return nil
+}
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -157,8 +164,12 @@ func TestDiscoveryManifest(t *testing.T) {
 
 	got := map[string]RetryPolicy{}
 	for _, s := range manifest.Services {
-		if s.Ty != "VIRTUAL_OBJECT" {
-			t.Errorf("%s: type %q, want VIRTUAL_OBJECT", s.Name, s.Ty)
+		wantTy := "VIRTUAL_OBJECT"
+		if s.Name == WebhooksService {
+			wantTy = "SERVICE"
+		}
+		if s.Ty != wantTy {
+			t.Errorf("%s: type %q, want %s", s.Name, s.Ty, wantTy)
 		}
 		handlers := map[string]string{}
 		for _, h := range s.Handlers {
@@ -174,6 +185,9 @@ func TestDiscoveryManifest(t *testing.T) {
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:
 			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
+		case WebhooksService:
+			// a plain service's handlers carry no type.
+			want = map[string]string{"Deliver": ""}
 		}
 		if fmt.Sprint(handlers) != fmt.Sprint(want) {
 			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)

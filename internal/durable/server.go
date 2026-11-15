@@ -28,10 +28,13 @@ const (
 	// ArtifactPinObject is keyed by snapshot id and holds the pins that keep
 	// artifact gc off it.
 	ArtifactPinObject = "ArtifactPin"
+	// WebhooksService is a plain service: each Deliver invocation is one
+	// attempt at one hitl webhook delivery.
+	WebhooksService = "Webhooks"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -45,6 +48,7 @@ type Fleet interface {
 	Snapshots
 	Checkpoints
 	Tokens
+	Webhooks
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -145,12 +149,19 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return pinned(ctx)
 			}))
 
+	hooks := restate.NewService(WebhooksService, retryOption(cfg, WebhooksService)).
+		Handler("Deliver", restate.NewServiceHandler(
+			func(ctx restate.Context, d orchestrator.WebhookDelivery) (restate.Void, error) {
+				return restate.Void{}, deliverWebhook(ctx, fleet, d)
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
 		Bind(host).
 		Bind(artifacts).
-		Bind(pins)
+		Bind(pins).
+		Bind(hooks)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {
