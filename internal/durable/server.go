@@ -58,6 +58,7 @@ type Fleet interface {
 	Webhooks
 	Hitl
 	Migrator
+	Expiry
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -119,7 +120,15 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("Migrate", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req orchestrator.MigrateRequest) (string, error) {
 				return migrate(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
-			}, restate.WithAbortTimeout(snapshotAbortTimeout)))
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("Drain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, drain(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
+			})).
+		Handler("Expire", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req ExpireRequest) (restate.Void, error) {
+				return restate.Void{}, envExpire(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
 		Handler("Ping", restate.NewObjectSharedHandler(

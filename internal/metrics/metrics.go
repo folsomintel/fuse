@@ -410,6 +410,26 @@ func (m *PrometheusMetrics) EgressProvisionFailed(provider string) {
 
 var _ orchestrator.WebhookMetrics = (*PrometheusMetrics)(nil)
 
+var _ orchestrator.ExpiryMetrics = (*PrometheusMetrics)(nil)
+
+// VMExpiry implements orchestrator.ExpiryMetrics. with restate on, the
+// environment expiry timers count into the same series reconcile does in
+// mode off.
+func (m *PrometheusMetrics) VMExpiry(reason string, reaped bool) {
+	switch {
+	case reason == "stuck_task" && reaped:
+		m.stuckTasksFailed.Inc()
+	case reason == "stuck_task":
+		m.stuckTasksSuspected.Inc()
+	case reason == "idle_timeout" && reaped:
+		m.idleVMsFailed.Inc()
+	case reason == "idle_timeout":
+		m.idleVMsSuspected.Inc()
+	case reason == "drain_timeout" && reaped:
+		m.drainingVMsDestroyed.Inc()
+	}
+}
+
 // DestroyDeadLettered implements orchestrator.DestroyDeadLetterMetrics.
 func (m *PrometheusMetrics) DestroyDeadLettered() {
 	m.destroyDeadLetters.Inc()

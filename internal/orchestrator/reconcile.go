@@ -112,6 +112,10 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 // reconcile cycles before it is failed. Between strikes it is annotated
 // with a task.stuck_suspected event.
 func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *ReconcileSummary) {
+	if fm.durableExpiry() != nil {
+		// the Environment/{vm_id}.Expire timer owns it, strikes included.
+		return
+	}
 	now := time.Now()
 
 	type stuckCandidate struct {
@@ -176,19 +180,7 @@ func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *Reconc
 	for _, c := range candidates {
 		if !c.needFail {
 			summary.StuckTasksSuspected++
-			fm.logger.Warn("vm exceeded runtime ceiling, suspected stuck",
-				"vm", c.vmID,
-				"task", c.taskID,
-				"age", c.age,
-				"ceiling", c.ceiling,
-				"strike", c.strikes,
-			)
-			fm.appendEventBackground("task", c.taskID, "task.stuck_suspected", map[string]any{
-				"vm_id":   c.vmID,
-				"age_s":   int(c.age.Seconds()),
-				"ceiling": c.ceiling.String(),
-				"strike":  c.strikes,
-			})
+			fm.noteStuckSuspected(c.vmID, c.taskID, c.age, c.ceiling, c.strikes)
 			continue
 		}
 
@@ -196,6 +188,42 @@ func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *Reconc
 		fm.failStuckTask(ctx, c.vmID, c.taskID, c.age, c.ceiling)
 		summary.StuckTasksFailed++
 	}
+}
+
+// noteStuckSuspected records a first strike against a vm past its runtime
+// ceiling.
+func (fm *FleetManager) noteStuckSuspected(vmID, taskID string, age, ceiling time.Duration, strike int) {
+	fm.logger.Warn("vm exceeded runtime ceiling, suspected stuck",
+		"vm", vmID,
+		"task", taskID,
+		"age", age,
+		"ceiling", ceiling,
+		"strike", strike,
+	)
+	fm.appendEventBackground("task", taskID, "task.stuck_suspected", map[string]any{
+		"vm_id":   vmID,
+		"age_s":   int(age.Seconds()),
+		"ceiling": ceiling.String(),
+		"strike":  strike,
+	})
+}
+
+// noteIdleSuspected records a first strike against a vm past its idle
+// timeout.
+func (fm *FleetManager) noteIdleSuspected(vmID, taskID string, idle, timeout time.Duration, strike int) {
+	fm.logger.Warn("vm exceeded idle timeout, suspected idle",
+		"vm", vmID,
+		"task", taskID,
+		"idle", idle,
+		"timeout", timeout,
+		"strike", strike,
+	)
+	fm.appendEventBackground("vm", vmID, "vm.idle_suspected", map[string]any{
+		"task_id": taskID,
+		"idle_s":  int(idle.Seconds()),
+		"timeout": timeout.String(),
+		"strike":  strike,
+	})
 }
 
 // reconcileIdleVMs tears down Running VMs that have gone longer than their
@@ -212,6 +240,10 @@ func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *Reconc
 // Detection is two-strike like reconcileStuckTasks, so resolution is bounded
 // by roughly two reconcile ticks.
 func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *ReconcileSummary) {
+	if fm.durableExpiry() != nil {
+		// the Environment/{vm_id}.Expire timer owns it, strikes included.
+		return
+	}
 	now := time.Now()
 
 	type idleCandidate struct {
@@ -290,19 +322,7 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 	for _, c := range candidates {
 		if !c.needFail {
 			summary.IdleVMsSuspected++
-			fm.logger.Warn("vm exceeded idle timeout, suspected idle",
-				"vm", c.vmID,
-				"task", c.taskID,
-				"idle", c.idle,
-				"timeout", c.timeout,
-				"strike", c.strikes,
-			)
-			fm.appendEventBackground("vm", c.vmID, "vm.idle_suspected", map[string]any{
-				"task_id": c.taskID,
-				"idle_s":  int(c.idle.Seconds()),
-				"timeout": c.timeout.String(),
-				"strike":  c.strikes,
-			})
+			fm.noteIdleSuspected(c.vmID, c.taskID, c.idle, c.timeout, c.strikes)
 			continue
 		}
 
@@ -323,6 +343,10 @@ func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *Reconcile
 // A single strike is enough: unlike a long-running task, nothing legitimate
 // keeps a VM in Draining, and exec is already refused there.
 func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *ReconcileSummary) {
+	if fm.durableExpiry() != nil {
+		// the timer the durable drain armed owns it.
+		return
+	}
 	now := time.Now()
 
 	type drainingCandidate struct {
@@ -355,23 +379,11 @@ func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *Rec
 	fm.mu.RUnlock()
 
 	for _, c := range candidates {
-		torn := fm.failExpiredVM(ctx, c.vmID, c.taskID, expiry{
-			from:       VMStateDraining,
-			reasonCode: "drain_timeout",
-			kind:       DeadLetterDrainTimeout,
-			reason:     fmt.Sprintf("environment left draining for %s with no DELETE, exceeding draining timeout %s", c.age.Round(time.Second), fm.drainingTimeout),
-			age:        c.age,
-			ceiling:    fm.drainingTimeout,
-		})
-		if !torn {
+		if !fm.failExpiredVM(ctx, c.vmID, c.taskID, fm.drainExpiry(c.age)) {
 			// a DELETE got there between the scan and the teardown.
 			continue
 		}
-		fm.appendEventBackground("vm", c.vmID, "vm.drain_expired", map[string]any{
-			"task_id":    c.taskID,
-			"draining_s": int(c.age.Seconds()),
-			"timeout":    fm.drainingTimeout.String(),
-		})
+		fm.noteDrainExpired(c.vmID, c.taskID, c.age)
 		summary.DrainingVMsDestroyed++
 	}
 }
@@ -443,27 +455,56 @@ type expiry struct {
 // a "stuck" reason. Shares structure with the "vm missing from provider"
 // path in reconcile() but is triggered by the stuck-task detector.
 func (fm *FleetManager) failStuckTask(ctx context.Context, vmID, taskID string, age, ceiling time.Duration) {
-	fm.failExpiredVM(ctx, vmID, taskID, expiry{
+	fm.failExpiredVM(ctx, vmID, taskID, stuckExpiry(age, ceiling))
+}
+
+func stuckExpiry(age, ceiling time.Duration) expiry {
+	return expiry{
 		from:       VMStateRunning,
 		reasonCode: "stuck_task",
 		kind:       DeadLetterStuckTask,
 		reason:     fmt.Sprintf("task stuck: runtime %s exceeded ceiling %s with no state transitions", age.Round(time.Second), ceiling),
 		age:        age,
 		ceiling:    ceiling,
-	})
+	}
 }
 
 // failIdleVM marks a Running VM as destroying because it has gone longer than
 // its idle timeout with no exec and no attach session. Takes the same teardown
 // path as failStuckTask, with its own reason code.
 func (fm *FleetManager) failIdleVM(ctx context.Context, vmID, taskID string, idle, timeout time.Duration) {
-	fm.failExpiredVM(ctx, vmID, taskID, expiry{
+	fm.failExpiredVM(ctx, vmID, taskID, idleExpiry(idle, timeout))
+}
+
+func idleExpiry(idle, timeout time.Duration) expiry {
+	return expiry{
 		from:       VMStateRunning,
 		reasonCode: "idle_timeout",
 		kind:       DeadLetterIdleTimeout,
 		reason:     fmt.Sprintf("environment idle: no exec or attach for %s, exceeding idle timeout %s", idle.Round(time.Second), timeout),
 		age:        idle,
 		ceiling:    timeout,
+	}
+}
+
+// drainExpiry is a vm left draining for age, past the draining timeout.
+func (fm *FleetManager) drainExpiry(age time.Duration) expiry {
+	return expiry{
+		from:       VMStateDraining,
+		reasonCode: "drain_timeout",
+		kind:       DeadLetterDrainTimeout,
+		reason:     fmt.Sprintf("environment left draining for %s with no DELETE, exceeding draining timeout %s", age.Round(time.Second), fm.drainingTimeout),
+		age:        age,
+		ceiling:    fm.drainingTimeout,
+	}
+}
+
+// noteDrainExpired records a draining vm torn down at its timeout.
+func (fm *FleetManager) noteDrainExpired(vmID, taskID string, age time.Duration) {
+	fm.appendEventBackground("vm", vmID, "vm.drain_expired", map[string]any{
+		"task_id":    taskID,
+		"draining_s": int(age.Seconds()),
+		"timeout":    fm.drainingTimeout.String(),
 	})
 }
 
@@ -471,6 +512,16 @@ func (fm *FleetManager) failIdleVM(ctx context.Context, vmID, taskID string, idl
 // carries one, dead-letters the reason, and destroys the VM in the background.
 // It reports false when the VM had already moved on and nothing was done.
 func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
+	if !fm.markExpiredVM(ctx, vmID, taskID, e) {
+		return false
+	}
+	fm.destroyAsync(vmID, DestroyReasonExpired)
+	return true
+}
+
+// markExpiredVM is failExpiredVM without the destroy: the durable expiry
+// timer sends that itself, as a journaled step.
+func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok || v.state != e.from || v.taskID != taskID {
@@ -523,7 +574,6 @@ func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, 
 			"ceiling_s", fmt.Sprintf("%d", int(e.ceiling.Seconds())),
 		),
 	})
-	fm.destroyAsync(vmID, DestroyReasonExpired)
 	return true
 }
 

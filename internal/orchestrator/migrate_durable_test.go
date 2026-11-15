@@ -309,3 +309,37 @@ func TestMigrateResumeSource_retriesAllButGoneOrRunning(t *testing.T) {
 		}
 	}
 }
+
+// drainRecorder is a DurableExpiry that records the drains sent to restate.
+type drainRecorder struct {
+	mu     sync.Mutex
+	drains []string
+}
+
+func (d *drainRecorder) Drain(_ context.Context, vmID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.drains = append(d.drains, vmID)
+	return nil
+}
+func (d *drainRecorder) SendArmExpiry(context.Context, string) error { return nil }
+
+// TestMigrateDrainSource_staysInProcess: with restate running drains, a
+// migrate still drains its source in process. the durable migrate holds the
+// source's Environment object, so a drain sent there would wait on it
+// forever.
+func TestMigrateDrainSource_staysInProcess(t *testing.T) {
+	fm := newDeltaFleet(t, newDeltaMigrateProvider(), &deltaMover{})
+	d := &drainRecorder{}
+	fm.SetDurableExpiry(d)
+	if err := fm.MigrateDrainSource(context.Background(), MigratePlan{SourceVMID: "fuse-task-src"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.drains) != 0 {
+		t.Fatalf("drains sent to restate %v, want none", d.drains)
+	}
+	info, _ := fm.GetVM("fuse-task-src")
+	if info.State != VMStateDraining {
+		t.Fatalf("source state %s, want draining in process", info.State)
+	}
+}
