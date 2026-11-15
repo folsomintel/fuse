@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.44.0](https://github.com/folsomintel/fuse/compare/v0.43.0...v0.44.0) (2026-11-15)
+
+
+### Features
+
+* go sdk idempotency keys and operations, fuse operation show and wait ([8bec344](https://github.com/folsomintel/fuse/commit/8bec34458048ce4fe2275def250a6f9ebfd56e5e))
+* idempotency-key and /v1/operations on mutating routes, forwarded to restate ingress ([5fbb84e](https://github.com/folsomintel/fuse/commit/5fbb84e03d8efd842d92dd82cba82bfad314ce77))
+* python sdk idempotency keys and operations ([ae823df](https://github.com/folsomintel/fuse/commit/ae823dfec615499144f1f8f72305cd323855abb6))
+* rust sdk idempotency keys and operations ([f127b0a](https://github.com/folsomintel/fuse/commit/f127b0a9f5533a10a4eca8bfd5eb0148e196bf52))
+* typescript sdk idempotency keys and operations ([30e0c95](https://github.com/folsomintel/fuse/commit/30e0c95427de92523b29b02b0a7a20360cc6c318))
+
+
+### Bug Fixes
+
+* answer 404 for operations past their retention ([77135fb](https://github.com/folsomintel/fuse/commit/77135fb035cfd25e6c48ae1c6adeae775cd9f506))
+* bound the python and rust operation wait by its timeout ([70673f4](https://github.com/folsomintel/fuse/commit/70673f41ea82933c1c00702951ba3ff0e19f1976))
+* drain running operations within the shutdown budget ([773522d](https://github.com/folsomintel/fuse/commit/773522d210e022ca19136525f09954b00d992476))
+* keep unexpired operation keys instead of evicting them at the cap ([a880cb0](https://github.com/folsomintel/fuse/commit/a880cb066ef8b513a34e10ac2848e0505792f855))
+* log operation panics with their stack ([5106e1c](https://github.com/folsomintel/fuse/commit/5106e1c1a2ddd31f4e2497734c15efb27939f4a6))
+* refuse new operations once the registry is at its cap ([77f46e1](https://github.com/folsomintel/fuse/commit/77f46e17f1c5f727339c2bee844ae7cbfecacb96))
+
 ## [0.43.0](https://github.com/folsomintel/fuse/compare/v0.42.0...v0.43.0) (2026-11-15)
 
 
