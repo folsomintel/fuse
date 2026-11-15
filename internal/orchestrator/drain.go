@@ -51,6 +51,13 @@ const DefaultDrainingTimeout = drainTimeout + 5*time.Minute
 // alternative (command first, then state flip) would lose the intent of
 // the drain on a crash.
 func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
+	return fm.drainInProcess(ctx, vmID)
+}
+
+// drainInProcess is Drain run in this process. a durable migrate drains its
+// source with it: the migrate holds the source's Environment object, so a
+// drain sent to that object would wait on the migrate forever.
+func (fm *FleetManager) drainInProcess(ctx context.Context, vmID string) error {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok {

@@ -701,9 +701,11 @@ func (fm *FleetManager) MigrateHandover(ctx context.Context, plan MigratePlan) e
 }
 
 // MigrateDrainSource runs the source's drain command before it is destroyed.
-// a failure is logged: the source is destroyed anyway.
+// a failure is logged: the source is destroyed anyway. it drains in process,
+// never through restate: on restate this step runs on the source's own
+// Environment object, which a drain sent there would queue behind.
 func (fm *FleetManager) MigrateDrainSource(ctx context.Context, plan MigratePlan) error {
-	if err := fm.Drain(ctx, plan.SourceVMID); err != nil {
+	if err := fm.drainInProcess(ctx, plan.SourceVMID); err != nil {
 		fm.logger.WarnContext(ctx, "drain source vm during migration failed; destroying anyway", "vm", plan.SourceVMID, "err", err)
 	}
 	return nil
