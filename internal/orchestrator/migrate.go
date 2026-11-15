@@ -177,13 +177,16 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		}
 		if err == nil && delta {
 			reportStep(ctx, "delta")
+			// the host pauses the guest before it writes the diff, so the
+			// pause is timed from the request.
+			diffAt := time.Now()
 			var child SnapshotRecord
 			child, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 				Comment: "migration delta", Live: true, Diff: true,
 				Parent: seed.SnapshotID, KeepPaused: true, NoLineage: true,
 			})
 			if err == nil {
-				frozen, frozenAt = true, time.Now()
+				frozen, frozenAt = true, diffAt
 				localID, err = fm.moveDeltaToHost(ctx, child, localID, plan.TargetHostID, true)
 			}
 			// the chain's base on the target was consumed by the merge, or is

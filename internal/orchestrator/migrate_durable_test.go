@@ -273,3 +273,39 @@ func TestCheckpointCandidates_skipADurableMigrate(t *testing.T) {
 		t.Fatalf("candidates %s after the migrate", got)
 	}
 }
+
+// resumeEnv answers Resume with err.
+type resumeEnv struct {
+	stubLoadEnv
+	err error
+}
+
+func (e *resumeEnv) CheckpointDiff(context.Context, string, string, bool) (Checkpoint, error) {
+	return Checkpoint{}, nil
+}
+func (e *resumeEnv) Resume(context.Context) error { return e.err }
+
+// TestMigrateResumeSource_retriesAllButGoneOrRunning: a rollback's resume
+// takes a source the host no longer has (404) or will not resume because it
+// is not paused (409) as done, and returns every other failure, a rejected
+// token among them, so the step retries it.
+func TestMigrateResumeSource_retriesAllButGoneOrRunning(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		done bool
+	}{
+		{nil, true},
+		{&HTTPStatusError{Code: 404}, true},
+		{&HTTPStatusError{Code: 409}, true},
+		{&HTTPStatusError{Code: 401}, false},
+		{&HTTPStatusError{Code: 503}, false},
+		{errors.New("connection refused"), false},
+	} {
+		fm := NewFleetManager(FleetConfig{Provider: newStubProvider()})
+		fm.vms["fuse-src"] = &vm{id: "fuse-src", env: &resumeEnv{err: tc.err}}
+		err := fm.MigrateResumeSource(context.Background(), MigratePlan{SourceVMID: "fuse-src"})
+		if (err == nil) != tc.done {
+			t.Errorf("resume answering %v: err = %v, want done %v", tc.err, err, tc.done)
+		}
+	}
+}

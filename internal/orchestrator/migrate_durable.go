@@ -713,8 +713,9 @@ func (fm *FleetManager) MigrateDrainSource(ctx context.Context, plan MigratePlan
 
 // MigrateResumeSource resumes a source a failed delta migrate left paused:
 // until the target runs it is the only copy of the guest. a source that is
-// gone, or that the host refuses to resume because it is not paused, needs
-// nothing.
+// gone (404), or that the host refuses to resume because it is not paused
+// (409), needs nothing. every other failure, a rejected token among them, is
+// returned so the resume is tried again.
 func (fm *FleetManager) MigrateResumeSource(ctx context.Context, plan MigratePlan) error {
 	fm.mu.RLock()
 	v, ok := fm.vms[plan.SourceVMID]
@@ -739,8 +740,8 @@ func (fm *FleetManager) MigrateResumeSource(ctx context.Context, plan MigratePla
 	}
 	err := d.Resume(ctx)
 	var httpErr *HTTPStatusError
-	if errors.As(err, &httpErr) && httpErr.Code >= 400 && httpErr.Code < 500 {
-		fm.logger.WarnContext(ctx, "resume source vm after a failed delta migrate refused; taking it as running", "vm", plan.SourceVMID, "err", err)
+	if errors.As(err, &httpErr) && (httpErr.Code == http.StatusNotFound || httpErr.Code == http.StatusConflict) {
+		fm.logger.WarnContext(ctx, "resume source vm after a failed delta migrate refused; taking it as gone or running", "vm", plan.SourceVMID, "err", err)
 		return nil
 	}
 	if err != nil {
