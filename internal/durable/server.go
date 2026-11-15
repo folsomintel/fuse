@@ -53,6 +53,7 @@ type Fleet interface {
 	Tokens
 	Webhooks
 	Hitl
+	Creator
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -118,7 +119,12 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("RotateToken", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
 				return restate.Void{}, rotateToken(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
-			}))
+			})).
+		// the artifact step can wait on a whole artifact move.
+		Handler("Create", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.CreateRequest) (restate.Void, error) {
+				return restate.Void{}, create(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout()))))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
 		Handler("Ping", restate.NewObjectSharedHandler(
