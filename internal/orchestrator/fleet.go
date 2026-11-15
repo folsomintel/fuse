@@ -636,6 +636,10 @@ type FleetManager struct {
 	// token_rotation.go.
 	durableTokens DurableTokenRotator
 
+	// durableMigrate runs migrates on restate; nil in mode off. see
+	// migrate_durable.go.
+	durableMigrate DurableMigrator
+
 	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
 	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in
 	// flight and webhookSends tracks them. webhookBacklog is the deliveries
@@ -1906,6 +1910,11 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 				recoveredVM.err = "vm missing from provider during recovery"
 				recoveredVM.updatedAt = time.Now()
 			}
+		} else if recoveredVM.state == VMStateProvisioning && fm.isMigratePlaceholder(recoveredVM) {
+			// the target of a migrate restate is still running: the migrate
+			// either finishes it or destroys it. the lookup only finds the
+			// environment a create before the restart already made.
+			_ = fm.reattachVMFromProvider(ctx, recoveredVM)
 		} else if recoveredVM.state == VMStateProvisioning {
 			// Provisioning was interrupted by a crash. The sandbox may
 			// already exist in the provider (a crash between Create and
