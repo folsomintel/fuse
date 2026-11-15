@@ -298,6 +298,19 @@ approved action failed. `GET
 answers `403` with `details.reason: hitl_denied`, the gate in
 `details.gate`, and the gate's `reason` as the message.
 
+**Across an orchestrator restart.** With restate off, an approved action the
+orchestrator was running when it stopped is settled with `result.error` saying
+it may or may not have run. With restate on (`FUSE_RESTATE_MODE=self` or
+`cloud`), the approval is a restate `Intervention/{id}.Run` invocation and
+the restarted orchestrator carries it on: an exec runs once (the host agent
+replays a command it already finished instead of running it again), and a
+destroy, snapshot or token rotation runs as that operation's own durable
+handler. A computer action, drain, fork or migrate that was already under way
+when the orchestrator died still gets the may-or-may-not-have-run error, so
+it is never done twice. A waiting `?wait=` or SDK call gets the result once
+it is stored. Each pending intervention's deadline is a restate timer too, so
+`on_timeout` applies on time after a restart, even with nobody reading it.
+
 The SDKs wait on a `202` for you: `exec` returns the approved command's
 result, `computer` the action's output and screenshot, `fork` the new
 environment, and so on. A rejection raises
