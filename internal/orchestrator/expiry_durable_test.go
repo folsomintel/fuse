@@ -181,18 +181,18 @@ func TestExpiryCheckIdle(t *testing.T) {
 	withDurableExpiry(fm)
 	ctx := context.Background()
 
-	v, err := fm.ExpiryCheck(ctx, vmID, 0)
+	v, err := fm.ExpiryCheck(ctx, vmID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !v.Strike || v.Reap || v.In != fm.reconcileInterval {
+	if v.Strike != "idle_timeout" || v.Reap || v.In != fm.reconcileInterval {
 		t.Fatalf("first check %+v, want a strike rechecked after one reconcile interval", v)
 	}
 	if s := vmState(fm, vmID); s != VMStateRunning {
 		t.Fatalf("state after one strike %s, want running", s)
 	}
 
-	v, err = fm.ExpiryCheck(ctx, vmID, 1)
+	v, err = fm.ExpiryCheck(ctx, vmID, "idle_timeout")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestExpiryCheckIdle(t *testing.T) {
 	}
 
 	// a replay of the reaping check after a crash sends the destroy again.
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 1); !v.Reap {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "idle_timeout"); !v.Reap {
 		t.Fatalf("replayed check %+v, want a reap", v)
 	}
 }
@@ -223,13 +223,13 @@ func TestExpiryCheckPendingInterventionHoldsIdle(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for strikes := range 2 {
-		v, err := fm.ExpiryCheck(context.Background(), vmID, strikes)
+	for _, strike := range []string{"", "idle_timeout"} {
+		v, err := fm.ExpiryCheck(context.Background(), vmID, strike)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if v.Reap || v.Strike || v.In != expiryRecheck {
-			t.Fatalf("check with %d strikes %+v, want a recheck", strikes, v)
+		if v.Reap || v.Strike != "" || v.In != expiryRecheck {
+			t.Fatalf("check with strike %q %+v, want a recheck", strike, v)
 		}
 	}
 	if s := vmState(fm, vmID); s != VMStateRunning {
@@ -245,7 +245,7 @@ func TestExpiryCheckSchedules(t *testing.T) {
 	near := func(got, want time.Duration) bool { return got > want-5*time.Second && got <= want }
 
 	fm, vmID := idleFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, "task-1", time.Minute)
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 0); v.Strike || v.Reap || !near(v.In, 4*time.Minute) {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "" || v.Reap || !near(v.In, 4*time.Minute) {
 		t.Fatalf("idle for 1m of 5m: %+v, want a check in 4m", v)
 	}
 
@@ -253,7 +253,7 @@ func TestExpiryCheckSchedules(t *testing.T) {
 	fm.vms[vmID].attachSessions = 1
 	fm.vms[vmID].lastActivityAt = time.Now().Add(-time.Hour)
 	fm.mu.Unlock()
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 0); v.Strike || !near(v.In, 5*time.Minute) {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "" || !near(v.In, 5*time.Minute) {
 		t.Fatalf("attached: %+v, want a check in one timeout", v)
 	}
 
@@ -263,16 +263,16 @@ func TestExpiryCheckSchedules(t *testing.T) {
 	fm.hitlMu.Lock()
 	fm.signalStateLocked(vmID).extendedUntil = time.Now().Add(20 * time.Minute)
 	fm.hitlMu.Unlock()
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 1); v.Reap || v.Strike || !near(v.In, 20*time.Minute) {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "idle_timeout"); v.Reap || v.Strike != "" || !near(v.In, 20*time.Minute) {
 		t.Fatalf("extended: %+v, want a check when the extension ends", v)
 	}
 
 	// no task means no runtime ceiling, and no idle timeout: nothing to watch.
 	plain, plainID := fleetWithRunningVM(t, FleetConfig{}, "", time.Hour)
-	if v, _ := plain.ExpiryCheck(ctx, plainID, 0); v != (ExpiryVerdict{}) {
+	if v, _ := plain.ExpiryCheck(ctx, plainID, ""); v != (ExpiryVerdict{}) {
 		t.Fatalf("unwatched vm: %+v, want nothing", v)
 	}
-	if v, _ := plain.ExpiryCheck(ctx, "fuse-gone", 0); v != (ExpiryVerdict{}) {
+	if v, _ := plain.ExpiryCheck(ctx, "fuse-gone", ""); v != (ExpiryVerdict{}) {
 		t.Fatalf("missing vm: %+v, want nothing", v)
 	}
 }
@@ -289,7 +289,7 @@ func TestExpiryCheckRuntimeCeiling(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 1); v.Reap || v.In != expiryRecheck {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "stuck_task"); v.Reap || v.In != expiryRecheck {
 		t.Fatalf("pending expiry: %+v, want a recheck", v)
 	}
 	if err := store.UpsertIntervention(ctx, InterventionRecord{
@@ -298,10 +298,14 @@ func TestExpiryCheckRuntimeCeiling(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 0); !v.Strike {
-		t.Fatalf("past the ceiling: %+v, want a strike", v)
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "stuck_task" {
+		t.Fatalf("past the ceiling: %+v, want a stuck_task strike", v)
 	}
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 1); !v.Reap {
+	// a strike for another window does not count toward this one.
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "idle_timeout"); v.Reap || v.Strike != "stuck_task" {
+		t.Fatalf("past the ceiling after an idle strike: %+v, want a fresh stuck_task strike", v)
+	}
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "stuck_task"); !v.Reap {
 		t.Fatalf("second strike: %+v, want a reap", v)
 	}
 }
@@ -312,13 +316,13 @@ func TestExpiryCheckRuntimeCeiling(t *testing.T) {
 func TestExpiryCheckDraining(t *testing.T) {
 	ctx := context.Background()
 	fm, vmID := drainingFleet(t, FleetConfig{DrainingTimeout: 10 * time.Minute}, "task-1", 4*time.Minute)
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 0); v.Reap || v.In <= 5*time.Minute || v.In > 6*time.Minute {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Reap || v.In <= 5*time.Minute || v.In > 6*time.Minute {
 		t.Fatalf("4m into a 10m grace: %+v, want a check in about 6m", v)
 	}
 	fm.mu.Lock()
 	fm.vms[vmID].updatedAt = time.Now().Add(-11 * time.Minute)
 	fm.mu.Unlock()
-	if v, _ := fm.ExpiryCheck(ctx, vmID, 0); !v.Reap {
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); !v.Reap {
 		t.Fatalf("past the grace: %+v, want a reap with no strike first", v)
 	}
 	if s := vmState(fm, vmID); s != VMStateDestroying {
@@ -332,7 +336,7 @@ func TestExpiryCheckDraining(t *testing.T) {
 		Match: hitl.GateMatch{Action: []string{string(hitl.ActionDestroy)}}, Mode: hitl.ModeAsk,
 	}}}
 	gated.mu.Unlock()
-	if v, _ := gated.ExpiryCheck(ctx, gatedID, 0); v != (ExpiryVerdict{}) {
+	if v, _ := gated.ExpiryCheck(ctx, gatedID, ""); v != (ExpiryVerdict{}) {
 		t.Fatalf("destroy gated: %+v, want nothing", v)
 	}
 }
@@ -375,4 +379,41 @@ func TestExtensionRearmsExpiry(t *testing.T) {
 	if got := d.armed(); len(got) != 2 {
 		t.Fatalf("arms %v, want the first and the extension's", got)
 	}
+}
+
+// TestReusedIDIsArmedAgain: a vm that reuses the id of one armed before is
+// armed afresh by the sweep.
+func TestReusedIDIsArmedAgain(t *testing.T) {
+	fm, vmID := idleFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, "task-1", time.Minute)
+	d := withDurableExpiry(fm)
+	fm.armExpiry(vmID)
+	fm.expirySends.Wait()
+	fm.mu.Lock()
+	fm.vms[vmID].createdAt = time.Now()
+	fm.mu.Unlock()
+	fm.armExpiries()
+	fm.expirySends.Wait()
+	if got := d.armed(); len(got) != 2 {
+		t.Fatalf("arms %v, want the reused id armed again", got)
+	}
+}
+
+// TestDrainCommandAttachesAfterRestart: a drain resumed after a restart finds
+// the recovered draining vm with no env handle, attaches one and runs the
+// command instead of skipping it.
+func TestDrainCommandAttachesAfterRestart(t *testing.T) {
+	p := newMockProvider()
+	fm, vmID := drainingFleet(t, FleetConfig{Provider: p}, "task-1", time.Minute)
+	fm.mu.Lock()
+	fm.vms[vmID].env = nil
+	fm.vms[vmID].drainCommand = DefaultFusedDrainCommand
+	fm.mu.Unlock()
+	plan, err := fm.DrainBegin(context.Background(), vmID)
+	if err != nil || !plan.Command {
+		t.Fatalf("replayed begin %+v, %v: want the command still to run", plan, err)
+	}
+	if msg := fm.DrainCommand(context.Background(), vmID); msg != "" {
+		t.Fatalf("drain command: %s", msg)
+	}
+	assertDrainExec(t, drainEnvFor(t, p, vmID), 1)
 }

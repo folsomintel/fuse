@@ -45,7 +45,7 @@ func (fm *FleetManager) SetDurableExpiry(d DurableExpiry) {
 		fm.expirySendSlots = make(chan struct{}, maxExpirySends)
 	}
 	if fm.expiryArmed == nil {
-		fm.expiryArmed = make(map[string]bool)
+		fm.expiryArmed = make(map[string]time.Time)
 	}
 	fm.mu.Unlock()
 }
@@ -58,36 +58,37 @@ func (fm *FleetManager) durableExpiry() DurableExpiry {
 
 // armExpiry hands vmID's expiry to restate, off the caller's goroutine. a vm
 // whose arm is queued, in flight or done is not sent again; a send that fails
-// is forgotten, so the next reconcile sends it again. mode off does nothing.
+// is forgotten, so the next reconcile sends it again. the armed mark is the
+// vm's create time, so a later vm that reuses the id is armed afresh. mode
+// off does nothing.
 func (fm *FleetManager) armExpiry(vmID string) {
-	d := fm.durableExpiry()
-	if d == nil {
-		return
-	}
-	fm.mu.Lock()
-	if fm.expiryArmed[vmID] {
-		fm.mu.Unlock()
-		return
-	}
-	fm.expiryArmed[vmID] = true
-	fm.mu.Unlock()
-	fm.sendArmExpiry(d, vmID)
+	fm.sendArm(vmID, false)
 }
 
 // rearmExpiry is armExpiry for a vm whose deadline moved, such as an approved
 // extension: it is sent even when the vm was armed before.
 func (fm *FleetManager) rearmExpiry(vmID string) {
+	fm.sendArm(vmID, true)
+}
+
+func (fm *FleetManager) sendArm(vmID string, again bool) {
 	d := fm.durableExpiry()
 	if d == nil {
 		return
 	}
 	fm.mu.Lock()
-	fm.expiryArmed[vmID] = true
+	v, ok := fm.vms[vmID]
+	if !ok || (!again && fm.expiryArmed[vmID].Equal(v.createdAt)) {
+		fm.mu.Unlock()
+		return
+	}
+	created := v.createdAt
+	fm.expiryArmed[vmID] = created
 	fm.mu.Unlock()
-	fm.sendArmExpiry(d, vmID)
+	fm.sendArmExpiry(d, vmID, created)
 }
 
-func (fm *FleetManager) sendArmExpiry(d DurableExpiry, vmID string) {
+func (fm *FleetManager) sendArmExpiry(d DurableExpiry, vmID string, created time.Time) {
 	fm.expirySends.Add(1)
 	go func() {
 		defer fm.expirySends.Done()
@@ -98,7 +99,9 @@ func (fm *FleetManager) sendArmExpiry(d DurableExpiry, vmID string) {
 		if err := d.SendArmExpiry(ctx, vmID); err != nil {
 			fm.logger.Error("send durable expiry failed, reconcile will retry", "vm", vmID, "err", err)
 			fm.mu.Lock()
-			delete(fm.expiryArmed, vmID)
+			if fm.expiryArmed[vmID].Equal(created) {
+				delete(fm.expiryArmed, vmID)
+			}
 			fm.mu.Unlock()
 		}
 	}()
@@ -116,12 +119,12 @@ func (fm *FleetManager) armExpiries() {
 	var arm []string
 	fm.mu.Lock()
 	for id, v := range fm.vms {
-		if (v.state == VMStateRunning || v.state == VMStateDraining) && !fm.expiryArmed[id] {
+		if (v.state == VMStateRunning || v.state == VMStateDraining) && !fm.expiryArmed[id].Equal(v.createdAt) {
 			arm = append(arm, id)
 		}
 	}
-	for id := range fm.expiryArmed {
-		if _, ok := fm.vms[id]; !ok {
+	for id, created := range fm.expiryArmed {
+		if v, ok := fm.vms[id]; !ok || !v.createdAt.Equal(created) {
 			delete(fm.expiryArmed, id)
 		}
 	}
@@ -136,9 +139,10 @@ type ExpiryVerdict struct {
 	// Reap is a vm the check marked destroying, or found destroying: the
 	// timer sends its destroy.
 	Reap bool `json:"reap,omitempty"`
-	// Strike is a vm past a window for the first time. the timer looks
-	// again after In and reaps it if it still is.
-	Strike bool `json:"strike,omitempty"`
+	// Strike is the reason a vm is past a window for the first time:
+	// stuck_task or idle_timeout. the timer looks again after In and reaps
+	// it if it is still past the same window.
+	Strike string `json:"strike,omitempty"`
 	// In is when to look again. zero with Reap and Strike unset means
 	// nothing is left to watch.
 	In time.Duration `json:"in,omitempty"`
@@ -158,8 +162,10 @@ type expiryView struct {
 }
 
 // ExpiryCheck is the step of the durable Environment/{vm_id}.Expire timer: it
-// judges vmID by the rules reconcile applies in mode off, with strikes being
-// the strikes the timer has recorded against it so far.
+// judges vmID by the rules reconcile applies in mode off. strike is the
+// window the previous check struck the vm for, or empty; a vm is reaped only
+// on a second consecutive check past the same window, as reconcile counts
+// idle and runtime strikes apart.
 //
 //   - running: past its max_runtime (with a task) or its idle timeout, the
 //     first check strikes and the next reaps. a pending expiry
@@ -172,7 +178,7 @@ type expiryView struct {
 //
 // it is safe to run again: a replay finds the vm where the first run left
 // it.
-func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID string, strikes int) (ExpiryVerdict, error) {
+func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID, strike string) (ExpiryVerdict, error) {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]
 	var e expiryView
@@ -276,14 +282,14 @@ func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID string, strikes in
 		return ExpiryVerdict{In: next.Sub(now)}, nil
 	}
 
-	if strikes < 1 {
+	if strike != ex.reasonCode {
 		if ex.reasonCode == "stuck_task" {
 			fm.noteStuckSuspected(vmID, e.taskID, ex.age, ex.ceiling, 1)
 		} else {
 			fm.noteIdleSuspected(vmID, e.taskID, ex.age, ex.ceiling, 1)
 		}
 		fm.noteExpiryMetric(ex.reasonCode, false)
-		return ExpiryVerdict{Strike: true, In: fm.reconcileInterval}, nil
+		return ExpiryVerdict{Strike: ex.reasonCode, In: fm.reconcileInterval}, nil
 	}
 	if !fm.markExpiredVM(ctx, vmID, e.taskID, ex) {
 		// the vm moved on between the read and the teardown.

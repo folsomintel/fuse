@@ -125,11 +125,12 @@ func (fakeFleet) HitlRunFinish(context.Context, string, orchestrator.HitlRunPlan
 	return nil
 }
 func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
+func (fakeFleet) DrainCheck(context.Context, string) error                  { return nil }
 func (fakeFleet) DrainBegin(context.Context, string) (orchestrator.DrainPlan, error) {
 	return orchestrator.DrainPlan{}, nil
 }
 func (fakeFleet) DrainCommand(context.Context, string) string { return "" }
-func (fakeFleet) ExpiryCheck(context.Context, string, int) (orchestrator.ExpiryVerdict, error) {
+func (fakeFleet) ExpiryCheck(context.Context, string, string) (orchestrator.ExpiryVerdict, error) {
 	return orchestrator.ExpiryVerdict{}, nil
 }
 

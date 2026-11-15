@@ -30,9 +30,10 @@ const expiryKey = "expiry"
 // Expiry is the part of the fleet the drain and expiry handlers drive, one
 // method per step. *FleetManager satisfies it.
 type Expiry interface {
+	DrainCheck(ctx context.Context, vmID string) error
 	DrainBegin(ctx context.Context, vmID string) (orchestrator.DrainPlan, error)
 	DrainCommand(ctx context.Context, vmID string) string
-	ExpiryCheck(ctx context.Context, vmID string, strikes int) (orchestrator.ExpiryVerdict, error)
+	ExpiryCheck(ctx context.Context, vmID, strike string) (orchestrator.ExpiryVerdict, error)
 }
 
 // ExpireRequest is the input of Environment/{vm_id}.Expire.
@@ -50,8 +51,9 @@ type ExpireRequest struct {
 type expiryState struct {
 	// Token is the pending timer's.
 	Token string `json:"token"`
-	// Strikes is how many consecutive checks found the vm past a window.
-	Strikes int `json:"strikes,omitempty"`
+	// Strike is the reason the last check found the vm past its window
+	// for, or empty. the next check past the same window reaps.
+	Strike string `json:"strike,omitempty"`
 }
 
 // drain is Environment/{vm_id}.Drain: the vm goes draining, the grace timer
@@ -65,6 +67,11 @@ type expiryState struct {
 // crash during it replays the step, so the command can run twice.
 func drain(ctx restate.ObjectContext, fleet Expiry, policy RetryPolicy) error {
 	vmID := restate.Key(ctx)
+	if err := runStep(ctx, opDrain, "check", func(c context.Context) error {
+		return permanent(fleet.DrainCheck(c, vmID))
+	}); err != nil {
+		return err
+	}
 	plan, err := Run(ctx, opDrain, "begin", func(c context.Context) (orchestrator.DrainPlan, error) {
 		plan, err := fleet.DrainBegin(c, vmID)
 		return plan, permanent(err)
@@ -109,7 +116,7 @@ func envExpire(ctx restate.ObjectContext, fleet Expiry, policy RetryPolicy, req 
 		return nil
 	}
 	v, err := Run(ctx, opExpire, "check", func(c context.Context) (orchestrator.ExpiryVerdict, error) {
-		return fleet.ExpiryCheck(c, vmID, st.Strikes)
+		return fleet.ExpiryCheck(c, vmID, st.Strike)
 	}, unbounded(policy)...)
 	if err != nil {
 		return err
@@ -120,11 +127,7 @@ func envExpire(ctx restate.ObjectContext, fleet Expiry, policy RetryPolicy, req 
 		restate.ObjectSend(ctx, EnvironmentObject, vmID, "Destroy").
 			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonExpired})
 	case v.In > 0:
-		if v.Strike {
-			st.Strikes++
-		} else {
-			st.Strikes = 0
-		}
+		st.Strike = v.Strike
 		scheduleExpiry(ctx, vmID, st, v.In)
 	default:
 		restate.Clear(ctx, expiryKey)

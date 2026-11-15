@@ -186,7 +186,8 @@ one durable timer on its `Environment/{vm_id}` object instead, and its
   one a full idle timeout later. An environment with nothing to watch (no
   task ceiling, no idle timeout) has no timer.
 - The two strikes live in the object's state, not in orchestrator memory, so a
-  restart neither resets nor skips one. The second check comes one reconcile
+  restart neither resets nor skips one, and a strike only counts toward the
+  same window (idle or `max_runtime`). The second check comes one reconcile
   interval after the first. An arm that lands between the two (a restart,
   an extension) can bring the second check forward.
 - `fuse environment drain` runs as `Environment/{vm_id}/Drain`: the move to

@@ -16,16 +16,27 @@ import (
 type expiryFleet struct {
 	*scriptedFleet
 	plan     orchestrator.DrainPlan
+	checkErr error
 	beginErr error
 	cmdMsg   string
 	// verdicts are what successive checks return; past the end a check
 	// finds nothing left to watch.
 	verdicts []orchestrator.ExpiryVerdict
-	strikes  []int
+	strikes  []string
 }
 
 func newExpiryFleet(vm string, verdicts ...orchestrator.ExpiryVerdict) *expiryFleet {
 	return &expiryFleet{scriptedFleet: newScriptedFleet(0, vm), verdicts: verdicts}
+}
+
+func (f *expiryFleet) DrainCheck(_ context.Context, vm string) error {
+	f.record(vm, "drain_check")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	err := f.checkErr
+	// the first drain leaves the vm draining: a second one is refused.
+	f.checkErr = fmt.Errorf("%w: vm %s is in state draining", orchestrator.ErrVMNotRunning, vm)
+	return err
 }
 
 func (f *expiryFleet) DrainBegin(_ context.Context, vm string) (orchestrator.DrainPlan, error) {
@@ -38,11 +49,11 @@ func (f *expiryFleet) DrainCommand(_ context.Context, vm string) string {
 	return f.cmdMsg
 }
 
-func (f *expiryFleet) ExpiryCheck(_ context.Context, vm string, strikes int) (orchestrator.ExpiryVerdict, error) {
+func (f *expiryFleet) ExpiryCheck(_ context.Context, vm, strike string) (orchestrator.ExpiryVerdict, error) {
 	f.record(vm, "check")
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.strikes = append(f.strikes, strikes)
+	f.strikes = append(f.strikes, strike)
 	if len(f.verdicts) == 0 {
 		return orchestrator.ExpiryVerdict{}, nil
 	}
@@ -54,7 +65,7 @@ func (f *expiryFleet) ExpiryCheck(_ context.Context, vm string, strikes int) (or
 func (f *expiryFleet) seenStrikes() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return fmt.Sprint(f.strikes)
+	return strings.Join(f.strikes, "|")
 }
 
 // waitSteps waits until vm's steps are want.
@@ -86,10 +97,10 @@ func TestDrainThroughRestateDestroysAfterGrace(t *testing.T) {
 	if err := client.Drain(ctx, vm); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
-	if got := fleet.steps(vm); got != "drain_begin,drain_command" {
+	if got := fleet.steps(vm); got != "drain_check,drain_begin,drain_command" {
 		t.Fatalf("steps right after the drain %s, want only the drain's: the grace has not passed", got)
 	}
-	waitSteps(t, fleet.scriptedFleet, vm, "drain_begin,drain_command,check,"+destroySteps)
+	waitSteps(t, fleet.scriptedFleet, vm, "drain_check,drain_begin,drain_command,check,"+destroySteps)
 }
 
 // TestDrainFailureStillDestroys: a failed drain command comes back as the
@@ -107,7 +118,7 @@ func TestDrainFailureStillDestroys(t *testing.T) {
 	if err == nil || err.Error() != fmt.Sprintf("drain vm %s: drain command: guest refused", vm) {
 		t.Fatalf("drain error %v, want the fleet's message", err)
 	}
-	waitSteps(t, fleet.scriptedFleet, vm, "drain_begin,drain_command,check,"+destroySteps)
+	waitSteps(t, fleet.scriptedFleet, vm, "drain_check,drain_begin,drain_command,check,"+destroySteps)
 }
 
 // TestDrainRefusalKeepsItsSentinel: a vm the begin step refuses answers
@@ -124,8 +135,8 @@ func TestDrainRefusalKeepsItsSentinel(t *testing.T) {
 		t.Fatalf("drain error %v, want ErrVMNotRunning", err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if got := fleet.steps(vm); got != "drain_begin" {
-		t.Fatalf("steps %s, want only drain_begin", got)
+	if got := fleet.steps(vm); got != "drain_check,drain_begin" {
+		t.Fatalf("steps %s, want only drain_check,drain_begin", got)
 	}
 }
 
@@ -134,7 +145,7 @@ func TestDrainRefusalKeepsItsSentinel(t *testing.T) {
 func TestExpireStrikesThenReaps(t *testing.T) {
 	vm := uniqueVM("expire-strike")
 	fleet := newExpiryFleet(vm,
-		orchestrator.ExpiryVerdict{Strike: true, In: 200 * time.Millisecond},
+		orchestrator.ExpiryVerdict{Strike: "idle_timeout", In: 200 * time.Millisecond},
 		orchestrator.ExpiryVerdict{Reap: true})
 	client := serveFleet(t, fleet, fastPolicy)
 
@@ -142,8 +153,8 @@ func TestExpireStrikesThenReaps(t *testing.T) {
 		t.Fatalf("arm: %v", err)
 	}
 	waitSteps(t, fleet.scriptedFleet, vm, "check,check,"+destroySteps)
-	if got := fleet.seenStrikes(); got != "[0 1]" {
-		t.Fatalf("strikes the checks saw %s, want [0 1]", got)
+	if got := fleet.seenStrikes(); got != "|idle_timeout" {
+		t.Fatalf("strikes the checks saw %q, want none then idle_timeout", got)
 	}
 }
 
@@ -197,7 +208,7 @@ func TestExpireNothingToWatch(t *testing.T) {
 // with the strike restate kept, and reaps.
 func TestExpireSurvivesEndpointRestart(t *testing.T) {
 	vm := uniqueVM("expire-restart")
-	first := newExpiryFleet(vm, orchestrator.ExpiryVerdict{Strike: true, In: time.Second})
+	first := newExpiryFleet(vm, orchestrator.ExpiryVerdict{Strike: "idle_timeout", In: time.Second})
 	client, addr, stop := serveFleetAt(t, first, "")
 	if err := client.SendArmExpiry(context.Background(), vm); err != nil {
 		t.Fatal(err)
@@ -208,10 +219,31 @@ func TestExpireSurvivesEndpointRestart(t *testing.T) {
 	second := newExpiryFleet(vm, orchestrator.ExpiryVerdict{Reap: true})
 	_, _, _ = serveFleetAt(t, second, addr)
 	waitSteps(t, second.scriptedFleet, vm, "check,"+destroySteps)
-	if got := second.seenStrikes(); got != "[1]" {
-		t.Fatalf("strikes after the restart %s, want [1]: the strike lives in object state", got)
+	if got := second.seenStrikes(); got != "idle_timeout" {
+		t.Fatalf("strike after the restart %q, want idle_timeout: the strike lives in object state", got)
 	}
 	if strings.Contains(first.steps(vm), "begin") {
 		t.Fatalf("the stopped endpoint ran the destroy: %s", first.steps(vm))
+	}
+}
+
+// TestSecondDrainIsRefused: a second drain queued behind the first on the
+// object is refused by its check step, runs no command and arms no timer.
+func TestSecondDrainIsRefused(t *testing.T) {
+	vm := uniqueVM("drain-twice")
+	fleet := newExpiryFleet(vm)
+	fleet.plan = orchestrator.DrainPlan{Command: true, Grace: time.Hour}
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := client.Drain(ctx, vm); err != nil {
+		t.Fatalf("first drain: %v", err)
+	}
+	if err := client.Drain(ctx, vm); !errors.Is(err, orchestrator.ErrVMNotRunning) {
+		t.Fatalf("second drain: %v, want ErrVMNotRunning", err)
+	}
+	if got := fleet.steps(vm); got != "drain_check,drain_begin,drain_command,drain_check" {
+		t.Fatalf("steps %s, want the second drain stopped at its check", got)
 	}
 }

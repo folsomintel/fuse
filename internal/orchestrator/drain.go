@@ -101,6 +101,14 @@ func (fm *FleetManager) drainable(vmID string) error {
 // Environment/{vm_id}.Drain handler runs each as a journaled step and arms
 // the grace timer between them; mode off runs them in turn.
 
+// DrainCheck refuses a vm that is not running. the durable drain journals it
+// before DrainBegin, so a second drain queued behind the first on the object
+// is refused here, while a replay of the first after a crash, whose check is
+// already journaled, goes on to DrainBegin.
+func (fm *FleetManager) DrainCheck(_ context.Context, vmID string) error {
+	return fm.drainable(vmID)
+}
+
 // DrainBegin moves a running vm to draining and persists it. a vm already
 // draining is a replay of this step after a crash and is not an error.
 func (fm *FleetManager) DrainBegin(ctx context.Context, vmID string) (DrainPlan, error) {
@@ -116,6 +124,9 @@ func (fm *FleetManager) drainBegin(ctx context.Context, vmID string, replay bool
 	}
 	plan := DrainPlan{Command: v.env != nil && v.drainCommand != "", Grace: fm.drainingTimeout}
 	if replay && v.state == VMStateDraining {
+		// after a restart the vm has no env handle yet: DrainCommand
+		// attaches one, so the command still runs.
+		plan.Command = v.drainCommand != ""
 		fm.mu.Unlock()
 		return plan, nil
 	}
@@ -189,13 +200,31 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 	v, ok := fm.vms[vmID]
 	var env Environment
 	drainCmd := ""
+	var attach *vm
 	if ok {
 		env = v.env
 		drainCmd = v.drainCommand
+		attach = &vm{id: v.id, hostID: v.hostID, authTokenEncrypted: v.authTokenEncrypted}
 	}
 	fm.mu.RUnlock()
-	if env == nil || drainCmd == "" {
+	if !ok || drainCmd == "" {
 		return ""
+	}
+	if env == nil {
+		// recovery attaches only running vms, so a drain resumed after a
+		// restart attaches its own handle.
+		if err := fm.reattachVMFromProvider(ctx, attach); err != nil {
+			msg := fmt.Sprintf("drain command: attach environment: %v", err)
+			fm.recordDrainError(vmID, msg)
+			return msg
+		}
+		env = attach.env
+		fm.mu.Lock()
+		if v, ok := fm.vms[vmID]; ok && v.env == nil {
+			v.env = env
+			v.url = attach.url
+		}
+		fm.mu.Unlock()
 	}
 
 	// Bound the drain command even if the caller's context has none.

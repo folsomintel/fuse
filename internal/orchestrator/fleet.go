@@ -664,12 +664,12 @@ type FleetManager struct {
 
 	// durableExpiries runs drain and environment expiry on restate; nil in
 	// mode off. see expiry_durable.go. expirySendSlots bounds the one-way
-	// arms in flight and expirySends tracks them. expiryArmed is the vms
-	// this process has armed, guarded by mu.
+	// arms in flight and expirySends tracks them. expiryArmed is the create
+	// time of each vm this process has armed, guarded by mu.
 	durableExpiries DurableExpiry
 	expirySendSlots chan struct{}
 	expirySends     sync.WaitGroup
-	expiryArmed     map[string]bool
+	expiryArmed     map[string]time.Time
 
 	cancel context.CancelFunc
 	done   chan struct{}

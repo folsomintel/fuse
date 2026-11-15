@@ -206,7 +206,7 @@ drain runs as `Environment/<vm_id>/Drain`: begin (persist `draining`), arm
 the grace timer, run the drain command once. ttl (`max_runtime`), idle and
 drain-grace expiry run as `Environment/<vm_id>/Expire`: one check per
 invocation, which schedules the next as a delayed send to itself under a fresh
-token kept in the object's `expiry` state, with the strike count. a send whose
+token kept in the object's `expiry` state, with the window the last check struck the vm for. a send whose
 token is not the stored one is stale and does nothing, so re-arming (the
 orchestrator does it on create, on an approved extension and for every vm
 after a restart) never leaves two live timers. a check that reaps sends
