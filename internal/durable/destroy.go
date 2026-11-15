@@ -107,8 +107,19 @@ func step(ctx restate.Context, name string, fn func(context.Context) error, opts
 // keeps running if ctx ends first.
 func (c *Client) Destroy(ctx context.Context, vmID string, req orchestrator.DestroyRequest) error {
 	_, err := ingress.Object[orchestrator.DestroyRequest, restate.Void](c.ingress, EnvironmentObject, vmID, "Destroy").
-		Request(ctx, req)
+		Request(ctx, req, callerKey(ctx)...)
 	return err
+}
+
+// callerKey forwards the api caller's idempotency key on ctx as the ingress
+// idempotency key, so a retried request attaches to the invocation the first
+// one started. restate scopes the key to the handler and object key.
+func callerKey(ctx context.Context) []ingress.RequestOption {
+	key := orchestrator.IdempotencyKey(ctx)
+	if key == "" {
+		return nil
+	}
+	return []ingress.RequestOption{restate.WithIdempotencyKey(key)}
 }
 
 // SendDestroy enqueues Environment/{vmID}.Destroy without waiting.
