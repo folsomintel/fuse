@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::error::Error;
 use crate::events::EventStream;
-use crate::gates::{decode, Gated, OnHeld};
+use crate::gates::{decode_body, Gated, OnHeld};
 use crate::interventions::{wait_intervention, HumanRequest, ReviewRequest, ReviewResult};
+use crate::operations::CallOptions;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{
     CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, HitlKind, Intervention,
@@ -284,13 +285,26 @@ impl Environments {
     }
 
     /// Creates an environment. The call returns as soon as the VM is up;
-    /// follow [`Environments::events`] to watch it settle.
+    /// follow [`Environments::events`] to watch it settle. It sends a fresh
+    /// idempotency key; see [`Environments::create_with_options`] to pick
+    /// one.
     pub async fn create(&self, request: CreateRequest) -> Result<EnvironmentInfo, Error> {
+        self.create_with_options(request, CallOptions::new()).await
+    }
+
+    /// Creates an environment with per-call options such as an idempotency
+    /// key. A create that outlasts the server's wait is followed through its
+    /// operation transparently.
+    pub async fn create_with_options(
+        &self,
+        request: CreateRequest,
+        options: CallOptions,
+    ) -> Result<EnvironmentInfo, Error> {
         let request = self
             .t
             .request(Method::POST, &["v1", "environments"])
             .json(&request);
-        self.t.send_json(request).await
+        self.send_env(options.apply(request)).await
     }
 
     /// Starts draining an environment.
@@ -302,7 +316,17 @@ impl Environments {
     /// draining timeout (5m30s by default) passes, and then the orchestrator
     /// destroys it.
     pub async fn drain(&self, vm_id: &str) -> Result<EnvironmentInfo, Error> {
-        self.action(vm_id, "drain").await
+        self.drain_with_options(vm_id, CallOptions::new()).await
+    }
+
+    /// Starts draining an environment with per-call options such as an
+    /// idempotency key.
+    pub async fn drain_with_options(
+        &self,
+        vm_id: &str,
+        options: CallOptions,
+    ) -> Result<EnvironmentInfo, Error> {
+        self.action(vm_id, "drain", options).await
     }
 
     /// Creates a new environment seeded from an existing one and returns
@@ -310,13 +334,25 @@ impl Environments {
     /// server snapshots the source first; otherwise it reuses the named
     /// snapshot.
     pub async fn fork(&self, vm_id: &str, options: ForkOptions) -> Result<EnvironmentInfo, Error> {
+        self.fork_with_options(vm_id, options, CallOptions::new())
+            .await
+    }
+
+    /// Forks an environment with per-call options such as an idempotency
+    /// key.
+    pub async fn fork_with_options(
+        &self,
+        vm_id: &str,
+        options: ForkOptions,
+        call: CallOptions,
+    ) -> Result<EnvironmentInfo, Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "fork")])
             .json(&options);
-        self.send_env(request).await
+        self.send_env(call.apply(request)).await
     }
 
     /// Moves an environment to another host and returns the new environment.
@@ -326,13 +362,25 @@ impl Environments {
         vm_id: &str,
         options: MigrateOptions,
     ) -> Result<EnvironmentInfo, Error> {
+        self.migrate_with_options(vm_id, options, CallOptions::new())
+            .await
+    }
+
+    /// Migrates an environment with per-call options such as an idempotency
+    /// key.
+    pub async fn migrate_with_options(
+        &self,
+        vm_id: &str,
+        options: MigrateOptions,
+        call: CallOptions,
+    ) -> Result<EnvironmentInfo, Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "migrate")])
             .json(&options);
-        self.send_env(request).await
+        self.send_env(call.apply(request)).await
     }
 
     /// Rotates the environment's own credentials.
@@ -347,11 +395,21 @@ impl Environments {
 
     /// Destroys an environment.
     pub async fn destroy(&self, vm_id: &str) -> Result<(), Error> {
+        self.destroy_with_options(vm_id, CallOptions::new()).await
+    }
+
+    /// Destroys an environment with per-call options such as an
+    /// idempotency key.
+    pub async fn destroy_with_options(
+        &self,
+        vm_id: &str,
+        options: CallOptions,
+    ) -> Result<(), Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::DELETE, &["v1", "environments", vm_id]);
-        self.send_unit_gated(request).await
+        self.send_unit_gated(options.apply(request)).await
     }
 
     /// Runs a command inside a running environment's guest and returns its
@@ -400,7 +458,7 @@ impl Environments {
                 .timeout(guest + EXEC_HTTP_OVERHEAD)
                 .json(&request);
             match self.t.send_gated(http_request).await {
-                Ok(Gated::Done(response)) => return decode(response).await,
+                Ok(Gated::Done(body)) => return decode_body(&body),
                 Ok(Gated::Held(held)) => break held,
                 Err(err) => self.t.wait_unlocked(err, !request.wait).await?,
             }
@@ -483,14 +541,19 @@ impl Environments {
         Ok(EventStream::new(response))
     }
 
-    async fn action(&self, vm_id: &str, action: &str) -> Result<EnvironmentInfo, Error> {
+    async fn action(
+        &self,
+        vm_id: &str,
+        action: &str,
+        options: CallOptions,
+    ) -> Result<EnvironmentInfo, Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", action)]);
-        match self.t.send_gated(request).await? {
-            Gated::Done(response) => decode(response).await,
+        match self.t.send_gated(options.apply(request)).await? {
+            Gated::Done(body) => decode_body(&body),
             Gated::Held(held) => {
                 self.t.settle_held(held, None, false).await?;
                 self.get(vm_id).await
@@ -498,11 +561,11 @@ impl Environments {
         }
     }
 
-    // send_env sends a fork or migrate. a held one is waited out and the
+    // send_env sends a create, fork or migrate. a held one is waited out and the
     // environment it produced is fetched.
     async fn send_env(&self, request: reqwest::RequestBuilder) -> Result<EnvironmentInfo, Error> {
         let held = match self.t.send_gated(request).await? {
-            Gated::Done(response) => return decode(response).await,
+            Gated::Done(body) => return decode_body(&body),
             Gated::Held(held) => held,
         };
         let settled = self.t.settle_held(held, None, false).await?;
