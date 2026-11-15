@@ -2380,7 +2380,8 @@ components:
         so its retry runs again. With restate on, the key is also the
         restate ingress idempotency key of a destroy, snapshot or restore,
         so a retry after an orchestrator restart attaches to the same
-        invocation. 1-255 visible ascii characters. Every answer carries
+        invocation, except a destroy that already finished: its vm is gone,
+        so that retry answers 404. 1-255 visible ascii characters. Every answer carries
         the operation's id in `Fuse-Operation-Id`. On POST
         /v1/environments/{vmId} only `drain`, `fork` and `migrate` honor it.
     Wait:
