@@ -664,6 +664,11 @@ type FleetManager struct {
 	// between its steps, by vm id, guarded by mu.
 	durableCreate DurableCreator
 	createRuns    map[string]*createRun
+	// recoveredCreates are the vms recovered provisioning on restate, which
+	// reconcile checks restate still holds a create for. guarded by mu.
+	recoveredCreates map[string]bool
+	// reconciledOnce is set after the boot-time reconcile.
+	reconciledOnce atomic.Bool
 
 	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
 	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in
@@ -779,6 +784,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		hosts:                    make(map[string]*Host),
 		hostProviders:            make(map[string]Provider),
 		createRuns:               make(map[string]*createRun),
+		recoveredCreates:         make(map[string]bool),
 		tokenEncryptionKey:       cfg.TokenEncryptionKey,
 		hostProviderFactory:      cfg.HostProviderFactory,
 		egressRegistry:           cfg.EgressRegistry,
@@ -889,6 +895,7 @@ func (fm *FleetManager) Start(ctx context.Context) {
 
 	// Trigger a boot-time converge so recovered state is reconciled immediately.
 	fm.reconcile(ctx)
+	fm.reconciledOnce.Store(true)
 	go fm.reconcileLoop(ctx)
 	if fm.checkpointInterval > 0 {
 		go fm.checkpointLoop(ctx)
@@ -1740,7 +1747,11 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileStuckDraining(ctx, &summary)
 	fm.armExpiries()
-	fm.reconcileStaleCreates(ctx)
+	// not on the boot-time pass: restate answers through the handler
+	// endpoint, which only serves once Start has returned.
+	if fm.reconciledOnce.Load() {
+		fm.reconcileStaleCreates(ctx)
+	}
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
@@ -2000,6 +2011,9 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	fm.mu.Lock()
 	for id, recoveredVM := range recovered {
 		fm.vms[id] = recoveredVM
+		if recoveredVM.state == VMStateProvisioning {
+			fm.recoveredCreates[id] = true
+		}
 	}
 	fm.mu.Unlock()
 

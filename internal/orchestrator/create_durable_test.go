@@ -129,11 +129,13 @@ type inlineCreator struct {
 	st       CreateState
 	done     []string
 	inFlight bool
+	asked    int
 }
 
 func (c *inlineCreator) CreateInFlight(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.asked++
 	return c.inFlight, nil
 }
 
@@ -593,8 +595,10 @@ func TestStaleCreateIsAbandoned(t *testing.T) {
 		t.Fatalf("create: %v, want the crash", err)
 	}
 	fm2, c2 := newCreateFleet(t, store, p, FleetConfig{})
+	// a provisioning vm this process made itself (a fork, a migrate) is
+	// never asked about.
 	fm2.mu.Lock()
-	fm2.vms["fuse-t9"].updatedAt = time.Now().Add(-time.Hour)
+	fm2.vms["fuse-fork"] = &vm{id: "fuse-fork", state: VMStateProvisioning, createdAt: time.Now()}
 	fm2.mu.Unlock()
 
 	c2.inFlight = true
@@ -603,10 +607,21 @@ func TestStaleCreateIsAbandoned(t *testing.T) {
 		t.Fatalf("vm %+v with a create in flight, want it left provisioning", v)
 	}
 
+	// asked again after it was found in flight, it is not asked at all.
 	c2.inFlight = false
+	fm2.reconcileStaleCreates(ctx)
+	if _, ok := fm2.GetVM("fuse-t9"); !ok {
+		t.Fatal("a create restate held was dropped on a later cycle")
+	}
+	fm2.mu.Lock()
+	fm2.recoveredCreates["fuse-t9"] = true
+	fm2.mu.Unlock()
 	fm2.reconcileStaleCreates(ctx)
 	if _, ok := fm2.GetVM("fuse-t9"); ok {
 		t.Fatal("stale create left its vm tracked")
+	}
+	if _, ok := fm2.GetVM("fuse-fork"); !ok {
+		t.Fatal("reconcile dropped a provisioning vm it did not recover")
 	}
 	tasks, _ := store.ListTasks(ctx)
 	if len(tasks) != 1 || tasks[0].RunStatus != TaskRunFailed {
@@ -661,5 +676,30 @@ func TestCreateErrorsRedactGatewayAndToken(t *testing.T) {
 		if strings.Contains(err.Error(), leak) {
 			t.Fatalf("error %q carries %q", err, leak)
 		}
+	}
+}
+
+// the boot-time reconcile does not ask restate about recovered vms: the
+// handler endpoint that answers is not serving yet.
+func TestStartDoesNotAskRestate(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	p := newCreateProvider()
+	fm, c := newCreateFleet(t, store, p, FleetConfig{})
+	c.crashAfter = "boot"
+	if _, err := fm.ProvisionAndAssign(ctx, "t12", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); !errors.Is(err, errCrash) {
+		t.Fatalf("create: %v, want the crash", err)
+	}
+	fm2 := NewFleetManager(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: createTestKey,
+		HostProviderFactory: func(string, string, HostBackend) Provider { return p }, ReconcileInterval: time.Hour})
+	c2 := &inlineCreator{fm: fm2}
+	fm2.SetDurableCreator(c2)
+	fm2.Start(ctx)
+	fm2.Stop()
+	if c2.asked != 0 {
+		t.Fatalf("start asked restate %d times", c2.asked)
+	}
+	if v, ok := fm2.GetVM("fuse-t12"); !ok || v.State != VMStateProvisioning {
+		t.Fatalf("recovered vm %+v, want provisioning", v)
 	}
 }
