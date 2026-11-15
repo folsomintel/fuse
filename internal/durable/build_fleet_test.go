@@ -135,6 +135,7 @@ func TestBuildOnFleetResumesAfterEndpointRestart(t *testing.T) {
 	fm.SetDurableDestroyer(client)
 	fm.SetDurableSnapshots(client)
 	fm.SetDurableBuilds(client)
+	fm.SetDurableCreator(client)
 
 	in := orchestrator.BuildInput{
 		ID:       fmt.Sprintf("bld_fleet_%d", time.Now().UnixNano()),
