@@ -29,7 +29,7 @@ const hitlRunAbortTimeout = orchestrator.HitlRunTimeout + 5*time.Minute
 type Hitl interface {
 	HitlRunBegin(ctx context.Context, id string) (orchestrator.HitlRunPlan, error)
 	HitlRunInProcess(ctx context.Context, id string) error
-	HitlRunFinish(ctx context.Context, id string, res hitl.Result) error
+	HitlRunFinish(ctx context.Context, id string, plan orchestrator.HitlRunPlan, res hitl.Result) error
 	HitlExpire(ctx context.Context, id string) (time.Duration, error)
 }
 
@@ -103,7 +103,7 @@ func hitlRun(ctx restate.ObjectContext, fleet Hitl, policy RetryPolicy) error {
 		res = hitl.Result{Error: err.Error()}
 	}
 	return runStep(ctx, opHitlRun, "finish", func(c context.Context) error {
-		return hitlPermanent(fleet.HitlRunFinish(c, id, res))
+		return hitlPermanent(fleet.HitlRunFinish(c, id, plan, res))
 	}, retry...)
 }
 

@@ -88,9 +88,28 @@ func (fm *FleetManager) hitlSend(what, id string, send func(context.Context) err
 	}()
 }
 
-// sendHitlRun hands an approved action to restate.
+// sendHitlRun hands an approved action to restate. an intervention whose
+// send is already queued or in flight is not queued again, so a restate
+// outage holds at most one waiting send per approval owed a result.
 func (fm *FleetManager) sendHitlRun(d DurableHitl, id string) {
-	fm.hitlSend("run", id, func(ctx context.Context) error { return d.SendHitlRun(ctx, id) })
+	fm.hitlMu.Lock()
+	if fm.hitlQueued[id] {
+		fm.hitlMu.Unlock()
+		return
+	}
+	if fm.hitlQueued == nil {
+		fm.hitlQueued = make(map[string]bool)
+	}
+	fm.hitlQueued[id] = true
+	fm.hitlMu.Unlock()
+	fm.hitlSend("run", id, func(ctx context.Context) error {
+		defer func() {
+			fm.hitlMu.Lock()
+			delete(fm.hitlQueued, id)
+			fm.hitlMu.Unlock()
+		}()
+		return d.SendHitlRun(ctx, id)
+	})
 }
 
 // scheduleExpiry arms the durable timer that applies a pending
@@ -102,8 +121,11 @@ func (fm *FleetManager) scheduleExpiry(in hitl.Intervention) {
 	if d == nil || in.State != hitl.StatePending {
 		return
 	}
-	delay := max(time.Until(in.Deadline), 0)
-	fm.hitlSend("expire", in.ID, func(ctx context.Context) error { return d.SendHitlExpire(ctx, in.ID, delay) })
+	// the delay is taken when the send goes out, so time spent waiting for
+	// a slot does not push the timer past the deadline.
+	fm.hitlSend("expire", in.ID, func(ctx context.Context) error {
+		return d.SendHitlExpire(ctx, in.ID, max(time.Until(in.Deadline), 0))
+	})
 }
 
 // resumeApprovedRuns sends every approved action still owed a result to
@@ -153,10 +175,15 @@ const (
 // HitlRunPlan is what HitlRunBegin settled. restate journals it, so it holds
 // no argv, text or output: only the route, the environment and, for a
 // snapshot, its options.
+//
+// a route other than in process is also the lifecycle operation it runs,
+// and StartedAt when the run began, so HitlRunFinish can record it with the
+// other operations.
 type HitlRunPlan struct {
-	Route    HitlRunRoute     `json:"route"`
-	EnvID    string           `json:"env_id,omitempty"`
-	Snapshot *SnapshotOptions `json:"snapshot,omitempty"`
+	Route     HitlRunRoute     `json:"route"`
+	EnvID     string           `json:"env_id,omitempty"`
+	Snapshot  *SnapshotOptions `json:"snapshot,omitempty"`
+	StartedAt time.Time        `json:"started_at,omitempty"`
 }
 
 // the methods below are the steps of the durable Intervention/{id}.Run and
@@ -178,7 +205,7 @@ func (fm *FleetManager) HitlRunBegin(ctx context.Context, id string) (HitlRunPla
 	if in.Lifecycle == nil {
 		return HitlRunPlan{Route: HitlRouteInProcess, EnvID: in.EnvID}, nil
 	}
-	plan := HitlRunPlan{EnvID: in.EnvID}
+	plan := HitlRunPlan{EnvID: in.EnvID, StartedAt: time.Now()}
 	switch in.Lifecycle.Action {
 	case hitl.ActionDestroy:
 		if _, ok := fm.GetVM(in.EnvID); !ok {
@@ -205,11 +232,12 @@ func (fm *FleetManager) HitlRunBegin(ctx context.Context, id string) (HitlRunPla
 // and writes the result to the intervention. the result never leaves this
 // step, so exec output and screenshots stay out of the journal.
 //
-// a retried exec carries the step's idempotency key to the host agent, which
-// hands back the first run's output instead of running it again. the others
-// have no such key, so they run at most once: the step marks the row before
-// it starts, and an attempt that finds the mark settles the action as
-// possibly run rather than doing it a second time.
+// the step marks the row before it starts. a retried exec within
+// execReplayWindow of the mark carries the step's idempotency key to the
+// host agent, which hands back the first run's output instead of running it
+// again. the others have no such key, so they run at most once: an attempt
+// that finds the mark settles the action as possibly run rather than doing
+// it a second time, and so does an exec retried after the window.
 func (fm *FleetManager) HitlRunInProcess(ctx context.Context, id string) error {
 	in, err := fm.loadIntervention(ctx, id)
 	if err != nil {
@@ -221,14 +249,15 @@ func (fm *FleetManager) HitlRunInProcess(ctx context.Context, id string) error {
 	if res, ok := fm.takeUnstored(id); ok {
 		return fm.storeDurableResult(ctx, id, res)
 	}
-	if in.Exec == nil {
-		started, err := fm.markRunStarted(ctx, id)
-		if err != nil {
-			return err
-		}
-		if started {
-			return fm.storeDurableResult(ctx, id, hitl.Result{Error: errRunInterrupted, FinishedAt: time.Now()})
-		}
+	started, err := fm.markRunStarted(ctx, id)
+	if err != nil {
+		return err
+	}
+	// an exec retried well inside the agent's key ttl is replayed by the
+	// agent. past that the agent may have forgotten the key and would run
+	// the command again, so it is settled like the others.
+	if !started.IsZero() && (in.Exec == nil || time.Since(started) > execReplayWindow) {
+		return fm.storeDurableResult(ctx, id, hitl.Result{Error: errRunInterrupted, FinishedAt: time.Now()})
 	}
 	actx, cancel := context.WithTimeout(ctx, runTimeout(in))
 	res := fm.runApproved(actx, in)
@@ -238,8 +267,10 @@ func (fm *FleetManager) HitlRunInProcess(ctx context.Context, id string) error {
 }
 
 // HitlRunFinish writes the result of an action the run handed to its
-// environment's handler. a result already there is kept.
-func (fm *FleetManager) HitlRunFinish(ctx context.Context, id string, res hitl.Result) error {
+// environment's handler, and records it as the lifecycle operation it was,
+// as DestroyVM, CreateSnapshot and RotateToken do. a result already there is
+// kept and not recorded again.
+func (fm *FleetManager) HitlRunFinish(ctx context.Context, id string, plan HitlRunPlan, res hitl.Result) error {
 	in, err := fm.loadIntervention(ctx, id)
 	if err != nil {
 		return err
@@ -248,7 +279,17 @@ func (fm *FleetManager) HitlRunFinish(ctx context.Context, id string, res hitl.R
 		return nil
 	}
 	res.FinishedAt = time.Now()
-	return fm.storeRunResult(ctx, id, res)
+	if err := fm.storeRunResult(ctx, id, res); err != nil {
+		return err
+	}
+	if om, ok := fm.metrics.(OperationMetrics); ok && !plan.StartedAt.IsZero() {
+		var opErr error
+		if res.Error != "" {
+			opErr = errors.New(res.Error)
+		}
+		om.OperationCompleted(string(plan.Route), res.FinishedAt.Sub(plan.StartedAt), opErr)
+	}
+	return nil
 }
 
 // HitlExpire applies an intervention's on_timeout once its deadline has
@@ -302,39 +343,44 @@ func (fm *FleetManager) takeUnstored(id string) (hitl.Result, bool) {
 	return res, ok
 }
 
+// execReplayWindow is how long after its first attempt an approved exec is
+// retried on the host agent's idempotency key. well inside the agents' 24h
+// default key ttl, which an operator can shorten.
+const execReplayWindow = time.Hour
+
 // markRunStarted records on the row that an attempt at the approved action
-// is about to begin, and reports whether an earlier one already had. the
-// mark lives in the sealed result column next to the answer, so it is not
-// part of the intervention anyone reads; the result replaces it.
-func (fm *FleetManager) markRunStarted(ctx context.Context, id string) (bool, error) {
+// is about to begin, and returns when an earlier one began, zero when none
+// had. the mark lives in the sealed result column next to the answer, so it
+// is not part of the intervention anyone reads; the result replaces it.
+func (fm *FleetManager) markRunStarted(ctx context.Context, id string) (time.Time, error) {
 	fm.hitlMu.Lock()
 	defer fm.hitlMu.Unlock()
 	rec, err := fm.store.GetIntervention(ctx, id)
 	if err != nil {
-		return false, err
+		return time.Time{}, err
 	}
 	raw, err := fm.unseal(rec.Result, rec.Sealed)
 	if err != nil {
-		return false, fmt.Errorf("intervention %s: result: %w", id, err)
+		return time.Time{}, fmt.Errorf("intervention %s: result: %w", id, err)
 	}
 	var r interventionResult
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return false, fmt.Errorf("intervention %s: result: %w", id, err)
+			return time.Time{}, fmt.Errorf("intervention %s: result: %w", id, err)
 		}
 	}
 	if r.Started != nil {
-		return true, nil
+		return *r.Started, nil
 	}
 	now := time.Now().UTC()
 	r.Started = &now
 	if raw, err = json.Marshal(r); err != nil {
-		return false, err
+		return time.Time{}, err
 	}
 	if rec.Result, _, err = fm.seal(raw); err != nil {
-		return false, fmt.Errorf("seal intervention result: %w", err)
+		return time.Time{}, fmt.Errorf("seal intervention result: %w", err)
 	}
-	return false, fm.store.UpsertIntervention(ctx, rec)
+	return time.Time{}, fm.store.UpsertIntervention(ctx, rec)
 }
 
 // runTimeout bounds one approved action.

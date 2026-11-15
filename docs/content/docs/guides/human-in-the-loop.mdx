@@ -303,7 +303,9 @@ orchestrator was running when it stopped is settled with `result.error` saying
 it may or may not have run. With restate on (`FUSE_RESTATE_MODE=self` or
 `cloud`), the approval is a restate `Intervention/{id}.Run` invocation and
 the restarted orchestrator carries it on: an exec runs once (the host agent
-replays a command it already finished instead of running it again), and a
+replays a command it already finished instead of running it again; an exec
+whose first attempt is more than an hour old gets the may-or-may-not error
+instead, since the agent may have forgotten it), and a
 destroy, snapshot or token rotation runs as that operation's own durable
 handler. A computer action, drain, fork or migrate that was already under way
 when the orchestrator died still gets the may-or-may-not-have-run error, so

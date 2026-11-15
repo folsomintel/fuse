@@ -160,7 +160,7 @@ func (f *hitlFleet) HitlRunInProcess(ctx context.Context, id string) error {
 	return nil
 }
 
-func (f *hitlFleet) HitlRunFinish(_ context.Context, id string, res hitl.Result) error {
+func (f *hitlFleet) HitlRunFinish(_ context.Context, id string, _ orchestrator.HitlRunPlan, res hitl.Result) error {
 	f.record("finish")
 	if _, ok := f.rows.result(id); ok {
 		return nil

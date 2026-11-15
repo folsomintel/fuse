@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
@@ -76,6 +77,129 @@ func (m *fakeHitlMetrics) HitlRunFinished(action string, _ time.Duration, failed
 	}
 	m.runs = append(m.runs, r)
 	m.mu.Unlock()
+}
+
+// fakeOpMetrics records lifecycle operations.
+type fakeOpMetrics struct {
+	mu  sync.Mutex
+	ops []string
+}
+
+func (m *fakeOpMetrics) ReconcileCompleted(ReconcileSummary) {}
+func (m *fakeOpMetrics) OperationCompleted(op string, _ time.Duration, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := op + ":ok"
+	if err != nil {
+		r = op + ":error"
+	}
+	m.ops = append(m.ops, r)
+}
+
+func (m *fakeOpMetrics) seen() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.ops...)
+}
+
+// setRunMark puts a start mark from at on the intervention, as an attempt
+// that began then and died would have left it.
+func setRunMark(t *testing.T, fm *FleetManager, id string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := fm.markRunStarted(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := fm.store.GetIntervention(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(interventionResult{Started: &at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Result, _, err = fm.seal(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.store.UpsertIntervention(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// an exec retried soon after its first attempt goes back to the agent, which
+// replays it on the step's key; one retried after the window could run again
+// on an agent that forgot the key, so it is settled as possibly run.
+func TestDurableHitlExecReplayWindow(t *testing.T) {
+	fm, vmID, _, _ := durableHitlFleet(t)
+	env := mockEnvOf(fm, vmID)
+	ctx := context.Background()
+
+	recent, _ := gateExec(fm, vmID, "git", "push", "--force")
+	stale, _ := gateExec(fm, vmID, "git", "push", "--force", "origin")
+	for _, id := range []string{recent.ID, stale.ID} {
+		if _, err := fm.DecideIntervention(ctx, id, DecideRequest{Outcome: hitl.OutcomeApprove, By: approver}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setRunMark(t, fm, recent.ID, time.Now().Add(-time.Minute))
+	setRunMark(t, fm, stale.ID, time.Now().Add(-execReplayWindow-time.Minute))
+
+	for _, id := range []string{recent.ID, stale.ID} {
+		if err := fm.HitlRunInProcess(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _ := fm.GetIntervention(ctx, recent.ID); got.Result == nil || got.Result.Exec == nil {
+		t.Fatalf("recent retry result %+v, want the exec's", got.Result)
+	}
+	if got, _ := fm.GetIntervention(ctx, stale.ID); got.Result == nil || got.Result.Error != errRunInterrupted {
+		t.Fatalf("stale retry result %+v, want the interrupted error", got.Result)
+	}
+	if n := len(env.execArgv); n != 1 {
+		t.Fatalf("exec reached the agent %d times, want only the recent retry", n)
+	}
+}
+
+// a send waiting on restate is not queued a second time for the same
+// approval.
+func TestDurableHitlRunSendQueuedOnce(t *testing.T) {
+	fm, _, _, _ := durableHitlFleet(t)
+	block := make(chan struct{})
+	d := &blockingDurableHitl{block: block}
+	fm.SetDurableHitl(d)
+	for range 5 {
+		fm.sendHitlRun(d, "int_1")
+	}
+	close(block)
+	fm.hitlSends.Wait()
+	if n := d.count(); n != 1 {
+		t.Fatalf("%d sends for one approval, want 1", n)
+	}
+	fm.sendHitlRun(d, "int_1")
+	fm.hitlSends.Wait()
+	if n := d.count(); n != 2 {
+		t.Fatalf("%d sends after the first finished, want a new one", n)
+	}
+}
+
+type blockingDurableHitl struct {
+	fakeDurableHitl
+	block chan struct{}
+	n     int
+}
+
+func (d *blockingDurableHitl) SendHitlRun(context.Context, string) error {
+	<-d.block
+	d.mu.Lock()
+	d.n++
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *blockingDurableHitl) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.n
 }
 
 func durableHitlFleet(t *testing.T) (*FleetManager, string, *fakeDurableHitl, *fakeHitlMetrics) {
@@ -168,7 +292,7 @@ func TestDurableHitlRunInProcessAtMostOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	// an earlier attempt began and died.
-	if started, err := fm.markRunStarted(ctx, held.ID); err != nil || started {
+	if started, err := fm.markRunStarted(ctx, held.ID); err != nil || !started.IsZero() {
 		t.Fatalf("first mark: started=%v err=%v", started, err)
 	}
 	if in, _ := fm.GetIntervention(ctx, held.ID); in.Settled() {
@@ -213,7 +337,8 @@ func TestDurableHitlRunBeginRoutes(t *testing.T) {
 	spec := &hitl.Spec{TimeoutSeconds: 600, Gates: []hitl.Gate{
 		{Name: "life", On: hitl.KindLifecycle, Match: hitl.GateMatch{Action: []string{"destroy", "snapshot", "rotate-token"}}},
 	}}
-	fm, vmID := hitlFleet(t, FleetConfig{}, spec)
+	ops := &fakeOpMetrics{}
+	fm, vmID := hitlFleet(t, FleetConfig{Metrics: ops}, spec)
 	fm.SetDurableHitl(&fakeDurableHitl{})
 	ctx := context.Background()
 	approve := func(action hitl.LifecycleAction, params any) string {
@@ -241,12 +366,16 @@ func TestDurableHitlRunBeginRoutes(t *testing.T) {
 		}
 	}
 
-	if err := fm.HitlRunFinish(ctx, snap, hitl.Result{SnapshotID: "snap-9"}); err != nil {
+	plan, _ := fm.HitlRunBegin(ctx, snap)
+	if err := fm.HitlRunFinish(ctx, snap, plan, hitl.Result{SnapshotID: "snap-9"}); err != nil {
 		t.Fatal(err)
 	}
-	// a replayed finish keeps the first result.
-	if err := fm.HitlRunFinish(ctx, snap, hitl.Result{Error: "late"}); err != nil {
+	// a replayed finish keeps the first result and is not counted again.
+	if err := fm.HitlRunFinish(ctx, snap, plan, hitl.Result{Error: "late"}); err != nil {
 		t.Fatal(err)
+	}
+	if got := ops.seen(); !slices.Equal(got, []string{"snapshot:ok"}) {
+		t.Fatalf("operations %v, want one snapshot", got)
 	}
 	if got, _ := fm.GetIntervention(ctx, snap); got.Result == nil || got.Result.SnapshotID != "snap-9" {
 		t.Fatalf("snapshot result %+v", got.Result)
