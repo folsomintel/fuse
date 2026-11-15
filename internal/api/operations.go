@@ -169,24 +169,33 @@ func newOperationStore() *operationStore {
 	return &operationStore{byID: map[string]*operation{}, byKey: map[string]*operation{}}
 }
 
+// errOperationsFull is begin's answer when the registry is at its cap.
+var errOperationsFull = errors.New("too many operations in flight")
+
 // begin returns the live operation owner's key names, or registers op. a
 // finished operation whose answer was a 5xx is dropped so a retry runs again.
-func (s *operationStore) begin(op *operation) (existing *operation) {
+// new work is refused once the registry holds maxOperations.
+func (s *operationStore) begin(op *operation) (existing *operation, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(time.Now())
+	scoped := op.owner + "\x00" + op.key
 	if op.key != "" {
-		scoped := op.owner + "\x00" + op.key
 		if prev, ok := s.byKey[scoped]; ok {
 			if !prev.finished() || prev.rec.status < 500 {
-				return prev
+				return prev, nil
 			}
 			s.dropLocked(prev)
 		}
+	}
+	if len(s.byID) >= maxOperations {
+		return nil, errOperationsFull
+	}
+	if op.key != "" {
 		s.byKey[scoped] = op
 	}
 	s.byID[op.id] = op
-	return nil
+	return nil, nil
 }
 
 func (s *operationStore) get(id string) (*operation, bool) {
@@ -342,7 +351,12 @@ func (h *Handler) asOperation(kind string, limit int64, next http.HandlerFunc) h
 			done:        make(chan struct{}),
 			rec:         &opRecorder{header: http.Header{}},
 		}
-		if prev := h.operationStore().begin(op); prev != nil {
+		prev, err := h.operationStore().begin(op)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error(), nil)
+			return
+		}
+		if prev != nil {
 			if prev.fingerprint != op.fingerprint {
 				writeError(w, http.StatusConflict, CodeConflict,
 					HeaderIdempotencyKey+" was already used for a different request",

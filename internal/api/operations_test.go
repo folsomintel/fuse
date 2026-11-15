@@ -246,3 +246,15 @@ func TestOperation_keyForwardedToFleet(t *testing.T) {
 		t.Errorf("forwarded key = %q, want master:destroy:k-1", gotKey)
 	}
 }
+
+func TestOperationStore_refusesNewWorkAtCapacity(t *testing.T) {
+	s := newOperationStore()
+	for i := 0; i < maxOperations; i++ {
+		op := &operation{id: newOperationID(), done: make(chan struct{})}
+		s.byID[op.id] = op
+	}
+	op := &operation{id: newOperationID(), done: make(chan struct{})}
+	if _, err := s.begin(op); err != errOperationsFull {
+		t.Fatalf("begin at capacity: err = %v, want errOperationsFull", err)
+	}
+}
