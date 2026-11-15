@@ -207,13 +207,17 @@ func (fm *FleetManager) checkpointTick(ctx context.Context) {
 }
 
 // checkpointCandidates are the running vms whose environment can take diff
-// snapshots: firecracker, no gpu, placed on a host.
+// snapshots: firecracker, no gpu, placed on a host. a vm restate is migrating
+// is left out: its tick would only queue behind the migrate on its object.
 func (fm *FleetManager) checkpointCandidates() []string {
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	var out []string
 	for id, v := range fm.vms {
 		if v.state != VMStateRunning || v.hostID == "" || v.spec.GPUs > 0 || v.env == nil {
+			continue
+		}
+		if fm.migrating[id] > 0 {
 			continue
 		}
 		if _, ok := v.env.(DeltaSnapshotCapable); !ok {

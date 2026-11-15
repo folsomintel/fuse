@@ -65,6 +65,13 @@ func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
 		defer cancel()
 		return d.Drain(ctx, vmID)
 	}
+	return fm.drainInProcess(ctx, vmID)
+}
+
+// drainInProcess is Drain run in this process. a durable migrate drains its
+// source with it: the migrate holds the source's Environment object, so a
+// drain sent to that object would wait on the migrate forever.
+func (fm *FleetManager) drainInProcess(ctx context.Context, vmID string) error {
 	plan, err := fm.drainBegin(ctx, vmID, false)
 	if err != nil || !plan.Command {
 		return err

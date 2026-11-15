@@ -19,10 +19,6 @@ type fakeDurableSnapshots struct {
 	checkpoints []string
 	retired     []string
 	collects    []string
-	holds       []string
-	releases    []bool
-	hold        ChainHold
-	holdErr     error
 }
 
 func (f *fakeDurableSnapshots) Snapshot(_ context.Context, vmID string, _ SnapshotOptions) (SnapshotRecord, error) {
@@ -43,20 +39,6 @@ func (f *fakeDurableSnapshots) Checkpoint(_ context.Context, vmID string) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.checkpoints = append(f.checkpoints, vmID)
-	return nil
-}
-
-func (f *fakeDurableSnapshots) HoldChain(_ context.Context, vmID string, _ time.Duration) (ChainHold, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.holds = append(f.holds, vmID)
-	return f.hold, f.holdErr
-}
-
-func (f *fakeDurableSnapshots) ReleaseChain(_ context.Context, _, _ string, reset bool) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.releases = append(f.releases, reset)
 	return nil
 }
 

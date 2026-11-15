@@ -450,51 +450,6 @@ func TestCheckpointChainThroughRestate(t *testing.T) {
 	}
 }
 
-// TestHoldChainKeepsTheTickOff: while a migrate holds the chain a tick does
-// nothing, and once released it runs again.
-func TestHoldChainKeepsTheTickOff(t *testing.T) {
-	fleet := newSnapFleet()
-	client := serveFleet(t, fleet, fastPolicy)
-	vm := uniqueVM("hold")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	hold, err := client.HoldChain(ctx, vm, time.Hour)
-	if err != nil || hold.Busy {
-		t.Fatalf("hold = %+v, %v", hold, err)
-	}
-	if err := client.Checkpoint(ctx, vm); err != nil {
-		t.Fatal(err)
-	}
-	if got := fleet.steps(); got != "" {
-		t.Fatalf("held tick ran steps %s", got)
-	}
-	// a second hold is refused while the first is live.
-	if again, err := client.HoldChain(ctx, vm, time.Hour); err != nil || !again.Busy {
-		t.Fatalf("second hold = %+v, %v; want busy", again, err)
-	}
-	// a release naming another hold changes nothing.
-	if err := client.ReleaseChain(ctx, vm, "not-the-holder", false); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Checkpoint(ctx, vm); err != nil {
-		t.Fatal(err)
-	}
-	if got := fleet.steps(); got != "" {
-		t.Fatalf("tick ran steps %s after a stranger's release", got)
-	}
-	if err := client.ReleaseChain(ctx, vm, hold.Holder, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Checkpoint(ctx, vm); err != nil {
-		t.Fatal(err)
-	}
-	fleet.waitSettled(t)
-	if got := fleet.steps(); !strings.HasPrefix(got, "plan,") {
-		t.Fatalf("released tick ran %q, want it to plan", got)
-	}
-}
-
 // TestCheckpointChainFailedCopyRetiresADiff: a delta merge that fails for
 // good deletes the child and retires the chain, whose base it may have
 // consumed; the pin on that base goes with it.

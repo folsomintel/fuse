@@ -653,6 +653,12 @@ type FleetManager struct {
 	// token_rotation.go.
 	durableTokens DurableTokenRotator
 
+	// durableMigrate runs migrates on restate; nil in mode off. see
+	// migrate_durable.go. migrating counts the migrates this process is
+	// waiting on, by source vm, guarded by mu.
+	durableMigrate DurableMigrator
+	migrating      map[string]int
+
 	// durableCreate runs creates on restate; nil in mode off. see
 	// create_durable.go. createRuns holds what a create in flight keeps
 	// between its steps, by vm id, guarded by mu.
@@ -1965,6 +1971,11 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 				recoveredVM.err = "vm missing from provider during recovery"
 				recoveredVM.updatedAt = time.Now()
 			}
+		} else if recoveredVM.state == VMStateProvisioning && fm.isMigratePlaceholder(recoveredVM) {
+			// the target of a migrate restate is still running: the migrate
+			// either finishes it or destroys it. the lookup only finds the
+			// environment a create before the restart already made.
+			_ = fm.reattachVMFromProvider(ctx, recoveredVM)
 		} else if recoveredVM.state == VMStateProvisioning && !durableCreate {
 			// Provisioning was interrupted by a crash. The sandbox may
 			// already exist in the provider (a crash between Create and
