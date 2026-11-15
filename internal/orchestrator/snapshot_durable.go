@@ -69,13 +69,6 @@ type DurableSnapshots interface {
 	// until the tick has taken its checkpoint; the copy to the standby
 	// runs on after it returns.
 	Checkpoint(ctx context.Context, vmID string) error
-	// HoldChain keeps the checkpoint loop off vmID's chain for lease, or
-	// until ReleaseChain, and returns the chain. Busy is set while a tick's
-	// copy is still running or another hold is live; nothing is held then.
-	HoldChain(ctx context.Context, vmID string, lease time.Duration) (ChainHold, error)
-	// ReleaseChain ends the hold named holder. reset forgets the chain,
-	// whose base the holder consumed or put out of step.
-	ReleaseChain(ctx context.Context, vmID, holder string, reset bool) error
 	// SendRetireChain enqueues the removal of what a gone vm's chain holds.
 	SendRetireChain(ctx context.Context, vmID string) error
 	// SendCollectSnapshot enqueues the deletion of a snapshot retention gc
