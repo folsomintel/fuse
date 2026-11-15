@@ -171,6 +171,21 @@ func TestArtifactSteps(t *testing.T) {
 	if _, err := fm.ArtifactPull(ctx, gone); !PermanentArtifactError(err) {
 		t.Fatalf("pull from an unregistered host: %v, want a permanent error", err)
 	}
+
+	// a source gc marked deleting after the move planned is not read.
+	deleting := seedArtifactRecord(t, fm, "art-del", "tenant-1", "h-a", "d3")
+	deleting.State = SnapshotStateDeleting
+	if err := fm.upsertSnapshotRecord(ctx, deleting); err != nil {
+		t.Fatalf("mark deleting: %v", err)
+	}
+	doomed := job
+	doomed.SnapshotID, doomed.SourceSnapshotID, doomed.LocalID = "art-del", "art-del", "art-del-copy"
+	if _, err := fm.ArtifactPull(ctx, doomed); !PermanentArtifactError(err) {
+		t.Fatalf("pull of a deleting source: %v, want a permanent error", err)
+	}
+	if n := len(mover.calls()); n != 1 {
+		t.Fatalf("mover ran %d times, want the deleting source never pulled", n)
+	}
 }
 
 // TestArtifactDiscard deletes an unrecorded copy and keeps a recorded one.

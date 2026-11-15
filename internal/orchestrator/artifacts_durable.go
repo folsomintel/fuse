@@ -245,6 +245,16 @@ func (fm *FleetManager) ArtifactPull(ctx context.Context, job ArtifactMoveJob) (
 	if fm.artifactMover == nil {
 		return ArtifactMoved{}, fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
 	}
+	// the move pinned its source before this step, and snapshot gc checks
+	// pins before it deletes. reading the row after the pin closes the gap
+	// where gc checked first: a source it is deleting is not read.
+	source, found, err := fm.lookupSnapshotRecord(ctx, job.SnapshotID)
+	if err != nil {
+		return ArtifactMoved{}, err
+	}
+	if found && source.State == SnapshotStateDeleting {
+		return ArtifactMoved{}, fmt.Errorf("%w: snapshot %s is being deleted", ErrArtifactImmovable, job.SnapshotID)
+	}
 	from, err := fm.artifactEndpoint(job.SourceHostID)
 	if err != nil {
 		return ArtifactMoved{}, err
