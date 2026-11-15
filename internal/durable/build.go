@@ -26,8 +26,8 @@ type Builds interface {
 	BuildExec(ctx context.Context, in orchestrator.BuildInput, vmID string, ex orchestrator.BuildExec) error
 	BuildSnapshotLayer(ctx context.Context, in orchestrator.BuildInput, vmID string, layer int) (string, error)
 	BuildSnapshot(ctx context.Context, in orchestrator.BuildInput, vmID string) (string, error)
-	BuildDestroyBuilder(ctx context.Context, in orchestrator.BuildInput) error
-	BuildFinish(ctx context.Context, in orchestrator.BuildInput) error
+	BuildDestroyBuilder(ctx context.Context, in orchestrator.BuildInput, outcome string) error
+	BuildFinish(ctx context.Context, in orchestrator.BuildInput, snapshotID string) error
 	BuildFailed(ctx context.Context, in orchestrator.BuildInput, cause string) error
 }
 
@@ -61,8 +61,9 @@ func build(ctx restate.WorkflowContext, fleet Builds, policy RetryPolicy, in orc
 			}, retry)
 		}
 	}
+	var snapshotID string
 	if err == nil {
-		_, err = buildStep(ctx, in, orchestrator.BuildStepSnapshot, func(c context.Context) (string, error) {
+		snapshotID, err = buildStep(ctx, in, orchestrator.BuildStepSnapshot, func(c context.Context) (string, error) {
 			return fleet.BuildSnapshot(c, in, vmID)
 		}, retry)
 	}
@@ -74,8 +75,12 @@ func build(ctx restate.WorkflowContext, fleet Builds, policy RetryPolicy, in orc
 	// the builder goes on both paths. a destroy that runs out of retries is
 	// already dead-lettered by the destroy handler, so it does not change
 	// what the build produced.
+	outcome := orchestrator.BuildSucceeded
+	if err != nil {
+		outcome = orchestrator.BuildFailed
+	}
 	if _, derr := buildStep(ctx, in, orchestrator.BuildStepDestroy, func(c context.Context) (restate.Void, error) {
-		return restate.Void{}, fleet.BuildDestroyBuilder(c, in)
+		return restate.Void{}, fleet.BuildDestroyBuilder(c, in, outcome)
 	}, retry); derr != nil && !restate.IsTerminalError(derr) {
 		return derr
 	}
@@ -90,7 +95,7 @@ func build(ctx restate.WorkflowContext, fleet Builds, policy RetryPolicy, in orc
 		return err
 	}
 	_, err = buildStep(ctx, in, "finish", func(c context.Context) (restate.Void, error) {
-		return restate.Void{}, fleet.BuildFinish(c, in)
+		return restate.Void{}, fleet.BuildFinish(c, in, snapshotID)
 	}, retry)
 	return err
 }

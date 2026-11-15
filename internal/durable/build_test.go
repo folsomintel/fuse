@@ -26,13 +26,15 @@ func restateTerminal(msg string) error { return restate.ToTerminalError(errors.N
 type buildFleet struct {
 	fakeFleet
 
-	mu      sync.Mutex
-	calls   []string
-	fail    map[string][]error
-	block   map[string]chan struct{}
-	entered chan string
-	done    chan string
-	cause   string
+	mu       sync.Mutex
+	calls    []string
+	fail     map[string][]error
+	block    map[string]chan struct{}
+	entered  chan string
+	done     chan string
+	cause    string
+	outcome  string
+	artifact string
 }
 
 func newBuildFleet() *buildFleet {
@@ -103,14 +105,20 @@ func (f *buildFleet) BuildSnapshot(ctx context.Context, _ orchestrator.BuildInpu
 	return "snap-final", f.enter(ctx, "snapshot")
 }
 
-func (f *buildFleet) BuildDestroyBuilder(ctx context.Context, _ orchestrator.BuildInput) error {
+func (f *buildFleet) BuildDestroyBuilder(ctx context.Context, _ orchestrator.BuildInput, outcome string) error {
+	f.mu.Lock()
+	f.outcome = outcome
+	f.mu.Unlock()
 	return f.enter(ctx, "destroy_builder")
 }
 
-func (f *buildFleet) BuildFinish(ctx context.Context, _ orchestrator.BuildInput) error {
+func (f *buildFleet) BuildFinish(ctx context.Context, _ orchestrator.BuildInput, snapshotID string) error {
 	if err := f.enter(ctx, "finish"); err != nil {
 		return err
 	}
+	f.mu.Lock()
+	f.artifact = snapshotID
+	f.mu.Unlock()
 	f.done <- "succeeded"
 	return nil
 }
@@ -206,6 +214,9 @@ func TestBuildThroughRestate(t *testing.T) {
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps %s, want %s", got, want)
 	}
+	if fleet.outcome != orchestrator.BuildSucceeded || fleet.artifact != "snap-final" {
+		t.Fatalf("destroy outcome %q, finish artifact %q", fleet.outcome, fleet.artifact)
+	}
 }
 
 // TestBuildFailedStepCompensates: a setup step that fails for good destroys
@@ -226,6 +237,9 @@ func TestBuildFailedStepCompensates(t *testing.T) {
 	want := "resolve_cache,create_builder,layer_0,snapshot_layer_0,tail,destroy_builder,failed"
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps %s, want %s", got, want)
+	}
+	if fleet.outcome != orchestrator.BuildFailed {
+		t.Fatalf("destroy outcome %q, want failed", fleet.outcome)
 	}
 	if !strings.Contains(fleet.cause, "setup tail exited 1") {
 		t.Fatalf("cause %q", fleet.cause)

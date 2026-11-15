@@ -307,6 +307,14 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 		if prev.Fingerprint != in.Fingerprint {
 			return BuildRecord{}, false, fmt.Errorf("%w: %s", ErrBuildConflict, in.ID)
 		}
+		if prev.Durable && prev.State == BuildRunning && d != nil {
+			// the first submit may have stopped between the record and the
+			// send. restate runs a workflow id once, so sending it again
+			// starts a build nothing started and attaches to one that runs.
+			if err := d.SubmitBuild(ctx, in); err != nil {
+				return BuildRecord{}, false, fmt.Errorf("%w: resubmit build %s: %v", ErrBuildNotStarted, in.ID, err)
+			}
+		}
 		return fm.liveBuild(ctx, bs, prev), true, nil
 	}
 	fm.appendEvent(ctx, "build", in.ID, "build.submitted", map[string]any{"name": in.Name, "durable": rec.Durable})
@@ -403,17 +411,22 @@ func (fm *FleetManager) runBuild(ctx context.Context, in BuildInput) {
 			_, err = fm.BuildSnapshotLayer(ctx, in, vmID, ex.Layer)
 		}
 	}
+	var snapshotID string
 	if err == nil {
-		_, err = fm.BuildSnapshot(ctx, in, vmID)
+		snapshotID, err = fm.BuildSnapshot(ctx, in, vmID)
 	}
-	if derr := fm.BuildDestroyBuilder(ctx, in); derr != nil {
+	outcome := BuildSucceeded
+	if err != nil {
+		outcome = BuildFailed
+	}
+	if derr := fm.BuildDestroyBuilder(ctx, in, outcome); derr != nil {
 		fm.logger.WarnContext(ctx, "destroy builder failed", "build", in.ID, "err", derr)
 	}
 	if err != nil {
 		if ferr := fm.BuildFailed(ctx, in, err.Error()); ferr != nil {
 			fm.logger.ErrorContext(ctx, "record failed build", "build", in.ID, "err", ferr)
 		}
-	} else if ferr := fm.BuildFinish(ctx, in); ferr != nil {
+	} else if ferr := fm.BuildFinish(ctx, in, snapshotID); ferr != nil {
 		fm.logger.ErrorContext(ctx, "record finished build", "build", in.ID, "err", ferr)
 	}
 	end(err)
@@ -735,8 +748,11 @@ func (fm *FleetManager) BuildSnapshot(ctx context.Context, in BuildInput, vmID s
 
 // BuildDestroyBuilder destroys the builder, unless the build keeps it. it runs
 // on success and as the compensation of a failure, so it finds the builder by
-// its task id: a create that failed part way may have left one.
-func (fm *FleetManager) BuildDestroyBuilder(ctx context.Context, in BuildInput) error {
+// its task id: a create that failed part way may have left one. outcome is
+// how the build ended (BuildSucceeded or BuildFailed): the builder's stream
+// closes with the builder, so its last build event carries the outcome before
+// the destroy rather than after it.
+func (fm *FleetManager) BuildDestroyBuilder(ctx context.Context, in BuildInput, outcome string) error {
 	if in.Keep {
 		return nil
 	}
@@ -744,19 +760,25 @@ func (fm *FleetManager) BuildDestroyBuilder(ctx context.Context, in BuildInput) 
 	if !ok {
 		return nil
 	}
-	if _, err := fm.updateBuild(ctx, in, func(rec *BuildRecord) { rec.Step = BuildStepDestroy }); err != nil {
+	rec, err := fm.updateBuild(ctx, in, func(rec *BuildRecord) { rec.Step = BuildStepDestroy })
+	if err != nil {
 		return err
 	}
+	rec.State = outcome
+	fm.publishBuildEvent(rec)
 	if err := fm.DestroyVM(ctx, info.ID); err != nil && !errors.Is(err, ErrVMNotFound) {
 		return err
 	}
 	return nil
 }
 
-// BuildFinish records a build that produced its artifact.
-func (fm *FleetManager) BuildFinish(ctx context.Context, in BuildInput) error {
+// BuildFinish records a build that produced artifact snapshotID. the id comes
+// from the snapshot step's result, not the record, so a record that had to
+// start again still names the artifact.
+func (fm *FleetManager) BuildFinish(ctx context.Context, in BuildInput, snapshotID string) error {
 	_, err := fm.updateBuild(ctx, in, func(rec *BuildRecord) {
 		now := time.Now().UTC()
+		rec.SnapshotID = snapshotID
 		rec.State = BuildSucceeded
 		rec.Step = BuildStepDone
 		rec.FinishedAt = &now

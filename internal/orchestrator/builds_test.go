@@ -478,3 +478,111 @@ type failingBuilds struct{}
 func (failingBuilds) SubmitBuild(context.Context, BuildInput) error {
 	return errors.New("restate is not used for this build")
 }
+
+// persistentBuildStore stands in for postgres: a durable build needs a record
+// that outlives the process, which the memory store is not.
+type persistentBuildStore struct{ *MemoryStateStore }
+
+// recordingBuilds is a restate that takes every build and counts the sends.
+type recordingBuilds struct {
+	mu   sync.Mutex
+	sent []string
+}
+
+func (r *recordingBuilds) SubmitBuild(_ context.Context, in BuildInput) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sent = append(r.sent, in.ID)
+	return nil
+}
+
+// a submit that stopped between the record and the send leaves a running
+// durable record nothing runs. a retry with the same key sends the workflow
+// again, which restate starts once; a finished build is not sent again.
+func TestSubmitBuildResendsAnInterruptedSubmit(t *testing.T) {
+	ctx := context.Background()
+	store := persistentBuildStore{NewMemoryStateStore()}
+	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: store})
+	d := &recordingBuilds{}
+	fm.SetDurableBuilds(d)
+
+	in := testBuildInput("bld_lost", "k0")
+	rec := newBuildRecord(in, time.Now())
+	rec.Durable = true
+	if _, _, err := store.InsertBuild(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	got, replayed, err := fm.SubmitBuild(ctx, in, nil)
+	if err != nil || !replayed || got.State != BuildRunning {
+		t.Fatalf("retry: %+v replayed=%v err=%v", got, replayed, err)
+	}
+	if fmt.Sprint(d.sent) != "[bld_lost]" {
+		t.Fatalf("sends %v, want the workflow sent again", d.sent)
+	}
+
+	rec.State = BuildSucceeded
+	if err := store.UpsertBuild(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := fm.SubmitBuild(ctx, in, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("a finished build was sent again: %v", d.sent)
+	}
+}
+
+// the builder's stream closes when the builder is destroyed, so its last
+// build event already carries how the build ended.
+func TestBuildEventsCarryTheOutcomeBeforeTheBuilderGoes(t *testing.T) {
+	for _, tc := range []struct {
+		name, failOn, want string
+	}{
+		{"succeeded", "", BuildSucceeded},
+		{"failed", "npm ci", BuildFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fm := newBuildFleet(t, &buildProvider{failOn: tc.failOn})
+			in := testBuildInput("bld_events_"+tc.name, "k0", "k1")
+			events, stop := fm.SubscribeEnvironmentEvents("fuse-" + buildTaskID(in.ID))
+			defer stop()
+			if _, _, err := fm.SubmitBuild(context.Background(), in, nil); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.After(5 * time.Second)
+			for {
+				select {
+				case ev, ok := <-events:
+					if !ok {
+						t.Fatalf("stream closed without a %s build event", tc.want)
+					}
+					if ev.Build != nil && ev.Build.State == tc.want {
+						return
+					}
+				case <-deadline:
+					t.Fatalf("no %s build event", tc.want)
+				}
+			}
+		})
+	}
+}
+
+// a record that had to start again (gone from the store mid-build) still
+// names the artifact once the build finishes: the id comes from the snapshot
+// step, not the record.
+func TestBuildFinishNamesTheArtifactOnARecreatedRecord(t *testing.T) {
+	ctx := context.Background()
+	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-",
+		StateStore: persistentBuildStore{NewMemoryStateStore()}})
+	in := testBuildInput("bld_recreated", "k0")
+	if err := fm.BuildFinish(ctx, in, "snap-final"); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := fm.GetBuild(ctx, in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.State != BuildSucceeded || rec.SnapshotID != "snap-final" {
+		t.Fatalf("record %s with artifact %q, want succeeded with snap-final", rec.State, rec.SnapshotID)
+	}
+}
