@@ -146,14 +146,14 @@ func newBuildCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if keep && b.BuilderID != "" {
+				warnf("keeping builder environment %s", b.BuilderID)
+			}
 			if b.State != fuse.BuildSucceeded {
 				if b.Output != "" {
 					fmt.Fprint(os.Stderr, b.Output)
 				}
 				return fmt.Errorf("build %s failed: %s", b.ID, b.Error)
-			}
-			if keep && b.BuilderID != "" {
-				warnf("keeping builder environment %s", b.BuilderID)
 			}
 
 			if app.isJSON() {
