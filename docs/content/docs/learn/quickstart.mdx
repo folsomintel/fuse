@@ -2,26 +2,20 @@
 title: Quickstart
 sidebar:
   icon: rocket
-description: Install the CLI, point it at your orchestrator, and bring up your first environment
+description: Install the CLI, start Fuse on your laptop or a KVM server, and boot your first environment
 ---
 
-This walks through the fastest path from a fresh machine to a running environment.
+Fuse has two parts: the **CLI** on your laptop, and a **stack** (orchestrator,
+host agent, microVMs) that runs wherever there is KVM. Pick where the stack runs:
 
-:::note[No server yet?]
-`fuse local up` runs the whole stack — orchestrator, host agent, and real
-microVMs — on your own machine and connects the CLI to it, so you can skip
-straight to step 3. See [Local development](/docs/guides/local-development).
-:::
+| | Run it locally | Run it on a KVM server |
+| --- | --- | --- |
+| Where | Your laptop | A Linux box you can SSH into |
+| Needs | Linux with `/dev/kvm`, or macOS 15+ on M3 or later | Linux x86_64 with `/dev/kvm` and `sudo` |
+| Setup | `fuse local up` | `sudo ./scripts/fc-agent.sh bootstrap` |
+| Good for | Trying Fuse, developing a Fusefile | Real workloads, a team, always-on |
 
-You need two things already up before you start:
-
-- an **orchestrator**, reachable over HTTP. See [Orchestrator deploy](/docs/cloud/orchestrator-deploy).
-- at least one **host agent**, running on the box that will actually hold the microVMs.
-  See [Firecracker host setup](/docs/cloud/firecracker-host-setup), or
-  [GPU host setup](/docs/cloud/gpu-host-setup) for a QEMU host with GPUs.
-
-The CLI does not run VMs itself. It is a client: it talks to the orchestrator, and the
-orchestrator talks to your hosts.
+Both run the same binaries, so a Fusefile that works on one works on the other.
 
 ## 1. Install the CLI
 
@@ -29,62 +23,128 @@ orchestrator talks to your hosts.
 brew install --cask folsomintel/fuse/fuse
 ```
 
-Upgrade later with `brew upgrade --cask folsomintel/fuse/fuse`. Check what you have with
-`fuse --version`.
-
-:::warning[Always use the fully qualified name]
-Homebrew's own cask repo has an unrelated `fuse` (Fuse Studio, from fuse-open.github.io).
-A bare `brew install --cask fuse` or `brew upgrade --cask fuse` resolves to **that**
-project, not this CLI, even once you have tapped `folsomintel/fuse`. Qualify it as
-`folsomintel/fuse/fuse` every time, or an install silently stops receiving updates.
-:::
-
-### Without Homebrew
+Or, without Homebrew (macOS and Linux):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/folsomintel/fuse/main/ops/install-fuse.sh | bash
 ```
 
-Works on macOS and Linux. The script resolves the latest release for your platform,
-verifies the archive against that release's `checksums.txt` before extracting anything,
-and installs to `/usr/local/bin` (falling back to `~/.local/bin` when that is not
-writable). `VERSION=vX.Y.Z` pins a release; `FUSE_INSTALL_DIR=/path` chooses the target.
+Check it with `fuse --version`.
 
-On macOS this is also the path that avoids Gatekeeper entirely: `curl` does not set the
-`com.apple.quarantine` attribute that a browser download or a Homebrew cask does, so the
-first-launch check never runs. If you did download the archive through a browser and macOS
-refuses to open the binary, clear the attribute:
+:::warning[Always use the full cask name]
+Homebrew has an unrelated cask called `fuse`. Always install and upgrade with
+`folsomintel/fuse/fuse`, never a bare `fuse`. More install options are under
+[Installing the CLI](#installing-the-cli) below.
+:::
+
+## 2. Start the stack
+
+Do **one** of these.
+
+### Option A: locally
 
 ```bash
-xattr -dr com.apple.quarantine ./fuse
+fuse local up
 ```
 
-Or grab the `fuse-cli_*` archive for your platform straight from the
-[latest release](https://github.com/folsomintel/fuse/releases/latest).
+The first run downloads Firecracker, a kernel, a base rootfs and the fuse
+binaries into `~/.fuse/local/` (on macOS it also boots a small Linux appliance
+VM, so install [vfkit](https://github.com/crc-org/vfkit) first with
+`brew install vfkit`). It then connects the CLI to a context named `local` and
+registers your machine as a host. Later runs take seconds.
 
-## 2. Set up
+Stop it with `fuse local down`. See [Local development](/docs/guides/local-development)
+for requirements and troubleshooting.
+
+### Option B: on a KVM server
+
+On the server, check that KVM is there, then clone the repo and run bootstrap:
+
+```bash
+ls -l /dev/kvm   # must exist, or the box cannot run microVMs
+
+git clone https://github.com/folsomintel/fuse && cd fuse/host-agent/firecracker
+sudo ./scripts/fc-agent.sh bootstrap
+```
+
+`bootstrap` installs the host dependencies, Firecracker, the host agent, a local
+Postgres and the orchestrator as systemd services, bakes the guest rootfs,
+registers the box as host `local-fc`, and turns on a weekly auto-update. It is
+safe to re-run. It ends by printing the line to run on your laptop:
+
+```text
+ fuse host ready
+   orchestrator : http://203.0.113.10:8080
+   token        : 3f9c...
+
+   drive it from your laptop:
+     fuse connect http://203.0.113.10:8080 --token 3f9c...
+```
+
+Open `8080/tcp` from your laptop to the server (or put it behind a TLS proxy or a
+tailnet), then run that `fuse connect` line on your laptop.
+
+:::note[No `/dev/kvm`?]
+Ordinary cloud VMs do not expose KVM. Use bare metal (Hetzner dedicated,
+Equinix, AWS `*.metal`) or an instance type with nested virtualization enabled.
+See [Firecracker host setup](/docs/cloud/firecracker-host-setup) for the full
+requirements and the step-by-step equivalent of `bootstrap`.
+:::
+
+## 3. Write a Fusefile
+
+In any project directory, save this as `Fusefile`:
+
+```yaml
+version: 1
+
+resources:
+  cpus: 2
+  memory: 2GB
+
+run: echo "hello from $(hostname)" > hello.txt
+```
+
+That is the whole shape: how big the box is, and what to run on it. See
+[Your first Fusefile](/docs/learn/first-fusefile) for what each line does, and
+[Fusefile](/docs/concepts/fusefile) for every field. `fuse init` writes a fully
+commented example with every field filled in, which is a good reference but
+needs editing before it boots.
+
+:::warning[`run` must terminate]
+`run` executes while the environment is being created, so a command that never
+returns (a foreground server, `sleep infinity`) fails the create. Background
+anything long-lived, or declare it under `services`.
+:::
+
+## 4. Bring it up
+
+```bash
+fuse up
+```
+
+`up` creates an environment from the Fusefile and streams events until it is
+`running`, then exits. If it ends up `failed`, `up` exits non-zero.
+
+## 5. Use it
+
+```bash
+fuse environment list
+fuse environment exec <id> -- cat /workspace/hello.txt
+```
+
+## Already have an orchestrator and host?
+
+If you deployed the pieces yourself (see [Orchestrator deploy](/docs/cloud/orchestrator-deploy)
+and [Firecracker host setup](/docs/cloud/firecracker-host-setup)), connect the CLI
+and register the host in one guided pass instead of step 2:
 
 ```bash
 fuse quickstart
 ```
 
-One guided pass that does the whole first-time setup: it connects to your orchestrator,
-registers a compute host, and selects that host so later commands are scoped to it.
-
-It prompts for the orchestrator URL and token, then the host's ID, agent URL, and agent
-token, plus a region and a max VM count. CPU, RAM, and storage are not asked for, they
-are probed from the host agent. See [`fuse quickstart`](/reference/cli/quickstart) for
-every prompt and what it means.
-
-:::warning[Two different tokens]
-The orchestrator token (`ORCH_AUTH_TOKEN`) authenticates **you to the orchestrator**.
-The host agent token (`FC_AGENT_TOKEN`) is what the **orchestrator uses to reach the
-host**. They are not interchangeable. A mismatched host agent token registers fine and
-then fails at the first `fuse up` with an opaque `http 401`, so if you see that, re-register
-the host.
-:::
-
-`quickstart` is interactive. On a non-tty, run the two steps it wraps directly:
+It prompts for the orchestrator URL and token, then the host's ID, agent URL and
+agent token. On a non-tty, run the two steps it wraps:
 
 ```bash
 fuse connect https://orch.example.com --token "$ORCH_AUTH_TOKEN"
@@ -94,78 +154,33 @@ fuse host register prod-east-1 \
   --max-vms 20
 ```
 
-See [CLI overview](/reference/cli) for global flags, contexts, and config file layout.
-
-## 3. Scaffold a Fusefile
-
-```bash
-fuse init
-```
-
-This writes a fully commented example `Fusefile` to the current directory. Open it and
-adjust `resources`, `run`, and any `services` you need. See
-[Fusefile](/docs/concepts/fusefile) for the full field reference.
-
-Underneath the comments, the common case is small:
-
-```yaml
-version: 1
-
-resources:
-  cpus: 2
-  memory: 2GB
-
-run: ./start.sh
-```
-
-That is the whole shape: how big the box is, and what to run on it. Nothing here names
-a vendor or a backend. GPU fields exist, and they are opt-in, see
-[Advanced: GPU fields](/docs/concepts/fusefile#advanced-gpu-fields) when you need one.
-
-Line one of the scaffold is a `yaml-language-server` modeline pointing at Fuse's
-published JSON Schema, so an editor with YAML support gives you completion and inline
-validation while you edit. It is a comment, and removing it changes nothing except that
-feedback. See [Editor support](/docs/concepts/fusefile#editor-support).
-
-The scaffold is deliberately maximal, it names every field. For the opposite end of the
-range, the fewest lines that actually boot, see
-[Your first Fusefile](/docs/learn/first-fusefile). That version needs no `--secret` in
-step 4.
-
-## 4. Bring it up
-
-```bash
-fuse up --secret pg_password=devpassword
-```
-
-`up` compiles the Fusefile and creates an environment from it, then streams provisioning
-events until the environment is up, exiting once it reaches `running` (or pass
-`--no-wait` to return immediately). If the environment ends up `failed` instead, `up`
-exits non-zero.
-
-The scaffold from step 3 declares `pg_password` under `secrets`, so `up` refuses to
-create anything until you supply a value for it, either with `--secret` as above or with
-`--secrets-file`. Values live outside the Fusefile by design, the file names the secrets
-an environment requires rather than carrying them.
-
-:::warning[`run` must terminate]
-The startup script runs synchronously while the environment is being created, so a `run`
-that never returns (a foreground server, `sleep infinity`) will fail the create rather
-than leaving you with a running box. Background anything long-lived, or declare it under
-`services` instead.
+:::warning[Two different tokens]
+`ORCH_AUTH_TOKEN` authenticates **you to the orchestrator**. `FC_AGENT_TOKEN` is
+what the **orchestrator uses to reach the host**. They are not interchangeable,
+and a mismatched agent token shows up as `http 401` on the first `fuse up`. See
+[`fuse quickstart`](/reference/cli/quickstart) for every prompt.
 :::
 
-## 5. Check on it
+## Installing the CLI
+
+The install script verifies the release archive against its `checksums.txt` and
+installs to `/usr/local/bin` (or `~/.local/bin` when that is not writable).
+`VERSION=vX.Y.Z` pins a release and `FUSE_INSTALL_DIR=/path` picks the target.
+You can also download the `fuse-cli_*` archive for your platform from the
+[latest release](https://github.com/folsomintel/fuse/releases/latest).
+
+If macOS refuses to open a binary you downloaded through a browser, clear the
+quarantine attribute:
 
 ```bash
-fuse environment list
-fuse environment get <id>
-fuse environment exec <id> -- echo hello
+xattr -dr com.apple.quarantine ./fuse
 ```
+
+Upgrade a Homebrew install with `brew upgrade --cask folsomintel/fuse/fuse`.
 
 ## Next steps
 
-- Start from the smallest working file: [Your first Fusefile](/docs/learn/first-fusefile)
-- Learn what each Fusefile field does: [Fusefile](/docs/concepts/fusefile)
+- Save and roll back state: [Snapshot and rollback](/docs/learn/snapshot-and-rollback)
+- Branch a running box: [Fork to debug](/docs/learn/fork-to-debug)
 - Understand the VM lifecycle: [Environments](/docs/concepts/environments)
-- Run whole or fractional GPUs: [GPU batch and training jobs](/docs/guides/gpu-workloads)
+- Run whole or fractional GPUs: [GPU host setup](/docs/cloud/gpu-host-setup)

@@ -666,6 +666,15 @@ type FleetManager struct {
 	// builds.go.
 	builds buildRegistry
 
+	// durableExpiries runs drain and environment expiry on restate; nil in
+	// mode off. see expiry_durable.go. expirySendSlots bounds the one-way
+	// arms in flight and expirySends tracks them. expiryArmed is the create
+	// time of each vm this process has armed, guarded by mu.
+	durableExpiries DurableExpiry
+	expirySendSlots chan struct{}
+	expirySends     sync.WaitGroup
+	expiryArmed     map[string]time.Time
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -1272,6 +1281,7 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	}
 	fm.appendEvent(ctx, "vm", vmID, "vm.running", map[string]any{"task_id": taskID})
 	fm.appendEvent(ctx, "task", taskID, "task.running", map[string]any{"vm_id": vmID})
+	fm.armExpiry(vmID)
 	if result.Egress.Mode == egress.ModeProxy {
 		// provider and protocol only: the endpoint is on the environment for
 		// anyone who needs it, and never in an event or a log line.
@@ -1691,6 +1701,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileStuckDraining(ctx, &summary)
+	fm.armExpiries()
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
