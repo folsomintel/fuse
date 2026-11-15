@@ -2350,3 +2350,91 @@ impl VersionInfo {
         self.service == "fuse-orchestrator"
     }
 }
+
+string_enum! {
+    /// The mutating call an [`Operation`] runs.
+    pub enum OperationKind {
+        Create => "create",
+        Destroy => "destroy",
+        Fork => "fork",
+        Migrate => "migrate",
+        Snapshot => "snapshot",
+        Restore => "restore",
+        Drain => "drain",
+    }
+}
+
+string_enum! {
+    /// States for [`Operation::state`]. Running is the only non-terminal
+    /// one; succeeded is a 2xx answer, failed any other.
+    pub enum OperationState {
+        Running => "running",
+        Succeeded => "succeeded",
+        Failed => "failed",
+    }
+}
+
+impl OperationState {
+    /// Reports whether the operation finished.
+    pub fn is_terminal(&self) -> bool {
+        *self != Self::Running
+    }
+}
+
+/// The error body of a failed [`Operation`]: the `error` member of the
+/// envelope the call itself would have answered with.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OperationError {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub details: HashMap<String, String>,
+}
+
+/// One run of a mutating call (create, destroy, fork, migrate, drain,
+/// snapshot, restore), from
+/// [`Operations::get`](crate::Operations::get). Once it finished,
+/// `status_code` with `result` (2xx) or `error` (otherwise) are what the
+/// call itself would have answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Operation {
+    pub id: String,
+    pub kind: OperationKind,
+    pub state: OperationState,
+    /// The step the operation last reported starting, e.g. migrate's
+    /// snapshot, transfer, delta, boot and cutover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+    /// The http status the call answered with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<u16>,
+    /// The call's response body on success: an environment for create,
+    /// fork, migrate and drain, a snapshot for snapshot, absent for destroy
+    /// and restore, and a held response when a hitl gate held the action
+    /// (status 202).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// The call's error body on failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<OperationError>,
+}
+
+impl Operation {
+    /// Reports whether the operation finished.
+    pub fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+    }
+}
+
+/// The 202 body of a mutating call whose operation outlasted the server's
+/// wait. The SDK follows it transparently; it is public for callers that
+/// read raw responses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationAccepted {
+    pub operation_id: String,
+    pub operation: Operation,
+}

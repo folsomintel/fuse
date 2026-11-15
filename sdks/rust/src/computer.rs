@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::environments::Environments;
 use crate::error::Error;
-use crate::gates::{decode, Gated, OnHeld};
+use crate::gates::{decode_body, Gated, OnHeld};
 use crate::strenum::string_enum;
 use crate::transport::require;
 use crate::types::Intervention;
@@ -322,7 +322,7 @@ impl Environments {
                 .stream_request(Method::POST, &["v1", "environments", vm_id, "computer"])
                 .json(body);
             match self.transport().send_gated(request).await {
-                Ok(Gated::Done(response)) => return decode(response).await,
+                Ok(Gated::Done(body)) => return decode_body(&body),
                 Ok(Gated::Held(held)) => break held,
                 Err(err) => self.transport().wait_unlocked(err, no_wait).await?,
             }

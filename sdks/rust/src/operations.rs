@@ -1,0 +1,173 @@
+use std::fmt;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use reqwest::{Method, RequestBuilder, StatusCode};
+
+use crate::error::{parse_api_error, Error};
+use crate::interventions::{WAIT_HTTP_OVERHEAD, WAIT_POLL};
+use crate::transport::{require, Transport};
+use crate::types::{Operation, OperationAccepted, OperationState};
+
+pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+/// Per-call options for the mutating calls that run as operations:
+/// environments create, destroy, fork, migrate and drain, and snapshots
+/// create and restore.
+///
+/// ```
+/// use fuse::CallOptions;
+///
+/// let options = CallOptions::new().idempotency_key("deploy-42");
+/// ```
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct CallOptions {
+    /// Sent as `Idempotency-Key` (1-255 visible ascii). The same key with
+    /// the same request attaches to, or replays, the first call's
+    /// operation; with a different request it is a 409 conflict. `None`
+    /// sends a fresh random key, generated once per call.
+    pub idempotency_key: Option<String>,
+}
+
+impl CallOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+
+    // apply sets the idempotency key header, generating one when the caller
+    // gave none. a builder is built once per call, so the key is too.
+    pub(crate) fn apply(&self, builder: RequestBuilder) -> RequestBuilder {
+        let key = self
+            .idempotency_key
+            .clone()
+            .filter(|key| !key.is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        builder.header(IDEMPOTENCY_KEY_HEADER, key)
+    }
+}
+
+/// A callback told about the operation whenever a mutating call answers 202
+/// with one, before the call starts following it. Set it client-wide with
+/// [`ClientBuilder::on_operation`](crate::ClientBuilder::on_operation).
+#[derive(Clone)]
+pub struct OnOperation(pub(crate) Arc<dyn Fn(&OperationAccepted) + Send + Sync>);
+
+impl OnOperation {
+    pub fn new(callback: impl Fn(&OperationAccepted) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(callback))
+    }
+}
+
+impl fmt::Debug for OnOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("OnOperation")
+    }
+}
+
+/// The operations service, from
+/// [`Client::operations`](crate::Client::operations).
+///
+/// Mutating calls follow their own operation transparently when the server
+/// answers 202 with one, so this is only needed to look one up by the id in
+/// a `Fuse-Operation-Id` header. Operations live in the orchestrator's
+/// memory for 24h after they finish; unknown ones are not found.
+#[derive(Clone)]
+pub struct Operations {
+    t: Arc<Transport>,
+}
+
+impl Operations {
+    pub(crate) fn new(t: Arc<Transport>) -> Self {
+        Self { t }
+    }
+
+    /// Returns one operation. With `wait` the server holds the call until
+    /// the operation finishes or `wait` passes (capped by the server);
+    /// without it the call answers at once.
+    pub async fn get(&self, id: &str, wait: Option<Duration>) -> Result<Operation, Error> {
+        get_operation(&self.t, id, wait).await
+    }
+
+    /// Long-polls until the operation finishes and returns it. With
+    /// `timeout` it returns the still-running operation once `timeout`
+    /// passes; without it, it waits until the operation finishes. Drop the
+    /// future to stop early.
+    pub async fn wait(&self, id: &str, timeout: Option<Duration>) -> Result<Operation, Error> {
+        wait_operation(&self.t, id, timeout).await
+    }
+}
+
+// get_operation reads one operation. a waiting read runs on the no-timeout
+// stream client with its own deadline, so a short client timeout cannot cut
+// a held poll short.
+pub(crate) async fn get_operation(
+    t: &Transport,
+    id: &str,
+    wait: Option<Duration>,
+) -> Result<Operation, Error> {
+    require(id, "operation id")?;
+    let request = match wait {
+        Some(wait) => t
+            .stream_request(Method::GET, &["v1", "operations", id])
+            .query(&[("wait", format!("{}ms", wait.as_millis()))])
+            .timeout(wait + WAIT_HTTP_OVERHEAD),
+        None => t.request(Method::GET, &["v1", "operations", id]),
+    };
+    t.send_json(request).await
+}
+
+// wait_operation long-polls until the operation finishes, or until timeout
+// passes when one is given.
+pub(crate) async fn wait_operation(
+    t: &Transport,
+    id: &str,
+    timeout: Option<Duration>,
+) -> Result<Operation, Error> {
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    loop {
+        let poll = match deadline {
+            Some(deadline) => deadline
+                .saturating_duration_since(Instant::now())
+                .min(WAIT_POLL),
+            None => WAIT_POLL,
+        };
+        let operation = get_operation(t, id, Some(poll)).await?;
+        let expired = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        if operation.is_terminal() || expired {
+            return Ok(operation);
+        }
+    }
+}
+
+// operation_answer turns a finished operation into the status and body the
+// call itself would have answered with, and a non-2xx one into the same
+// error that answer would have been.
+pub(crate) fn operation_answer(operation: Operation) -> Result<(u16, Vec<u8>), Error> {
+    let fallback = if operation.state == OperationState::Succeeded {
+        200
+    } else {
+        500
+    };
+    let status = operation.status_code.unwrap_or(fallback);
+    if (200..300).contains(&status) {
+        let body = match &operation.result {
+            Some(result) => serde_json::to_vec(result)?,
+            None => Vec::new(),
+        };
+        return Ok((status, body));
+    }
+    let body = match &operation.error {
+        Some(error) => serde_json::to_vec(&serde_json::json!({ "error": error }))?,
+        None => Vec::new(),
+    };
+    let status_text = StatusCode::from_u16(status)
+        .ok()
+        .and_then(|status| status.canonical_reason());
+    Err(parse_api_error(status, status_text, None, &body).into())
+}

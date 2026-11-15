@@ -11,12 +11,12 @@ use crate::types::{
 };
 
 // how long one long-poll asks the server to hold. the server caps it at 50s.
-const WAIT_POLL: Duration = Duration::from_secs(30);
+pub(crate) const WAIT_POLL: Duration = Duration::from_secs(30);
 
 // headroom on top of the long-poll for the network round trip, so a poll
 // that the server holds for its full duration does not race the client's
 // deadline.
-const WAIT_HTTP_OVERHEAD: Duration = Duration::from_secs(30);
+pub(crate) const WAIT_HTTP_OVERHEAD: Duration = Duration::from_secs(30);
 
 /// The body of
 /// [`Environments::request_human`](crate::Environments::request_human).

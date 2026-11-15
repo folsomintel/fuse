@@ -3,9 +3,9 @@
 //! The crate is published as `folsom-fuse`; the library target is `fuse`,
 //! mirroring the Python SDK's `import fuse`.
 //!
-//! [`Client`] is the entry point. It groups five resource services behind
+//! [`Client`] is the entry point. It groups six resource services behind
 //! one shared transport: [`Environments`], [`Snapshots`], [`Hosts`],
-//! [`ApiKeys`], and [`Interventions`].
+//! [`ApiKeys`], [`Interventions`], and [`Operations`].
 //!
 //! ```no_run
 //! use fuse::{Client, CreateRequest, ExecRequest, Spec};
@@ -57,6 +57,7 @@ mod events;
 mod gates;
 mod hosts;
 mod interventions;
+mod operations;
 mod snapshots;
 mod strenum;
 mod takeover;
@@ -80,6 +81,7 @@ pub use interventions::{
     ApproveOptions, AuditOptions, AuditPage, HumanRequest, InterventionPage, Interventions,
     ListInterventionsOptions, ReviewRequest, ReviewResult,
 };
+pub use operations::{CallOptions, OnOperation, Operations};
 pub use snapshots::{ListSnapshotsOptions, SnapshotPage, Snapshots};
 pub use takeover::{LockedError, ReleaseOptions, TakeoverOptions};
 pub use types::{
@@ -94,7 +96,8 @@ pub use types::{
     HostState, Intervention, InterventionDecision, InterventionOutcome, InterventionPayload,
     InterventionResult, InterventionSecret, InterventionSignal, InterventionState,
     InterventionTakeover, LifecycleAction, LifecyclePayload, MigInstance, MigrateOptions,
-    MissReason, Protocol, Reaper, RegisterHostRequest, ReviewFormat, ReviewPayload, Snapshot,
-    SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia,
-    VersionInfo, ALLOWLIST_GATE,
+    MissReason, Operation, OperationAccepted, OperationError, OperationKind, OperationState,
+    Protocol, Reaper, RegisterHostRequest, ReviewFormat, ReviewPayload, Snapshot, SnapshotExport,
+    SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia, VersionInfo,
+    ALLOWLIST_GATE,
 };

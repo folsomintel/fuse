@@ -11,9 +11,10 @@ use crate::error::Error;
 use crate::gates::{HitlWait, OnHeld};
 use crate::hosts::Hosts;
 use crate::interventions::Interventions;
+use crate::operations::{OnOperation, Operations};
 use crate::snapshots::Snapshots;
 use crate::transport::{RequestIdFn, Transport, DEFAULT_TIMEOUT};
-use crate::types::{ActorLabel, Intervention, VersionInfo};
+use crate::types::{ActorLabel, Intervention, OperationAccepted, VersionInfo};
 
 /// The entry point for the Fuse API. It groups the resource services that
 /// share a single transport, and is cheap to clone.
@@ -96,6 +97,11 @@ impl Client {
         Interventions::new(self.transport.clone())
     }
 
+    /// The operations service.
+    pub fn operations(&self) -> Operations {
+        Operations::new(self.transport.clone())
+    }
+
     /// Probes `GET /v1/version` (unauthenticated) and reports what the
     /// endpoint says it is. A transport-level error (connection refused,
     /// DNS failure, timeout) is returned as `Err`; a reachable-but-wrong
@@ -147,6 +153,7 @@ pub struct ClientBuilder {
     http: Option<reqwest::Client>,
     actor: Option<ActorLabel>,
     hitl: HitlWait,
+    on_operation: Option<OnOperation>,
 }
 
 impl ClientBuilder {
@@ -160,6 +167,7 @@ impl ClientBuilder {
             http: None,
             actor: None,
             hitl: HitlWait::default(),
+            on_operation: None,
         }
     }
 
@@ -223,6 +231,16 @@ impl ClientBuilder {
         self
     }
 
+    /// Calls `callback` with the accepted operation whenever a mutating call
+    /// answers 202 with one, before the call starts following it.
+    pub fn on_operation(
+        mut self,
+        callback: impl Fn(&OperationAccepted) + Send + Sync + 'static,
+    ) -> Self {
+        self.on_operation = Some(OnOperation::new(callback));
+        self
+    }
+
     /// Builds the client. Fails if the base URL is empty or not a valid
     /// absolute HTTP URL.
     pub fn build(self) -> Result<Client, Error> {
@@ -255,6 +273,7 @@ impl ClientBuilder {
             self.actor,
         );
         transport.hitl = self.hitl;
+        transport.on_operation = self.on_operation;
         Ok(Client {
             transport: Arc::new(transport),
         })
