@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 
 import httpx
@@ -194,3 +195,18 @@ def test_operations_wait_timeout() -> None:
     )
     with fuse.Client(BASE_URL, "tok") as client, pytest.raises(TimeoutError):
         client.operations.wait("op_1", timeout=0.01)
+
+
+@respx.mock
+def test_operations_wait_bounds_http_by_timeout() -> None:
+    seen: list[float] = []
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        time.sleep(0.25)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    respx.get(f"{BASE_URL}/v1/operations/op_1").mock(side_effect=slow)
+    with fuse.Client(BASE_URL, "tok") as client, pytest.raises(TimeoutError):
+        client.operations.wait("op_1", timeout=0.2)
+    assert seen and seen[0] <= 0.2

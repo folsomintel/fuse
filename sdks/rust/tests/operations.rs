@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use fuse::{CallOptions, Client, CreateRequest, OperationKind, OperationState};
 use serde_json::{json, Value};
-use wiremock::matchers::{header, method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn env_body(id: &str) -> Value {
@@ -275,4 +275,41 @@ async fn operations_get_and_wait() {
 
     let err = operations.get("op_missing", None).await.unwrap_err();
     assert!(err.is_not_found());
+}
+
+#[tokio::test]
+async fn operations_wait_returns_by_its_timeout_when_a_poll_hangs() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/operations/op_5"))
+        .and(query_param_is_missing("wait"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(operation("op_5", "migrate", "running")),
+        )
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/operations/op_5"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(operation("op_5", "migrate", "running"))
+                .set_delay(Duration::from_secs(10)),
+        )
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    let started = std::time::Instant::now();
+    let op = client
+        .operations()
+        .wait("op_5", Some(Duration::from_millis(300)))
+        .await
+        .unwrap();
+    assert_eq!(op.state, OperationState::Running);
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "wait took {:?}",
+        started.elapsed()
+    );
 }
