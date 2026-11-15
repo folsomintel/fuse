@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -115,6 +116,27 @@ func buildID(owner, key string) string {
 	return "bld_" + hex.EncodeToString(sum[:12])
 }
 
+// buildFingerprint identifies the request a build id was first used for. the
+// record keeps it, so it covers secret names but never their values: a hash
+// of a short secret is a guess away from the secret.
+func buildFingerprint(req CreateBuildRequest) (string, error) {
+	names := make([]string, 0, len(req.Secrets))
+	for k := range req.Secrets {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	req.Secrets = nil
+	raw, err := json.Marshal(struct {
+		CreateBuildRequest
+		SecretNames []string `json:"secret_names"`
+	}{req, names})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // createBuild submits a build and answers 202 with it at once: a build runs
 // for minutes, past any request. it keeps running when the caller goes away.
 //
@@ -169,12 +191,16 @@ func (h *Handler) createBuild(w http.ResponseWriter, r *http.Request) {
 	}
 
 	owner := operationOwner(principal(r))
-	sum := sha256.Sum256(body)
+	fingerprint, err := buildFingerprint(req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, CodeInternal, err.Error(), nil)
+		return
+	}
 	in := orchestrator.BuildInput{
 		ID:          buildID(owner, key),
 		Name:        req.Name,
 		TenantID:    callerTenantID(r.Context()),
-		Fingerprint: hex.EncodeToString(sum[:]),
+		Fingerprint: fingerprint,
 		Spec:        toOrchestratorSpec(req.Spec),
 		Manifest:    manifest,
 		Arch:        orchestrator.NormalizeArch(req.Arch),

@@ -166,3 +166,20 @@ func TestGetBuildIsTenantScoped(t *testing.T) {
 func buildSetupPlan() fusefile.SetupPlan {
 	return fusefile.SetupPlan{Prelude: "set -eu\n", Steps: []string{"true"}}
 }
+
+// the fingerprint the record keeps covers which secrets a build had, not
+// their values.
+func TestBuildFingerprintLeavesSecretValuesOut(t *testing.T) {
+	a, b := buildBody(), buildBody()
+	a.Secrets = map[string]string{"TOKEN": "one"}
+	b.Secrets = map[string]string{"TOKEN": "two"}
+	fa, _ := buildFingerprint(a)
+	fb, _ := buildFingerprint(b)
+	if fa != fb {
+		t.Errorf("fingerprint varies with a secret value")
+	}
+	b.Secrets = map[string]string{"OTHER": "one"}
+	if fc, _ := buildFingerprint(b); fc == fa {
+		t.Errorf("fingerprint ignores which secrets were sent")
+	}
+}
