@@ -206,7 +206,10 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	var started MigrateStarted
 	started.Ingress, err = fm.MigrateIngress(ctx, plan)
 	if err == nil {
-		started.TokenEncrypted, err = fm.MigrateCredentials(ctx, plan, started.Ingress)
+		started.Credentials, err = fm.MigrateCredentials(ctx, plan)
+	}
+	if err == nil {
+		err = fm.MigrateUpload(ctx, plan, started)
 	}
 	if err == nil {
 		err = fm.MigrateStartAgent(ctx, plan, started)

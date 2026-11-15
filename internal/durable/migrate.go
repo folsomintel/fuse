@@ -50,7 +50,8 @@ type Migrator interface {
 	MigrateDeltaPlan(ctx context.Context, plan orchestrator.MigratePlan, child orchestrator.SnapshotRecord, base string) (orchestrator.ArtifactMoveJob, error)
 	MigrateCreate(ctx context.Context, plan orchestrator.MigratePlan, seed orchestrator.SnapshotRecord, localID string) error
 	MigrateIngress(ctx context.Context, plan orchestrator.MigratePlan) ([]byte, error)
-	MigrateCredentials(ctx context.Context, plan orchestrator.MigratePlan, ingress []byte) ([]byte, error)
+	MigrateCredentials(ctx context.Context, plan orchestrator.MigratePlan) (orchestrator.RotatedCredentials, error)
+	MigrateUpload(ctx context.Context, plan orchestrator.MigratePlan, started orchestrator.MigrateStarted) error
 	MigrateStartAgent(ctx context.Context, plan orchestrator.MigratePlan, started orchestrator.MigrateStarted) error
 	MigratePersist(ctx context.Context, plan orchestrator.MigratePlan, started orchestrator.MigrateStarted) error
 	MigrateTask(ctx context.Context, plan orchestrator.MigratePlan) error
@@ -271,10 +272,17 @@ func (m *migration) run() (seed orchestrator.SnapshotRecord, started orchestrato
 	}, retryUnder(m.policy)...); err != nil {
 		return seed, started, delta, err
 	}
-	if started.TokenEncrypted, err = Run(ctx, m.op, "credentials", func(c context.Context) ([]byte, error) {
-		enc, err := fleet.MigrateCredentials(c, plan, started.Ingress)
-		return enc, migratePermanent(err)
-	}, retryUnder(m.policy)...); err != nil {
+	// made once and journaled sealed, so a retried upload sends the same
+	// files under the same keys.
+	if started.Credentials, err = Run(ctx, m.op, "credentials", func(c context.Context) (orchestrator.RotatedCredentials, error) {
+		creds, err := fleet.MigrateCredentials(c, plan)
+		return creds, migrateRefusal(err)
+	}); err != nil {
+		return seed, started, delta, err
+	}
+	if err := m.step("upload", func(c context.Context) error {
+		return migratePermanent(fleet.MigrateUpload(c, plan, started))
+	}); err != nil {
 		return seed, started, delta, err
 	}
 	if err := m.step("start_agent", func(c context.Context) error {

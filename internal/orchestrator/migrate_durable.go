@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -70,9 +72,9 @@ type MigrateStarted struct {
 	// Ingress is the target's ingress publish, sealed under the token
 	// encryption key. nil when the target is not published.
 	Ingress []byte `json:"ingress,omitempty"`
-	// TokenEncrypted is the target's auth token as its row stores it. nil
-	// with no encryption key, where the guest runs without credentials.
-	TokenEncrypted []byte `json:"token_encrypted,omitempty"`
+	// Credentials are the target's own, as MigrateCredentials sealed them.
+	// zero with no encryption key, where the guest runs without credentials.
+	Credentials RotatedCredentials `json:"credentials"`
 }
 
 // MemoryWatch is the input of Migrate/{migration_id}.WatchMemory: the lazily
@@ -463,42 +465,77 @@ func (fm *FleetManager) MigrateIngress(ctx context.Context, plan MigratePlan) ([
 	return fm.sealIngress(p)
 }
 
-// MigrateCredentials gives the new vm credentials of its own and uploads them
-// with its tunnel file, returning its token as the row stores it. a fleet
-// with no encryption key gives it none. a retry makes and uploads new ones.
-func (fm *FleetManager) MigrateCredentials(ctx context.Context, plan MigratePlan, ingress []byte) ([]byte, error) {
+// MigrateCredentials makes the new vm credentials of its own, returned
+// sealed. it uploads nothing: a durable retry of the upload has to send the
+// same files, so they are made once, in a step of their own. a fleet with no
+// encryption key gives the vm none.
+func (fm *FleetManager) MigrateCredentials(_ context.Context, plan MigratePlan) (RotatedCredentials, error) {
 	if len(fm.tokenEncryptionKey) != 32 {
-		return nil, nil
-	}
-	_, env, err := fm.migrateTargetEnv(ctx, plan)
-	if err != nil {
-		return nil, err
-	}
-	ip, err := fm.openIngress(ingress)
-	if err != nil {
-		return nil, err
+		return RotatedCredentials{}, nil
 	}
 	creds, err := secrets.GenerateVMCredentials(plan.NewVMID)
 	if err != nil {
-		return nil, fmt.Errorf("generate credentials for migrated vm %s: %w", plan.NewVMID, err)
+		return RotatedCredentials{}, fmt.Errorf("generate credentials for migrated vm %s: %w", plan.NewVMID, err)
 	}
-	if err := uploadFiles(ctx, env, ip.withTunnelFiles(fusedCredentialFiles(creds))); err != nil {
-		return nil, fmt.Errorf("upload credentials to migrated vm %s: %w", plan.NewVMID, err)
+	raw, err := json.Marshal(sealedCredentials{AuthToken: creds.AuthToken, CertPEM: creds.CertPEM, KeyPEM: creds.KeyPEM})
+	if err != nil {
+		return RotatedCredentials{}, fmt.Errorf("encode credentials for migrated vm %s: %w", plan.NewVMID, err)
+	}
+	sealed, err := secrets.EncryptBytes(raw, fm.tokenEncryptionKey)
+	if err != nil {
+		return RotatedCredentials{}, fmt.Errorf("encrypt credentials for migrated vm %s: %w", plan.NewVMID, err)
+	}
+	token, err := secrets.EncryptToken(creds.AuthToken, fm.tokenEncryptionKey)
+	if err != nil {
+		return RotatedCredentials{}, fmt.Errorf("encrypt token for migrated vm %s: %w", plan.NewVMID, err)
+	}
+	return RotatedCredentials{Sealed: sealed, TokenEncrypted: token}, nil
+}
+
+// MigrateUpload writes the new vm's tunnel file and credential files into the
+// guest. one at a time in path order, not concurrently like uploadFiles: on
+// restate each upload is keyed by its place in the step, and the agent
+// replays a key's first answer whatever file it now carries, so a retried
+// step has to send the same file under each key.
+func (fm *FleetManager) MigrateUpload(ctx context.Context, plan MigratePlan, started MigrateStarted) error {
+	_, env, err := fm.migrateTargetEnv(ctx, plan)
+	if err != nil {
+		return err
+	}
+	ip, err := fm.openIngress(started.Ingress)
+	if err != nil {
+		return err
+	}
+	files := ip.tunnelFiles()
+	var creds *secrets.VMCredentials
+	if len(started.Credentials.Sealed) > 0 {
+		raw, err := secrets.DecryptBytes(started.Credentials.Sealed, fm.tokenEncryptionKey)
+		if err != nil {
+			return fmt.Errorf("open credentials for migrated vm %s: %w", plan.NewVMID, err)
+		}
+		var sealed sealedCredentials
+		if err := json.Unmarshal(raw, &sealed); err != nil {
+			return fmt.Errorf("open credentials for migrated vm %s: %w", plan.NewVMID, err)
+		}
+		creds = &secrets.VMCredentials{AuthToken: sealed.AuthToken, CertPEM: sealed.CertPEM, KeyPEM: sealed.KeyPEM}
+		files = ip.withTunnelFiles(fusedCredentialFiles(creds))
+	}
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		if err := env.Upload(ctx, files[path], path); err != nil {
+			return fmt.Errorf("upload credentials to migrated vm %s: upload %s: %w", plan.NewVMID, path, err)
+		}
 	}
 	setTokenIfSupported(env, creds)
-	enc, err := secrets.EncryptToken(creds.AuthToken, fm.tokenEncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt token for migrated vm %s: %w", plan.NewVMID, err)
-	}
-	return enc, nil
+	return nil
 }
 
 // migrateToken is the new vm's plaintext token, and hands it to env.
 func (fm *FleetManager) migrateToken(env Environment, started MigrateStarted) (string, error) {
-	if len(started.TokenEncrypted) == 0 || len(fm.tokenEncryptionKey) != 32 {
+	enc := started.Credentials.TokenEncrypted
+	if len(enc) == 0 || len(fm.tokenEncryptionKey) != 32 {
 		return "", nil
 	}
-	token, err := secrets.DecryptToken(started.TokenEncrypted, fm.tokenEncryptionKey)
+	token, err := secrets.DecryptToken(enc, fm.tokenEncryptionKey)
 	if err != nil {
 		return "", fmt.Errorf("decrypt migrated vm token: %w", err)
 	}
@@ -509,8 +546,9 @@ func (fm *FleetManager) migrateToken(env Environment, started MigrateStarted) (s
 }
 
 // MigrateStartAgent restarts the guest agent on the new vm with its own
-// credentials and tunnel, or only its tunnel on a fleet with no encryption
-// key.
+// credentials and tunnel. on a fleet with no encryption key it only restarts
+// it onto the vm's own tunnel (see retunnelWithoutCredentials), and leaves an
+// unpublished vm's agent alone.
 func (fm *FleetManager) MigrateStartAgent(ctx context.Context, plan MigratePlan, started MigrateStarted) error {
 	_, env, err := fm.migrateTargetEnv(ctx, plan)
 	if err != nil {
@@ -521,7 +559,10 @@ func (fm *FleetManager) MigrateStartAgent(ctx context.Context, plan MigratePlan,
 		return err
 	}
 	if len(fm.tokenEncryptionKey) != 32 {
-		if err := fm.retunnelWithoutCredentials(ctx, env, ip, DefaultFusedDrainCommand); err != nil {
+		if ip == nil {
+			return nil
+		}
+		if err := env.StartAgent(ctx, AgentSpec{DrainCommand: DefaultFusedDrainCommand, TunnelConfigPath: ip.tunnelConfigPath()}); err != nil {
 			return fmt.Errorf("start tunnel on migrated vm %s: %w", plan.NewVMID, err)
 		}
 		return nil
@@ -554,7 +595,7 @@ func (fm *FleetManager) MigratePersist(ctx context.Context, plan MigratePlan, st
 	v.state = VMStateRunning
 	v.env = env
 	v.url = env.URL()
-	v.authTokenEncrypted = started.TokenEncrypted
+	v.authTokenEncrypted = started.Credentials.TokenEncrypted
 	v.drainCommand = DefaultFusedDrainCommand
 	v.updatedAt = time.Now()
 	fm.mu.Unlock()

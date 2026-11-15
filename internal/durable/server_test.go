@@ -142,8 +142,11 @@ func (fakeFleet) MigrateCreate(context.Context, orchestrator.MigratePlan, orches
 func (fakeFleet) MigrateIngress(context.Context, orchestrator.MigratePlan) ([]byte, error) {
 	return nil, nil
 }
-func (fakeFleet) MigrateCredentials(context.Context, orchestrator.MigratePlan, []byte) ([]byte, error) {
-	return nil, nil
+func (fakeFleet) MigrateCredentials(context.Context, orchestrator.MigratePlan) (orchestrator.RotatedCredentials, error) {
+	return orchestrator.RotatedCredentials{}, nil
+}
+func (fakeFleet) MigrateUpload(context.Context, orchestrator.MigratePlan, orchestrator.MigrateStarted) error {
+	return nil
 }
 func (fakeFleet) MigrateStartAgent(context.Context, orchestrator.MigratePlan, orchestrator.MigrateStarted) error {
 	return nil

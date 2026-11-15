@@ -24,6 +24,7 @@ type migFleet struct {
 	frozen   []string
 	settled  []orchestrator.MemoryPoll
 	deltaJob orchestrator.ArtifactMoveJob
+	uploaded []string
 }
 
 // newMigFleet migrates src to h2 under a fresh new vm id.
@@ -116,16 +117,26 @@ func (f *migFleet) MigrateIngress(ctx context.Context, _ orchestrator.MigratePla
 	return []byte("sealed-ingress"), f.enter(ctx, "ingress")
 }
 
-func (f *migFleet) MigrateCredentials(ctx context.Context, _ orchestrator.MigratePlan, ingress []byte) ([]byte, error) {
-	if string(ingress) != "sealed-ingress" {
-		return nil, fmt.Errorf("credentials got ingress %q", ingress)
+// MigrateCredentials makes a new token on every run, so a step that ran
+// twice would show as an upload of a token other than the one started.
+func (f *migFleet) MigrateCredentials(ctx context.Context, _ orchestrator.MigratePlan) (orchestrator.RotatedCredentials, error) {
+	token := fmt.Sprintf("sealed-token-%d", time.Now().UnixNano())
+	return orchestrator.RotatedCredentials{Sealed: []byte(token), TokenEncrypted: []byte(token)}, f.enter(ctx, "credentials")
+}
+
+func (f *migFleet) MigrateUpload(ctx context.Context, _ orchestrator.MigratePlan, started orchestrator.MigrateStarted) error {
+	if string(started.Ingress) != "sealed-ingress" {
+		return fmt.Errorf("upload got ingress %q", started.Ingress)
 	}
-	return []byte("sealed-token"), f.enter(ctx, "credentials")
+	f.mmu.Lock()
+	f.uploaded = append(f.uploaded, string(started.Credentials.Sealed))
+	f.mmu.Unlock()
+	return f.enter(ctx, "upload")
 }
 
 func (f *migFleet) MigrateStartAgent(ctx context.Context, _ orchestrator.MigratePlan, started orchestrator.MigrateStarted) error {
-	if string(started.TokenEncrypted) != "sealed-token" {
-		return fmt.Errorf("start agent got token %q", started.TokenEncrypted)
+	if len(started.Credentials.TokenEncrypted) == 0 {
+		return errors.New("start agent got no token")
 	}
 	return f.enter(ctx, "start_agent")
 }
@@ -199,12 +210,14 @@ const seedSteps = "begin,checkpoint,record,list,ready"
 const sourceDestroy = "destroy_begin:src,destroy_host:src,destroy_finish:src"
 
 // TestMigrateThroughRestate: a live migrate runs every step once, a create
-// that fails twice is retried inside its step, and the source is drained and
+// and an upload that fail twice are retried inside their steps, the retried
+// upload sends the credentials made once, and the source is drained and
 // destroyed through the destroy steps.
 func TestMigrateThroughRestate(t *testing.T) {
 	src := uniqueVM("migrate")
 	fleet := newMigFleet(src, true, false, false)
 	fleet.fail["create"] = []error{errors.New("agent 503"), errors.New("agent 503")}
+	fleet.fail["upload"] = []error{errors.New("agent 503"), errors.New("agent 503")}
 	client := serveFleet(t, fleet, fastPolicy)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -217,9 +230,15 @@ func TestMigrateThroughRestate(t *testing.T) {
 		t.Fatalf("migrate returned %s, want %s", id, fleet.plan.NewVMID)
 	}
 	want := "migrate_plan,placeholder," + seedSteps + ",plan_transfer,create,create,create," +
-		"ingress,credentials,start_agent,persist,task,cutover,lineage,handover,drain," + sourceDestroy
+		"ingress,credentials,upload,upload,upload,start_agent,persist,task,cutover,lineage,handover,drain," + sourceDestroy
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps\n %s\nwant\n %s", got, want)
+	}
+	fleet.mmu.Lock()
+	uploaded := fleet.uploaded
+	fleet.mmu.Unlock()
+	if len(uploaded) != 3 || uploaded[0] != uploaded[1] || uploaded[1] != uploaded[2] {
+		t.Fatalf("uploads %v, want the same credentials on every attempt", uploaded)
 	}
 	if frozen, _ := fleet.outcomes(); len(frozen) != 0 {
 		t.Fatalf("frozen %v for a migrate that never paused its source", frozen)
@@ -283,7 +302,7 @@ func TestMigrateDeltaFailureResumesTheSource(t *testing.T) {
 	}
 	persists := strings.Repeat("persist,", fastPolicy.MaxAttempts)
 	want := "migrate_plan,placeholder," + seedSteps + ",plan_transfer," + seedSteps + ",plan_delta,create," +
-		"ingress,credentials,start_agent," + persists +
+		"ingress,credentials,upload,start_agent," + persists +
 		"destroy_begin:target,destroy_host:target,destroy_finish:target,resume_source,frozen,delete_seed"
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps\n %s\nwant\n %s", got, want)
@@ -334,7 +353,7 @@ func TestMigrateSurvivesRestartWithTheSourcePaused(t *testing.T) {
 	if res.id != first.plan.NewVMID {
 		t.Fatalf("migrate returned %s, want %s", res.id, first.plan.NewVMID)
 	}
-	want := "create,ingress,credentials,start_agent,persist,frozen,task,cutover,lineage,handover," + sourceDestroy
+	want := "create,ingress,credentials,upload,start_agent,persist,frozen,task,cutover,lineage,handover," + sourceDestroy
 	if got := second.steps(); got != want {
 		t.Fatalf("steps after the restart\n %s\nwant\n %s", got, want)
 	}
@@ -369,7 +388,7 @@ func TestMigrateDeltaOntoTheChainStandby(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	want := "migrate_plan,placeholder," + seedSteps + ",plan_delta,create," +
-		"ingress,credentials,start_agent,persist,frozen,task,cutover,lineage,handover," + sourceDestroy
+		"ingress,credentials,upload,start_agent,persist,frozen,task,cutover,lineage,handover," + sourceDestroy
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps\n %s\nwant\n %s", got, want)
 	}
