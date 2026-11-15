@@ -234,6 +234,10 @@ const (
 	// DeadLetterDestroy records a durable destroy that ran out of retries
 	// and left its environment in destroy_failed.
 	DeadLetterDestroy DeadLetterKind = "destroy"
+
+	// DeadLetterWebhook records a durable hitl webhook delivery that was
+	// still failing when its retry window ran out.
+	DeadLetterWebhook DeadLetterKind = "hitl_webhook"
 )
 
 // DeadLetterRecord is a failure the reconciler has given up on retrying.
