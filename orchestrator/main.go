@@ -574,6 +574,7 @@ func run() error {
 		fm.SetDurableSnapshots(restateClient)
 		fm.SetDurableTokenRotator(restateClient)
 		fm.SetDurableWebhooks(restateClient)
+		fm.SetDurableHitl(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()

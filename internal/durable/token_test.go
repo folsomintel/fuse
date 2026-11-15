@@ -234,9 +234,16 @@ func TestRotateTokenSurvivesEndpointRestart(t *testing.T) {
 // bytes) decoded back into its bytes.
 func readJournal(t *testing.T, ctx context.Context, vm string) []byte {
 	t.Helper()
+	return readJournalOf(t, ctx, EnvironmentObject, vm, "generate")
+}
+
+// readJournalOf is readJournal for any object key, checking that the entry
+// named want is there.
+func readJournalOf(t *testing.T, ctx context.Context, service, key, want string) []byte {
+	t.Helper()
 	admin, _ := restateTestURLs(t)
 	query := fmt.Sprintf("SELECT j.name, j.entry_json FROM sys_journal j JOIN sys_invocation i ON j.id = i.id "+
-		"WHERE i.target_service_name = '%s' AND i.target_service_key = '%s'", EnvironmentObject, vm)
+		"WHERE i.target_service_name = '%s' AND i.target_service_key = '%s'", service, key)
 	body, _ := json.Marshal(map[string]string{"query": query})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, admin+"/query", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -269,8 +276,8 @@ func readJournal(t *testing.T, ctx context.Context, vm string) []byte {
 		}
 		all = appendPayloads(all, entry)
 	}
-	if !strings.Contains(strings.Join(names, ","), "generate") {
-		t.Fatalf("journal of %s has entries %v, want the generate step", vm, names)
+	if !strings.Contains(strings.Join(names, ","), want) {
+		t.Fatalf("journal of %s has entries %v, want the %s step", key, names, want)
 	}
 	return all
 }

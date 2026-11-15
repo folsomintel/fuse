@@ -31,10 +31,13 @@ const (
 	// WebhooksService is a plain service: each Deliver invocation is one
 	// attempt at one hitl webhook delivery.
 	WebhooksService = "Webhooks"
+	// InterventionObject is keyed by hitl intervention id: the run of an
+	// approved action and the timer of its deadline.
+	InterventionObject = "Intervention"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -49,6 +52,7 @@ type Fleet interface {
 	Checkpoints
 	Tokens
 	Webhooks
+	Hitl
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -155,13 +159,24 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return restate.Void{}, deliverWebhook(ctx, fleet, d)
 			}))
 
+	interventions := restate.NewObject(InterventionObject, retryOption(cfg, InterventionObject)).
+		Handler("Run", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, hitlRun(ctx, fleet, servicePolicy(cfg, InterventionObject))
+			}, restate.WithAbortTimeout(hitlRunAbortTimeout))).
+		Handler("Expire", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, hitlExpire(ctx, fleet, servicePolicy(cfg, InterventionObject))
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
 		Bind(host).
 		Bind(artifacts).
 		Bind(pins).
-		Bind(hooks)
+		Bind(hooks).
+		Bind(interventions)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {

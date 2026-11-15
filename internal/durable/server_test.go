@@ -20,6 +20,7 @@ import (
 	"github.com/mr-tron/base58"
 	"github.com/restatedev/sdk-go/server"
 
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
@@ -116,6 +117,13 @@ func (fakeFleet) WebhookDeadLetter(context.Context, orchestrator.WebhookDelivery
 	return nil
 }
 
+func (fakeFleet) HitlRunBegin(context.Context, string) (orchestrator.HitlRunPlan, error) {
+	return orchestrator.HitlRunPlan{}, nil
+}
+func (fakeFleet) HitlRunInProcess(context.Context, string) error            { return nil }
+func (fakeFleet) HitlRunFinish(context.Context, string, hitl.Result) error  { return nil }
+func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -185,6 +193,8 @@ func TestDiscoveryManifest(t *testing.T) {
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:
 			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
+		case InterventionObject:
+			want = map[string]string{"Run": "EXCLUSIVE", "Expire": "EXCLUSIVE"}
 		case WebhooksService:
 			// a plain service's handlers carry no type.
 			want = map[string]string{"Deliver": ""}
