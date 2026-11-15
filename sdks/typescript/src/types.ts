@@ -432,6 +432,15 @@ export interface Event {
   duration_ms?: number;
   /** exit code of the step. step events only. */
   exit_code?: number;
+  /** the build's progress. build events only. */
+  build?: BuildEvent;
+}
+
+/** BuildEvent is the build member of an event whose kind is "build". */
+export interface BuildEvent {
+  id: string;
+  state: string;
+  step?: string;
 }
 
 /** SnapshotRequest is the optional body for snapshots.create. */
@@ -1190,4 +1199,77 @@ export interface Operation {
 export interface OperationAccepted {
   operation_id: string;
   operation: Operation;
+}
+
+/** Build states. */
+export const BuildState = {
+  Running: "running",
+  Succeeded: "succeeded",
+  Failed: "failed",
+} as const;
+
+export type BuildState = (typeof BuildState)[keyof typeof BuildState];
+
+/** BuildStep is one setup step of a build. */
+export interface BuildStep {
+  script: string;
+  /** Layer cache key. Empty means the step is not cacheable. */
+  key?: string;
+}
+
+/** BuildSetup is the setup a build runs on its builder environment. */
+export interface BuildSetup {
+  prelude: string;
+  files?: string;
+  /** At least one. */
+  steps: BuildStep[];
+}
+
+/** CreateBuildRequest is the body for builds.create. */
+export interface CreateBuildRequest {
+  name: string;
+  /** The same spec environments.create takes. */
+  spec?: Spec;
+  /** Base64 manifest. */
+  manifest_inline?: string;
+  secrets?: Record<string, string>;
+  /** The arch layer artifacts are looked up and filed under. Empty lets the
+   * server derive it. */
+  arch?: string;
+  /** Keep the builder environment instead of destroying it. */
+  keep?: boolean;
+  setup: BuildSetup;
+}
+
+/** BuildLayer is one layer's cache outcome. */
+export interface BuildLayer {
+  index: number;
+  key?: string;
+  /** "hit", "miss" or "skip". */
+  status: string;
+  snapshot_id?: string;
+}
+
+/** Build is one run of a build. */
+export interface Build {
+  id: string;
+  name: string;
+  /** One of BuildState. */
+  state: string;
+  /** e.g. resolve_cache, create_builder, layer_0, tail, snapshot,
+   * destroy_builder, done. */
+  step?: string;
+  builder_id?: string;
+  arch?: string;
+  cache_hits: number;
+  seed_snapshot_id?: string;
+  layers: BuildLayer[];
+  /** The final artifact; boot it with seed_snapshot_id. */
+  snapshot_id?: string;
+  error?: string;
+  /** Redacted tail of the failing setup exec. */
+  output?: string;
+  created_at: string;
+  updated_at: string;
+  finished_at?: string;
 }
