@@ -1,0 +1,142 @@
+---
+title: Builds
+sidebar:
+  icon: hammer
+description: Bake a setup into a snapshot with the builds service
+---
+
+A build runs a setup on a builder environment on the orchestrator, caching
+each keyed step as a layer snapshot, and files the result as a snapshot you
+can boot from. `client.Builds` starts builds and follows them. `fuse build`
+is a client of this service: it plans the layers from a Fusefile and submits
+them.
+
+## client.Builds
+
+```go
+func (s *BuildsService) Create(ctx context.Context, req CreateBuildRequest, opts ...CallOption) (*Build, error)
+func (s *BuildsService) Get(ctx context.Context, id string, opt GetBuildOptions) (*Build, error)
+func (s *BuildsService) Wait(ctx context.Context, id string) (*Build, error)
+```
+
+`Create` sends `POST /v1/builds` and returns at once with the running build
+(a `202`). The build keeps running if your process goes away. It sends a
+fresh random `Idempotency-Key` unless you pass `WithIdempotencyKey`. The same
+key with the same body returns the same build; the same key with a different
+body is a `409` `conflict`.
+
+`Get` fetches a build at once, or, with `GetBuildOptions.Wait` set, attaches
+until it is no longer running for at most that long (the server caps it at
+50s). An unknown id is an error `IsNotFound` reports.
+
+`Wait` polls `Get` with a 30s wait until the build is no longer running. `ctx`
+bounds it, and the build keeps running if `ctx` ends first. A failed build is
+returned, not an error: check `State`, then `Error` and `Output`.
+
+```go
+started, err := client.Builds.Create(ctx, fuse.CreateBuildRequest{
+	Name: "app",
+	Setup: fuse.BuildSetup{
+		Prelude: "set -e\n",
+		Steps: []fuse.BuildStep{
+			{Script: "apt-get update && apt-get install -y git", Key: "deps-v1"},
+			{Script: "git clone https://example.com/app /app"},
+		},
+	},
+}, fuse.WithIdempotencyKey("app-build-42"))
+if err != nil {
+	return err
+}
+build, err := client.Builds.Wait(ctx, started.ID)
+if err != nil {
+	return err
+}
+if build.State != fuse.BuildSucceeded {
+	return fmt.Errorf("build failed: %s\n%s", build.Error, build.Output)
+}
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID:         "t",
+	SeedSnapshotID: build.SnapshotID,
+})
+```
+
+## CreateBuildRequest
+
+```go
+type CreateBuildRequest struct {
+	Name           string
+	Spec           Spec
+	ManifestInline string
+	Secrets        map[string]string
+	Arch           string
+	Keep           bool
+	Setup          BuildSetup
+}
+
+type BuildSetup struct {
+	Prelude string
+	Files   string
+	Steps   []BuildStep
+}
+
+type BuildStep struct {
+	Script string
+	Key    string
+}
+```
+
+- `Spec` is the same spec `Environments.Create` takes. GPU builds are refused.
+- `ManifestInline` is a base64 manifest.
+- `Secrets` reach the builder like a create's. With restate on they are
+  sealed under the orchestrator's `TOKEN_ENCRYPTION_KEY` before the build is
+  journaled, and redacted from the build's error and output.
+- `Arch` is the arch layer artifacts are looked up and filed under. Empty lets
+  the server derive it from the spec or the fleet; a fleet of mixed arches
+  then builds without the cache.
+- `Keep` keeps the builder environment instead of destroying it.
+- `Steps` needs at least one. Each exec runs `Prelude`, then on a cold
+  build's first exec `Files`, then its steps' scripts. A step's `Key` is its
+  layer cache key; a step without one, and every step after it, is not
+  cached and runs in one final exec.
+
+## Build
+
+```go
+type Build struct {
+	ID             string
+	Name           string
+	State          string // BuildRunning, BuildSucceeded or BuildFailed
+	Step           string
+	BuilderID      string
+	Arch           string
+	CacheHits      int
+	SeedSnapshotID string
+	Layers         []BuildLayer
+	SnapshotID     string
+	Error          string
+	Output         string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	FinishedAt     *time.Time
+}
+
+type BuildLayer struct {
+	Index      int
+	Key        string
+	Status     string // hit, miss or skip
+	SnapshotID string
+}
+```
+
+- `Step` is where the build is: `queued`, `resolve_cache`, `create_builder`,
+  `layer_0` and so on, `tail`, `snapshot`, `destroy_builder`, `done`.
+- `Layers[].Status` is `hit` (the seed covers it), `miss` (it runs and is
+  snapshotted) or `skip` (it cannot be cached).
+- `SnapshotID` is the final artifact; boot it with `SeedSnapshotID` (or
+  `--from-build` in the CLI).
+- `Output` is the redacted tail of the failing setup exec.
+
+## Build events
+
+A builder's event stream carries `EventKindBuild` events whose `Build` member
+is a `*BuildEvent` with the build's `ID`, `State` and `Step`.
