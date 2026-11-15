@@ -931,16 +931,13 @@ func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req Crea
 	return nil
 }
 
-// staleCreateAfter is how long a provisioning vm this process runs no create
-// for may sit before reconcile asks restate whether a create still owns it.
-const staleCreateAfter = 2 * time.Minute
-
 // reconcileStaleCreates fails provisioning vms no create will finish: on
-// restate, a create interrupted while restate was off (an in-process create
-// before the switch) has no invocation to resume it, and would otherwise hold
-// its task and its host's capacity forever, since the rest of reconcile skips
-// provisioning vms. restate is asked about each one; a vm it cannot answer
-// for is left for the next cycle.
+// restate, a vm recovered provisioning whose create ran before restate was on
+// (in process) has no invocation to resume it, and would otherwise hold its
+// task and its host's capacity forever, since the rest of reconcile skips
+// provisioning vms. only vms recovered provisioning at startup are asked
+// about, never a create, fork or migrate this process is running. a vm
+// restate cannot answer for is asked again next cycle.
 func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 	d := fm.durableCreator()
 	if d == nil {
@@ -948,23 +945,33 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 	}
 	type stale struct{ id, taskID, hostID string }
 	var candidates []stale
-	cutoff := time.Now().Add(-staleCreateAfter)
-	fm.mu.RLock()
-	for id, v := range fm.vms {
-		if _, running := fm.createRuns[id]; v.state == VMStateProvisioning && !running && v.updatedAt.Before(cutoff) {
-			candidates = append(candidates, stale{id, v.taskID, v.hostID})
+	fm.mu.Lock()
+	for id := range fm.recoveredCreates {
+		v, ok := fm.vms[id]
+		if !ok || v.state != VMStateProvisioning {
+			delete(fm.recoveredCreates, id)
+			continue
 		}
+		if _, running := fm.createRuns[id]; running {
+			// its create resumed in this process.
+			delete(fm.recoveredCreates, id)
+			continue
+		}
+		candidates = append(candidates, stale{id, v.taskID, v.hostID})
 	}
-	fm.mu.RUnlock()
+	fm.mu.Unlock()
 	for _, c := range candidates {
 		askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		inFlight, err := d.CreateInFlight(askCtx, c.id)
 		cancel()
 		if err != nil {
-			fm.logger.Warn("ask restate about a provisioning vm failed, retrying next cycle", "vm", c.id, "err", err)
+			fm.logger.Warn("ask restate about a recovered provisioning vm failed, retrying next cycle", "vm", c.id, "err", err)
 			continue
 		}
 		if inFlight {
+			fm.mu.Lock()
+			delete(fm.recoveredCreates, c.id)
+			fm.mu.Unlock()
 			continue
 		}
 		cause := "provisioning interrupted with no create to finish it"
@@ -972,6 +979,9 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 			fm.logger.Warn("abandon stale create failed, retrying next cycle", "vm", c.id, "err", err)
 			continue
 		}
+		fm.mu.Lock()
+		delete(fm.recoveredCreates, c.id)
+		fm.mu.Unlock()
 		provider, _ := fm.providerForVM(c.hostID)
 		fm.cleanupFailedCreate(provider, nil, c.id, c.hostID)
 	}
