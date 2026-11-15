@@ -2,54 +2,174 @@
 title: Firecracker host setup
 sidebar:
   icon: flame
-description: Bringing up a bare-metal or nested-virt host to run Firecracker microVMs
+description: Turn a Linux box with KVM into a Fuse host, from a fresh server to your first environment
 ---
 
-## Requirements
+This page takes a fresh Linux server to a running Fuse environment. One command
+installs everything on the box: the Firecracker host agent, the orchestrator and
+a Postgres for it. You then drive it from your laptop with the CLI.
 
-Firecracker needs hardware virtualization (KVM). The host must expose `/dev/kvm`:
+## 1. Check the server
 
-- **Bare-metal Linux**, or a cloud instance type with **nested virtualization**
-  enabled (e.g. GCP `*-metal`/nested-virt images, AWS `*.metal`, bare-metal
-  providers like Equinix or Hetzner dedicated). It will not run inside an ordinary
-  container or a VM without nested virt.
-- Confirm before you start:
-  ```bash
-  ls -l /dev/kvm
-  [ -r /dev/kvm ] && [ -w /dev/kvm ] && echo ok
-  ```
-  If `/dev/kvm` is missing, the host can't run Firecracker.
-- Linux only, `x86_64` today (the baked rootfs pulls `amd64` podman/iptables). The
-  agent shells out to `ip`, `iptables`, `firecracker`, and SSH.
-- Needs `sudo` (TAP devices, iptables, mounting the rootfs to bake), plus `python3`
-  (the agent itself), `podman` (the bake extracts the iptables bundle with it),
-  `curl`, `tar`, `ssh`, `iptables`, and `e2fsck`/`resize2fs`/`truncate` from
-  `e2fsprogs` and `util-linux`.
-- Rather than installing that list by hand, run `./scripts/fc-deps.sh` first, it installs
-  the whole set on apt or dnf and then verifies every tool the scripts shell out
-  to.
-
-## One-command bootstrap
-
-On a host that meets the requirements above, `bootstrap` does everything: host
-dependencies, Firecracker, the agent service, a local Postgres, the orchestrator, the
-weekly auto-update timer, the guest agent and rootfs bake, and it self-registers the
-host. It then prints the token and the exact `fuse connect` line to run from your
-laptop.
+Firecracker needs hardware virtualization, so the server must expose `/dev/kvm`:
 
 ```bash
-git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
+ls -l /dev/kvm
+[ -r /dev/kvm ] && [ -w /dev/kvm ] && echo ok
+```
+
+If `/dev/kvm` is missing, the box can't run Fuse. Ordinary cloud VMs and
+containers don't expose it. Use one of these:
+
+- **bare metal**: Hetzner dedicated, Equinix, OVH, AWS `*.metal`
+- **a cloud VM with nested virtualization enabled**: for example a GCP instance
+  with nested virtualization turned on
+
+The server also needs:
+
+- Linux on **x86_64** (the baked rootfs pulls `amd64` podman and iptables)
+- `apt` (Debian/Ubuntu) or `dnf` (Fedora/RHEL), so the scripts can install their
+  own dependencies
+- `sudo`, and `git` to clone the repo
+
+## 2. Run bootstrap
+
+```bash
+git clone https://github.com/folsomintel/fuse ~/fuse
+cd ~/fuse/host-agent/firecracker
 sudo ./scripts/fc-agent.sh bootstrap
 ```
 
-It's idempotent, safe to re-run. Flags: `--no-updater` (skip the auto-update
-timer), `--no-register` (don't self-register). Everything below is the manual,
-step-by-step equivalent, use it when you want to run or skip individual stages.
+Keep the checkout where it is. The services run from it, and the updater pulls
+into it.
+
+`bootstrap` runs eight stages and prints each one as `[bootstrap] N/8`:
+
+| Stage                 | What it does                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------- |
+| 1. host dependencies  | `fc-deps.sh` installs podman, python3, iptables, e2fsprogs and the rest, then checks KVM     |
+| 2. firecracker        | `fc-install.sh` fetches the Firecracker binary, a guest kernel, a base rootfs and an SSH key |
+| 3. host agent         | installs and starts `fc-agent.service` on `:8090`, generating its token                      |
+| 4. postgres           | `fc-postgres.sh` installs Postgres and creates a loopback-only `fuse_orchestrator` database  |
+| 5. orchestrator       | installs and starts `orchestrator.service` on `:8080`, with auth on and a generated token    |
+| 6. auto-update        | installs a weekly timer that pulls the latest release (skip with `--no-updater`)             |
+| 7. guest agent + bake | downloads `fused` and bakes it into `rootfs-fused.ext4`                                      |
+| 8. register           | registers this box with the orchestrator as host `local-fc` (skip with `--no-register`)      |
+
+It's safe to re-run. If a stage fails, fix the cause and run it again. When it
+finishes it prints the address and token to use from your laptop:
+
+```text
+======================================================================
+ fuse host ready
+   orchestrator : http://203.0.113.10:8080
+   token        : 3f9c...
+
+   drive it from your laptop:
+     fuse connect http://203.0.113.10:8080 --token 3f9c...
+======================================================================
+```
+
+:::note[Wrong address in the connect line?]
+`bootstrap` guesses the server's address by asking `ifconfig.me`. Behind NAT, or
+if you reach the box over a private network or tailnet, set the address
+yourself:
+
+```bash
+sudo PUBLIC_HOST=10.0.0.5 ./scripts/fc-agent.sh bootstrap
+```
+
+:::
+
+## 3. Open the orchestrator port
+
+With everything on one box, your laptop only talks to the orchestrator. Allow
+`8080/tcp` from wherever you run the CLI, or put a TLS proxy or a tailnet in
+front of it. Leave `8090` (the host agent) closed to the outside: the
+orchestrator reaches it over loopback.
+
+## 4. Connect from your laptop
+
+Install the CLI (see [Quickstart](/docs/learn/quickstart#1-install-the-cli)),
+then run the line `bootstrap` printed:
+
+```bash
+fuse connect http://203.0.113.10:8080 --token <token>
+fuse host get local-fc
+```
+
+`fuse host get` should show the server's CPUs, RAM and disk. If you lose the
+token, it's `ORCH_AUTH_TOKEN` in `/etc/default/orchestrator` on the server.
+
+## 5. Boot an environment
+
+In any directory on your laptop:
+
+```bash
+cat > Fusefile <<'EOF'
+version: 1
+resources:
+  cpus: 2
+  memory: 2GB
+run: echo "hello from $(hostname)" > hello.txt
+EOF
+
+fuse up
+fuse environment exec <id> -- cat /workspace/hello.txt
+```
+
+If that prints `hello from ...`, the host is done. See
+[Your first Fusefile](/docs/learn/first-fusefile) for what each line does.
+
+## Where things live
+
+| What                          | Where                                                            |
+| ----------------------------- | ---------------------------------------------------------------- |
+| Host agent service            | `fc-agent.service`, log at `host-agent/firecracker/fc-agent.log` |
+| Host agent token              | `FC_AGENT_TOKEN` in `host-agent/firecracker/.env`                |
+| Orchestrator service          | `orchestrator.service`, logs via `journalctl -u orchestrator`    |
+| Orchestrator config and token | `/etc/default/orchestrator` (`ORCH_AUTH_TOKEN`, `DATABASE_URL`)  |
+| Postgres password             | `/etc/fuse/postgres.pass`                                        |
+| Auto-update timer             | `fc-update.timer`, Mondays 04:00 UTC                             |
+| VM state                      | `host-agent/firecracker/agent-state/vms/<vm_id>/`                |
+
+## Adding more hosts
+
+`bootstrap` puts an orchestrator on every box it runs on. For a second host
+that should join an existing orchestrator, install only the host agent:
+
+```bash
+git clone https://github.com/folsomintel/fuse ~/fuse
+cd ~/fuse/host-agent/firecracker
+sudo ./scripts/fc-deps.sh
+sudo ./scripts/fc-install.sh
+sudo ./scripts/fc-update.sh                  # download fused and bake the rootfs
+sudo ./scripts/fc-agent.sh install-service   # starts the agent, prints its URL and token
+```
+
+Then register it from your laptop, using the agent token it printed (not the
+orchestrator token):
+
+```bash
+fuse host register fc-east-2 \
+  --url http://<host>:8090 \
+  --token "$FC_AGENT_TOKEN" \
+  --max-vms 20
+```
+
+Here the orchestrator reaches the agent over the network, so open `8090/tcp` and
+the per-VM range `19551-19799/tcp` from the orchestrator to this host. See
+[Deploying the orchestrator](/docs/cloud/orchestrator-deploy) for the token and
+port reference.
 
 ## Manual, step-by-step setup
 
+To run or skip individual stages, this is what the host side of `bootstrap`
+does:
+
 ```bash
-git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
+git clone https://github.com/folsomintel/fuse ~/fuse
+cd ~/fuse/host-agent/firecracker
 
 # 0. Install host dependencies (podman, python3, e2fsprogs, ...) and verify them.
 ./scripts/fc-deps.sh
@@ -57,8 +177,9 @@ git clone <this repo> ~/fc && cd ~/fc/host-agent/firecracker
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
 ./scripts/fc-install.sh
 
-# 2. Build the reference in-guest agent (produces host-agent/firecracker/fused). Needs Go.
-#    To run your own agent instead, drop your binary here as `fused` and skip this.
+# 2. Build the reference in-guest agent (produces host-agent/firecracker/fused). Needs Go
+#    (./scripts/fc-deps.sh --with-go installs it). To run your own agent instead, drop
+#    your binary here as `fused` and skip this.
 ../shared/fc-build-agent.sh
 
 # 3. Bake the guest rootfs (rootfs-fused.ext4). Bakes in `fused` + fused.service.
@@ -80,7 +201,61 @@ FIRECRACKER_TOKEN=<generated>
 ```
 
 See [Deploying the orchestrator](/docs/cloud/orchestrator-deploy) to wire these into
-an orchestrator instance.
+an orchestrator instance, or register the agent with an existing one as in
+[Adding more hosts](#adding-more-hosts).
+## Operating
+
+```bash
+./scripts/fc-agent.sh start               # launch agent on :8090, print env
+./scripts/fc-agent.sh stop                 # stop
+./scripts/fc-agent.sh restart              # stop+start; re-attaches to running VMs
+./scripts/fc-agent.sh log                  # tail agent log
+./scripts/fc-agent.sh env                  # print env keys for an already-running agent
+./tests/fc-agent-test.sh                 # contract smoke test
+
+# systemd integration (optional, for long-lived hosts)
+./scripts/fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
+./scripts/fc-agent.sh uninstall-service
+```
+
+To pick up a new agent binary: re-run `./scripts/fc-bake-rootfs.sh` then `./scripts/fc-agent.sh restart`.
+
+On startup, the agent walks its state directory and for each VM either reuses it (if
+the process and socket are alive) or transparently recreates the TAP/DNAT and
+relaunches Firecracker with the same config. That means `systemctl restart fc-agent`
+and host reboots don't lose VMs, as long as the systemd unit is installed.
+
+## Auto-update
+
+`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It pulls the
+checkout first, resolves the latest release tag, then compares that tag against the
+`.fc-version` marker file next to the script. If they differ it downloads the new
+`fused`, re-bakes the rootfs, and restarts the agent. The comparison is **string
+equality, not a version ordering**, so re-tagging or rolling back to an older
+release also triggers an update, and `FC_FORCE=1` re-applies the current one. It
+never shells out to `fused --version` to make that decision:
+
+```bash
+./scripts/fc-update.sh                 # one-shot: update if the marker != the latest tag
+./scripts/fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
+./scripts/fc-agent.sh uninstall-updater
+```
+
+No token needed (public repo). Optional `host-agent/firecracker/.fc-updater.env` can set
+`GH_TOKEN=...` to dodge API rate limits, or `FUSE_ORCH_SERVICE`/`FUSE_ORCH_BIN` to
+also update a co-located orchestrator. Override the source repo with
+`FUSE_REPO=owner/name`.
+
+Upgrade every fc-agent before live-migrating or checkpointing across hosts. An
+upgraded agent hashes a live snapshot's memory in a format older agents cannot
+check, so an older target refuses it with a 422 and the move fails.
+
+## State
+
+State lives under `agent-state/vms/<vm_id>/`, safe to `rm -rf` if the agent is
+stopped and you want a clean slate.
+
+Hit an issue baking or booting? See [Troubleshooting](/docs/cloud/troubleshooting).
 
 ## What gets baked into the rootfs
 
@@ -156,56 +331,3 @@ the agent's environment.
 - Open at your cloud / external firewall: `8090/tcp` (the agent's HTTP API) and
   `19551–19799/tcp` (the per-VM guest-agent DNAT range).
 
-## Operating
-
-```bash
-./scripts/fc-agent.sh start               # launch agent on :8090, print env
-./scripts/fc-agent.sh stop                 # stop
-./scripts/fc-agent.sh restart              # stop+start; re-attaches to running VMs
-./scripts/fc-agent.sh log                  # tail agent log
-./scripts/fc-agent.sh env                  # print env keys for an already-running agent
-./tests/fc-agent-test.sh                 # contract smoke test
-
-# systemd integration (optional, for long-lived hosts)
-./scripts/fc-agent.sh install-service      # enable fc-agent.service (survives reboot)
-./scripts/fc-agent.sh uninstall-service
-```
-
-To pick up a new agent binary: re-run `./scripts/fc-bake-rootfs.sh` then `./scripts/fc-agent.sh restart`.
-
-On startup, the agent walks its state directory and for each VM either reuses it (if
-the process and socket are alive) or transparently recreates the TAP/DNAT and
-relaunches Firecracker with the same config. That means `systemctl restart fc-agent`
-and host reboots don't lose VMs, as long as the systemd unit is installed.
-
-## Auto-update
-
-`fc-update.sh` keeps a self-hosted box on the latest GitHub release. It pulls the
-checkout first, resolves the latest release tag, then compares that tag against the
-`.fc-version` marker file next to the script. If they differ it downloads the new
-`fused`, re-bakes the rootfs, and restarts the agent. The comparison is **string
-equality, not a version ordering**, so re-tagging or rolling back to an older
-release also triggers an update, and `FC_FORCE=1` re-applies the current one. It
-never shells out to `fused --version` to make that decision:
-
-```bash
-./scripts/fc-update.sh                 # one-shot: update if the marker != the latest tag
-./scripts/fc-agent.sh install-updater  # weekly systemd timer (Mon 04:00 UTC +/- 30m)
-./scripts/fc-agent.sh uninstall-updater
-```
-
-No token needed (public repo). Optional `host-agent/firecracker/.fc-updater.env` can set
-`GH_TOKEN=...` to dodge API rate limits, or `FUSE_ORCH_SERVICE`/`FUSE_ORCH_BIN` to
-also update a co-located orchestrator. Override the source repo with
-`FUSE_REPO=owner/name`.
-
-Upgrade every fc-agent before live-migrating or checkpointing across hosts. An
-upgraded agent hashes a live snapshot's memory in a format older agents cannot
-check, so an older target refuses it with a 422 and the move fails.
-
-## State
-
-State lives under `agent-state/vms/<vm_id>/`, safe to `rm -rf` if the agent is
-stopped and you want a clean slate.
-
-Hit an issue baking or booting? See [Troubleshooting](/docs/cloud/troubleshooting).
