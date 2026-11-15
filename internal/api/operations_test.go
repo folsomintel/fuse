@@ -272,3 +272,24 @@ func TestOperationStore_getDropsExpired(t *testing.T) {
 		t.Fatal("expired operation still in the store")
 	}
 }
+
+func TestOperation_waitOperationsBlocksUntilDone(t *testing.T) {
+	h, p := newSlowTestHandler(t)
+	router, err := h.Router()
+	if err != nil {
+		t.Fatalf("router: %v", err)
+	}
+	rr := doKeyed(t, router, http.MethodPost, "/v1/environments?wait=false", "k-shutdown", createBody(t, "shutdown"))
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("create: status %d, want 202", rr.Code)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := h.WaitOperations(ctx); err == nil {
+		t.Fatal("WaitOperations returned while the create was still running")
+	}
+	close(p.release)
+	if err := h.WaitOperations(context.Background()); err != nil {
+		t.Fatalf("WaitOperations after release: %v", err)
+	}
+}

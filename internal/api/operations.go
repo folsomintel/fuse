@@ -413,7 +413,9 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 	req := r.Clone(ctx)
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	req.ContentLength = int64(len(body))
+	h.opsRunning.Add(1)
 	go func() {
+		defer h.opsRunning.Done()
 		defer cancel()
 		defer func() {
 			if p := recover(); p != nil {
@@ -431,6 +433,23 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 		}()
 		next(op.rec, req)
 	}()
+}
+
+// WaitOperations blocks until every running operation returns or ctx ends.
+// shutdown calls it after the http server stops so accepted work can finish
+// within the shutdown budget.
+func (h *Handler) WaitOperations(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		h.opsRunning.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // answerOperation waits up to wait for op, then writes its answer or a 202.
