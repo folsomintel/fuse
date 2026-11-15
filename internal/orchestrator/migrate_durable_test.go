@@ -5,9 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // fakeDurableMigrator stands in for the restate client: it runs nothing and
@@ -191,5 +194,39 @@ func TestSealIngress(t *testing.T) {
 	}
 	if none, err := fm.sealIngress(nil); err != nil || none != nil {
 		t.Fatalf("seal of no publish = %v, %v; want nothing", none, err)
+	}
+}
+
+// TestMigrateVM_credentialsUploadedInPathOrder: the new vm gets credentials
+// of its own, uploaded one at a time in path order (what keeps a durable
+// retry's keyed uploads in step), and its agent restarts on the token its
+// row stores.
+func TestMigrateVM_credentialsUploadedInPathOrder(t *testing.T) {
+	provider := newCredForkProvider()
+	key := bytes.Repeat([]byte{5}, 32)
+	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", TokenEncryptionKey: key})
+	ctx := context.Background()
+	if _, err := fm.ProvisionAndAssign(ctx, "task-src", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	newID, err := fm.MigrateVM(ctx, "fuse-task-src", MigrateOptions{})
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	env := provider.envs[newID]
+	if env == nil {
+		t.Fatalf("no env for %s", newID)
+	}
+	if len(env.uploadedPaths) == 0 || !slices.IsSorted(env.uploadedPaths) {
+		t.Fatalf("uploaded %v, want the credential files in path order", env.uploadedPaths)
+	}
+	if len(env.startAgentCalls) != 1 || env.startAgentCalls[0].AuthToken == "" || env.startAgentCalls[0].AuthToken != env.authToken {
+		t.Fatalf("start agent %+v with env token %q, want one restart on the vm's own token", env.startAgentCalls, env.authToken)
+	}
+	fm.mu.RLock()
+	stored := fm.vms[newID].authTokenEncrypted
+	fm.mu.RUnlock()
+	if plain, err := secrets.DecryptToken(stored, key); err != nil || plain != env.authToken {
+		t.Fatalf("stored token %q (%v), want the guest's", plain, err)
 	}
 }
