@@ -1746,6 +1746,8 @@ string_enum! {
         State => "state",
         /// One setup step's boundary, timing, and cache verdict.
         Step => "step",
+        /// A build's progress, carried in [`Event::build`].
+        Build => "build",
     }
 }
 
@@ -1808,6 +1810,9 @@ pub struct Event {
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// Set only on build events: the build and where it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildEvent>,
 }
 
 impl Default for Event {
@@ -1828,6 +1833,7 @@ impl Default for Event {
             miss_detail: Vec::new(),
             duration_ms: None,
             exit_code: None,
+            build: None,
         }
     }
 }
@@ -2437,4 +2443,178 @@ impl Operation {
 pub struct OperationAccepted {
     pub operation_id: String,
     pub operation: Operation,
+}
+
+/// The build member of an [`Event`] whose kind is build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildEvent {
+    pub id: String,
+    pub state: BuildState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+}
+
+string_enum! {
+    /// States for [`Build::state`]. Running is the only non-terminal one.
+    pub enum BuildState {
+        Running => "running",
+        Succeeded => "succeeded",
+        Failed => "failed",
+    }
+}
+
+impl BuildState {
+    /// Reports whether the build finished.
+    pub fn is_terminal(&self) -> bool {
+        *self != Self::Running
+    }
+}
+
+string_enum! {
+    /// Cache verdicts for [`BuildLayer::status`].
+    pub enum BuildLayerStatus {
+        Hit => "hit",
+        Miss => "miss",
+        Skip => "skip",
+    }
+}
+
+/// One setup step of a [`BuildSetup`]. An empty `key` means the layer is
+/// not cacheable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildStep {
+    pub script: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+impl BuildStep {
+    pub fn new(script: impl Into<String>) -> Self {
+        Self {
+            script: script.into(),
+            key: None,
+        }
+    }
+
+    pub fn key(mut self, key: impl Into<String>) -> Self {
+        self.key = Some(key.into());
+        self
+    }
+}
+
+/// The setup a build runs: a prelude, optional files, and at least one step.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildSetup {
+    pub prelude: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files: Option<String>,
+    pub steps: Vec<BuildStep>,
+}
+
+/// The body of [`Builds::create`](crate::Builds::create).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CreateBuildRequest {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Spec>,
+    /// The manifest, base64 encoded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_inline: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secrets: Option<HashMap<String, String>>,
+    /// The arch layer artifacts are looked up and filed under. `None` lets
+    /// the server derive it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    /// Keeps the builder environment instead of destroying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep: Option<bool>,
+    pub setup: BuildSetup,
+}
+
+impl CreateBuildRequest {
+    pub fn new(name: impl Into<String>, setup: BuildSetup) -> Self {
+        Self {
+            name: name.into(),
+            setup,
+            ..Self::default()
+        }
+    }
+
+    pub fn spec(mut self, spec: Spec) -> Self {
+        self.spec = Some(spec);
+        self
+    }
+
+    pub fn manifest_inline(mut self, manifest: impl Into<String>) -> Self {
+        self.manifest_inline = Some(manifest.into());
+        self
+    }
+
+    pub fn secrets(mut self, secrets: HashMap<String, String>) -> Self {
+        self.secrets = Some(secrets);
+        self
+    }
+
+    pub fn arch(mut self, arch: impl Into<String>) -> Self {
+        self.arch = Some(arch.into());
+        self
+    }
+
+    pub fn keep(mut self, keep: bool) -> Self {
+        self.keep = Some(keep);
+        self
+    }
+}
+
+/// One layer of a [`Build`] and its cache verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildLayer {
+    pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    pub status: BuildLayerStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+}
+
+/// A build, from [`Builds::get`](crate::Builds::get). A failed one carries
+/// `error` and the redacted tail of the failing exec in `output`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Build {
+    pub id: String,
+    pub name: String,
+    pub state: BuildState,
+    /// The step the build last reported, e.g. resolve_cache, layer_0,
+    /// snapshot or done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+    #[serde(default)]
+    pub cache_hits: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub layers: Vec<BuildLayer>,
+    /// The final artifact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+impl Build {
+    /// Reports whether the build finished.
+    pub fn is_terminal(&self) -> bool {
+        self.state.is_terminal()
+    }
 }
