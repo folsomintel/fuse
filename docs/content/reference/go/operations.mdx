@@ -50,7 +50,8 @@ finished with a 5xx is not kept at all, so its retry runs again. Keys live in
 the orchestrator's memory and an orchestrator restart forgets them, except
 that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the key of a destroy, snapshot or
 restore is also the restate invocation's idempotency key, so a retry after a
-restart attaches to the same invocation.
+restart attaches to the same invocation. A destroy that already finished is
+the exception: its vm is gone, so that retry answers 404.
 
 ## Following an accepted operation
 

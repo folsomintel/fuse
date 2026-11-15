@@ -126,7 +126,9 @@ call that cannot provision a second environment. The rules:
   them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a destroy,
   snapshot or restore also hands the key to restate as the invocation's
   idempotency key, so a retry after a restart still attaches to the same
-  invocation. Create, fork, migrate and drain have no such fallback.
+  invocation. A destroy that already finished is the exception: its vm is
+  gone, so that retry answers `404`. Create, fork, migrate and drain have no
+  such fallback.
 
 The SDKs send a random key on every call and take your own for retries:
 `WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in
