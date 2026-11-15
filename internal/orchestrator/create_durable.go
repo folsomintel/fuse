@@ -101,10 +101,10 @@ func provisionErr(vmID string, err error, secretMap map[string]string) error {
 
 // CreateRequest is the input of the durable Environment/{vm_id}.Create
 // handler. restate journals it, so everything a caller can put a secret in
-// (the manifest, secrets, startup script, gateway token, files) is sealed.
+// (the spec, whose hitl webhook urls can carry a token, the manifest,
+// secrets, startup script, gateway token, files) is sealed.
 type CreateRequest struct {
 	TaskID string `json:"task_id"`
-	Spec   Spec   `json:"spec"`
 	// Sealed is createInputs as json, encrypted under TOKEN_ENCRYPTION_KEY.
 	Sealed []byte `json:"sealed"`
 }
@@ -112,6 +112,7 @@ type CreateRequest struct {
 // createInputs is the plaintext inside CreateRequest.Sealed: what
 // ProvisionAndAssign takes besides the task id and spec.
 type createInputs struct {
+	Spec                 Spec              `json:"spec"`
 	Manifest             []byte            `json:"manifest,omitempty"`
 	Secrets              map[string]string `json:"secrets,omitempty"`
 	StartupScript        string            `json:"startup_script,omitempty"`
@@ -191,6 +192,7 @@ func (fm *FleetManager) durableProvision(ctx context.Context, d DurableCreator, 
 		}
 	}
 	raw, err := json.Marshal(createInputs{
+		Spec:                 spec,
 		Manifest:             manifest,
 		Secrets:              secretMap,
 		StartupScript:        opts.StartupScript,
@@ -211,7 +213,7 @@ func (fm *FleetManager) durableProvision(ctx context.Context, d DurableCreator, 
 	}
 	ctx, cancel := durableWait(ctx)
 	defer cancel()
-	if err := d.Create(ctx, vmID, CreateRequest{TaskID: taskID, Spec: spec, Sealed: sealed}); err != nil {
+	if err := d.Create(ctx, vmID, CreateRequest{TaskID: taskID, Sealed: sealed}); err != nil {
 		return nil, err
 	}
 	info, ok := fm.GetVM(vmID)
@@ -393,7 +395,7 @@ func (fm *FleetManager) CreateBegin(ctx context.Context, vmID string, req Create
 	if err != nil {
 		return CreateState{}, err
 	}
-	hitlKeys, hitlKeysEncrypted, err := fm.hitlKeysFor(req.Spec.Hitl, run.in.Secrets)
+	hitlKeys, hitlKeysEncrypted, err := fm.hitlKeysFor(run.in.Spec.Hitl, run.in.Secrets)
 	if err != nil {
 		return CreateState{}, err
 	}
@@ -415,7 +417,7 @@ func (fm *FleetManager) CreateBegin(ctx context.Context, vmID string, req Create
 	}
 
 	now := time.Now()
-	spec := req.Spec
+	spec := run.in.Spec
 	spec.Name = vmID
 	fm.mu.Lock()
 	v, again := fm.vms[vmID]

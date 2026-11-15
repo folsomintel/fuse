@@ -105,7 +105,7 @@ func createRequest(t *testing.T) orchestrator.CreateRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return orchestrator.CreateRequest{TaskID: "t", Spec: orchestrator.Spec{CPUs: 1}, Sealed: sealed}
+	return orchestrator.CreateRequest{TaskID: "t", Sealed: sealed}
 }
 
 // TestCreateThroughRestate: a host create that fails twice is retried inside

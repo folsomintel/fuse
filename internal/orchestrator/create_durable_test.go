@@ -330,8 +330,8 @@ func TestDurableCreateStepsRunTwice(t *testing.T) {
 	ctx := context.Background()
 	p := newCreateProvider()
 	fm, c := newCreateFleet(t, NewMemoryStateStore(), p, FleetConfig{})
-	sealed := sealCreate(t, fm, createInputs{Manifest: []byte(`{}`)})
-	c.req = CreateRequest{TaskID: "t3", Spec: Spec{CPUs: 2, RamMB: 512}, Sealed: sealed}
+	sealed := sealCreate(t, fm, createInputs{Spec: Spec{CPUs: 2, RamMB: 512}, Manifest: []byte(`{}`)})
+	c.req = CreateRequest{TaskID: "t3", Sealed: sealed}
 
 	for range 2 {
 		st, err := fm.CreateBegin(ctx, "fuse-t3", c.req)
