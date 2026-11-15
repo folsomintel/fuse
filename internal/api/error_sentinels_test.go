@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -399,5 +401,49 @@ func TestCreateEnvironment_startupScriptTimeoutReturns400(t *testing.T) {
 	}
 	if got := decodeError(t, rr.Body); got.Error.Code != CodeInvalidArgument {
 		t.Fatalf("code = %q, want %q", got.Error.Code, CodeInvalidArgument)
+	}
+}
+
+// ── Builds ────────────────────────────────────────────────────────
+
+// TestBuildSentinels: an unknown build is 404, a build id reused for another
+// build is 409, and a build restate did not take is 503, never 500.
+func TestBuildSentinels(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{orchestrator.ErrBuildNotFound, http.StatusNotFound},
+		{orchestrator.ErrBuildConflict, http.StatusConflict},
+		{orchestrator.ErrBuildNotStarted, http.StatusServiceUnavailable},
+	} {
+		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
+			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
+// refusingBuilds is a restate that does not take a build.
+type refusingBuilds struct{}
+
+func (refusingBuilds) SubmitBuild(context.Context, orchestrator.BuildInput) error {
+	return errors.New("restate ingress unreachable")
+}
+
+func TestCreateBuild_restateDownReturns503(t *testing.T) {
+	h, fm, _ := newTestHandler(t)
+	fm.SetDurableBuilds(refusingBuilds{})
+	r := mustRouter(t, h)
+
+	body := CreateBuildRequest{Name: "app", Setup: BuildSetup{Prelude: "set -eu\n", Steps: []BuildStep{{Script: "true"}}}}
+	rr := doJSON(t, r, http.MethodPost, "/v1/builds", body)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503. body: %s", rr.Code, rr.Body.String())
+	}
+	// the record went with the failed submit, so nothing reads as running.
+	var e Error
+	_ = json.NewDecoder(rr.Body).Decode(&e)
+	if e.Error.Code != CodeUnavailable {
+		t.Errorf("error code = %q, want %q", e.Error.Code, CodeUnavailable)
 	}
 }
