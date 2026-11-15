@@ -36,6 +36,7 @@ interface FuseClientOptions {
   requestId?: () => string;
   timeoutMs?: number;
   headers?: Record<string, string>;
+  onOperation?: (accepted: OperationAccepted) => void;
 }
 ```
 
@@ -60,13 +61,14 @@ const client = new FuseClient({
 | `requestId` | `() => string` | Generator called once per request for `X-Request-ID`. An empty return value omits the header. |
 | `timeoutMs` | `number` | Default per-request timeout in milliseconds. **Not** applied to `events()` streams. |
 | `headers` | `Record<string, string>` | Extra default headers merged into every request. |
+| `onOperation` | `(accepted: OperationAccepted) => void` | Called when a mutating call outlasts the server's attach bound, before the SDK follows its operation. See [Operations](/reference/typescript/operations). |
 
 Every service method also accepts a trailing `{ signal }` (an `AbortSignal`) for
 per-call cancellation, combined with any client-level `timeoutMs` internally.
 
 ## Services
 
-Four services hang off the client, matching the Go SDK's shape:
+The services hang off the client, matching the Go SDK's shape:
 
 ```ts
 class FuseClient {
@@ -74,6 +76,7 @@ class FuseClient {
   readonly snapshots: SnapshotsService;
   readonly hosts: HostsService;
   readonly apiKeys: ApiKeysService;
+  readonly operations: OperationsService;
 }
 ```
 
@@ -83,6 +86,7 @@ class FuseClient {
 | `client.hosts` | [Hosts](/reference/typescript/hosts) |
 | `client.snapshots` | [Snapshots](/reference/typescript/snapshots) |
 | `client.apiKeys` | [API keys](/reference/typescript/api-keys) |
+| `client.operations` | [Operations](/reference/typescript/operations) |
 
 Request and response field names are snake_case throughout, matching the API wire
 format and the Go SDK, not camelCase. Only method and option names (`rotateToken`,

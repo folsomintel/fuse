@@ -35,9 +35,15 @@ client.environments.destroy(env.id)
   all (VM not found, VM not running, or the provider has no guest to exec
   into). `exec` requires the master token, see
   [Errors](/reference/python/errors).
-- `destroy` tears the environment down from any state and is idempotent, a
-  second call on an already-gone environment raises `fuse.ApiError` with
-  `code == "not_found"` rather than hanging or raising something unrelated.
+- `destroy` tears the environment down from any state. A second call on an
+  already-gone environment raises `fuse.ApiError` with `code == "not_found"`
+  rather than hanging or raising something unrelated; a retry that passes the
+  first call's `idempotency_key` gets the first call's success back instead.
+
+`create`, `destroy`, `fork`, `migrate` and `drain` run as operations: each
+takes a keyword-only `idempotency_key`, and one that outlasts the server's
+attach bound is followed to the end for you. See
+[Operations](/reference/python/operations).
 
 ## Proxied egress
 

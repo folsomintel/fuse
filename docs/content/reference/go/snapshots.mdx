@@ -33,6 +33,10 @@ if err := client.Snapshots.Restore(ctx, snap.ID); err != nil {
   [`EnvironmentsService`](/reference/go/environments) for that
   instead.
 
+`Create` and `Restore` run as operations: both take trailing `...CallOption`
+for an idempotency key, and one that outlasts the server's attach bound is
+followed to the end for you. See [Operations](/reference/go/operations).
+
 ## Live snapshots
 
 `SnapshotRequest.Live` opts into capturing the guest's memory and vCPU state

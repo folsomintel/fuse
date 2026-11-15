@@ -89,6 +89,52 @@ fuse environment drain <id>      # running -> draining (graceful, phase 1)
 fuse environment destroy <id>    # tear down (phase 2, or from any state)
 ```
 
+## Long operations and retries
+
+Create, destroy, fork, migrate, drain, snapshot create and snapshot restore
+run on the orchestrator as **operations**, off the request that started them.
+The request waits for its operation up to the server's attach bound, 10
+seconds below its `-write-timeout` (50s by default), and answers as it always
+has when the operation finishes in time. One that takes longer, a cold boot
+with a slow startup script or a cross-host migrate, is answered `202` with an
+operation id instead, and keeps running. `?wait=false` asks for the `202` at
+once, and `?wait=30s` waits that long (capped at the bound). Every answer an
+operation gives carries its id in a `Fuse-Operation-Id` header.
+
+The SDKs and the CLI follow a `202` for you, polling
+[`GET /v1/operations/{operationId}`](/reference/api) until the operation
+finishes, so a long call simply takes longer to return. Leaving early (a
+cancelled context, an interrupted CLI) leaves the operation running; pick it
+up with [`fuse operation wait`](/reference/cli/operation/wait) or the SDKs'
+`operations.wait`. While a migrate runs, its operation's `step` reports how
+far it got: `snapshot`, `transfer`, `delta`, `boot`, then `cutover`.
+
+An `Idempotency-Key` header makes a mutating call safe to retry. A retry of
+the same request with the same key attaches to the first call's operation
+instead of running again, waiting for it if it is still running or replaying
+its answer (with `Idempotent-Replayed: true`) if it finished. That is what
+turns "the connection dropped during a create" from a guess into a second
+call that cannot provision a second environment. The rules:
+
+- Keys are scoped to the credential that sent them, 1 to 255 visible ascii
+  characters.
+- The same key with a different request is a `409` `conflict`,
+  `details.reason` `idempotency_key_reused`.
+- A finished operation and its key are kept for 24 hours. One that finished
+  with a 5xx is not kept, so its retry runs again.
+- Operations and keys live in the orchestrator's memory, and a restart forgets
+  them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a destroy,
+  snapshot or restore also hands the key to restate as the invocation's
+  idempotency key, so a retry after a restart still attaches to the same
+  invocation. Create, fork, migrate and drain have no such fallback.
+
+The SDKs send a random key on every call and take your own for retries:
+`WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in
+[TypeScript](/reference/typescript/operations) and `idempotency_key` in
+[Python](/reference/python/operations). The CLI sends a fresh key on every
+invocation, so running a command again is a new request, not a retry of the
+last one.
+
 ## Forking
 
 ```bash

@@ -36,10 +36,13 @@ response). Retry policy is callsite-specific, so wrap calls yourself:
 import { isUnavailable, FuseApiError } from "@folsom/fuse";
 
 async function createWithRetry(client: FuseClient, body: CreateRequest) {
+  // one key for every attempt, so a retry attaches to a create that is still
+  // running instead of starting a second one.
+  const idempotencyKey = crypto.randomUUID();
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      return await client.environments.create(body);
+      return await client.environments.create(body, { idempotencyKey });
     } catch (err) {
       lastErr = err;
       if (!isUnavailable(err)) throw err; // not retryable
@@ -54,6 +57,14 @@ async function createWithRetry(client: FuseClient, body: CreateRequest) {
 orchestrator rejecting work while shutting down, or a transient scheduling
 conflict); `isInvalidArgument` and `isNotFound` are not, retrying won't change
 the outcome.
+
+Passing the same `idempotencyKey` on every attempt is what makes retrying a
+mutating call safe. Without it each attempt sends a fresh key, so a retry after
+a timeout or a dropped connection, when the first create may still be running,
+provisions a second environment. With it the retry attaches to the first
+attempt's operation, or gets its answer back if it already finished. A first
+attempt that failed with a 5xx (an `unavailable`, say) is not kept, so its
+retry runs again. See [Operations](/reference/typescript/operations#idempotency-keys).
 
 ## Request correlation
 
@@ -126,10 +137,14 @@ one.
 ## Choosing a timeout
 
 `timeoutMs` at the client level is a sensible default for every non-streaming
-call, including `create`, which blocks server-side until the environment reaches
-`running` or fails. If you're provisioning environments with a large
-`max_runtime_seconds` or a slow custom image pull, you generally don't need a
-longer client timeout for that, `create` itself doesn't wait for the whole
-runtime, only for the initial boot. `timeoutMs` is never applied to `events()`,
+call. For the mutating calls (`create`, `destroy`, `fork`, `migrate`, `drain`,
+`snapshots.create`, `restore`) it bounds only the first request, which the
+server holds for at most its attach bound (50s by default, 10s below its
+`-write-timeout`). `create` waits server-side until the environment reaches
+`running` or fails, and one that outlasts the bound comes back as an operation
+the SDK follows without `timeoutMs`, bounded only by `{ signal }`. So set
+`timeoutMs` above the attach bound, or leave it unset: a shorter one rejects a
+slow create or migrate while its operation keeps running (retry it with the
+same `idempotencyKey` to attach). `timeoutMs` is never applied to `events()`,
 that stream has no built-in timeout by design, use `{ signal }` to bound it
 instead.

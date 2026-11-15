@@ -28,6 +28,11 @@ await client.snapshots.restore(snap.id);
   [the environments service](/reference/typescript/environments)
   for that instead.
 
+`create` and `restore` run as operations: both take an `idempotencyKey` in
+their trailing options, and one that outlasts the server's attach bound is
+followed to the end for you. See
+[Operations](/reference/typescript/operations).
+
 :::warning[Known limitation]
 Restoring while the guest has unsynced writes can corrupt the restored data. See
 [Troubleshooting](/docs/cloud/troubleshooting#snapshot-restore-can-corrupt-unsynced-writes)
