@@ -116,7 +116,9 @@ minutes is normal, a fork taking minutes is not.
 
 **Durable steps**: `orchestrator_step_duration_seconds{op,step}` and
 `orchestrator_step_retries_total{op,step}` cover operations that run on
-restate, one sample per executed step. A rising retry rate on one step is a
+restate, one sample per executed step. A create reports its `artifact`, `boot`,
+`egress`, `upload`, `startup` and `agent` steps under `op="create"` with restate
+off as well, so the two modes compare step by step. A rising retry rate on one step is a
 host agent or dependency failing while restate keeps retrying it. See
 [Tracing](/docs/cloud/tracing) for following one request through its steps.
 

@@ -182,6 +182,44 @@ func (fakeFleet) MigrateMemoryPoll(context.Context, string) (orchestrator.Memory
 func (fakeFleet) MigrateMemorySettled(context.Context, string, string, orchestrator.MemoryPoll, bool) error {
 	return nil
 }
+func (fakeFleet) CreateBegin(context.Context, string, orchestrator.CreateRequest) (orchestrator.CreateState, error) {
+	return orchestrator.CreateState{}, nil
+}
+func (fakeFleet) CreatePlace(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
+	return "", nil
+}
+func (fakeFleet) CreateArtifact(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
+	return "", nil
+}
+func (fakeFleet) CreatePublishIngress(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (*orchestrator.CreateIngress, error) {
+	return nil, nil
+}
+func (fakeFleet) CreateRestoreOrCreate(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (bool, error) {
+	return false, nil
+}
+func (fakeFleet) CreateProvisionEgress(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateUpload(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateStartupScript(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateStartAgent(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) ([]orchestrator.Endpoint, error) {
+	return nil, nil
+}
+func (fakeFleet) CreateRunning(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateReleaseEgress(context.Context, string) error    { return nil }
+func (fakeFleet) CreateUnpublishIngress(context.Context, string) error { return nil }
+func (fakeFleet) CreateAbandon(context.Context, string, orchestrator.CreateRequest, string) error {
+	return nil
+}
+func (fakeFleet) CreateBeginFailed(context.Context, string, orchestrator.CreateRequest, string) error {
+	return nil
+}
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -245,9 +283,10 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "RetireChain", "RotateToken", "Migrate", "Drain", "Expire"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "RetireChain", "RotateToken", "Migrate", "Drain", "Expire", "Create"} {
 				want[h] = "EXCLUSIVE"
 			}
+			want["CreateInFlight"] = "SHARED"
 		case ArtifactsObject:
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:

@@ -115,23 +115,13 @@ func migrateError(err error) error {
 		return errors.New(ierr.Message())
 	}
 	if i := int(code) - int(migrateErrorBase); i >= 0 && i < len(orchestrator.MigrateRefusals) {
-		return sentinelError{msg: ierr.Message(), sentinel: orchestrator.MigrateRefusals[i]}
+		return &sentinelError{msg: ierr.Message(), sentinel: orchestrator.MigrateRefusals[i]}
 	}
 	if i := int(code) - int(fleetErrorBase); i >= 0 && i < len(orchestrator.SnapshotFleetErrors) {
-		return sentinelError{msg: ierr.Message(), sentinel: orchestrator.SnapshotFleetErrors[i]}
+		return &sentinelError{msg: ierr.Message(), sentinel: orchestrator.SnapshotFleetErrors[i]}
 	}
 	return err
 }
-
-// sentinelError is a fleet error brought back across restate: its message,
-// which already names the sentinel, and the sentinel itself for errors.Is.
-type sentinelError struct {
-	msg      string
-	sentinel error
-}
-
-func (e sentinelError) Error() string { return e.msg }
-func (e sentinelError) Unwrap() error { return e.sentinel }
 
 // migration is one run of the migrate handler, and what its compensation has
 // to undo when it fails for good.

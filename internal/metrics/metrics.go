@@ -272,7 +272,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Namespace: "orchestrator",
 			Subsystem: "step",
 			Name:      "duration_seconds",
-			Help:      "Durable (restate) step latency by op and step, one sample per execution. Replayed steps are not counted.",
+			Help:      "Lifecycle step latency by op and step, one sample per execution: durable (restate) steps, and a create's steps in mode off. Replayed steps are not counted.",
 			Buckets:   []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"op", "step"}),
 		stepRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -516,6 +516,7 @@ var (
 	_ orchestrator.OperationMetrics    = (*PrometheusMetrics)(nil)
 	_ orchestrator.ArtifactMoveMetrics = (*PrometheusMetrics)(nil)
 	_ durable.StepMetrics              = (*PrometheusMetrics)(nil)
+	_ orchestrator.StepMetrics         = (*PrometheusMetrics)(nil)
 )
 
 // MigrateFrozen implements orchestrator.MigrateMetrics.

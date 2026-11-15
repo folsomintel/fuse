@@ -473,6 +473,10 @@ func TestMigrateErrorCodesStayInTheirRange(t *testing.T) {
 	for i := range orchestrator.SnapshotFleetErrors {
 		others = append(others, fleetErrorBase+restate.Code(i))
 	}
+	others = append(others, createFailedCode)
+	for i := range orchestrator.CreateFleetErrors {
+		others = append(others, createErrorBase+restate.Code(i))
+	}
 	for _, c := range others {
 		if c >= migrateRefusedCode && c <= last {
 			t.Fatalf("code %d is in migrate's range", c)

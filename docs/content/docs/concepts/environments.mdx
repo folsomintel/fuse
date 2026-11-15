@@ -128,12 +128,12 @@ call that cannot provision a second environment. The rules:
 - A finished operation and its key are kept for 24 hours. One that finished
   with a 5xx is not kept, so its retry runs again.
 - Operations and keys live in the orchestrator's memory, and a restart forgets
-  them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a destroy,
-  snapshot, restore or migrate also hands the key to restate as the
+  them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a create,
+  destroy, snapshot, restore or migrate also hands the key to restate as the
   invocation's idempotency key, so a retry after a restart still attaches to
   the same invocation. A destroy or migrate that already finished is the
-  exception: the vm it acted on is gone, so that retry answers `404`. Create,
-  fork and drain have no such fallback.
+  exception: the vm it acted on is gone, so that retry answers `404`. Fork and
+  drain have no such fallback.
 
 The SDKs send a random key on every call and take your own for retries:
 `WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in

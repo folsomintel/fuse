@@ -511,6 +511,9 @@ type BootOptions struct {
 	// fleet. nil means no proxy egress can be provisioned; a proxy spec then
 	// fails the boot rather than silently booting direct.
 	EgressRegistry *egress.Registry
+
+	// stepDone, set by the fleet, is told each boot step's duration.
+	stepDone func(step string, d time.Duration, err error)
 }
 
 // DefaultStartupScriptTimeout bounds a boot-time startup script when
@@ -591,7 +594,7 @@ type BootResult struct {
 }
 
 // reportedEndpoints returns env.Endpoints() when env implements
-// EndpointReporter, or nil otherwise. Shared by bootFresh/bootRestore so a
+// EndpointReporter, or nil otherwise. Used by every boot so a
 // provider without ingress support (the common case today) contributes no
 // endpoints rather than requiring every Environment to implement the method.
 func reportedEndpoints(env Environment) []Endpoint {
@@ -675,7 +678,7 @@ func releaseEgress(ctx context.Context, p Provider, env Environment, in bootInpu
 	_ = in.opts.EgressRegistry.Destroy(ctx, status.Provider, egressContext(p, env, in))
 }
 
-// bootInputs bundles the inputs needed by bootFresh and bootRestore.
+// bootInputs bundles the inputs a boot's steps need.
 // It exists purely to keep helper signatures readable.
 type bootInputs struct {
 	spec      Spec
@@ -711,7 +714,7 @@ func uploadFiles(ctx context.Context, env Environment, files map[string][]byte) 
 		go func(path string, data []byte) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			if err := env.Upload(ctx, data, path); err != nil {
+			if err := env.Upload(WithIdempotencyPart(ctx, "upload:"+path), data, path); err != nil {
 				errs <- fmt.Errorf("upload %s: %w", path, err)
 			}
 		}(path, data)
@@ -769,109 +772,104 @@ func runStartupScript(ctx context.Context, env Environment, script string, timeo
 	return nil
 }
 
-// bootRestore attempts to restore env from its latest checkpoint and bring
-// the guest agent back up. Returns (nil, nil) on a clean fall-through to fresh
-// provision (e.g. provider not SnapshotCapable, no checkpoints, restore
-// failed). Returns (result, nil) on successful restore. Returns (nil, err)
-// only for hard errors that should abort Boot entirely (e.g. startup script
-// failure).
-func bootRestore(ctx context.Context, p Provider, existing Environment, in bootInputs, start time.Time, encToken []byte) (*BootResult, error) {
-	sc, ok := existing.(SnapshotCapable)
+// restoreLatest restores env from its latest checkpoint. it reports false,
+// and leaves env alone, when there is nothing to restore: the provider is not
+// SnapshotCapable, it has no checkpoints, or the restore failed.
+func restoreLatest(ctx context.Context, env Environment) bool {
+	sc, ok := env.(SnapshotCapable)
 	if !ok {
-		return nil, nil
+		return false
 	}
-	checkpoints, cpErr := sc.ListCheckpoints(ctx)
-	if cpErr != nil || len(checkpoints) == 0 {
-		return nil, nil
+	checkpoints, err := sc.ListCheckpoints(ctx)
+	if err != nil || len(checkpoints) == 0 {
+		return false
 	}
-	latest := checkpoints[len(checkpoints)-1]
-	if restoreErr := sc.Restore(ctx, latest.ID); restoreErr != nil {
-		return nil, nil
-	}
-
-	// a restored environment re-provisions its egress rather than inheriting
-	// a stale endpoint: whatever backend served it before this boot is gone
-	// or unknown. release first so a backend that still remembers the vm
-	// does not refuse the re-provision.
-	releaseEgress(ctx, p, existing, in, egress.Status{Mode: in.spec.Egress.Normalize().Mode, Provider: in.spec.Egress.Provider})
-	egressStatus, err := provisionEgress(ctx, p, existing, in)
-	if err != nil {
-		return nil, err
-	}
-
-	// Re-upload the agent's files (manifest/secrets/credentials all live in
-	// AgentSpec.Files, populated by the profile). Credential files carry the
-	// SetToken side effect via setTokenIfSupported below.
-	_ = uploadFiles(ctx, existing, withEgressFiles(in.agentSpec.Files, egressStatus, existing))
-	setTokenIfSupported(existing, in.creds)
-	if err := runStartupScript(ctx, existing, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
-		releaseEgress(ctx, p, existing, in, egressStatus)
-		return nil, err
-	}
-	_ = existing.StartAgent(ctx, in.agentSpec)
-	return &BootResult{
-		Env:                existing,
-		BootTime:           time.Since(start),
-		FromCache:          true,
-		AuthTokenEncrypted: encToken,
-		DrainCommand:       in.agentSpec.DrainCommand,
-		Endpoints:          reportedEndpoints(existing),
-		Egress:             egressStatus,
-	}, nil
+	return sc.Restore(ctx, checkpoints[len(checkpoints)-1].ID) == nil
 }
 
-// bootFresh provisions a new environment via p.Create, uploads the agent's
-// files (manifest/secrets/credentials, all carried in AgentSpec.Files), runs
-// the startup script, and starts the agent.
-func bootFresh(ctx context.Context, p Provider, in bootInputs, start time.Time, encToken []byte) (*BootResult, error) {
-	env, err := p.Create(ctx, in.spec)
+// restoreOrCreate is the first step of a boot: a vm by spec.Name that p
+// already has is restored from its latest checkpoint, and anything else is
+// created. fromCache reports a restore. reuse keeps an existing vm that has
+// nothing to restore instead of creating over it, which is what a retried
+// durable boot step needs (create-if-absent); mode off creates as it always
+// has. fork's durable boot reuses this shape with CreateFromCheckpoint.
+func restoreOrCreate(ctx context.Context, p Provider, spec Spec, reuse bool) (env Environment, fromCache bool, err error) {
+	if existing, getErr := p.Get(ctx, spec.Name); getErr == nil {
+		if restoreLatest(ctx, existing) {
+			return existing, true, nil
+		}
+		if reuse {
+			return existing, false, nil
+		}
+	}
+	env, err = p.Create(ctx, spec)
+	return env, false, err
+}
+
+// bootRun is one boot between its steps: restore-or-create, egress, upload,
+// startup script and start agent. Boot runs them in turn; the durable create
+// runs each as a journaled step over a bootRun it rebuilds from the vm.
+type bootRun struct {
+	p         Provider
+	in        bootInputs
+	env       Environment
+	fromCache bool
+	egress    egress.Status
+}
+
+// provisionEgress brings up the egress the spec asks for. releaseFirst
+// releases whatever backend may still remember the vm before provisioning:
+// a restored vm's stale endpoint, or a durable step's earlier attempt.
+func (b *bootRun) provisionEgress(ctx context.Context, releaseFirst bool) error {
+	if releaseFirst {
+		releaseEgress(ctx, b.p, b.env, b.in, egress.Status{Mode: b.in.spec.Egress.Normalize().Mode, Provider: b.in.spec.Egress.Provider})
+	}
+	status, err := provisionEgress(ctx, b.p, b.env, b.in)
 	if err != nil {
+		return err
+	}
+	b.egress = status
+	return nil
+}
+
+// upload writes every file the agent profile declared (manifest, secrets,
+// credentials, caller files, tunnel config) plus the egress files into the
+// guest, then records the token on the env so env.Token() returns it.
+func (b *bootRun) upload(ctx context.Context) error {
+	if err := uploadFiles(ctx, b.env, withEgressFiles(b.in.agentSpec.Files, b.egress, b.env)); err != nil {
+		return err
+	}
+	setTokenIfSupported(b.env, b.in.creds)
+	return nil
+}
+
+// startup runs the caller's startup script, if any.
+func (b *bootRun) startup(ctx context.Context) error {
+	return runStartupScript(ctx, b.env, b.in.opts.StartupScript, b.in.opts.StartupScriptTimeout)
+}
+
+// startAgent launches the guest agent and returns the endpoints it published.
+func (b *bootRun) startAgent(ctx context.Context) ([]Endpoint, error) {
+	if err := b.env.StartAgent(ctx, b.in.agentSpec); err != nil {
 		return nil, err
 	}
+	return reportedEndpoints(b.env), nil
+}
 
-	// egress comes up between Create and the upload pass: the endpoint
-	// binds to the vm's tap, so it cannot precede Create, and the guest
-	// files that carry it have to go up with the manifest. a failure here
-	// returns before anything is uploaded, and the fleet's rollback destroys
-	// the vm, so there is no window in which a vm exists, is reported to the
-	// caller, and has egress other than what was asked for.
-	egressStatus, err := provisionEgress(ctx, p, env, in)
-	if err != nil {
-		return nil, err
+// release tears down the egress a failed boot brought up.
+func (b *bootRun) release(ctx context.Context) {
+	releaseEgress(ctx, b.p, b.env, b.in, b.egress)
+}
+
+// timeStep runs fn as boot step name and reports its duration to the
+// fleet's observer, when it set one.
+func (in bootInputs) timeStep(name string, fn func() error) error {
+	start := time.Now()
+	err := fn()
+	if in.opts.stepDone != nil {
+		in.opts.stepDone(name, time.Since(start), err)
 	}
-
-	// Upload everything the agent profile declared. For fused this is the
-	// manifest, secrets JSON, and (when present) the TLS/auth credential
-	// files. The guest is responsible for mounting any sensitive paths on
-	// tmpfs (see PRD-08 for the fused profile's /fuse contract). the egress
-	// files ride the same pass, so the proxy variables exist before the
-	// startup script runs.
-	if err := uploadFiles(ctx, env, withEgressFiles(in.agentSpec.Files, egressStatus, env)); err != nil {
-		releaseEgress(ctx, p, env, in, egressStatus)
-		return nil, err
-	}
-	// Credential files were uploaded above; record the token on the env so
-	// env.Token() returns it.
-	setTokenIfSupported(env, in.creds)
-
-	if err := runStartupScript(ctx, env, in.opts.StartupScript, in.opts.StartupScriptTimeout); err != nil {
-		releaseEgress(ctx, p, env, in, egressStatus)
-		return nil, err
-	}
-
-	if err := env.StartAgent(ctx, in.agentSpec); err != nil {
-		releaseEgress(ctx, p, env, in, egressStatus)
-		return nil, err
-	}
-
-	return &BootResult{
-		Env:                env,
-		BootTime:           time.Since(start),
-		AuthTokenEncrypted: encToken,
-		DrainCommand:       in.agentSpec.DrainCommand,
-		Endpoints:          reportedEndpoints(env),
-		Egress:             egressStatus,
-	}, nil
+	return err
 }
 
 // Boot provisions or restores an environment, uploads the agent's files, and
@@ -905,7 +903,7 @@ func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap
 	// paths and launch command are assembled (see agent_profile.go). Credential
 	// files are included in AgentSpec.Files and uploaded generically; the
 	// in-memory token side effect is applied by setTokenIfSupported in
-	// bootFresh/bootRestore.
+	// bootRun.upload.
 	agentSpec := FusedAgentSpec(manifest, GuestSecrets(secretMap, spec.Egress), creds, opts)
 
 	in := bootInputs{
@@ -917,18 +915,50 @@ func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap
 		opts:      opts,
 	}
 
-	// Try restoring from an existing checkpoint first. bootRestore returns
-	// (nil, nil) when restore is not applicable (provider not SnapshotCapable,
-	// no checkpoints, or restore failed) so we fall through to fresh provision.
-	if existing, err := p.Get(ctx, spec.Name); err == nil {
-		result, err := bootRestore(ctx, p, existing, in, start, encToken)
-		if err != nil {
-			return nil, err
-		}
-		if result != nil {
-			return result, nil
-		}
+	// restore from an existing checkpoint when there is one, else create.
+	// the steps after it are the same either way: a restored vm re-provisions
+	// its egress rather than inheriting a stale endpoint, and gets its files
+	// and agent again. every step after egress releases it on failure; the
+	// fleet's rollback destroys the vm.
+	b := &bootRun{p: p, in: in}
+	if err := in.timeStep("boot", func() error {
+		var err error
+		b.env, b.fromCache, err = restoreOrCreate(ctx, p, spec, false)
+		return err
+	}); err != nil {
+		return nil, err
 	}
-
-	return bootFresh(ctx, p, in, start, encToken)
+	// egress comes up between Create and the upload pass: the endpoint binds
+	// to the vm's tap, so it cannot precede Create, and the guest files that
+	// carry it have to go up with the manifest. a failure here returns before
+	// anything is uploaded, and the fleet's rollback destroys the vm.
+	if err := in.timeStep("egress", func() error { return b.provisionEgress(ctx, b.fromCache) }); err != nil {
+		return nil, err
+	}
+	if err := in.timeStep("upload", func() error { return b.upload(ctx) }); err != nil {
+		b.release(ctx)
+		return nil, err
+	}
+	if err := in.timeStep("startup", func() error { return b.startup(ctx) }); err != nil {
+		b.release(ctx)
+		return nil, err
+	}
+	var endpoints []Endpoint
+	if err := in.timeStep("agent", func() error {
+		var err error
+		endpoints, err = b.startAgent(ctx)
+		return err
+	}); err != nil {
+		b.release(ctx)
+		return nil, err
+	}
+	return &BootResult{
+		Env:                b.env,
+		BootTime:           time.Since(start),
+		FromCache:          b.fromCache,
+		AuthTokenEncrypted: encToken,
+		DrainCommand:       agentSpec.DrainCommand,
+		Endpoints:          endpoints,
+		Egress:             b.egress,
+	}, nil
 }
