@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -419,6 +420,12 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 		defer cancel()
 		defer func() {
 			if p := recover(); p != nil {
+				if h.Logger != nil {
+					h.Logger.Error("operation panicked",
+						"operation_id", op.id, "kind", op.kind,
+						"request_id", RequestID(req.Context()),
+						"panic", p, "stack", string(debug.Stack()))
+				}
 				op.rec.status = 0
 				op.rec.body.Reset()
 				writeError(op.rec, http.StatusInternalServerError, CodeInternal, "operation panicked", nil)
