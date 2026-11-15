@@ -126,6 +126,52 @@ func (fakeFleet) HitlRunFinish(context.Context, string, orchestrator.HitlRunPlan
 }
 func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
 
+func (fakeFleet) MigrateBegin(context.Context, string, orchestrator.MigrateRequest) (orchestrator.MigratePlan, error) {
+	return orchestrator.MigratePlan{}, nil
+}
+func (fakeFleet) MigratePlaceholder(context.Context, orchestrator.MigratePlan) error { return nil }
+func (fakeFleet) MigrateTransferPlan(context.Context, orchestrator.MigratePlan, orchestrator.SnapshotRecord) (orchestrator.ChainMove, error) {
+	return orchestrator.ChainMove{}, nil
+}
+func (fakeFleet) MigrateDeltaPlan(context.Context, orchestrator.MigratePlan, orchestrator.SnapshotRecord, string) (orchestrator.ArtifactMoveJob, error) {
+	return orchestrator.ArtifactMoveJob{}, nil
+}
+func (fakeFleet) MigrateCreate(context.Context, orchestrator.MigratePlan, orchestrator.SnapshotRecord, string) error {
+	return nil
+}
+func (fakeFleet) MigrateIngress(context.Context, orchestrator.MigratePlan) ([]byte, error) {
+	return nil, nil
+}
+func (fakeFleet) MigrateCredentials(context.Context, orchestrator.MigratePlan, []byte) ([]byte, error) {
+	return nil, nil
+}
+func (fakeFleet) MigrateStartAgent(context.Context, orchestrator.MigratePlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) MigratePersist(context.Context, orchestrator.MigratePlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) MigrateTask(context.Context, orchestrator.MigratePlan) error { return nil }
+func (fakeFleet) MigrateCutover(context.Context, orchestrator.MigratePlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) MigrateLineage(context.Context, orchestrator.MigratePlan, orchestrator.SnapshotRecord, bool) error {
+	return nil
+}
+func (fakeFleet) MigrateHandover(context.Context, orchestrator.MigratePlan) error     { return nil }
+func (fakeFleet) MigrateDrainSource(context.Context, orchestrator.MigratePlan) error  { return nil }
+func (fakeFleet) MigrateResumeSource(context.Context, orchestrator.MigratePlan) error { return nil }
+func (fakeFleet) MigrateFrozen(context.Context, orchestrator.MigratePlan, time.Duration, string) error {
+	return nil
+}
+func (fakeFleet) MigrateDeleteSeed(context.Context, orchestrator.SnapshotRecord) error { return nil }
+func (fakeFleet) MigrateMemoryPoll(context.Context, string) (orchestrator.MemoryPoll, error) {
+	return orchestrator.MemoryPoll{Gone: true}, nil
+}
+func (fakeFleet) MigrateMemorySettled(context.Context, string, string, orchestrator.MemoryPoll, bool) error {
+	return nil
+}
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -188,7 +234,7 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "RetireChain", "RotateToken", "Migrate"} {
 				want[h] = "EXCLUSIVE"
 			}
 		case ArtifactsObject:
@@ -197,6 +243,8 @@ func TestDiscoveryManifest(t *testing.T) {
 			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
 		case InterventionObject:
 			want = map[string]string{"Run": "EXCLUSIVE", "Expire": "EXCLUSIVE"}
+		case MigrateObject:
+			want = map[string]string{"WatchMemory": "EXCLUSIVE"}
 		case WebhooksService:
 			// a plain service's handlers carry no type.
 			want = map[string]string{"Deliver": ""}
