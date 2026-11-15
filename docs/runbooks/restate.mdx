@@ -202,6 +202,25 @@ decrypts; run it again. a rotation's journal can be read with the query below. r
 q "SELECT j.index, j.name, j.entry_json FROM sys_journal j JOIN sys_invocation i ON j.id = i.id WHERE i.target_handler_name = 'RotateToken'"
 ```
 
+drain runs as `Environment/<vm_id>/Drain`: begin (persist `draining`), arm
+the grace timer, run the drain command once. ttl (`max_runtime`), idle and
+drain-grace expiry run as `Environment/<vm_id>/Expire`: one check per
+invocation, which schedules the next as a delayed send to itself under a fresh
+token kept in the object's `expiry` state, with the strike count. a send whose
+token is not the stored one is stale and does nothing, so re-arming (the
+orchestrator does it on create, on an approved extension and for every vm
+after a restart) never leaves two live timers. a check that reaps sends
+`Environment/<vm_id>/Destroy`. the pending timer of each environment is a
+scheduled invocation:
+
+```sh
+q "SELECT target_service_key, status, scheduled_at FROM sys_invocation WHERE target_service_name = 'Environment' AND target_handler_name = 'Expire' AND status <> 'completed'"
+q "SELECT service_key, value_utf8 FROM state WHERE service_name = 'Environment' AND key = 'expiry'"
+```
+
+a check whose state store read fails retries without an attempt bound, so a
+store outage delays reaping rather than dropping the timer.
+
 hitl webhooks run as `Webhooks/Deliver`, one invocation per attempt at one
 delivery to one endpoint. a failed attempt does not sleep: it sends the next
 attempt to itself delayed (1s, then four times longer, capped at an hour) and

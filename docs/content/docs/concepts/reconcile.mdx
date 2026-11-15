@@ -166,6 +166,45 @@ no attempt in flight, such as one left over from before the upgrade. A destroy
 that runs out of retries moves the VM to `destroy_failed` and writes a
 `destroy` dead letter, counted by `orchestrator_destroy_dead_letters_total`.
 
+## Expiry on restate
+
+With restate on (`FUSE_RESTATE_MODE=self` or `cloud`), the stuck-task, idle
+and stuck-draining passes above do not run in the loop. Each environment has
+one durable timer on its `Environment/{vm_id}` object instead, and its
+`Expire` handler applies the same rules, holds included:
+
+- A create that reaches `running` arms the timer. Reconcile arms any `running`
+  or `draining` environment this orchestrator process has not armed yet: one
+  whose arm failed, one a fork or migrate brought up, and every environment
+  after a restart. Arming again is harmless: it replaces the pending timer,
+  which then fires as a no-op.
+- Each check schedules the next one as a delayed send at the moment the
+  environment next becomes due (its `max_runtime` deadline, the end of its
+  idle window, the end of an approved extension), never as one long sleep, so
+  a day-long lifetime pins no invocation to an old deployment. An environment
+  a pending intervention holds is looked at again every minute; an attached
+  one a full idle timeout later. An environment with nothing to watch (no
+  task ceiling, no idle timeout) has no timer.
+- The two strikes live in the object's state, not in orchestrator memory, so a
+  restart neither resets nor skips one. The second check comes one reconcile
+  interval after the first. An arm that lands between the two (a restart,
+  an extension) can bring the second check forward.
+- `fuse environment drain` runs as `Environment/{vm_id}/Drain`: the move to
+  `draining` is persisted, the grace timer is armed for the draining timeout,
+  then the drain command runs once. The timer is armed before the command, so
+  a failed command or an orchestrator killed under it still ends in a
+  destroy. The timer is a delayed send, so a `DELETE` during the grace runs at
+  once.
+- An approved [expiry extension](/docs/guides/human-in-the-loop) re-arms the
+  timer at its new end.
+- A reaped environment goes to `destroying` with the same events and dead
+  letters as above, and the timer sends `Destroy` on the same object. The
+  `orchestrator_reconcile_*` strike and teardown counters count these too.
+
+Pending timers are scheduled invocations restate keeps; see
+[the restate runbook](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx)
+for how to list them.
+
 ## Health verdicts
 
 This is the one pass that is **not** a detector. It reads and reports; it never
