@@ -744,6 +744,9 @@ func run() error {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http shutdown: %w", err)
 	}
+	if err := handler.WaitOperations(shutdownCtx); err != nil {
+		logger.Warn("shutdown budget ran out with operations still running", "error", err)
+	}
 	logger.Info("orchestrator server stopped")
 	return nil
 }

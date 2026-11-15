@@ -105,6 +105,8 @@ type Handler struct {
 
 	opsOnce sync.Once
 	ops     *operationStore
+	// opsRunning counts operation goroutines, so shutdown can wait for them.
+	opsRunning sync.WaitGroup
 }
 
 // Router returns an http.Handler serving the orchestrator REST API.
