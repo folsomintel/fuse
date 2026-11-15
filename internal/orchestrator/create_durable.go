@@ -779,6 +779,7 @@ func (fm *FleetManager) CreateRunning(ctx context.Context, vmID string, req Crea
 	fm.logger.InfoContext(ctx, "vm running", "vm", vmID, "task", req.TaskID, "from_cache", st.FromCache, "host", st.HostID)
 	fm.appendEvent(ctx, "vm", vmID, "vm.running", map[string]any{"task_id": req.TaskID})
 	fm.appendEvent(ctx, "task", req.TaskID, "task.running", map[string]any{"vm_id": vmID})
+	fm.armExpiry(vmID)
 	if status.Mode == egress.ModeProxy {
 		// provider and protocol only: the endpoint is on the environment for
 		// anyone who needs it, and never in an event or a log line.

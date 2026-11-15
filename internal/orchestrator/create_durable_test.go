@@ -554,3 +554,18 @@ func TestInProcessCreateTimesItsSteps(t *testing.T) {
 		t.Fatalf("steps %s", got)
 	}
 }
+
+// a create on restate that reaches running arms its ttl timer, as the
+// in-process create does.
+func TestDurableCreateRunningArmsExpiry(t *testing.T) {
+	p := newCreateProvider()
+	fm, _ := newCreateFleet(t, NewMemoryStateStore(), p, FleetConfig{})
+	d := withDurableExpiry(fm)
+	if _, err := fm.ProvisionAndAssign(context.Background(), "t8", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	fm.expirySends.Wait()
+	if got := d.armed(); len(got) != 1 || got[0] != "fuse-t8" {
+		t.Fatalf("arms %v, want one for fuse-t8", got)
+	}
+}
