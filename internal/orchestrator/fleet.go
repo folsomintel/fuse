@@ -662,6 +662,10 @@ type FleetManager struct {
 	// guarded by hitlMu.
 	hitlQueued map[string]bool
 
+	// builds is the fusefile builds this process runs or submits. see
+	// builds.go.
+	builds buildRegistry
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }

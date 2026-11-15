@@ -43,6 +43,18 @@ type EnvironmentEvent struct {
 	// re-reads the intervention rather than trusting the event. State on
 	// such an event is the environment's current state, unchanged.
 	Intervention *InterventionEvent `json:"intervention,omitempty"`
+
+	// Build is set on "build" events on a builder's stream: the fusefile
+	// build it runs moved to a new step or state. like Intervention it
+	// carries ids and states only; GET /v1/builds/{id} has the rest.
+	Build *BuildEvent `json:"build,omitempty"`
+}
+
+// BuildEvent is the hint carried by a "build" event.
+type BuildEvent struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	Step  string `json:"step,omitempty"`
 }
 
 // InterventionEvent is the content-free hint carried by an "intervention"
