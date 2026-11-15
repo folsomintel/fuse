@@ -112,7 +112,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	if d := fm.durableMigrator(); d != nil {
 		return fm.durableMigrateVM(ctx, d, vmID, opts)
 	}
-	plan, err := fm.MigrateBegin(ctx, vmID, MigrateRequest{TargetHostID: opts.TargetHostID, Live: opts.Live, Lazy: opts.Lazy})
+	plan, err := fm.MigrateBegin(ctx, vmID, MigrateRequest(opts))
 	if err != nil {
 		return "", err
 	}

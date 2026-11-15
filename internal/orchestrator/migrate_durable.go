@@ -153,7 +153,7 @@ func (fm *FleetManager) durableMigrateVM(ctx context.Context, d DurableMigrator,
 	}()
 	ctx, cancel := durableWait(ctx)
 	defer cancel()
-	return d.Migrate(ctx, vmID, MigrateRequest{TargetHostID: opts.TargetHostID, Live: opts.Live, Lazy: opts.Lazy})
+	return d.Migrate(ctx, vmID, MigrateRequest(opts))
 }
 
 // isMigratePlaceholder reports whether a recovered provisioning vm is the
