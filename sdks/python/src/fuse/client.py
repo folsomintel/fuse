@@ -9,9 +9,10 @@ from ._services.apikeys import APIKeysService
 from ._services.environments import EnvironmentsService
 from ._services.hosts import HostsService
 from ._services.interventions import InterventionsService
+from ._services.operations import OperationsService
 from ._services.snapshots import SnapshotsService
 from ._transport import Transport
-from .types import ActorLabel, Intervention
+from .types import ActorLabel, Intervention, OperationAccepted
 
 
 class Client:
@@ -24,6 +25,10 @@ class Client:
     # hitl_wait=False makes every gated call raise PendingInterventionError at
     # once instead. on_held is called with the pending intervention whenever
     # a gate holds a call, before it waits.
+    #
+    # on_operation is called with the accepted operation whenever a mutating
+    # call outlasts the server's wait and answers 202, before the call
+    # follows it to the end.
     def __init__(
         self,
         base_url: str,
@@ -36,6 +41,7 @@ class Client:
         actor: Optional[ActorLabel] = None,
         hitl_wait: bool = True,
         on_held: Optional[Callable[[Intervention], None]] = None,
+        on_operation: Optional[Callable[[OperationAccepted], None]] = None,
     ) -> None:
         if not base_url:
             raise ValueError("base url is required")
@@ -53,6 +59,7 @@ class Client:
             actor=actor,
             hitl_wait=hitl_wait,
             on_held=on_held,
+            on_operation=on_operation,
         )
         self._bind()
 
@@ -62,6 +69,7 @@ class Client:
         self.hosts = HostsService(self._t)
         self.api_keys = APIKeysService(self._t)
         self.interventions = InterventionsService(self._t)
+        self.operations = OperationsService(self._t)
 
     def with_actor(self, actor: ActorLabel) -> Client:
         # returns a copy that sends actor as the Fuse-Actor headers, sharing

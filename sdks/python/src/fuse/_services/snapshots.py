@@ -6,6 +6,7 @@ from urllib.parse import quote
 from .._transport import Transport
 from ..types import Snapshot, SnapshotPage, SnapshotRequest
 from .interventions import read_held, settle_held
+from .operations import call_operation
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -17,7 +18,11 @@ class SnapshotsService:
         self._t = transport
 
     def create(
-        self, vm_id: str, request: Optional[SnapshotRequest] = None
+        self,
+        vm_id: str,
+        request: Optional[SnapshotRequest] = None,
+        *,
+        idempotency_key: Optional[str] = None,
     ) -> Snapshot:
         # checkpoints a running environment. with no request (or with live
         # unset) this takes a disk snapshot, the rootfs and nothing else; pass
@@ -32,7 +37,13 @@ class SnapshotsService:
         if not vm_id:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}/snapshots"
-        resp = self._t.request("POST", path, body=request or SnapshotRequest())
+        resp = call_operation(
+            self._t,
+            "POST",
+            path,
+            body=request or SnapshotRequest(),
+            idempotency_key=idempotency_key,
+        )
         held = read_held(resp)
         if held is not None:
             settled = settle_held(self._t, held)
@@ -149,8 +160,10 @@ class SnapshotsService:
             raise ValueError("snapshot id is required")
         self._t.request("DELETE", f"/v1/snapshots/{quote(snapshot_id, safe='')}")
 
-    def restore(self, snapshot_id: str) -> None:
+    def restore(self, snapshot_id: str, *, idempotency_key: Optional[str] = None) -> None:
         if not snapshot_id:
             raise ValueError("snapshot id is required")
         path = f"/v1/snapshots/{quote(snapshot_id, safe='')}"
-        self._t.request("POST", path, params={"action": "restore"})
+        call_operation(
+            self._t, "POST", path, params={"action": "restore"}, idempotency_key=idempotency_key
+        )

@@ -30,6 +30,7 @@ from ..types import (
 from .events import stream_events
 from .interventions import read_held, settle_held, wait_intervention
 from .locks import call_unlocked
+from .operations import call_operation
 
 # the server's max page size; list() requests this internally so it walks
 # every page in as few round trips as possible.
@@ -85,39 +86,72 @@ class EnvironmentsService:
         resp = self._t.request("GET", f"/v1/environments/{quote(vm_id, safe='')}")
         return EnvironmentInfo.model_validate(resp.json())
 
-    def create(self, request: CreateRequest) -> EnvironmentInfo:
-        resp = self._t.request("POST", "/v1/environments", body=request)
+    def create(
+        self, request: CreateRequest, *, idempotency_key: Optional[str] = None
+    ) -> EnvironmentInfo:
+        # idempotency_key dedupes retries of this call: a retry with the same
+        # key and request returns the first call's result instead of running
+        # again. without one the call sends a fresh random key. this applies
+        # to every mutating call (create, destroy, drain, fork, migrate,
+        # snapshots.create, snapshots.restore). a call that outlasts the
+        # server's wait is followed through client.operations until it
+        # finishes, so it returns or raises exactly as a direct answer would.
+        resp = call_operation(
+            self._t, "POST", "/v1/environments", body=request, idempotency_key=idempotency_key
+        )
         return EnvironmentInfo.model_validate(resp.json())
 
-    def drain(self, vm_id: str) -> EnvironmentInfo:
+    def drain(self, vm_id: str, *, idempotency_key: Optional[str] = None) -> EnvironmentInfo:
         # phase-1 only: this quiesces the guest workload and moves the vm to
         # "draining" so you can inspect its output, but it does not destroy
         # the vm. call environments.destroy(vm_id) afterward to remove it. a
         # drained vm left undestroyed keeps running (and billing) until the
         # orchestrator's draining timeout (5m30s by default) passes, and then
         # the orchestrator destroys it.
-        return self._action(vm_id, "drain")
+        return self._action(vm_id, "drain", idempotency_key=idempotency_key)
 
-    def fork(self, vm_id: str, options: ForkOptions | None = None) -> EnvironmentInfo:
+    def fork(
+        self,
+        vm_id: str,
+        options: ForkOptions | None = None,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> EnvironmentInfo:
         if not vm_id:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
-        resp = self._t.request(
-            "POST", path, params={"action": "fork"}, body=options or ForkOptions()
+        resp = call_operation(
+            self._t,
+            "POST",
+            path,
+            params={"action": "fork"},
+            body=options or ForkOptions(),
+            idempotency_key=idempotency_key,
         )
         held = read_held(resp)
         if held is not None:
             return self._held_environment(held)
         return EnvironmentInfo.model_validate(resp.json())
 
-    def migrate(self, vm_id: str, options: MigrateOptions | None = None) -> EnvironmentInfo:
+    def migrate(
+        self,
+        vm_id: str,
+        options: MigrateOptions | None = None,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> EnvironmentInfo:
         # moves the environment to another host and returns the new one. the
         # source is drained and destroyed once the new one is running.
         if not vm_id:
             raise ValueError("vm id is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
-        resp = self._t.request(
-            "POST", path, params={"action": "migrate"}, body=options or MigrateOptions()
+        resp = call_operation(
+            self._t,
+            "POST",
+            path,
+            params={"action": "migrate"},
+            body=options or MigrateOptions(),
+            idempotency_key=idempotency_key,
         )
         held = read_held(resp)
         if held is not None:
@@ -395,10 +429,15 @@ class EnvironmentsService:
         if held is not None:
             settle_held(self._t, held)
 
-    def destroy(self, vm_id: str) -> None:
+    def destroy(self, vm_id: str, *, idempotency_key: Optional[str] = None) -> None:
         if not vm_id:
             raise ValueError("vm id is required")
-        resp = self._t.request("DELETE", f"/v1/environments/{quote(vm_id, safe='')}")
+        resp = call_operation(
+            self._t,
+            "DELETE",
+            f"/v1/environments/{quote(vm_id, safe='')}",
+            idempotency_key=idempotency_key,
+        )
         held = read_held(resp)
         if held is not None:
             settle_held(self._t, held)
@@ -409,13 +448,17 @@ class EnvironmentsService:
         # Event whose err is set on a stream-level failure.
         return stream_events(self._t, vm_id)
 
-    def _action(self, vm_id: str, action: str) -> EnvironmentInfo:
+    def _action(
+        self, vm_id: str, action: str, *, idempotency_key: Optional[str] = None
+    ) -> EnvironmentInfo:
         if not vm_id:
             raise ValueError("vm id is required")
         if not action:
             raise ValueError("action is required")
         path = f"/v1/environments/{quote(vm_id, safe='')}"
-        resp = self._t.request("POST", path, params={"action": action})
+        resp = call_operation(
+            self._t, "POST", path, params={"action": action}, idempotency_key=idempotency_key
+        )
         held = read_held(resp)
         if held is not None:
             settle_held(self._t, held)

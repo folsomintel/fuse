@@ -14,7 +14,7 @@ from ._core import (
     serialize_body,
 )
 from .errors import REQUEST_ID_HEADER, check_response
-from .types import ActorLabel, Intervention
+from .types import ActorLabel, Intervention, OperationAccepted
 
 ACTOR_HEADER = "Fuse-Actor"
 ACTOR_NAME_HEADER = "Fuse-Actor-Name"
@@ -45,6 +45,7 @@ class Transport:
         actor: Optional[ActorLabel] = None,
         hitl_wait: bool = True,
         on_held: Optional[Callable[[Intervention], None]] = None,
+        on_operation: Optional[Callable[[OperationAccepted], None]] = None,
     ) -> None:
         if actor is not None:
             check_actor(actor)
@@ -52,6 +53,8 @@ class Transport:
         # the client's hitl wait options for calls a gate holds.
         self.hitl_wait = hitl_wait
         self.on_held = on_held
+        # called when a mutating call answers 202 with an operation.
+        self.on_operation = on_operation
         self._bearer = token
         self._user_agent = user_agent
         self._request_id = request_id
@@ -97,16 +100,21 @@ class Transport:
         params: Optional[dict[str, Any]] = None,
         body: Any = None,
         timeout: Optional[float] = None,
+        headers: Optional[dict[str, str]] = None,
     ) -> httpx.Response:
         # timeout overrides the client's default for this one request; a
         # long-poll uses it so a short client timeout cannot cut the hold.
+        # headers are added to the client's own for this one request.
         json_body = serialize_body(body)
+        all_headers = self._headers(has_body=json_body is not None)
+        if headers:
+            all_headers.update(headers)
         resp = self._http.request(
             method,
             path,
             params=clean_params(params),
             json=json_body,
-            headers=self._headers(has_body=json_body is not None),
+            headers=all_headers,
             timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
         )
         check_response(resp)

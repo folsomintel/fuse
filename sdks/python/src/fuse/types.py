@@ -109,6 +109,11 @@ AUDIT_TAKEOVER_ENDED = "takeover_ended"
 # cast to fetch with client.interventions.get_recording.
 AUDIT_TAKEOVER_SESSION = "takeover_session"
 
+# operation states.
+OPERATION_RUNNING = "running"
+OPERATION_SUCCEEDED = "succeeded"
+OPERATION_FAILED = "failed"
+
 
 def is_terminal_state(state: str) -> bool:
     # reports whether state is a terminal lifecycle state.
@@ -1053,3 +1058,41 @@ class AuditPage(_Model):
     # fetch the next page; none means this was the last one.
     entries: list[AuditEntry] = Field(default_factory=list)
     next_cursor: Optional[str] = None
+
+
+class ErrorBody(_Model):
+    # a failed operation's error: the error member of the api's error
+    # envelope.
+    code: str = ""
+    message: str = ""
+    details: dict[str, str] = Field(default_factory=dict)
+
+
+class Operation(_Model):
+    # one run of a mutating call (create, destroy, fork, migrate, snapshot,
+    # restore or drain). once it finished, status_code with result (on a
+    # 2xx) or error (otherwise) is what the call itself would have answered.
+    id: str = ""
+    kind: str = ""
+    state: str = ""
+    step: str = ""
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    status_code: int = 0
+    # the call's raw response body on success: an environment for create,
+    # fork, migrate and drain, a snapshot for snapshot, none for destroy and
+    # restore, and a held response when a hitl gate held the action (202).
+    result: Optional[Any] = None
+    error: Optional[ErrorBody] = None
+
+    @property
+    def done(self) -> bool:
+        # reports whether the operation finished.
+        return self.state != "" and self.state != OPERATION_RUNNING
+
+
+class OperationAccepted(_Model):
+    # the 202 body of a mutating call whose operation outlasted the server's
+    # attach bound.
+    operation_id: str = ""
+    operation: Operation = Field(default_factory=Operation)
