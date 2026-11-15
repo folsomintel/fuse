@@ -208,7 +208,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Namespace: "orchestrator",
 			Subsystem: "operations",
 			Name:      "total",
-			Help:      "Lifecycle operations by op (create, destroy, fork, migrate, migrate_live, snapshot, restore) and result (ok, error).",
+			Help:      "Lifecycle operations by op (create, destroy, fork, migrate, migrate_live, snapshot, restore, rotate_token) and result (ok, error).",
 		}, []string{"op", "result"}),
 		operationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "orchestrator",
