@@ -573,6 +573,7 @@ func run() error {
 		fm.SetDurableArtifacts(restateClient)
 		fm.SetDurableSnapshots(restateClient)
 		fm.SetDurableTokenRotator(restateClient)
+		fm.SetDurableWebhooks(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()
