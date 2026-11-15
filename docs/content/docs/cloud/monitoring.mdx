@@ -126,6 +126,18 @@ attempt at a host-to-host artifact copy (create seeding, off-host fork,
 migrate, checkpoint deltas), with restate on or off. Failures concentrated on
 one host pair point at the network between them or one agent.
 
+**HITL webhooks**: `orchestrator_hitl_webhook_attempts_total{endpoint}`,
+`orchestrator_hitl_webhook_failures_total{endpoint}` and
+`orchestrator_hitl_webhook_last_status{endpoint}` (the http status of the last
+try, `0` when no receiver answered) cover every delivery attempt, with restate
+on or off. With restate on, `orchestrator_hitl_webhook_backlog{endpoint}` is
+the deliveries not yet delivered or dead-lettered and
+`orchestrator_hitl_webhook_dead_letters_total{endpoint}` the ones still failing
+after 24 hours. `endpoint` is the webhook url's host and port only: the path
+and query can carry a token. The backlog is per orchestrator process, so after
+a restart a delivery waiting out its backoff is counted again from its next
+try.
+
 **HTTP health**: the standard RED metrics apply directly.
 
 - `rate(orchestrator_http_requests_total{code=~"5.."}[5m])` for server error
@@ -149,6 +161,7 @@ saturation cannot be broken down by route.
 | `/ready` returning `503` for 2+ minutes | Critical | The orchestrator can't serve traffic; likely a Postgres outage. |
 | `rate(orchestrator_http_requests_total{code=~"5.."}[5m]) > 0` sustained | Warning | Server errors on the API surface. |
 | `orchestrator_reconcile_orphans_dead_lettered_total` increasing | Warning | VMs stuck in an unrecoverable state, needs manual cleanup. |
+| `orchestrator_hitl_webhook_dead_letters_total` increasing | Warning | A webhook receiver was unreachable or failing for 24 hours; its notifications were dropped. |
 | `orchestrator_fleet_egress_endpoints{state="unhealthy"} > 0` for 2+ cycles | Warning | Proxy-mode environments with no outbound access; the backend on that host is down. |
 | `time() - orchestrator_host_last_seen_timestamp_seconds > 300` | Warning | The orchestrator can't reach that host's agent. |
 | `orchestrator_host_allocated{resource="vms"} / orchestrator_host_capacity{resource="vms"} > 0.9` | Warning | That host is nearly full; creates will start landing elsewhere or failing placement. |
