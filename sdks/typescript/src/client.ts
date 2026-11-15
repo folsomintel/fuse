@@ -4,8 +4,9 @@ import { SnapshotsService } from "./snapshots.js";
 import { HostsService } from "./hosts.js";
 import { ApiKeysService } from "./apiKeys.js";
 import { InterventionsService } from "./interventions.js";
+import { OperationsService } from "./operations.js";
 import { VERSION } from "./version.js";
-import type { ActorLabel, Intervention } from "./types.js";
+import type { ActorLabel, Intervention, OperationAccepted } from "./types.js";
 
 /** Options for constructing a FuseClient. */
 export interface FuseClientOptions {
@@ -33,6 +34,9 @@ export interface FuseClientOptions {
   /** Called with the pending intervention whenever a gate holds a call,
    * before the call waits on it. exec's `onHeld` overrides it. */
   onHeld?: (held: Intervention) => void;
+  /** Called once when a mutating call's operation outlasts the server's
+   * attach bound (a 202 OperationAccepted), before the call follows it. */
+  onOperation?: (accepted: OperationAccepted) => void;
 }
 
 /**
@@ -49,6 +53,7 @@ export class FuseClient {
   readonly hosts: HostsService;
   readonly apiKeys: ApiKeysService;
   readonly interventions: InterventionsService;
+  readonly operations: OperationsService;
   private readonly options: FuseClientOptions;
 
   constructor(options: FuseClientOptions) {
@@ -64,12 +69,14 @@ export class FuseClient {
       actor: options.actor,
       hitlNoWait: options.hitlNoWait,
       onHeld: options.onHeld,
+      onOperation: options.onOperation,
     });
     this.environments = new EnvironmentsService(transport);
     this.snapshots = new SnapshotsService(transport);
     this.hosts = new HostsService(transport);
     this.apiKeys = new ApiKeysService(transport);
     this.interventions = new InterventionsService(transport);
+    this.operations = new OperationsService(transport);
   }
 
   /**

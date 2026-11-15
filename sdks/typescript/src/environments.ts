@@ -1,4 +1,9 @@
-import type { CallOptions, Transport } from "./transport.js";
+import {
+  idempotencyKey,
+  type CallOptions,
+  type MutatingCallOptions,
+  type Transport,
+} from "./transport.js";
 import type {
   ComputerAction,
   ComputerDisplay,
@@ -168,11 +173,16 @@ export class EnvironmentsService {
     );
   }
 
-  /** Provision a new environment. Blocks until running or creation fails. */
-  async create(body: CreateRequest, opts: CallOptions = {}): Promise<EnvironmentInfo> {
+  /** Provision a new environment. Blocks until running or creation fails,
+   * following the operation when it outlasts the server's attach bound. */
+  async create(
+    body: CreateRequest,
+    opts: MutatingCallOptions = {},
+  ): Promise<EnvironmentInfo> {
     return this.t.json<EnvironmentInfo>("POST", "/v1/environments", {
       body,
       signal: opts.signal,
+      idempotencyKey: idempotencyKey(opts),
     });
   }
 
@@ -182,13 +192,18 @@ export class EnvironmentsService {
   async fork(
     vmId: string,
     body: ForkOptions = {},
-    opts: CallOptions = {},
+    opts: MutatingCallOptions = {},
   ): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
     const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
-      { query: { action: "fork" }, body, signal: opts.signal },
+      {
+        query: { action: "fork" },
+        body,
+        signal: opts.signal,
+        idempotencyKey: idempotencyKey(opts),
+      },
     );
     if (!out.held) return out.value;
     return this.heldEnvironment(out.held, opts);
@@ -201,13 +216,18 @@ export class EnvironmentsService {
   async migrate(
     vmId: string,
     body: MigrateOptions = {},
-    opts: CallOptions = {},
+    opts: MutatingCallOptions = {},
   ): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
     const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
-      { query: { action: "migrate" }, body, signal: opts.signal },
+      {
+        query: { action: "migrate" },
+        body,
+        signal: opts.signal,
+        idempotencyKey: idempotencyKey(opts),
+      },
     );
     if (!out.held) return out.value;
     return this.heldEnvironment(out.held, opts);
@@ -567,12 +587,16 @@ export class EnvironmentsService {
    * draining timeout (5m30s by default) passes, and then the orchestrator
    * destroys it.
    */
-  async drain(vmId: string, opts: CallOptions = {}): Promise<EnvironmentInfo> {
+  async drain(vmId: string, opts: MutatingCallOptions = {}): Promise<EnvironmentInfo> {
     requireArg(vmId, "vm id");
     const out = await this.t.gated<EnvironmentInfo>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
-      { query: { action: "drain" }, signal: opts.signal },
+      {
+        query: { action: "drain" },
+        signal: opts.signal,
+        idempotencyKey: idempotencyKey(opts),
+      },
     );
     if (!out.held) return out.value;
     await settleHeld(this.t, out.held, {}, opts);
@@ -592,12 +616,12 @@ export class EnvironmentsService {
 
   /** Forcefully destroy an environment. Idempotent. When a hitl gate holds
    * the destroy, it waits for the decision. */
-  async destroy(vmId: string, opts: CallOptions = {}): Promise<void> {
+  async destroy(vmId: string, opts: MutatingCallOptions = {}): Promise<void> {
     requireArg(vmId, "vm id");
     const held = await this.t.gatedNoContent(
       "DELETE",
       `/v1/environments/${encodeURIComponent(vmId)}`,
-      { signal: opts.signal },
+      { signal: opts.signal, idempotencyKey: idempotencyKey(opts) },
     );
     if (held) await settleHeld(this.t, held, {}, opts);
   }
