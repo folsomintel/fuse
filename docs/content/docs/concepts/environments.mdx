@@ -42,7 +42,9 @@ on the environment.
 Drain itself does not destroy the VM. A subsequent explicit destroy call removes
 it. If none arrives, the [reconcile loop](/docs/concepts/reconcile#stuck-draining)
 destroys an environment that has been draining longer than the draining timeout,
-5m30s by default (`--draining-timeout` on the orchestrator).
+5m30s by default (`--draining-timeout` on the orchestrator). With restate on, a
+durable timer the drain arms does it instead, and survives an orchestrator
+restart ([expiry on restate](/docs/concepts/reconcile#expiry-on-restate)).
 
 ## Health is not a state
 
