@@ -34,10 +34,12 @@ const (
 	// InterventionObject is keyed by hitl intervention id: the run of an
 	// approved action and the timer of its deadline.
 	InterventionObject = "Intervention"
+	// BuildWorkflow is keyed by build id: one fusefile build, run once.
+	BuildWorkflow = "Build"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject, BuildWorkflow}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -53,6 +55,7 @@ type Fleet interface {
 	Tokens
 	Webhooks
 	Hitl
+	Builds
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -169,6 +172,12 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return restate.Void{}, hitlExpire(ctx, fleet, servicePolicy(cfg, InterventionObject))
 			}))
 
+	builds := restate.NewWorkflow(BuildWorkflow, retryOption(cfg, BuildWorkflow)).
+		Handler("Run", restate.NewWorkflowHandler(
+			func(ctx restate.WorkflowContext, in orchestrator.BuildInput) (restate.Void, error) {
+				return restate.Void{}, build(ctx, fleet, servicePolicy(cfg, BuildWorkflow), in)
+			}, restate.WithAbortTimeout(buildAbortTimeout)))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
@@ -176,7 +185,8 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Bind(artifacts).
 		Bind(pins).
 		Bind(hooks).
-		Bind(interventions)
+		Bind(interventions).
+		Bind(builds)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {
