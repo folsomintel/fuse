@@ -1,0 +1,133 @@
+---
+title: Operations
+sidebar:
+  icon: timer
+description: Idempotency keys, long-running calls, and the operations service
+---
+
+Seven calls run on the orchestrator as operations: `Environments.Create`,
+`Destroy`, `Fork`, `Migrate` and `Drain`, and `Snapshots.Create` and `Restore`.
+The server waits for the operation up to its attach bound (10 seconds below
+its `-write-timeout`, so 50s by default) and answers as it always has. One that
+outlasts the bound is answered with a `202` and an operation id, and the SDK
+follows it until it finishes. Either way the method returns exactly what a
+direct answer would have given, so callers need no changes.
+
+## Idempotency keys
+
+Every one of those seven methods takes trailing `...CallOption`:
+
+```go
+func WithIdempotencyKey(key string) CallOption
+```
+
+The key is sent as the `Idempotency-Key` header. A retry of the same request
+with the same key attaches to the first call's operation instead of running
+again: it waits for one still running, or gets a finished one's answer back.
+Without the option the SDK sends a fresh random key on every call, which is
+enough for the SDK's own following of a `202`, but not for a retry you make
+yourself. Pass your own key when you retry:
+
+```go
+key := uuid.NewString()
+env, err := client.Environments.Create(ctx, req, fuse.WithIdempotencyKey(key))
+var apiErr *fuse.APIError
+if err != nil && !errors.As(err, &apiErr) {
+	// the connection dropped or the client timed out. the create may still be
+	// running, so retry with the same key to attach to it rather than create a
+	// second environment.
+	env, err = client.Environments.Create(ctx, req, fuse.WithIdempotencyKey(key))
+}
+```
+
+Keys are 1 to 255 visible ascii characters; anything else is a `400`
+`invalid_argument`. They are scoped to the credential that sent them, so two
+API keys never collide. The same key with a different request (another
+method, path, action or body) is a `409` `conflict` whose `Details["reason"]`
+is `idempotency_key_reused`, with the first call's id in
+`Details["operation_id"]`. A finished operation is kept for 24 hours; one that
+finished with a 5xx is not kept at all, so its retry runs again. Keys live in
+the orchestrator's memory and an orchestrator restart forgets them, except
+that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the key of a destroy, snapshot or
+restore is also the restate invocation's idempotency key, so a retry after a
+restart attaches to the same invocation.
+
+## Following an accepted operation
+
+```go
+func WithOnOperation(fn func(*OperationAccepted)) Option
+```
+
+`fn` is called once, with the `202` body, whenever a call outlasts the
+server's attach bound, before the SDK starts following it. The `fuse` CLI
+uses it to print the operation id. The following itself polls
+`GET /v1/operations/{id}` with `?wait=30s` on the SDK's no-timeout client, so
+only `ctx` bounds it. Cancelling `ctx` returns `ctx.Err()` and leaves the
+operation running on the orchestrator.
+
+```go
+client, err := fuse.New(baseURL, token,
+	fuse.WithOnOperation(func(acc *fuse.OperationAccepted) {
+		log.Printf("%s still running as %s", acc.Operation.Kind, acc.OperationID)
+	}),
+)
+```
+
+## client.Operations
+
+```go
+func (s *OperationsService) Get(ctx context.Context, id string, opt GetOperationOptions) (*Operation, error)
+func (s *OperationsService) Wait(ctx context.Context, id string) (*Operation, error)
+```
+
+`Get` reports an operation at once, or, with `GetOperationOptions.Wait` set,
+attaches until it finishes for at most that long (capped by the server's
+attach bound). `Wait` blocks until it finishes; `ctx` bounds the wait and the
+operation keeps running if `ctx` ends first. Neither returns an `error` for a
+failed operation: check `State`, then `StatusCode` and `Error`.
+
+An operation is readable by the credential that started it, and by the master
+token, for 24 hours after it finishes. An unknown, expired or other caller's
+id is a `404` `not_found` `*APIError`.
+
+## Operation
+
+```go
+type Operation struct {
+	ID         string          `json:"id"`
+	Kind       string          `json:"kind"`
+	State      string          `json:"state"`
+	Step       string          `json:"step,omitempty"`
+	StartedAt  time.Time       `json:"started_at"`
+	FinishedAt *time.Time      `json:"finished_at,omitempty"`
+	StatusCode int             `json:"status_code,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      *ErrorBody      `json:"error,omitempty"`
+}
+
+type OperationAccepted struct {
+	OperationID string    `json:"operation_id"`
+	Operation   Operation `json:"operation"`
+}
+
+const (
+	OperationRunning   = "running"
+	OperationSucceeded = "succeeded"
+	OperationFailed    = "failed"
+)
+
+func (o *Operation) Done() bool
+```
+
+- `Kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
+  `drain`.
+- `State` is `succeeded` when the call answered 2xx and `failed` otherwise.
+  `Done` reports whether it is anything but `running`.
+- `Step` is the step the operation last reported starting. Only migrate
+  reports steps: `snapshot`, `transfer`, `delta`, `boot` and `cutover`.
+- `StatusCode`, with `Result` on success or `Error` on failure, is what the
+  call itself would have answered. `Result` is the raw response body: an
+  `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
+  snapshot, and empty for destroy and restore.
+- `ErrorBody` is the `error` member of the API's error envelope: `Code`,
+  `Message` and `Details`.

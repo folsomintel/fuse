@@ -1,0 +1,37 @@
+---
+title: Overview
+sidebar:
+  icon: timer
+description: Following the operations mutating calls run as
+---
+
+`fuse operation` (aliases `operations`, `op`) shows and waits on operations.
+Every create, destroy, fork, migrate, drain, snapshot create and restore runs on
+the orchestrator as an operation. The request waits for it up to the server's
+attach bound (10 seconds below its `-write-timeout`, so 50s by default) and
+answers as it always has. An operation that outlasts the bound is handed back as
+an operation id instead, and the cli prints this on stderr and keeps following
+it:
+
+```
+migrate is still running as operation op_3f9a1c2b7d4e5f60718293a4; waiting for it
+  interrupting leaves it running: fuse operation wait op_3f9a1c2b7d4e5f60718293a4
+```
+
+The command then prints its normal output once the operation finishes.
+Interrupting the cli does not stop the operation. Pick it up again with
+[`fuse operation wait`](/reference/cli/operation/wait), or check on it with
+[`fuse operation show`](/reference/cli/operation/show).
+
+Operations live in the orchestrator's memory. One is readable by the
+credential that started it (and by the master token) for 24 hours after it
+finishes, and an orchestrator restart forgets them all. An unknown, expired or
+other caller's id is a not-found error. See
+[Long operations and retries](/docs/concepts/environments#long-operations-and-retries).
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse operation show`](/reference/cli/operation/show) | Show an operation, finished or still running. |
+| [`fuse operation wait`](/reference/cli/operation/wait) | Wait for an operation to finish and print it. |

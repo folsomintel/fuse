@@ -68,9 +68,11 @@ intermediate state left to wait for, and nothing else will drive the
 environment to a terminal state on its own, iterate the stream from another
 thread rather than inline ahead of `destroy`, which would block forever.
 
-**`destroy`** tears the environment down. It is idempotent: destroying an
-already-gone environment raises `fuse.ApiError` with `code == "not_found"`, not an
-unrelated exception.
+**`destroy`** tears the environment down. Destroying an already-gone
+environment raises `fuse.ApiError` with `code == "not_found"`, not an
+unrelated exception. Only a retry carrying the first call's
+[`idempotency_key`](/reference/python/operations#idempotency-keys) gets the
+first call's success back.
 
 ## Next steps
 

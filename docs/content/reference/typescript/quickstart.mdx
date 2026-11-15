@@ -53,9 +53,12 @@ environment dies, the `AbortController` is what ends it. There is no built-in
 timeout on the stream itself, and an abort is treated as a clean end rather than
 an error, so the loop exits without throwing.
 
-**`destroy`** tears the environment down. It is **not** idempotent: destroying
-an already-gone environment throws a `FuseApiError` with `code === "not_found"`,
-so guard repeat calls with `isNotFound(err)` rather than calling blind.
+**`destroy`** tears the environment down. Destroying an already-gone
+environment throws a `FuseApiError` with `code === "not_found"`, so guard
+repeat calls with `isNotFound(err)` rather than calling blind. Only a retry
+carrying the first call's
+[`idempotencyKey`](/reference/typescript/operations#idempotency-keys) gets the
+first call's success back.
 
 ## Next steps
 

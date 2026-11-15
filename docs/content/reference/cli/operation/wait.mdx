@@ -1,0 +1,39 @@
+---
+title: fuse operation wait
+sidebar:
+  icon: hourglass
+  label: wait
+description: Wait for an operation to finish and print it
+---
+
+```bash
+fuse operation wait <id> [--timeout <duration>]
+```
+
+Waits until the operation finishes, then prints it in the same format as
+[`fuse operation show`](/reference/cli/operation/show).
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--timeout` | Give up waiting after this long (e.g. `90s`, `10m`). Default `0`, which waits until the operation finishes. |
+
+## Behavior
+
+Exits non-zero when the operation failed, with the call's own error (the
+same one the original command would have printed). Exits non-zero when
+`--timeout` passes first too, with `operation <id> still running after
+<timeout>`. Giving up, by `--timeout` or by interrupting the cli, only stops
+the waiting: the operation keeps running on the orchestrator.
+
+```bash
+$ fuse operation wait op_3f9a1c2b7d4e5f60718293a4
+id                 op_3f9a1c2b7d4e5f60718293a4
+kind               destroy
+state              succeeded
+step               -
+started            2026-11-15 10:00
+finished           2026-11-15 10:01
+status             204 No Content
+```

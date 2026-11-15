@@ -37,10 +37,16 @@ await client.environments.destroy(env.id);
   not found, VM not running, or the provider has no guest to exec into).
   `exec` requires the master token, see
   [Errors](/reference/typescript/errors).
-- `destroy` tears the environment down from any state and is idempotent, a
-  second call on an already-gone environment throws a `FuseApiError` with
+- `destroy` tears the environment down from any state. A second call on an
+  already-gone environment throws a `FuseApiError` with
   `code === "not_found"` rather than hanging or throwing something
-  unrelated.
+  unrelated; a retry that passes the first call's `idempotencyKey` gets the
+  first call's success back instead.
+
+`create`, `destroy`, `fork`, `migrate` and `drain` run as operations: each
+takes an `idempotencyKey` in its trailing options, and one that outlasts the
+server's attach bound is followed to the end for you. See
+[Operations](/reference/typescript/operations).
 
 ## Proxied egress
 

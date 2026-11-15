@@ -32,12 +32,16 @@ wrap calls yourself:
 
 ```python
 import time
+import uuid
 
 def create_with_retry(client: fuse.Client, request: fuse.CreateRequest) -> fuse.EnvironmentInfo:
+    # one key for every attempt, so a retry attaches to a create that is
+    # still running instead of starting a second one.
+    key = str(uuid.uuid4())
     last_err: Exception | None = None
     for attempt in range(3):
         try:
-            return client.environments.create(request)
+            return client.environments.create(request, idempotency_key=key)
         except fuse.ApiError as exc:
             last_err = exc
             if not fuse.is_unavailable(exc):
@@ -53,6 +57,15 @@ expect capacity to free up. `is_conflict`, `is_invalid_argument`, and
 `is_not_found` are not retryable, retrying won't change the outcome. In
 particular a duplicate `task_id` conflicts on every attempt, the fix is a new
 `task_id` rather than a retry.
+
+Passing the same `idempotency_key` on every attempt is what makes retrying a
+mutating call safe. Without it each attempt sends a fresh key, so a retry after
+a timeout or a dropped connection (an `httpx.TransportError`), when the first
+create may still be running, provisions a second environment. With it the retry
+attaches to the first attempt's operation, or gets its answer back if it
+already finished. A first attempt that failed with a 5xx (an `unavailable`,
+say) is not kept, so its retry runs again. See
+[Operations](/reference/python/operations#idempotency-keys).
 
 ## Request correlation
 
@@ -120,11 +133,16 @@ def test_create_environment():
 
 ## Choosing a timeout
 
-The default 60-second `timeout` on the normal-request client is generous enough
-for every non-streaming call, including `create`, which blocks server-side until
-the environment reaches `running` or fails. If you're provisioning environments
-with a large `max_runtime_seconds` or a slow custom image pull, you generally
-don't need a longer client timeout for that, `create` itself doesn't wait for the
-whole runtime, only for the initial boot. Where you do want a shorter timeout is
+The default 60-second `timeout` on the normal-request client sits above the
+server's default attach bound (50s), which is the longest a mutating call such
+as `create` holds its first request. `create` waits server-side until the
+environment reaches `running` or fails, and a create, migrate or snapshot that
+takes longer than the bound comes back as an operation the SDK follows with
+polls that carry their own timeout. So a slow boot or a long migrate does not
+need a longer client timeout. Two cases do: an orchestrator whose
+`-write-timeout` was raised past 70s (its attach bound is 10s below it), and a
+client `timeout` shorter than the bound, either of which can time out a
+mutating call client-side while its operation keeps running. Retry such a call
+with the same `idempotency_key` to attach to it. Where you do want a shorter timeout is
 read-only calls like `list`/`get` in a hot path, pass a dedicated `http_client`
 with its own timeout rather than wrapping every call in your own timeout logic.

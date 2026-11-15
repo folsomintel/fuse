@@ -48,6 +48,7 @@ if err != nil {
 | `WithUserAgent` | `func(string) Option` | Override the `User-Agent` header. Default: `fuse-go/<version>`. |
 | `WithRequestID` | `func(func() string) Option` | Generator called once per request for `X-Request-ID`. An empty return value omits the header. |
 | `WithBaseURL` | `func(string) Option` | Override the base URL passed to `New`. |
+| `WithOnOperation` | `func(func(*OperationAccepted)) Option` | Called when a mutating call outlasts the server's attach bound, before the SDK follows its operation. See [Operations](/reference/go/operations). |
 
 ```go
 client, err := fuse.New(baseURL, token,
@@ -69,7 +70,7 @@ local, un-tagged checkout, it falls back to `"dev"`.
 
 ## Services
 
-`Client` groups four services that share one transport:
+`Client` groups its services behind one shared transport:
 
 ```go
 type Client struct {
@@ -77,6 +78,7 @@ type Client struct {
 	Snapshots    *SnapshotsService
 	Hosts        *HostsService
 	APIKeys      *APIKeysService
+	Operations   *OperationsService
 }
 ```
 
@@ -86,6 +88,7 @@ type Client struct {
 | `client.Hosts` | [Hosts](/reference/go/hosts) |
 | `client.Snapshots` | [Snapshots](/reference/go/snapshots) |
 | `client.APIKeys` | [API keys](/reference/go/api-keys) |
+| `client.Operations` | [Operations](/reference/go/operations) |
 
 ## Probing what you're pointed at
 
