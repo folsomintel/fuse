@@ -117,6 +117,34 @@ func TestRotateTokenThroughRestate(t *testing.T) {
 	}
 }
 
+// TestRotateTokenPersistOutlastsThePolicy: a state store down for longer than
+// the policy's attempts holds the rotation at the persist until it is back,
+// rather than ending it with the guest's token never stored.
+func TestRotateTokenPersistOutlastsThePolicy(t *testing.T) {
+	guest := &tokenGuest{}
+	fleet := newTokenFleet(guest)
+	var downs []error
+	for range fastPolicy.MaxAttempts + 3 {
+		downs = append(downs, errors.New("store down"))
+	}
+	fleet.fail["persist"] = downs
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := client.RotateToken(ctx, uniqueVM("rotate-store-down")); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	want := "generate,upload," + strings.Repeat("persist,", len(downs)+1)
+	if got := fleet.steps(); got != strings.TrimSuffix(want, ",") {
+		t.Fatalf("steps %s, want %s", got, want)
+	}
+	inGuest, stored, _ := guest.tokens()
+	if inGuest == "" || stored != inGuest {
+		t.Fatalf("guest %q, stored %q; want the guest's token stored", inGuest, stored)
+	}
+}
+
 // TestRotateTokenRefusals: a refusal crosses restate with the fleet's own
 // message, and a vm the fleet does not know keeps its sentinel.
 func TestRotateTokenRefusals(t *testing.T) {
