@@ -172,8 +172,8 @@ func TestRotateTokenSteps_refusals(t *testing.T) {
 
 	noKey := NewFleetManager(FleetConfig{Provider: newCredForkProvider(), Prefix: "fuse-"})
 	id := provisionSnapshotTestVM(t, noKey, "task-2")
-	if _, err := noKey.RotateTokenGenerate(ctx, id); !errors.Is(err, ErrRotateNoKey) {
-		t.Fatalf("no key: %v, want ErrRotateNoKey", err)
+	if _, err := noKey.RotateTokenGenerate(ctx, id); !errors.Is(err, errRotateNoKey) {
+		t.Fatalf("no key: %v, want errRotateNoKey", err)
 	}
 }
 

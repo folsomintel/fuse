@@ -15,18 +15,18 @@ import (
 var (
 	// ErrRotateNotRunning is a vm that is not running.
 	ErrRotateNotRunning = errors.New("token rotation requires running")
-	// ErrRotateNoKey is an orchestrator with no TOKEN_ENCRYPTION_KEY.
-	ErrRotateNoKey = errors.New("token rotation requires a 32-byte encryption key (TOKEN_ENCRYPTION_KEY)")
-	// ErrRotateSealed is rotated credentials that no longer decrypt, as
+	// errRotateNoKey is an orchestrator with no TOKEN_ENCRYPTION_KEY.
+	errRotateNoKey = errors.New("token rotation requires a 32-byte encryption key (TOKEN_ENCRYPTION_KEY)")
+	// errRotateSealed is rotated credentials that no longer decrypt, as
 	// after TOKEN_ENCRYPTION_KEY changed under an unfinished rotation.
-	ErrRotateSealed = errors.New("rotated credentials do not decrypt under TOKEN_ENCRYPTION_KEY")
+	errRotateSealed = errors.New("rotated credentials do not decrypt under TOKEN_ENCRYPTION_KEY")
 )
 
 // TokenRotationRefused reports whether a token rotation step failed with one
 // of the rotation's own refusals (vm not running, no encryption key,
 // credentials that do not decrypt). a retry cannot change any of them.
 func TokenRotationRefused(err error) bool {
-	return errors.Is(err, ErrRotateNotRunning) || errors.Is(err, ErrRotateNoKey) || errors.Is(err, ErrRotateSealed)
+	return errors.Is(err, ErrRotateNotRunning) || errors.Is(err, errRotateNoKey) || errors.Is(err, errRotateSealed)
 }
 
 // RotatedCredentials is the output of RotateTokenGenerate and the input of
@@ -139,7 +139,7 @@ func (fm *FleetManager) rotateTarget(vmID string) (Environment, error) {
 		return nil, fmt.Errorf("%w: vm %s", errNoEnvironment, vmID)
 	}
 	if len(fm.tokenEncryptionKey) != 32 {
-		return nil, ErrRotateNoKey
+		return nil, errRotateNoKey
 	}
 	return env, nil
 }
@@ -180,11 +180,11 @@ func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rota
 	}
 	raw, err := secrets.DecryptBytes(rotated.Sealed, fm.tokenEncryptionKey)
 	if err != nil {
-		return ErrRotateSealed
+		return errRotateSealed
 	}
 	var sealed sealedCredentials
 	if err := json.Unmarshal(raw, &sealed); err != nil {
-		return ErrRotateSealed
+		return errRotateSealed
 	}
 	creds := &secrets.VMCredentials{AuthToken: sealed.AuthToken, CertPEM: sealed.CertPEM, KeyPEM: sealed.KeyPEM}
 	if err := uploadFiles(ctx, env, fusedCredentialFiles(creds)); err != nil {
@@ -215,7 +215,7 @@ func (fm *FleetManager) RotateTokenPersist(ctx context.Context, vmID string, rot
 func (fm *FleetManager) storeRotatedToken(vmID string, rotated RotatedCredentials) error {
 	token, err := secrets.DecryptToken(rotated.TokenEncrypted, fm.tokenEncryptionKey)
 	if err != nil {
-		return ErrRotateSealed
+		return errRotateSealed
 	}
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
