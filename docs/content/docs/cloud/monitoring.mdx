@@ -126,6 +126,14 @@ attempt at a host-to-host artifact copy (create seeding, off-host fork,
 migrate, checkpoint deltas), with restate on or off. Failures concentrated on
 one host pair point at the network between them or one agent.
 
+**HITL gates**: `orchestrator_hitl_decision_seconds{kind,outcome}` is the time
+from a gate holding an action to a human (or the deadline) deciding it,
+`orchestrator_hitl_decider_duration_seconds{verdict}` each gate decider call by
+its answer (`allow`, `deny`, `ask`, or `error` when the call failed and the
+action fell through to a human), and
+`orchestrator_hitl_run_duration_seconds{action,result}` the time from an
+approval to the held action's result, with restate on or off.
+
 **HITL webhooks**: `orchestrator_hitl_webhook_attempts_total{endpoint}`,
 `orchestrator_hitl_webhook_failures_total{endpoint}` and
 `orchestrator_hitl_webhook_last_status{endpoint}` (the http status of the last
