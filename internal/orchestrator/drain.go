@@ -34,9 +34,12 @@ const DefaultDrainingTimeout = drainTimeout + 5*time.Minute
 //     it to a 409 Conflict and inspect the current state.
 //   - Drain does not destroy the VM on success or on failure. Even if
 //     the drain command fails, the VM stays in Draining so the caller
-//     can still issue DELETE through the existing path. Auto-destroy
+//     can still issue DELETE through the existing path. Destroying it
 //     here would defeat the whole point of giving the harness a chance
-//     to recover from a partial drain.
+//     to recover from a partial drain. A VM nobody DELETEs is destroyed
+//     once the draining timeout (the grace) passes: by reconcile in mode
+//     off, by the Environment/{vm_id}.Expire timer the durable drain arms
+//     in modes self and cloud.
 //   - An empty drain command leaves the VM Draining for the caller to
 //     DELETE (back-compat): no graceful command is run.
 //   - Drain takes its own context; if the caller's request context is
@@ -51,29 +54,87 @@ const DefaultDrainingTimeout = drainTimeout + 5*time.Minute
 // alternative (command first, then state flip) would lose the intent of
 // the drain on a crash.
 func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
+	if d := fm.durableExpiry(); d != nil {
+		// refuse what mode off refuses before restate sees it: the durable
+		// begin step accepts a vm already draining, so a replay after a
+		// crash finds its own transition done.
+		if err := fm.drainable(vmID); err != nil {
+			return err
+		}
+		ctx, cancel := durableWait(ctx)
+		defer cancel()
+		return d.Drain(ctx, vmID)
+	}
+	plan, err := fm.drainBegin(ctx, vmID, false)
+	if err != nil || !plan.Command {
+		return err
+	}
+	if msg := fm.DrainCommand(ctx, vmID); msg != "" {
+		return fmt.Errorf("drain vm %s: %s", vmID, msg)
+	}
+	return nil
+}
+
+// DrainPlan is what DrainBegin settled. restate journals it.
+type DrainPlan struct {
+	// Command is set when there is a drain command to run in the guest.
+	Command bool `json:"command,omitempty"`
+	// Grace is how long the vm may stay draining before it is destroyed.
+	Grace time.Duration `json:"grace"`
+}
+
+// drainable reports why vmID cannot be drained, or nil.
+func (fm *FleetManager) drainable(vmID string) error {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	v, ok := fm.vms[vmID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+	}
+	if v.state != VMStateRunning {
+		return fmt.Errorf("%w: vm %s is in state %s", ErrVMNotRunning, vmID, v.state)
+	}
+	return nil
+}
+
+// the two methods below are the steps of a drain, in order. the durable
+// Environment/{vm_id}.Drain handler runs each as a journaled step and arms
+// the grace timer between them; mode off runs them in turn.
+
+// DrainBegin moves a running vm to draining and persists it. a vm already
+// draining is a replay of this step after a crash and is not an error.
+func (fm *FleetManager) DrainBegin(ctx context.Context, vmID string) (DrainPlan, error) {
+	return fm.drainBegin(ctx, vmID, true)
+}
+
+func (fm *FleetManager) drainBegin(ctx context.Context, vmID string, replay bool) (DrainPlan, error) {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok {
 		fm.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+		return DrainPlan{}, fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
+	}
+	plan := DrainPlan{Command: v.env != nil && v.drainCommand != "", Grace: fm.drainingTimeout}
+	if replay && v.state == VMStateDraining {
+		fm.mu.Unlock()
+		return plan, nil
 	}
 	if v.state != VMStateRunning {
 		current := v.state
 		fm.mu.Unlock()
-		return fmt.Errorf("%w: vm %s is in state %s", ErrVMNotRunning, vmID, current)
+		return DrainPlan{}, fmt.Errorf("%w: vm %s is in state %s", ErrVMNotRunning, vmID, current)
 	}
 
 	// Snapshot what we need before releasing the lock so the drain command
 	// runs outside the critical section.
-	env := v.env
-	drainCmd := v.drainCommand
+	hasEnv := v.env != nil
 	prevState := v.state
 	prevUpdatedAt := v.updatedAt
 	v.state = VMStateDraining
 	v.updatedAt = time.Now()
 	fm.mu.Unlock()
 
-	rollback := func() {
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
 		fm.mu.Lock()
 		current, exists := fm.vms[vmID]
 		if exists {
@@ -86,17 +147,13 @@ func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
 				fm.logger.Warn("persist vm rollback after drain failure", "vm", vmID, "err", err)
 			}
 		}
-	}
-
-	if err := fm.persistVMByID(ctx, vmID); err != nil {
-		rollback()
-		return fmt.Errorf("persist vm %s draining state: %w", vmID, err)
+		return DrainPlan{}, fmt.Errorf("persist vm %s draining state: %w", vmID, err)
 	}
 	fm.appendEvent(ctx, "vm", vmID, "vm.draining", map[string]any{"reason": "drain_requested"})
 	fm.publishStateChange(vmID, "")
 	fm.logger.Info("draining vm", "vm", vmID)
 
-	if env == nil {
+	if !hasEnv {
 		// No live env handle — nothing to run the drain command against,
 		// but the state transition still succeeded. This can happen for a
 		// VM recovered from state but never re-attached to a provider
@@ -112,14 +169,33 @@ func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
 		fm.mu.Unlock()
 		fm.persistVMBackground(vmID)
 		fm.appendEventBackground("vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_environment"})
-		return nil
+		return plan, nil
 	}
 
-	if drainCmd == "" {
+	if !plan.Command {
 		// No drain command configured for this agent: leave the VM Draining
 		// for the caller to DELETE (back-compat). No graceful command runs.
 		fm.appendEventBackground("vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_drain_command"})
-		return nil
+	}
+	return plan, nil
+}
+
+// DrainCommand runs the vm's drain command in the guest and returns why it
+// failed, or "" when it succeeded. a failure is a result, not an error: the
+// vm stays draining and the command is not retried, since running a partial
+// quiesce again is the caller's call.
+func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
+	fm.mu.RLock()
+	v, ok := fm.vms[vmID]
+	var env Environment
+	drainCmd := ""
+	if ok {
+		env = v.env
+		drainCmd = v.drainCommand
+	}
+	fm.mu.RUnlock()
+	if env == nil || drainCmd == "" {
+		return ""
 	}
 
 	// Bound the drain command even if the caller's context has none.
@@ -127,11 +203,12 @@ func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
 	defer cancel()
 
 	if err := env.ExecStream(rpcCtx, io.Discard, io.Discard, "sh", "-lc", drainCmd); err != nil {
-		fm.recordDrainError(vmID, fmt.Sprintf("drain command: %v", err))
+		msg := fmt.Sprintf("drain command: %v", err)
+		fm.recordDrainError(vmID, msg)
 		fm.appendEventBackground("vm", vmID, "vm.drain_failed", map[string]any{"reason": "exec", "error": err.Error()})
 		fm.logger.Warn("drain command failed", "vm", vmID, "err", err)
 		// Stay in Draining: caller decides whether to retry or DELETE.
-		return fmt.Errorf("drain vm %s: drain command: %w", vmID, err)
+		return msg
 	}
 
 	fm.mu.Lock()
@@ -143,7 +220,7 @@ func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
 	fm.persistVMBackground(vmID)
 	fm.appendEventBackground("vm", vmID, "vm.drained", nil)
 	fm.logger.Info("vm drained", "vm", vmID)
-	return nil
+	return ""
 }
 
 // recordDrainError stamps an error message onto the VM record without

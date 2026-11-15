@@ -287,10 +287,16 @@ func (fm *FleetManager) applyExtension(in hitl.Intervention) {
 	}
 	fm.hitlMu.Lock()
 	st := fm.signalStateLocked(in.EnvID)
-	if in.Signal.ExtendedUntil.After(st.extendedUntil) {
+	moved := in.Signal.ExtendedUntil.After(st.extendedUntil)
+	if moved {
 		st.extendedUntil = *in.Signal.ExtendedUntil
 	}
 	fm.hitlMu.Unlock()
+	if moved {
+		// the env's expiry timer is rescheduled to the new end; the one it
+		// replaces becomes a no-op.
+		fm.rearmExpiry(in.EnvID)
+	}
 }
 
 // recoverExtensions rebuilds approved extensions after a restart, so an env
