@@ -114,6 +114,11 @@ OPERATION_RUNNING = "running"
 OPERATION_SUCCEEDED = "succeeded"
 OPERATION_FAILED = "failed"
 
+# build states. running is the only non-terminal one.
+BUILD_RUNNING = "running"
+BUILD_SUCCEEDED = "succeeded"
+BUILD_FAILED = "failed"
+
 
 def is_terminal_state(state: str) -> bool:
     # reports whether state is a terminal lifecycle state.
@@ -590,6 +595,9 @@ class Event(BaseModel):
     miss_detail: list[str] = Field(default_factory=list)
     duration_ms: int = 0
     exit_code: int = 0
+
+    # set only on "build" events, which report a build's progress.
+    build: Optional[BuildEvent] = None
 
 
 class SnapshotRequest(_Model):
@@ -1096,3 +1104,75 @@ class OperationAccepted(_Model):
     # attach bound.
     operation_id: str = ""
     operation: Operation = Field(default_factory=Operation)
+
+
+class BuildStep(_Model):
+    # one setup step of a build. key is the layer cache key; empty means the
+    # step is not cacheable.
+    script: str = ""
+    key: Optional[str] = None
+
+
+class BuildSetup(_Model):
+    # the setup a build runs: prelude, optional files, then at least one step.
+    prelude: str = ""
+    files: Optional[str] = None
+    steps: list[BuildStep] = Field(default_factory=list)
+
+
+class CreateBuildRequest(_Model):
+    # body for builds.create. manifest_inline is base64. arch is the arch
+    # layer artifacts are looked up and filed under; none lets the server
+    # derive it. keep keeps the builder environment instead of destroying it.
+    name: str = ""
+    setup: BuildSetup = Field(default_factory=BuildSetup)
+    spec: Optional[Spec] = None
+    manifest_inline: Optional[str] = None
+    secrets: Optional[dict[str, str]] = None
+    arch: Optional[str] = None
+    keep: Optional[bool] = None
+
+
+class BuildLayer(_Model):
+    # one setup step's cache verdict: status is "hit", "miss" or "skip".
+    index: int = 0
+    key: str = ""
+    status: str = ""
+    snapshot_id: str = ""
+
+
+class Build(_Model):
+    # a build that runs setup steps on a builder environment and snapshots
+    # the result. snapshot_id is the final artifact once it succeeded; error
+    # and output (the redacted tail of the failing setup exec) say why one
+    # failed.
+    id: str = ""
+    name: str = ""
+    state: str = ""
+    step: str = ""
+    builder_id: str = ""
+    arch: str = ""
+    cache_hits: int = 0
+    seed_snapshot_id: str = ""
+    layers: list[BuildLayer] = Field(default_factory=list)
+    snapshot_id: str = ""
+    error: str = ""
+    output: str = ""
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+    @property
+    def done(self) -> bool:
+        # reports whether the build finished.
+        return self.state != "" and self.state != BUILD_RUNNING
+
+
+class BuildEvent(_Model):
+    # the build member of a "build" environment event.
+    id: str = ""
+    state: str = ""
+    step: str = ""
+
+
+Event.model_rebuild()

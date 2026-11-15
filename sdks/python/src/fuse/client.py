@@ -6,6 +6,7 @@ import httpx
 
 from ._core import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
 from ._services.apikeys import APIKeysService
+from ._services.builds import BuildsService
 from ._services.environments import EnvironmentsService
 from ._services.hosts import HostsService
 from ._services.interventions import InterventionsService
@@ -70,6 +71,7 @@ class Client:
         self.api_keys = APIKeysService(self._t)
         self.interventions = InterventionsService(self._t)
         self.operations = OperationsService(self._t)
+        self.builds = BuildsService(self._t)
 
     def with_actor(self, actor: ActorLabel) -> Client:
         # returns a copy that sends actor as the Fuse-Actor headers, sharing

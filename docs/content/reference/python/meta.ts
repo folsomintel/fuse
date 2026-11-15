@@ -11,6 +11,7 @@ export default defineMeta({
     "snapshots",
     "api-keys",
     "operations",
+    "builds",
     "errors",
     "advanced",
   ],
