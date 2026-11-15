@@ -206,3 +206,33 @@ func TestRotateToken_metered(t *testing.T) {
 		t.Fatalf("operations = %v, want %v", metrics.ops, want)
 	}
 }
+
+// TestRotateTokenUpload_stableOrder: every attempt sends the credential files
+// one at a time in the same order, so on restate a retried upload keys each
+// file the way the first attempt did.
+func TestRotateTokenUpload_stableOrder(t *testing.T) {
+	fm, provider, _, vmID := newRotateTestFleet(t)
+	env := provider.envs[vmID]
+	ctx := context.Background()
+	rotated, err := fm.RotateTokenGenerate(ctx, vmID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts [][]string
+	for range 3 {
+		env.mu.Lock()
+		env.uploadedPaths = nil
+		env.mu.Unlock()
+		if err := fm.RotateTokenUpload(ctx, vmID, rotated); err != nil {
+			t.Fatal(err)
+		}
+		env.mu.Lock()
+		attempts = append(attempts, append([]string(nil), env.uploadedPaths...))
+		env.mu.Unlock()
+	}
+	for _, got := range attempts {
+		if !slices.IsSorted(got) || len(got) != 3 || !slices.Equal(got, attempts[0]) {
+			t.Fatalf("upload orders %v, want the same sorted three files each attempt", attempts)
+		}
+	}
+}

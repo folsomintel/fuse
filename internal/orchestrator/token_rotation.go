@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -172,7 +174,8 @@ func (fm *FleetManager) RotateTokenGenerate(_ context.Context, vmID string) (Rot
 
 // RotateTokenUpload writes the credential files (cert, key, auth token) into
 // the guest, at the paths the agent profile owns (fusedCredentialFiles). the
-// same files are written on every attempt, so a retry is harmless.
+// same files are written in the same order on every attempt, so a retry is
+// harmless.
 func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rotated RotatedCredentials) error {
 	env, err := fm.rotateTarget(vmID)
 	if err != nil {
@@ -187,8 +190,15 @@ func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rota
 		return errRotateSealed
 	}
 	creds := &secrets.VMCredentials{AuthToken: sealed.AuthToken, CertPEM: sealed.CertPEM, KeyPEM: sealed.KeyPEM}
-	if err := uploadFiles(ctx, env, fusedCredentialFiles(creds)); err != nil {
-		return fmt.Errorf("upload credentials: %w", err)
+	// one at a time in path order, not concurrently like uploadFiles: on
+	// restate each upload is keyed by its place in the step (key/1, key/2,
+	// ...), and the agent replays a key's first answer whatever file it now
+	// carries, so a retried step has to send the same file under each key.
+	files := fusedCredentialFiles(creds)
+	for _, path := range slices.Sorted(maps.Keys(files)) {
+		if err := env.Upload(ctx, files[path], path); err != nil {
+			return fmt.Errorf("upload credentials: upload %s: %w", path, err)
+		}
 	}
 	setTokenIfSupported(env, creds)
 	return nil
