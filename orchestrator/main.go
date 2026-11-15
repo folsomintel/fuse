@@ -643,12 +643,15 @@ func run() error {
 	}
 
 	handler := &api.Handler{
-		Fleet:                   fm,
-		NewProvider:             hostProviderFactory,
-		AuthToken:               authToken,
-		APIKeys:                 apiKeyStoreOrNil(apiKeyStore),
-		AllowedCIDRs:            cidrList,
-		SecureCookies:           useSecureCookies,
+		Fleet:         fm,
+		NewProvider:   hostProviderFactory,
+		AuthToken:     authToken,
+		APIKeys:       apiKeyStoreOrNil(apiKeyStore),
+		AllowedCIDRs:  cidrList,
+		SecureCookies: useSecureCookies,
+		// a mutating route answers 202 with its operation 10s before the
+		// write timeout would cut the connection.
+		OperationWait:           max(writeTimeout-10*time.Second, time.Second),
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
 		Version:                 version,

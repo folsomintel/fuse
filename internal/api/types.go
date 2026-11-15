@@ -1118,3 +1118,38 @@ type InterventionList struct {
 	Interventions []Intervention `json:"interventions"`
 	NextCursor    *string        `json:"next_cursor,omitempty"`
 }
+
+// ── Operation types ────────────────────────────────────────────────
+
+// Operation is one run of a mutating route: create, destroy, fork, migrate,
+// snapshot, restore or drain. Once it finishes, StatusCode and Result (on a
+// 2xx) or Error (otherwise) are what the route itself would have answered.
+type Operation struct {
+	ID string `json:"id"`
+	// Kind is the route: create, destroy, fork, migrate, snapshot, restore
+	// or drain.
+	Kind string `json:"kind" enums:"create,destroy,fork,migrate,snapshot,restore,drain"`
+	// State is running, succeeded (a 2xx answer) or failed.
+	State string `json:"state" enums:"running,succeeded,failed"`
+	// Step is the step the operation last reported starting, when its kind
+	// reports steps (migrate does).
+	Step       string     `json:"step,omitempty"`
+	StartedAt  time.Time  `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// StatusCode is the http status the route answered with.
+	StatusCode int `json:"status_code,omitempty"`
+	// Result is the route's response body on success: an Environment for
+	// create, fork, migrate and drain, a Snapshot for snapshot, absent for
+	// destroy and restore (a 204), and a HeldResponse when a hitl gate held
+	// the action (status_code 202).
+	Result json.RawMessage `json:"result,omitempty" swaggertype:"object"`
+	// Error is the route's error body on failure.
+	Error *ErrorBody `json:"error,omitempty"`
+}
+
+// OperationAccepted is the 202 a mutating route answers with when its
+// operation outlasts ?wait=. Poll or attach with GET /v1/operations/{id}.
+type OperationAccepted struct {
+	OperationID string    `json:"operation_id"`
+	Operation   Operation `json:"operation"`
+}
