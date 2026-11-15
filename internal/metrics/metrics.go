@@ -44,6 +44,14 @@ type PrometheusMetrics struct {
 	// DestroyDeadLetterMetrics.
 	destroyDeadLetters prometheus.Counter
 
+	// hitl webhook deliveries by endpoint host, through
+	// orchestrator.WebhookMetrics.
+	webhookAttempts    *prometheus.CounterVec
+	webhookFailures    *prometheus.CounterVec
+	webhookBacklog     *prometheus.GaugeVec
+	webhookLastStatus  *prometheus.GaugeVec
+	webhookDeadLetters *prometheus.CounterVec
+
 	// host-to-host artifact copies, through ArtifactMoveMetrics.
 	artifactMoveDuration *prometheus.HistogramVec
 	artifactMoveBytes    *prometheus.CounterVec
@@ -184,6 +192,37 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Help:      "Total durable destroys that ran out of retries and left their environment in destroy_failed.",
 		}),
 
+		webhookAttempts: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl_webhook",
+			Name:      "attempts_total",
+			Help:      "HITL webhook posts by endpoint host, successful or not.",
+		}, []string{"endpoint"}),
+		webhookFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl_webhook",
+			Name:      "failures_total",
+			Help:      "HITL webhook posts that got no 2xx answer, by endpoint host.",
+		}, []string{"endpoint"}),
+		webhookBacklog: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl_webhook",
+			Name:      "backlog",
+			Help:      "Durable HITL webhook deliveries not yet delivered or dead-lettered, by endpoint host.",
+		}, []string{"endpoint"}),
+		webhookLastStatus: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl_webhook",
+			Name:      "last_status",
+			Help:      "HTTP status of the last HITL webhook post by endpoint host, 0 when no receiver answered.",
+		}, []string{"endpoint"}),
+		webhookDeadLetters: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "hitl_webhook",
+			Name:      "dead_letters_total",
+			Help:      "Durable HITL webhook deliveries still failing when their retry window ran out, by endpoint host.",
+		}, []string{"endpoint"}),
+
 		artifactMoveDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: "orchestrator",
 			Subsystem: "artifact_move",
@@ -275,6 +314,11 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.egressProvisionFailed,
 		m.egressTeardownFailed,
 		m.destroyDeadLetters,
+		m.webhookAttempts,
+		m.webhookFailures,
+		m.webhookBacklog,
+		m.webhookLastStatus,
+		m.webhookDeadLetters,
 		m.artifactMoveDuration,
 		m.artifactMoveBytes,
 		m.artifactMoveFailures,
@@ -322,9 +366,30 @@ func (m *PrometheusMetrics) EgressProvisionFailed(provider string) {
 	m.egressProvisionFailed.WithLabelValues(provider).Inc()
 }
 
+var _ orchestrator.WebhookMetrics = (*PrometheusMetrics)(nil)
+
 // DestroyDeadLettered implements orchestrator.DestroyDeadLetterMetrics.
 func (m *PrometheusMetrics) DestroyDeadLettered() {
 	m.destroyDeadLetters.Inc()
+}
+
+// WebhookAttempted implements orchestrator.WebhookMetrics.
+func (m *PrometheusMetrics) WebhookAttempted(endpoint string, status int, err error) {
+	m.webhookAttempts.WithLabelValues(endpoint).Inc()
+	if err != nil {
+		m.webhookFailures.WithLabelValues(endpoint).Inc()
+	}
+	m.webhookLastStatus.WithLabelValues(endpoint).Set(float64(status))
+}
+
+// WebhookBacklog implements orchestrator.WebhookMetrics.
+func (m *PrometheusMetrics) WebhookBacklog(endpoint string, n int) {
+	m.webhookBacklog.WithLabelValues(endpoint).Set(float64(n))
+}
+
+// WebhookDeadLettered implements orchestrator.WebhookMetrics.
+func (m *PrometheusMetrics) WebhookDeadLettered(endpoint string) {
+	m.webhookDeadLetters.WithLabelValues(endpoint).Inc()
 }
 
 // ArtifactMoveCompleted implements orchestrator.ArtifactMoveMetrics.
