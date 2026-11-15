@@ -42,18 +42,28 @@ class OperationsService:
         return wait_operation(self._t, operation_id, timeout=timeout)
 
 
-def get_operation(t: Transport, operation_id: str, *, wait: Optional[float] = None) -> Operation:
+def get_operation(
+    t: Transport,
+    operation_id: str,
+    *,
+    wait: Optional[float] = None,
+    http_timeout: Optional[float] = None,
+) -> Operation:
+    # http_timeout, when given, caps a waiting read's http timeout.
     if not operation_id:
         raise ValueError("operation id is required")
     path = f"/v1/operations/{quote(operation_id, safe='')}"
     if not wait or wait <= 0:
         resp = t.request("GET", path)
     else:
+        limit = wait + _POLL_HTTP_HEADROOM
+        if http_timeout is not None:
+            limit = min(limit, http_timeout)
         resp = t.request(
             "GET",
             path,
             params={"wait": f"{wait:g}s"},
-            timeout=wait + _POLL_HTTP_HEADROOM,
+            timeout=limit,
         )
     return Operation.model_validate(resp.json())
 
@@ -63,14 +73,21 @@ def wait_operation(
 ) -> Operation:
     # polls the operation until it finishes.
     deadline = None if timeout is None else time.monotonic() + timeout
+    expired = f"operation {operation_id} still running after {timeout}s"
     while True:
         poll = _POLL_WAIT_SECONDS
+        remaining = None
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError(f"operation {operation_id} still running after {timeout}s")
+                raise TimeoutError(expired)
             poll = min(poll, remaining)
-        op = get_operation(t, operation_id, wait=poll)
+        try:
+            op = get_operation(t, operation_id, wait=poll, http_timeout=remaining)
+        except httpx.TimeoutException as e:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(expired) from e
+            raise
         if op.done:
             return op
 

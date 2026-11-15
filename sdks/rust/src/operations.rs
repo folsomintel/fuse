@@ -91,7 +91,7 @@ impl Operations {
     /// the operation finishes or `wait` passes (capped by the server);
     /// without it the call answers at once.
     pub async fn get(&self, id: &str, wait: Option<Duration>) -> Result<Operation, Error> {
-        get_operation(&self.t, id, wait).await
+        get_operation(&self.t, id, wait, None).await
     }
 
     /// Long-polls until the operation finishes and returns it. With
@@ -106,17 +106,21 @@ impl Operations {
 // get_operation reads one operation. a waiting read runs on the no-timeout
 // stream client with its own deadline, so a short client timeout cannot cut
 // a held poll short.
+// limit, when given, caps a waiting read's http timeout.
 pub(crate) async fn get_operation(
     t: &Transport,
     id: &str,
     wait: Option<Duration>,
+    limit: Option<Duration>,
 ) -> Result<Operation, Error> {
     require(id, "operation id")?;
     let request = match wait {
         Some(wait) => t
             .stream_request(Method::GET, &["v1", "operations", id])
             .query(&[("wait", format!("{}ms", wait.as_millis()))])
-            .timeout(wait + WAIT_HTTP_OVERHEAD),
+            .timeout(limit.map_or(wait + WAIT_HTTP_OVERHEAD, |limit| {
+                limit.min(wait + WAIT_HTTP_OVERHEAD)
+            })),
         None => t.request(Method::GET, &["v1", "operations", id]),
     };
     t.send_json(request).await
@@ -131,14 +135,17 @@ pub(crate) async fn wait_operation(
 ) -> Result<Operation, Error> {
     let deadline = timeout.map(|timeout| Instant::now() + timeout);
     loop {
-        let poll = match deadline {
-            Some(deadline) => deadline
-                .saturating_duration_since(Instant::now())
-                .min(WAIT_POLL),
-            None => WAIT_POLL,
+        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let poll = remaining.map_or(WAIT_POLL, |remaining| remaining.min(WAIT_POLL));
+        let expired = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        let operation = match get_operation(t, id, Some(poll), remaining).await {
+            // the poll ran into the deadline: report where the operation is now.
+            Err(Error::Transport(e)) if e.is_timeout() && expired() => {
+                return get_operation(t, id, None, None).await;
+            }
+            other => other?,
         };
-        let operation = get_operation(t, id, Some(poll)).await?;
-        let expired = deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        let expired = expired();
         if operation.is_terminal() || expired {
             return Ok(operation);
         }
