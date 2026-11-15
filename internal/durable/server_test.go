@@ -99,6 +99,16 @@ func (fakeFleet) ChainAdvanced(context.Context, string, orchestrator.ChainState,
 }
 func (fakeFleet) MirrorChain(string, orchestrator.ChainState, bool) {}
 
+func (fakeFleet) RotateTokenGenerate(context.Context, string) (orchestrator.RotatedCredentials, error) {
+	return orchestrator.RotatedCredentials{}, nil
+}
+func (fakeFleet) RotateTokenUpload(context.Context, string, orchestrator.RotatedCredentials) error {
+	return nil
+}
+func (fakeFleet) RotateTokenPersist(context.Context, string, orchestrator.RotatedCredentials) error {
+	return nil
+}
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -157,7 +167,7 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken"} {
 				want[h] = "EXCLUSIVE"
 			}
 		case ArtifactsObject:
