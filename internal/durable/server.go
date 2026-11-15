@@ -44,6 +44,7 @@ type Fleet interface {
 	Artifacts
 	Snapshots
 	Checkpoints
+	Tokens
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -105,6 +106,10 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("RetireChain", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
 				return restate.Void{}, dropChain(ctx, fleet)
+			})).
+		Handler("RotateToken", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, rotateToken(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
 			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
