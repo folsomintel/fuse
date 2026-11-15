@@ -244,11 +244,12 @@ func (fm *FleetManager) webhookPending(d WebhookDelivery, pending bool) {
 	} else {
 		delete(ids, d.ID)
 	}
-	n := len(ids)
-	fm.webhookMu.Unlock()
+	// published under the lock, so a stale count never lands after a
+	// newer one.
 	if m, ok := fm.metrics.(WebhookMetrics); ok {
-		m.WebhookBacklog(d.Endpoint, n)
+		m.WebhookBacklog(d.Endpoint, len(ids))
 	}
+	fm.webhookMu.Unlock()
 }
 
 // webhookAttempted reports one post, in either mode.
