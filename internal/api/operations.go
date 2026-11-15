@@ -56,8 +56,8 @@ const (
 	// operationRetention is how long a finished operation, and the key that
 	// names it, stays readable. it matches the host agents' key store.
 	operationRetention = 24 * time.Hour
-	// maxOperations caps the registry. past it the oldest finished
-	// operations go first.
+	// maxOperations caps the registry. past it new work is refused rather
+	// than forgetting a key inside its retention.
 	maxOperations = 10000
 	// defaultOperationWait is the attach bound when Handler.OperationWait is
 	// unset. it stays below the server's default 60s write timeout.
@@ -99,6 +99,16 @@ func (op *operation) finished() bool {
 	default:
 		return false
 	}
+}
+
+// expired reports whether op finished more than operationRetention ago.
+func (op *operation) expired(now time.Time) bool {
+	if !op.finished() {
+		return false
+	}
+	op.mu.Lock()
+	defer op.mu.Unlock()
+	return now.Sub(op.finishedAt) > operationRetention
 }
 
 // view is the operation as the api returns it.
@@ -215,28 +225,12 @@ func (s *operationStore) dropLocked(op *operation) {
 	}
 }
 
-// sweepLocked drops operations past their retention, then the oldest
-// finished ones while the store is over its cap.
+// sweepLocked drops finished operations past their retention.
 func (s *operationStore) sweepLocked(now time.Time) {
-	var oldest *operation
-	var oldestAt time.Time
 	for _, op := range s.byID {
-		if !op.finished() {
-			continue
-		}
-		op.mu.Lock()
-		at := op.finishedAt
-		op.mu.Unlock()
-		if now.Sub(at) > operationRetention {
+		if op.expired(now) {
 			s.dropLocked(op)
-			continue
 		}
-		if len(s.byID) >= maxOperations && (oldest == nil || at.Before(oldestAt)) {
-			oldest, oldestAt = op, at
-		}
-	}
-	if oldest != nil && len(s.byID) >= maxOperations {
-		s.dropLocked(oldest)
 	}
 }
 
