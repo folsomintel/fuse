@@ -15,12 +15,6 @@ import (
 	fuse "github.com/folsomintel/fuse/sdks/go"
 )
 
-// buildExecTimeout bounds the build phase inside the guest. the exec path allows
-// 600s (the host agent's own EXEC_TIMEOUT_MAX); running the same work as a
-// startup script would cap it at 30s, which the init scaffold's apt-get
-// routinely exceeds. closing that gap is why this command exists.
-const buildExecTimeout = 600 * time.Second
-
 func newBuildCmd() *cobra.Command {
 	var (
 		file              string
@@ -31,14 +25,18 @@ func newBuildCmd() *cobra.Command {
 		keep              bool
 		plan              bool
 		noCache           bool
+		detach            bool
 	)
 	cmd := &cobra.Command{
 		Use:   "build [path]",
 		Short: "Run a Fusefile's setup phase once and snapshot the result",
-		Long: "build boots a throwaway environment, runs the Fusefile's setup phase in\n" +
-			"it, snapshots the resulting disk, and destroys the environment. it prints\n" +
-			"the snapshot id, which `fuse up --from-build <id>` boots directly so the\n" +
-			"setup work does not rerun on every boot.\n\n" +
+		Long: "build has the orchestrator boot a throwaway environment, run the\n" +
+			"Fusefile's setup phase in it, snapshot the resulting disk, and destroy the\n" +
+			"environment. it follows the build and prints the snapshot id, which\n" +
+			"`fuse up --from-build <id>` boots directly so the setup work does not\n" +
+			"rerun on every boot. the build runs on the orchestrator, so it finishes\n" +
+			"and cleans up its builder even if this command is stopped; --detach\n" +
+			"prints the build id and exits at once.\n\n" +
 			"the artifact is stored on the host that produced it. there is no object\n" +
 			"storage, but it is not stuck there either: a host that needs it fetches\n" +
 			"it from a host that has it. firecracker hosts only, since qemu hosts\n" +
@@ -113,143 +111,62 @@ func newBuildCmd() *cobra.Command {
 				return err
 			}
 
-			// resolve the cache before anything is provisioned. a hit changes
-			// what the builder boots from, so it has to be known at create time.
-			var hit *layerHit
+			// the layer keys are derived here because only this machine can
+			// read the files a step's `inputs` name. the orchestrator looks
+			// them up and runs the rest.
+			setup := fusefile.NewSetupPlan(f)
+			arch := ""
 			if lp != nil && lp.CacheEnabled {
-				arch := targetArch(cmd.Context(), cl, cur.ActiveHost)
+				arch = targetArch(cmd.Context(), cl, cur.ActiveHost)
 				if arch == "" {
 					// no safe answer, so no lookup. filing a layer under an arch
 					// it was not built on would serve a later build a rootfs it
 					// cannot boot, which is far worse than rebuilding.
 					warnf("cannot determine the target host architecture; building without the layer cache")
 					lp.CacheEnabled = false
-				} else {
-					lp.Arch = arch
-					hit, err = resolveDeepestLayer(cmd.Context(), cl, lp, arch)
-					if err != nil {
-						// the cache is an optimization. an orchestrator that
-						// cannot answer should cost time, never the build.
-						warnf("layer cache lookup failed, building cold: %v", err)
-						hit = nil
-					}
 				}
 			}
+			req := buildRequest(name, c, secretMap, setup, lp, arch, keep)
 
-			spec := fuse.Spec{
-				CPUs:      c.Spec.CPUs,
-				RamMB:     c.Spec.RamMB,
-				StorageGB: c.Spec.StorageGB,
-				Region:    c.Spec.Region,
-				Image:     c.Spec.Image,
-			}
-			req := fuse.CreateRequest{
-				TaskID:         buildTaskID(name),
-				ManifestInline: base64.StdEncoding.EncodeToString(c.ManifestJSON),
-				Secrets:        secretMap,
-			}
-			if hit != nil {
-				// seed and image are mutually exclusive: the artifact already
-				// is the rootfs, and the image it descended from is folded into
-				// the layer key, so the seed is the stronger statement.
-				spec.Image = ""
-				req.SeedSnapshotID = hit.Snapshot.ID
-				lp.markHit(hit.Index)
-			}
-			req.Spec = spec
-
-			// no startup script: the build phase runs through exec instead, for
-			// the 600s ceiling and so its output can be shown on failure.
-			e, err := cl.Environments.Create(cmd.Context(), req)
+			b, err := cl.Builds.Create(cmd.Context(), req)
 			if err != nil {
 				return friendly(err)
 			}
-			if hit != nil {
-				successf("reusing %d cached layer(s) from %s", lp.hitCount(), hit.Snapshot.ID)
-			}
-			successf("building in environment %s", e.ID)
-
-			// the builder is torn down on every exit path except --keep, so a
-			// failed build does not leave a vm holding host capacity.
-			destroy := func() {
-				if keep {
-					warnf("keeping builder environment %s", e.ID)
-					return
+			if detach {
+				if app.isJSON() {
+					return printJSON(b)
 				}
-				if err := cl.Environments.Destroy(cmd.Context(), e.ID); err != nil {
-					warnf("destroy builder %s: %v", e.ID, err)
-				}
+				successf("build %s submitted", b.ID)
+				fmt.Println(b.ID)
+				return nil
 			}
+			infof("build %s submitted; it keeps running on the orchestrator if this command stops", b.ID)
 
-			// no step tracker: this only waits for the builder to boot, and the
-			// builder is created without a startup script, so no setup step runs
-			// in this window. the setup phase runs below as one exec of
-			// BuildScript, which reports a single exit code rather than per-step
-			// events, so there is nothing for a tracker to record.
-			if err := waitForEnvironmentReady(cmd.Context(), cl, e.ID, nil); err != nil {
-				destroy()
+			b, err = followBuild(cmd.Context(), cl, b)
+			if err != nil {
 				return err
 			}
+			if b.State != fuse.BuildSucceeded {
+				if b.Output != "" {
+					fmt.Fprint(os.Stderr, b.Output)
+				}
+				return fmt.Errorf("build %s failed: %s", b.ID, b.Error)
+			}
+			if keep && b.BuilderID != "" {
+				warnf("keeping builder environment %s", b.BuilderID)
+			}
 
-			// runScript execs one shell script in the builder and surfaces its
-			// output. unlike the startup-script path, build output is shown: a
-			// build that fails silently is not debuggable. guest stdout/stderr
-			// keep their own streams so a caller can separate them.
-			runScript := func(script, label string) error {
-				res, err := cl.Environments.Exec(cmd.Context(), e.ID, fuse.ExecRequest{
-					Shell:     script,
-					TimeoutMS: int(buildExecTimeout / time.Millisecond),
-				})
+			if app.isJSON() {
+				snap, err := cl.Snapshots.Get(cmd.Context(), b.SnapshotID)
 				if err != nil {
 					return friendly(err)
 				}
-				if res.Stdout != "" {
-					fmt.Print(res.Stdout)
-				}
-				if res.Stderr != "" {
-					fmt.Fprint(os.Stderr, res.Stderr)
-				}
-				if res.ExitCode != 0 {
-					return fmt.Errorf("%s exited %d", label, res.ExitCode)
-				}
-				return nil
-			}
-
-			if lp == nil || !lp.CacheEnabled {
-				// caching off: one exec of the whole build script, byte for byte
-				// what this command has always done.
-				if err := runScript(c.BuildScript, "build phase"); err != nil {
-					destroy()
-					return err
-				}
-			} else if err := runCachedSetup(cmd.Context(), cl, e.ID, f, lp, hit, name, runScript); err != nil {
-				// layers already snapshotted stay in the store on purpose, so a
-				// retry after a fixed setup line resumes instead of restarting.
-				destroy()
-				return err
-			}
-
-			snap, err := cl.Snapshots.Create(cmd.Context(), e.ID, fuse.SnapshotRequest{
-				Comment:  "fuse build: " + name,
-				Mode:     "build",
-				Metadata: map[string]string{"name": name},
-			})
-			if err != nil {
-				destroy()
-				return friendly(err)
-			}
-			// the snapshot is durable and independent of the builder before the
-			// builder goes away, so this order is what makes the artifact
-			// outlive it.
-			destroy()
-
-			if app.isJSON() {
 				return printJSON(snap)
 			}
-			successf("built %s", snap.ID)
+			successf("built %s", b.SnapshotID)
 			// the id goes to stdout so `fuse up --from-build "$(fuse build)"`
 			// works; all other chatter is on stderr.
-			fmt.Println(snap.ID)
+			fmt.Println(b.SnapshotID)
 			return nil
 		},
 	}
@@ -261,82 +178,71 @@ func newBuildCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&keep, "keep", false, "leave the builder environment running instead of destroying it")
 	cmd.Flags().BoolVar(&plan, "plan", false, "print the derived setup layer cache plan and exit without building anything")
 	cmd.Flags().BoolVar(&noCache, "no-cache", false, "ignore the Fusefile's cache block and run every setup step")
+	cmd.Flags().BoolVar(&detach, "detach", false, "submit the build, print its id and exit without following it")
 	return cmd
 }
 
-// buildTaskID derives the builder's task id. it is deliberately distinct from
-// the task id `fuse up` derives from the same Fusefile, since a task id may
-// only be assigned to one vm at a time and a build must not collide with the
-// environment it is building for.
-func buildTaskID(name string) string {
-	return fmt.Sprintf("build-%s-%d", name, time.Now().UnixNano())
+// buildRequest is the build the orchestrator runs for c: the setup plan with
+// each step's layer key from lp. a plan with the cache off sends no keys, so
+// the whole setup runs as one exec, byte for byte the build script.
+func buildRequest(name string, c *fusefile.Compiled, secretMap map[string]string, setup fusefile.SetupPlan, lp *layerPlan, arch string, keep bool) fuse.CreateBuildRequest {
+	req := fuse.CreateBuildRequest{
+		Name: name,
+		Spec: fuse.Spec{
+			CPUs:      c.Spec.CPUs,
+			RamMB:     c.Spec.RamMB,
+			StorageGB: c.Spec.StorageGB,
+			Region:    c.Spec.Region,
+			Image:     c.Spec.Image,
+		},
+		ManifestInline: base64.StdEncoding.EncodeToString(c.ManifestJSON),
+		Secrets:        secretMap,
+		Keep:           keep,
+		Setup:          fuse.BuildSetup{Prelude: setup.Prelude, Files: setup.Files},
+	}
+	cached := lp != nil && lp.CacheEnabled
+	if cached {
+		req.Arch = arch
+	}
+	for i, script := range setup.Steps {
+		step := fuse.BuildStep{Script: script}
+		if cached && i < len(lp.Steps) && lp.Steps[i].Cacheable {
+			step.Key = lp.Steps[i].Key
+		}
+		req.Setup.Steps = append(req.Setup.Steps, step)
+	}
+	return req
 }
 
-// runCachedSetup runs the setup phase one cacheable step at a time, snapshotting
-// after each, then runs everything left as a single exec.
-//
-// The split is not a heuristic. Cacheable steps are always a leading run of the
-// setup list, because the chain breaks permanently at the first step that opts
-// out, so there is exactly one boundary: before it, every step can produce an
-// artifact worth keeping; after it, none can, and running them one at a time
-// would buy nothing but round trips.
-//
-// Each step is its own exec, and each exec is its own shell. That is why every
-// script here carries the prelude: strict mode does not survive across execs,
-// and neither does the `cd` into the workspace, so a step rendered without it
-// would run in whatever directory the shell started in. The file block is
-// written only on the first exec of a cold build, since a seed artifact already
-// contains it.
-//
-// A failure leaves every layer snapshotted so far in the store. That is the
-// point of snapshotting per step: fixing the setup line that broke and running
-// again resumes from the last good layer instead of starting over.
-func runCachedSetup(
-	ctx context.Context,
-	cl *fuse.Client,
-	envID string,
-	f *fusefile.Fusefile,
-	lp *layerPlan,
-	hit *layerHit,
-	name string,
-	runScript func(script, label string) error,
-) error {
-	start := 0
-	if hit != nil {
-		start = hit.Index + 1
-	}
-	// a seed artifact was built from the same base key, which folds the file
-	// block in, so the files are already on that disk.
-	writeFiles := hit == nil
-	prefix := cacheablePrefixLen(lp)
-
-	for i := start; i < prefix; i++ {
-		script := fusefile.SetupScriptRange(f, i, i+1, writeFiles && i == start)
-		if err := runScript(script, fmt.Sprintf("setup[%d]", i)); err != nil {
-			return err
+// followBuild waits for b to finish, reporting each step it moves to. the
+// build keeps running if ctx ends first.
+func followBuild(ctx context.Context, cl *fuse.Client, b *fuse.Build) (*fuse.Build, error) {
+	step, builder := "", ""
+	for {
+		if b.BuilderID != "" && b.BuilderID != builder {
+			builder = b.BuilderID
+			if b.CacheHits > 0 {
+				successf("reusing %d cached layer(s) from %s", b.CacheHits, b.SeedSnapshotID)
+			}
+			successf("building in environment %s", builder)
 		}
-		if _, err := cl.Snapshots.Create(ctx, envID, fuse.SnapshotRequest{
-			Comment:  fmt.Sprintf("fuse build layer %d: %s", i, name),
-			Mode:     "build",
-			LayerKey: lp.Steps[i].Key,
-		}); err != nil {
-			return friendly(err)
+		if b.Step != step {
+			step = b.Step
+			infof("%s", step)
 		}
-		lp.Statuses[i] = layerStatusMiss
-	}
-
-	// everything from the first uncacheable step on, as one exec. nothing here
-	// can be snapshotted, so there is no reason to pay for a round trip per
-	// step.
-	tail := prefix
-	if start > tail {
-		tail = start
-	}
-	if tail < len(lp.Steps) {
-		script := fusefile.SetupScriptRange(f, tail, len(lp.Steps), writeFiles && tail == start)
-		if err := runScript(script, "setup tail"); err != nil {
-			return err
+		if b.Done() {
+			return b, nil
 		}
+		next, err := cl.Builds.Get(ctx, b.ID, fuse.GetBuildOptions{Wait: buildPollWait})
+		if err != nil {
+			if ctx.Err() != nil {
+				warnf("stopped following build %s; it keeps running on the orchestrator", b.ID)
+			}
+			return nil, friendly(err)
+		}
+		b = next
 	}
-	return nil
 }
+
+// buildPollWait is the ?wait= of each poll while following a build.
+const buildPollWait = 30 * time.Second

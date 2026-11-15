@@ -193,28 +193,6 @@ func TestResolveDeepestLayerSkipsWithoutArch(t *testing.T) {
 	}
 }
 
-func TestCacheablePrefixLen(t *testing.T) {
-	tests := []struct {
-		name string
-		plan *layerPlan
-		want int
-	}{
-		{"nil plan", nil, 0},
-		{"all cacheable", &layerPlan{Steps: []fusefile.LayerKey{{Cacheable: true}, {Cacheable: true}}}, 2},
-		{"none cacheable", &layerPlan{Steps: []fusefile.LayerKey{{}, {}}}, 0},
-		// the chain breaks permanently at the first opt-out, so anything after
-		// it is uncacheable no matter what it says.
-		{"breaks midway", &layerPlan{Steps: []fusefile.LayerKey{{Cacheable: true}, {}, {}}}, 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := cacheablePrefixLen(tt.plan); got != tt.want {
-				t.Errorf("cacheablePrefixLen = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
 // One artifact satisfies every step leading to it, so a hit at index N marks
 // all of 0..N rather than just N.
 func TestMarkHitCoversEveryStepBelowIt(t *testing.T) {
