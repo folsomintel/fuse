@@ -54,6 +54,8 @@ tags:
     description: Unauthenticated probe and identity endpoints (mounted outside auth)
   - name: auth
     description: Session-cookie login/logout for browser callers
+  - name: operations
+    description: Mutating calls (create, destroy, fork, migrate, snapshot, restore, drain) run past their own request
 
 paths:
   /health:
@@ -313,6 +315,9 @@ paths:
         is a 404 before any VM is created. A pin to a real but ineligible
         host, and a label selector that matches no host, both fail 503 with
         a message naming the gate that rejected them.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       requestBody:
         required: true
         content:
@@ -326,6 +331,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Environment"
+        "202":
+          description: |
+            The operation outlasted `?wait=` (or `wait=false`): the body is
+            an OperationAccepted and `Location` points at
+            /v1/operations/{operationId}. Poll or attach there for the answer
+            this call would have returned.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/operations/{operationId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -505,6 +525,8 @@ paths:
           description: The action to perform.
         - $ref: "#/components/parameters/FuseActor"
         - $ref: "#/components/parameters/FuseActorName"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       responses:
         "200":
           description: |
@@ -539,15 +561,21 @@ paths:
             GET /v1/interventions/{interventionId}?wait=; once approved the
             orchestrator performs the action and stores the outcome in the
             intervention's `result`.
+            Also the answer when the operation outlasts `?wait=` (or
+            `wait=false`): the body is then an OperationAccepted, told apart
+            by its `operation_id`, and `Location` points at
+            /v1/operations/{operationId}.
           headers:
             Location:
               schema:
                 type: string
-              description: /v1/interventions/{interventionId}
+              description: /v1/interventions/{interventionId}, or /v1/operations/{operationId}
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HeldResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/OperationAccepted"
+                  - $ref: "#/components/schemas/HeldResponse"
         "204":
           description: |
             Action succeeded with no body. Always for rotate-token; for
@@ -582,13 +610,15 @@ paths:
       operationId: destroyEnvironment
       summary: Destroy environment
       description: |
-        Forcefully destroys the VM and marks its task failed. Not
-        idempotent: a second call on an already-gone VM returns 404
-        `not_found` in the standard error envelope, and SDKs raise on it
-        like any other 4xx. A caller that retries destroys should treat
-        404 as success itself rather than expecting the server to absorb
-        the repeat. A `lifecycle` hitl gate matching `destroy` can hold
+        Forcefully destroys the VM and marks its task failed. A second
+        call on an already-gone VM returns 404 `not_found` in the standard
+        error envelope, and SDKs raise on it like any other 4xx. A retry
+        that carries the first call's `Idempotency-Key` replays the first
+        call's 204 instead. A `lifecycle` hitl gate matching `destroy` can hold
         it (202) or deny it (403 `hitl_denied`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       responses:
         "202":
           description: |
@@ -598,15 +628,21 @@ paths:
             GET /v1/interventions/{interventionId}?wait=; once approved the
             orchestrator performs the action and stores the outcome in the
             intervention's `result`.
+            Also the answer when the operation outlasts `?wait=` (or
+            `wait=false`): the body is then an OperationAccepted, told apart
+            by its `operation_id`, and `Location` points at
+            /v1/operations/{operationId}.
           headers:
             Location:
               schema:
                 type: string
-              description: /v1/interventions/{interventionId}
+              description: /v1/interventions/{interventionId}, or /v1/operations/{operationId}
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HeldResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/OperationAccepted"
+                  - $ref: "#/components/schemas/HeldResponse"
         "204":
           description: VM destroyed.
         "403":
@@ -622,6 +658,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1125,6 +1163,9 @@ paths:
         (202) or deny it (403 `hitl_denied`). A held create runs on
         approval and the intervention's `result.snapshot_id` names the
         snapshot.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       requestBody:
         required: false
         content:
@@ -1146,15 +1187,21 @@ paths:
             GET /v1/interventions/{interventionId}?wait=; once approved the
             orchestrator performs the action and stores the outcome in the
             intervention's `result`.
+            Also the answer when the operation outlasts `?wait=` (or
+            `wait=false`): the body is then an OperationAccepted, told apart
+            by its `operation_id`, and `Location` points at
+            /v1/operations/{operationId}.
           headers:
             Location:
               schema:
                 type: string
-              description: /v1/interventions/{interventionId}
+              description: /v1/interventions/{interventionId}, or /v1/operations/{operationId}
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/HeldResponse"
+                oneOf:
+                  - $ref: "#/components/schemas/OperationAccepted"
+                  - $ref: "#/components/schemas/HeldResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -1351,9 +1398,26 @@ paths:
             type: string
             enum: [restore]
           description: The action to perform. Currently only "restore" is supported.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       responses:
         "204":
           description: Action succeeded.
+        "202":
+          description: |
+            The operation outlasted `?wait=` (or `wait=false`): the body is
+            an OperationAccepted and `Location` points at
+            /v1/operations/{operationId}. Poll or attach there for the answer
+            this call would have returned.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/operations/{operationId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -2217,6 +2281,48 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/operations/{operationId}:
+    parameters:
+      - name: operationId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Operation id from `Fuse-Operation-Id` or a 202 OperationAccepted.
+    get:
+      tags: [operations]
+      operationId: getOperation
+      summary: Get operation
+      description: |
+        Reports a mutating call's operation: its kind, state, current step
+        and, once it finished, the answer the call itself would have
+        returned (`status_code` with `result` or `error`). `?wait=`
+        attaches until it finishes, bounded below the server's write
+        timeout; without it the call answers at once.
+
+        Operations live in the orchestrator's memory: an operation is
+        readable by the credential that started it (and by the master
+        token) for 24h after it finishes, and an orchestrator restart
+        forgets them. Unknown, expired and other callers' operations are
+        all 404.
+      parameters:
+        - name: wait
+          in: query
+          schema:
+            type: string
+          description: How long to wait for the operation to finish, e.g. `30s`. Capped at the server's attach bound.
+      responses:
+        "200":
+          description: The operation, finished or still running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2255,6 +2361,43 @@ components:
         Consulted only when no Authorization header is present.
 
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+      description: |
+        Dedupes retries of this call. A retry with the same key and the
+        same request attaches to the first call's operation instead of
+        running again: it waits for the running one, or replays a finished
+        one's answer with `Idempotent-Replayed: true`. The same key with a
+        different request is 409 `conflict`, `details.reason`
+        `idempotency_key_reused`. Keys are scoped to the credential and
+        kept 24h after the operation finishes; a finished 5xx is not kept,
+        so its retry runs again. With restate on, the key is also the
+        restate ingress idempotency key of a destroy, snapshot or restore,
+        so a retry after an orchestrator restart attaches to the same
+        invocation, except a destroy that already finished: its vm is gone,
+        so that retry answers 404. 1-255 visible ascii characters. Every answer carries
+        the operation's id in `Fuse-Operation-Id`. On POST
+        /v1/environments/{vmId} only `drain`, `fork` and `migrate` honor it.
+    Wait:
+      name: wait
+      in: query
+      required: false
+      schema:
+        type: string
+      description: |
+        How long to wait for the operation before answering 202 with an
+        OperationAccepted. Absent or `true` waits up to the server's
+        attach bound (10s below its write timeout, 50s by default), so a
+        call that finishes in time answers exactly as it always has.
+        `false` (or `0`) answers 202 at once. A duration (`30s`) waits that
+        long, capped at the bound. On POST /v1/environments/{vmId} only
+        `drain`, `fork` and `migrate` honor it.
     VMID:
       name: vmId
       in: path
@@ -4112,6 +4255,68 @@ components:
           items:
             type: string
           description: Program basenames that run without a gate.
+
+    Operation:
+      type: object
+      required: [id, kind, state, started_at]
+      description: |
+        One run of a mutating call. Once it finished, `status_code` and
+        `result` (2xx) or `error` (otherwise) are what the call itself would
+        have answered.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [create, destroy, fork, migrate, snapshot, restore, drain]
+        state:
+          type: string
+          enum: [running, succeeded, failed]
+          description: succeeded is a 2xx answer, failed any other.
+        step:
+          type: string
+          description: The step the operation last reported starting. migrate reports snapshot, transfer, delta, boot and cutover.
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        status_code:
+          type: integer
+          description: The http status the call answered with.
+        result:
+          type: object
+          description: |
+            The call's response body on success: an Environment for create,
+            fork, migrate and drain, a Snapshot for snapshot, absent for
+            destroy and restore (204), and a HeldResponse when a hitl gate
+            held the action (status_code 202).
+        error:
+          type: object
+          description: The call's error body (the `error` member of an Error) on failure.
+          required: [code, message]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties:
+                type: string
+
+    OperationAccepted:
+      type: object
+      required: [operation_id, operation]
+      description: |
+        The 202 body of a mutating call whose operation outlasted `?wait=`.
+        Poll or attach with GET /v1/operations/{operationId}?wait=.
+      properties:
+        operation_id:
+          type: string
+        operation:
+          $ref: "#/components/schemas/Operation"
 
     HeldResponse:
       type: object

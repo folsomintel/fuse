@@ -7,6 +7,7 @@ use url::Url;
 
 use crate::error::{parse_api_error, Error, REQUEST_ID_HEADER};
 use crate::gates::{decode, HitlWait};
+use crate::operations::OnOperation;
 use crate::types::ActorLabel;
 
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -35,6 +36,9 @@ pub(crate) struct Transport {
     // hitl is how gated calls handle a hold and locked calls a 423. the
     // builder sets it after new.
     pub(crate) hitl: HitlWait,
+    // on_operation is told about a 202 operation before it is followed. the
+    // builder sets it after new.
+    pub(crate) on_operation: Option<OnOperation>,
 }
 
 impl Transport {
@@ -56,6 +60,7 @@ impl Transport {
             request_id,
             actor,
             hitl: HitlWait::default(),
+            on_operation: None,
         }
     }
 

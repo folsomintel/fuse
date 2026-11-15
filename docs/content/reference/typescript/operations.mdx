@@ -1,0 +1,151 @@
+---
+title: Operations
+sidebar:
+  icon: timer
+description: Idempotency keys, long-running calls, and the operations service
+---
+
+Seven calls run on the orchestrator as operations: `environments.create`,
+`destroy`, `fork`, `migrate` and `drain`, and `snapshots.create` and
+`restore`. The server waits for the operation up to its attach bound (10
+seconds below its `-write-timeout`, so 50s by default) and answers as it
+always has. One that outlasts the bound is answered with a `202` and an
+operation id, and the SDK follows it until it finishes. Either way the method
+resolves or rejects exactly as a direct answer would have, so callers need no
+changes.
+
+## Idempotency keys
+
+The trailing options of those seven methods are `MutatingCallOptions`:
+
+```ts
+interface MutatingCallOptions extends CallOptions {
+  idempotencyKey?: string;
+}
+```
+
+`idempotencyKey` is sent as the `Idempotency-Key` header. A retry of the same
+request with the same key attaches to the first call's operation instead of
+running again: it waits for one still running, or gets a finished one's
+answer back. Without it the SDK sends a fresh random key on every call, which
+is enough for the SDK's own following of a `202`, but not for a retry you make
+yourself. Pass your own key when you retry:
+
+```ts
+import { isFuseApiError } from "@folsom/fuse";
+
+const idempotencyKey = crypto.randomUUID();
+let env;
+try {
+  env = await client.environments.create(body, { idempotencyKey });
+} catch (err) {
+  if (isFuseApiError(err)) throw err;
+  // the connection dropped or the client timed out. the create may still be
+  // running, so retry with the same key to attach to it rather than create a
+  // second environment.
+  env = await client.environments.create(body, { idempotencyKey });
+}
+```
+
+Keys are 1 to 255 visible ascii characters; anything else is a `400`
+`invalid_argument`. They are scoped to the credential that sent them, so two
+API keys never collide. The same key with a different request (another
+method, path, action or body) is a `409` `conflict` whose
+`details.reason` is `idempotency_key_reused`, with the first call's id in
+`details.operation_id`. A finished operation is kept for 24 hours; one that
+finished with a 5xx is not kept at all, so its retry runs again. Keys live in
+the orchestrator's memory and an orchestrator restart forgets them, except
+that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the key of a
+destroy, snapshot or restore is also the restate invocation's idempotency
+key, so a retry after a restart attaches to the same invocation. A destroy
+that already finished is the exception: its vm is gone, so that retry answers
+404.
+
+## Following an accepted operation
+
+```ts
+interface FuseClientOptions {
+  // ...
+  onOperation?: (accepted: OperationAccepted) => void;
+}
+```
+
+`onOperation` is called once, with the `202` body, whenever a call outlasts
+the server's attach bound, before the SDK starts following it. The following
+polls `GET /v1/operations/{id}` with `?wait=30s`. The client's `timeoutMs`
+bounds only the first request, not the polls; only the call's `signal`
+bounds those, and aborting it leaves the operation running on the
+orchestrator. Set `timeoutMs` above the server's attach bound, or a long
+call rejects with the timeout while its operation carries on (retry it with
+the same `idempotencyKey` to attach).
+
+```ts
+const client = new FuseClient({
+  baseUrl,
+  token,
+  onOperation: (acc) =>
+    console.log(`${acc.operation.kind} still running as ${acc.operation_id}`),
+});
+```
+
+## client.operations
+
+```ts
+get(id: string, options?: { wait?: string }, opts?: CallOptions): Promise<Operation>
+wait(id: string, options?: { timeout?: number }, opts?: CallOptions): Promise<Operation>
+```
+
+`get` fetches an operation at once, or, with `wait` set to a duration such as
+`"30s"`, attaches until it finishes for at most that long (capped by the
+server's attach bound). `wait` resolves once the operation finishes;
+`timeout` (milliseconds) and `opts.signal` bound it, and the operation keeps
+running if either ends it first. Neither rejects for a failed operation:
+check `state`, then `status_code` and `error`. Neither applies the client's
+`timeoutMs`.
+
+An operation is readable by the credential that started it, and by the master
+token, for 24 hours after it finishes. An unknown, expired or other caller's
+id rejects with a `FuseApiError` whose `code` is `not_found`.
+
+## Operation
+
+```ts
+interface Operation {
+  id: string;
+  kind: string;
+  state: string;
+  step?: string;
+  started_at: string;
+  finished_at?: string;
+  status_code?: number;
+  result?: unknown;
+  error?: OperationError;
+}
+
+interface OperationAccepted {
+  operation_id: string;
+  operation: Operation;
+}
+
+interface OperationError {
+  code: string;
+  message: string;
+  details?: Record<string, string>;
+}
+
+const OperationState = {
+  Running: "running",
+  Succeeded: "succeeded",
+  Failed: "failed",
+} as const;
+```
+
+- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
+  `drain`.
+- `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
+- `step` is the step the operation last reported starting. Only migrate
+  reports steps: `snapshot`, `transfer`, `delta`, `boot` and `cutover`.
+- `status_code`, with `result` on success or `error` on failure, is what the
+  call itself would have answered. `result` is the response body: an
+  `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
+  snapshot, and absent for destroy and restore.

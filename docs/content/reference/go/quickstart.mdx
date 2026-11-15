@@ -84,9 +84,11 @@ healthy environment never satisfies it and the loop blocks forever.
 `IsTerminalState` is for callers that genuinely want to watch an environment
 until it goes away.
 
-**Destroy** tears the environment down. It is idempotent: destroying an
-already-gone environment returns a `not_found` `*APIError`, not a panic or a
-different error shape.
+**Destroy** tears the environment down. Destroying an already-gone
+environment returns a `not_found` `*APIError`, not a panic or a different
+error shape. Only a retry carrying the first call's
+[idempotency key](/reference/go/operations#idempotency-keys) gets the first
+call's success back.
 
 ## Next steps
 

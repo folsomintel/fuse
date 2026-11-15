@@ -53,6 +53,7 @@ range covers the fleet.
 | Env var | Flag | Default | Purpose |
 | --- | --- | --- | --- |
 | `ORCH_LISTEN` | `--listen` | `:8080` | API listen address. |
+| | `--write-timeout` | `60s` | Max time to write a response. Mutating calls wait for their operation up to 10s less than this (at least 1s) before answering `202` with an operation id; see [Long operations and retries](/docs/concepts/environments#long-operations-and-retries). |
 | `FIRECRACKER_BASE_URL` | `--firecracker-url` | empty → stub | Firecracker host agent URL. |
 | `FIRECRACKER_TOKEN` | `--firecracker-token` | | Bearer token for the host agent. |
 | `DATABASE_URL` | `--database-url` | empty → in-memory | Postgres state store connection string. |

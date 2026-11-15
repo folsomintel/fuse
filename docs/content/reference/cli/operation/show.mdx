@@ -1,0 +1,40 @@
+---
+title: fuse operation show
+sidebar:
+  icon: search
+  label: show
+description: Show an operation
+---
+
+```bash
+fuse operation show <id>
+```
+
+No flags beyond the globals. Prints the operation at once, without waiting:
+its id, kind (`create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
+`drain`), state (`running`, `succeeded` or `failed`), the step it last reported
+starting, when it started and finished, and the http status the call answered
+with. Only migrate reports steps (`snapshot`, `transfer`, `delta`, `boot`,
+`cutover`); every other kind shows `-`.
+
+```bash
+$ fuse operation show op_3f9a1c2b7d4e5f60718293a4
+id                 op_3f9a1c2b7d4e5f60718293a4
+kind               migrate
+state              running
+step               transfer
+started            2026-11-15 10:00
+finished           -
+status             -
+```
+
+A failed operation adds an `error` line with the error code and message. A
+succeeded one that returned a body (an environment for create, fork, migrate
+and drain, a snapshot for snapshot) prints that body after a blank line, as
+one line of JSON. Destroy and restore return no body. With `-o json` the
+whole operation prints as JSON, the same shape as
+[`GET /v1/operations/{operationId}`](/reference/api).
+
+`show` exits 0 for a failed operation too. Use
+[`fuse operation wait`](/reference/cli/operation/wait) when the exit code
+should say whether it worked.

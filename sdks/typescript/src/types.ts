@@ -1144,3 +1144,50 @@ export function isInterventionSettled(i: Intervention | undefined): boolean {
     (!!i.payload?.exec || !!i.payload?.lifecycle || !!i.payload?.computer);
   return !runs || !isInterventionApproved(i) || !!i.result;
 }
+
+/** Operation states. */
+export const OperationState = {
+  Running: "running",
+  Succeeded: "succeeded",
+  Failed: "failed",
+} as const;
+
+export type OperationState = (typeof OperationState)[keyof typeof OperationState];
+
+/** A failed operation's error: the error member of the api's error envelope. */
+export interface OperationError {
+  code: string;
+  message: string;
+  details?: Record<string, string>;
+}
+
+/**
+ * Operation is one run of a mutating call (create, destroy, fork, migrate,
+ * snapshot, restore or drain). Once it finished, status_code with result (on
+ * a 2xx) or error (otherwise) is what the call itself would have answered.
+ */
+export interface Operation {
+  id: string;
+  /** create, destroy, fork, migrate, snapshot, restore or drain. */
+  kind: string;
+  /** One of OperationState. */
+  state: string;
+  /** The step the operation last reported starting. */
+  step?: string;
+  started_at: string;
+  finished_at?: string;
+  /** The http status the call answered with. */
+  status_code?: number;
+  /** The call's response body on success: an EnvironmentInfo for create,
+   * fork, migrate and drain, a Snapshot for snapshot, absent for destroy and
+   * restore, and a held response when a hitl gate held the action. */
+  result?: unknown;
+  error?: OperationError;
+}
+
+/** OperationAccepted is the 202 body of a mutating call whose operation
+ * outlasted the server's attach bound. */
+export interface OperationAccepted {
+  operation_id: string;
+  operation: Operation;
+}

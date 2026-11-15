@@ -68,7 +68,7 @@ type SnapshotPage struct {
 // caller that depends on the memory being there should check it. Live against
 // a backend with no live-snapshot support is a 501 unimplemented, not a
 // conflict.
-func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody SnapshotRequest) (*Snapshot, error) {
+func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody SnapshotRequest, opts ...CallOption) (*Snapshot, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("snapshots service is not configured")
 	}
@@ -80,7 +80,7 @@ func (s *SnapshotsService) Create(ctx context.Context, vmID string, reqBody Snap
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func (s *SnapshotsService) Delete(ctx context.Context, snapshotID string) error 
 	return nil
 }
 
-func (s *SnapshotsService) Restore(ctx context.Context, snapshotID string) error {
+func (s *SnapshotsService) Restore(ctx context.Context, snapshotID string, opts ...CallOption) error {
 	if s == nil || s.t == nil {
 		return errors.New("snapshots service is not configured")
 	}
@@ -305,7 +305,7 @@ func (s *SnapshotsService) Restore(ctx context.Context, snapshotID string) error
 	if err != nil {
 		return err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, opts)
 	if err != nil {
 		return err
 	}

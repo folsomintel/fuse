@@ -6,8 +6,9 @@ use serde::Deserialize;
 
 use crate::error::Error;
 use crate::interventions::wait_intervention;
+use crate::operations::{operation_answer, wait_operation};
 use crate::transport::Transport;
-use crate::types::Intervention;
+use crate::types::{Intervention, OperationAccepted};
 
 /// A callback told about the pending intervention whenever a hitl gate
 /// holds a call, before the call waits on it. Set it per exec with
@@ -45,10 +46,10 @@ pub(crate) struct HitlWait {
     pub(crate) on_held: Option<OnHeld>,
 }
 
-/// The answer to a gated call: its own response, or the intervention a gate
-/// held it on.
+/// The answer to a gated call: its own response body, or the intervention a
+/// gate held it on.
 pub(crate) enum Gated {
-    Done(Response),
+    Done(Vec<u8>),
     Held(Box<Intervention>),
 }
 
@@ -58,15 +59,37 @@ struct HeldResponse {
     intervention: Intervention,
 }
 
+// the 202 body of a call whose operation outlasted the server's wait. it is
+// told apart from a held response by its operation_id.
+#[derive(Deserialize)]
+struct Accepted {
+    #[serde(default)]
+    operation_id: String,
+}
+
 impl Transport {
     /// Sends a gated call. A 202 decodes as the held intervention; any other
-    /// success is returned for the caller to read.
+    /// success body is returned for the caller to read. A 202 naming an
+    /// operation is followed until the operation finishes, and its answer
+    /// is handled as if the call had answered with it.
     pub(crate) async fn send_gated(&self, builder: RequestBuilder) -> Result<Gated, Error> {
         let response = Self::check(builder.send().await?).await?;
-        if response.status() != StatusCode::ACCEPTED {
-            return Ok(Gated::Done(response));
+        let mut status = response.status().as_u16();
+        let mut body = response.bytes().await?.to_vec();
+        if status == StatusCode::ACCEPTED.as_u16() {
+            let accepted: Accepted = serde_json::from_slice(&body)?;
+            if !accepted.operation_id.is_empty() {
+                let accepted: OperationAccepted = serde_json::from_slice(&body)?;
+                if let Some(callback) = &self.on_operation {
+                    (callback.0)(&accepted);
+                }
+                let operation = wait_operation(self, &accepted.operation_id, None).await?;
+                (status, body) = operation_answer(operation)?;
+            }
         }
-        let body = response.bytes().await?;
+        if status != StatusCode::ACCEPTED.as_u16() {
+            return Ok(Gated::Done(body));
+        }
         let held: HeldResponse = serde_json::from_slice(&body)?;
         Ok(Gated::Held(Box::new(held.intervention)))
     }
@@ -107,5 +130,10 @@ impl Transport {
 /// Reads a JSON body off a successful response.
 pub(crate) async fn decode<T: serde::de::DeserializeOwned>(response: Response) -> Result<T, Error> {
     let body = response.bytes().await?;
-    Ok(serde_json::from_slice(&body)?)
+    decode_body(&body)
+}
+
+/// Decodes a successful response body read off a gated call.
+pub(crate) fn decode_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Error> {
+    Ok(serde_json::from_slice(body)?)
 }

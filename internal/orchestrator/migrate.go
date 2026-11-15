@@ -231,6 +231,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	} else {
 		// a live seed is the bulk of what moves, so the guest gives back what
 		// it is not using first.
+		reportStep(ctx, "snapshot")
 		seed, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
 		if err != nil {
 			return "", err
@@ -282,13 +283,16 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 
 	var newEnv Environment
 	if targetHostID == srcHostID {
+		reportStep(ctx, "boot")
 		newEnv, err = forkable.CreateFromCheckpoint(ctx, spec, vmID, seed.SnapshotID)
 	} else {
 		localID := stagedBase
 		if localID == "" {
+			reportStep(ctx, "transfer")
 			localID, err = fm.ensureArtifactOnHost(ctx, seed, targetHostID, opts.Lazy)
 		}
 		if err == nil && delta {
+			reportStep(ctx, "delta")
 			var child SnapshotRecord
 			child, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 				Comment: "migration delta", Live: true, Diff: true,
@@ -312,6 +316,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 			v.spec.ResumeSeed = opts.Live
 			fm.mu.Unlock()
 			fm.touchArtifact(localID, seed.SnapshotID)
+			reportStep(ctx, "boot")
 			newEnv, err = targetProvider.Create(ctx, spec)
 		}
 	}
@@ -328,6 +333,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 
 	// published under ports of its own first. the source's ports are adopted
 	// at the very end (adoptIngress), once nothing can fail any more.
+	reportStep(ctx, "cutover")
 	var plan *ingressPlan
 	if fm.ingressSupported(targetHostID, spec) {
 		plan, err = fm.publishIngress(ctx, newVMID, nil, "")

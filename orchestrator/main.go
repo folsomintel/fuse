@@ -643,12 +643,15 @@ func run() error {
 	}
 
 	handler := &api.Handler{
-		Fleet:                   fm,
-		NewProvider:             hostProviderFactory,
-		AuthToken:               authToken,
-		APIKeys:                 apiKeyStoreOrNil(apiKeyStore),
-		AllowedCIDRs:            cidrList,
-		SecureCookies:           useSecureCookies,
+		Fleet:         fm,
+		NewProvider:   hostProviderFactory,
+		AuthToken:     authToken,
+		APIKeys:       apiKeyStoreOrNil(apiKeyStore),
+		AllowedCIDRs:  cidrList,
+		SecureCookies: useSecureCookies,
+		// a mutating route answers 202 with its operation 10s before the
+		// write timeout would cut the connection.
+		OperationWait:           max(writeTimeout-10*time.Second, time.Second),
 		OnAuthFailure:           auditAuthFail,
 		OnIPReject:              auditIPReject,
 		Version:                 version,
@@ -740,6 +743,9 @@ func run() error {
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http shutdown: %w", err)
+	}
+	if err := handler.WaitOperations(shutdownCtx); err != nil {
+		logger.Warn("shutdown budget ran out with operations still running", "error", err)
 	}
 	logger.Info("orchestrator server stopped")
 	return nil

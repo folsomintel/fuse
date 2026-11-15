@@ -70,10 +70,21 @@ new FuseClient({
 | `client.snapshots`    | `create`, `list`, `get`, `delete`, `restore`                         |
 | `client.hosts`        | `register`, `list`, `get`, `cordon`, `uncordon`, `deregister`        |
 | `client.apiKeys`      | `create`, `list`, `revoke`                                           |
+| `client.operations`   | `get`, `wait`                                                        |
 
 Every method accepts a trailing `{ signal }` for cancellation, e.g.
 `client.environments.list({}, { signal })`. Request/response field names are
 snake_case, matching the API wire format and the Go SDK.
+
+The mutating calls (`environments.create`, `destroy`, `fork`, `migrate`,
+`drain`, `snapshots.create`, `restore`) also take `idempotencyKey`, sent as the
+`Idempotency-Key` header so a retry with the same key returns the first call's
+result instead of running again; without one each call sends a fresh random
+key. When one of these outlasts the server's attach bound it answers 202 with
+an operation, which the sdk follows until it finishes and then answers as the
+call would have. `client.operations.get(id, { wait })` and
+`client.operations.wait(id, { timeout })` read an operation directly, and the
+`onOperation` client option is called with each 202 before it is followed.
 
 ## Errors
 

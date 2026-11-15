@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/egress"
@@ -93,6 +94,19 @@ type Handler struct {
 	MetricsRequestsTotal    *prometheus.CounterVec
 	MetricsRequestDuration  *prometheus.HistogramVec
 	MetricsRequestsInFlight prometheus.Gauge
+
+	// OperationWait is how long a mutating route waits for its operation
+	// before answering 202 with the operation instead, and the cap on
+	// ?wait=. It must stay below the server's write timeout. Zero means 50s.
+	OperationWait time.Duration
+	// OperationTimeout bounds an operation once no caller waits on it. Zero
+	// means 2h.
+	OperationTimeout time.Duration
+
+	opsOnce sync.Once
+	ops     *operationStore
+	// opsRunning counts operation goroutines, so shutdown can wait for them.
+	opsRunning sync.WaitGroup
 }
 
 // Router returns an http.Handler serving the orchestrator REST API.
@@ -196,11 +210,11 @@ func (h *Handler) Router() (http.Handler, error) {
 
 func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/environments", h.listEnvironments)
-	r.Post("/v1/environments", h.createEnvironment)
+	r.Post("/v1/environments", h.asOperation(OpCreate, MaxEnvironmentBodyBytes, h.createEnvironment))
 	r.Get("/v1/environments/{vmId}", h.getEnvironment)
 	r.Get("/v1/environments/{vmId}/events", h.streamEnvironmentEvents)
 	r.Post("/v1/environments/{vmId}", h.environmentAction)
-	r.Delete("/v1/environments/{vmId}", h.destroyEnvironment)
+	r.Delete("/v1/environments/{vmId}", h.asOperation(OpDestroy, MaxJSONBodyBytes, h.destroyEnvironment))
 
 	// Attach is a sub-path rather than an ?action= verb because it is a
 	// protocol upgrade, not a JSON call: it has no request body and it never
@@ -230,7 +244,7 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/interventions/{interventionId}/attach", h.takeoverAttach)
 	r.Get("/v1/interventions/{interventionId}/desktop", h.takeoverDesktop)
 
-	r.Post("/v1/environments/{vmId}/snapshots", h.createSnapshot)
+	r.Post("/v1/environments/{vmId}/snapshots", h.asOperation(OpSnapshot, MaxJSONBodyBytes, h.createSnapshot))
 	r.Get("/v1/snapshots", h.listSnapshots)
 	// A fixed sub-path rather than a filter on the collection above: this
 	// answers "is there an artifact for this one key" with at most one record
@@ -257,6 +271,11 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/hosts/{hostId}", h.getHost)
 	r.Post("/v1/hosts/{hostId}", h.hostAction)
 	r.Delete("/v1/hosts/{hostId}", h.removeHost)
+
+	// Operations are the mutating routes above run past their own request:
+	// create, destroy, fork, migrate, snapshot, restore and drain. See
+	// operations.go.
+	r.Get("/v1/operations/{operationId}", h.getOperation)
 }
 
 // resolver returns h.Resolver or the default inline resolver.
@@ -1004,7 +1023,7 @@ func (h *Handler) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) snapshotAction(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Query().Get("action") {
 	case "restore":
-		h.restoreSnapshot(w, r)
+		h.asOperation(OpRestore, MaxJSONBodyBytes, h.restoreSnapshot)(w, r)
 	default:
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
 			"missing or unknown action query parameter", nil)
@@ -1044,11 +1063,11 @@ func (h *Handler) environmentAction(w http.ResponseWriter, r *http.Request) {
 	case "rotate-token":
 		h.rotateToken(w, r)
 	case "drain":
-		h.drainEnvironment(w, r)
+		h.asOperation(OpDrain, MaxJSONBodyBytes, h.drainEnvironment)(w, r)
 	case "fork":
-		h.forkEnvironment(w, r)
+		h.asOperation(OpFork, MaxJSONBodyBytes, h.forkEnvironment)(w, r)
 	case "migrate":
-		h.migrateEnvironment(w, r)
+		h.asOperation(OpMigrate, MaxJSONBodyBytes, h.migrateEnvironment)(w, r)
 	case "request":
 		h.requestHuman(w, r)
 	case "takeover":

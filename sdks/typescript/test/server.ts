@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { FuseClient } from "../src/index.js";
+import { FuseClient, type FuseClientOptions } from "../src/index.js";
 
 export interface TestServer {
   client: FuseClient;
@@ -13,7 +13,10 @@ type Handler = (req: IncomingMessage, res: ServerResponse) => void | Promise<voi
  * serve spins up a real local HTTP server (the analog of Go's
  * httptest.NewServer) and returns a FuseClient pointed at it.
  */
-export async function serve(handler: Handler): Promise<TestServer> {
+export async function serve(
+  handler: Handler,
+  options: Partial<FuseClientOptions> = {},
+): Promise<TestServer> {
   const server = createServer((req, res) => {
     Promise.resolve(handler(req, res)).catch(() => {
       if (!res.headersSent) res.statusCode = 500;
@@ -25,6 +28,7 @@ export async function serve(handler: Handler): Promise<TestServer> {
   const client = new FuseClient({
     baseUrl: `http://127.0.0.1:${address.port}`,
     token: "tok",
+    ...options,
   });
   const close = () => new Promise<void>((resolve) => server.close(() => resolve()));
   return { client, close };

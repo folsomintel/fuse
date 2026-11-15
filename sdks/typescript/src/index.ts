@@ -28,8 +28,11 @@ export type {
   AuditPage,
 } from "./interventions.js";
 
+export { OperationsService } from "./operations.js";
+export type { GetOperationOptions, WaitOperationOptions } from "./operations.js";
+
 // Per-call options and the fetch type.
-export type { CallOptions, FetchLike } from "./transport.js";
+export type { CallOptions, MutatingCallOptions, FetchLike } from "./transport.js";
 
 // Wire types, state constants, and the terminal-state helper.
 export type {
@@ -93,6 +96,9 @@ export type {
   InterventionReview,
   LifecyclePayload,
   InterventionResult,
+  Operation,
+  OperationAccepted,
+  OperationError,
 } from "./types.js";
 export {
   State,
@@ -113,6 +119,7 @@ export {
   ACTOR_SOURCE_DECIDER,
   ReviewFormat,
   TakeoverVia,
+  OperationState,
 } from "./types.js";
 
 // Errors and code helpers.

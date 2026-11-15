@@ -1,0 +1,144 @@
+---
+title: Operations
+sidebar:
+  icon: timer
+description: Idempotency keys, long-running calls, and the operations service
+---
+
+Seven calls run on the orchestrator as operations: `environments.create`,
+`destroy`, `fork`, `migrate` and `drain`, and `snapshots.create` and
+`restore`. The server waits for the operation up to its attach bound (10
+seconds below its `-write-timeout`, so 50s by default) and answers as it
+always has. One that outlasts the bound is answered with a `202` and an
+operation id, and the SDK follows it until it finishes. Either way the method
+returns or raises exactly as a direct answer would have, so callers need no
+changes.
+
+## Idempotency keys
+
+Each of those seven methods takes a keyword-only `idempotency_key`:
+
+```python
+def create(self, request: CreateRequest, *, idempotency_key: Optional[str] = None) -> EnvironmentInfo: ...
+def destroy(self, vm_id: str, *, idempotency_key: Optional[str] = None) -> None: ...
+```
+
+The key is sent as the `Idempotency-Key` header. A retry of the same request
+with the same key attaches to the first call's operation instead of running
+again: it waits for one still running, or gets a finished one's answer back.
+Without it the SDK sends a fresh random key on every call, which is enough for
+the SDK's own following of a `202`, but not for a retry you make yourself.
+Pass your own key when you retry:
+
+```python
+import uuid
+
+import httpx
+
+key = str(uuid.uuid4())
+try:
+    env = client.environments.create(request, idempotency_key=key)
+except httpx.TransportError:
+    # the connection dropped or the client timed out. the create may still be
+    # running, so retry with the same key to attach to it rather than create
+    # a second environment.
+    env = client.environments.create(request, idempotency_key=key)
+```
+
+Keys are 1 to 255 visible ascii characters; anything else is a `400`
+`invalid_argument`. They are scoped to the credential that sent them, so two
+API keys never collide. The same key with a different request (another
+method, path, action or body) is a `409` `conflict` whose
+`details["reason"]` is `idempotency_key_reused`, with the first call's id in
+`details["operation_id"]`. A finished operation is kept for 24 hours; one
+that finished with a 5xx is not kept at all, so its retry runs again. Keys
+live in the orchestrator's memory and an orchestrator restart forgets them,
+except that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the
+key of a destroy, snapshot or restore is also the restate invocation's
+idempotency key, so a retry after a restart attaches to the same invocation.
+A destroy that already finished is the exception: its vm is gone, so that
+retry answers 404.
+
+## Following an accepted operation
+
+```python
+fuse.Client(base_url, token, *, on_operation: Callable[[OperationAccepted], None] | None = None, ...)
+```
+
+`on_operation` is called once, with the `202` body, whenever a call outlasts
+the server's attach bound, before the SDK starts following it. The following
+polls `GET /v1/operations/{id}` with `?wait=30s`, each poll with its own http
+timeout of the hold plus 30 seconds, so a short client `timeout` cannot cut
+it. The first request still uses the client `timeout` (60s by default): keep
+it above the server's attach bound, or a long call raises a timeout while its
+operation carries on (retry it with the same `idempotency_key` to attach).
+
+```python
+client = fuse.Client(
+    base_url,
+    token,
+    on_operation=lambda acc: print(f"{acc.operation.kind} still running as {acc.operation_id}"),
+)
+```
+
+## client.operations
+
+```python
+def get(self, operation_id: str, wait: Optional[float] = None) -> Operation: ...
+def wait(self, operation_id: str, timeout: Optional[float] = None) -> Operation: ...
+```
+
+`get` fetches an operation at once, or, with `wait` (seconds) set, attaches
+until it finishes for at most that long (capped by the server's attach
+bound). `wait` blocks until the operation finishes; with `timeout` (seconds)
+it raises `TimeoutError` once that passes. The operation keeps running either
+way. Neither raises for a failed operation: check `state`, then
+`status_code` and `error`.
+
+An operation is readable by the credential that started it, and by the master
+token, for 24 hours after it finishes. An unknown, expired or other caller's
+id raises `fuse.ApiError` with `code == "not_found"`.
+
+## Operation
+
+```python
+class Operation(BaseModel):
+    id: str = ""
+    kind: str = ""
+    state: str = ""
+    step: str = ""
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    status_code: int = 0
+    result: Optional[Any] = None
+    error: Optional[ErrorBody] = None
+
+    @property
+    def done(self) -> bool: ...
+
+class OperationAccepted(BaseModel):
+    operation_id: str = ""
+    operation: Operation = Field(default_factory=Operation)
+
+class ErrorBody(BaseModel):
+    code: str = ""
+    message: str = ""
+    details: dict[str, str] = Field(default_factory=dict)
+
+OPERATION_RUNNING = "running"
+OPERATION_SUCCEEDED = "succeeded"
+OPERATION_FAILED = "failed"
+```
+
+- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
+  `drain`.
+- `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
+  `done` reports whether it is anything but `running`.
+- `step` is the step the operation last reported starting. Only migrate
+  reports steps: `snapshot`, `transfer`, `delta`, `boot` and `cutover`.
+- `status_code`, with `result` on success or `error` on failure, is what the
+  call itself would have answered. `result` is the decoded response body: an
+  environment for create, fork, migrate and drain, a snapshot for snapshot,
+  and `None` for destroy and restore.
+
+`Operation`, `OperationAccepted`, `ErrorBody` and the three state constants are exported from `fuse`.

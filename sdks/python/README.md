@@ -27,7 +27,16 @@ with fuse.Client("https://orchestrator.example.com", token="...") as client:
 ```
 
 services hang off the client: `client.environments`, `client.snapshots`,
-`client.hosts`, `client.api_keys`.
+`client.hosts`, `client.api_keys`, `client.interventions`, `client.operations`.
+
+the mutating calls (`environments.create`, `destroy`, `drain`, `fork`,
+`migrate`, `snapshots.create`, `snapshots.restore`) take an optional
+`idempotency_key=`; a retry with the same key and request returns the first
+call's result instead of running again. without one each call sends a fresh
+random key. a call that outlasts the server's wait is followed through
+`client.operations` until it finishes, so it returns or raises as usual;
+`client.operations.get(id, wait=None)` and `client.operations.wait(id,
+timeout=None)` read an operation directly.
 
 errors raise `fuse.ApiError`; use predicates like `fuse.is_not_found(err)` to
 branch on the server error code.

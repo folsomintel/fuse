@@ -5,11 +5,22 @@
 // no timeout (the Go SDK uses a separate Timeout:0 client for events).
 
 import { FuseError, errorFromResponse } from "./errors.js";
-import type { ActorLabel, Intervention } from "./types.js";
+import {
+  OperationState,
+  type ActorLabel,
+  type Intervention,
+  type Operation,
+  type OperationAccepted,
+} from "./types.js";
 
 const REQUEST_ID_HEADER = "X-Request-ID";
 const ACTOR_HEADER = "Fuse-Actor";
 const ACTOR_NAME_HEADER = "Fuse-Actor-Name";
+const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+
+/** How long one operation poll asks the server to hold. The server caps it
+ * at its own attach bound. */
+const OPERATION_POLL_WAIT = "30s";
 
 /** A minimal fetch signature, satisfied by the global fetch and most polyfills. */
 export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -18,6 +29,15 @@ export type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Res
 export interface CallOptions {
   /** Abort the request (and, for events, the stream). */
   signal?: AbortSignal;
+}
+
+/** Per-call options of a mutating call (create, destroy, fork, migrate,
+ * drain, snapshot create and restore), which runs as an operation. */
+export interface MutatingCallOptions extends CallOptions {
+  /** Sent as the Idempotency-Key header, so a retry of the same request with
+   * the same key returns the first call's result instead of running again.
+   * Without it every call sends a fresh random key. */
+  idempotencyKey?: string;
 }
 
 export interface TransportConfig {
@@ -31,6 +51,7 @@ export interface TransportConfig {
   actor?: ActorLabel;
   hitlNoWait?: boolean;
   onHeld?: (held: Intervention) => void;
+  onOperation?: (accepted: OperationAccepted) => void;
 }
 
 /** Gated is the answer to a call a hitl gate may hold: the action's own
@@ -43,10 +64,25 @@ interface RequestSpec {
   query?: Query;
   body?: unknown;
   signal?: AbortSignal;
+  /** Set on a mutating call: sent as Idempotency-Key, and a 202 operation is
+   * followed until it finishes. */
+  idempotencyKey?: string;
+  /** Skip the client's default timeout; only signal bounds the request. */
+  noTimeout?: boolean;
+}
+
+/** idempotencyKey is the key a mutating call sends: the caller's, or a fresh
+ * random one generated once per call. */
+export function idempotencyKey(opts: MutatingCallOptions): string {
+  if (opts.idempotencyKey) return opts.idempotencyKey;
+  // node 18 has no global crypto without --experimental-global-webcrypto.
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const part = () => Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${part()}${part()}`;
 }
 
 /** Combine zero or more AbortSignals into one, without relying on AbortSignal.any (Node 20+). */
-function combineSignals(signals: Array<AbortSignal | undefined>): {
+export function combineSignals(signals: Array<AbortSignal | undefined>): {
   signal?: AbortSignal;
   cleanup: () => void;
 } {
@@ -86,6 +122,7 @@ export class Transport {
   /** The client's hitl wait options. */
   readonly hitlNoWait: boolean;
   readonly onHeld?: (held: Intervention) => void;
+  private readonly onOperation?: (accepted: OperationAccepted) => void;
 
   constructor(cfg: TransportConfig) {
     if (!cfg.baseUrl) {
@@ -106,6 +143,7 @@ export class Transport {
     this.actor = cfg.actor;
     this.hitlNoWait = cfg.hitlNoWait ?? false;
     this.onHeld = cfg.onHeld;
+    this.onOperation = cfg.onOperation;
 
     const provided = cfg.fetch;
     if (provided) {
@@ -121,9 +159,14 @@ export class Transport {
 
   /** Perform a request and decode a JSON response body. */
   async json<T>(method: string, path: string, spec: RequestSpec = {}): Promise<T> {
-    const { signal: combined, cleanup } = this.withTimeout(spec.signal);
+    const { signal: combined, cleanup } = spec.noTimeout
+      ? { signal: spec.signal, cleanup: () => {} }
+      : this.withTimeout(spec.signal);
     try {
-      const res = await this.execute(method, path, spec, combined);
+      const res = await this.follow(
+        await this.execute(method, path, spec, combined),
+        spec,
+      );
       if (!res.ok) throw await errorFromResponse(res);
       return await this.decodeJson<T>(res);
     } finally {
@@ -143,7 +186,10 @@ export class Transport {
   ): Promise<Gated<T>> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.execute(method, path, spec, combined);
+      const res = await this.follow(
+        await this.execute(method, path, spec, combined),
+        spec,
+      );
       if (!res.ok) throw await errorFromResponse(res);
       if (res.status === 202) return { held: await this.decodeHeld(res) };
       return { value: await this.decodeJson<T>(res) };
@@ -161,7 +207,10 @@ export class Transport {
   ): Promise<Intervention | undefined> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.execute(method, path, spec, combined);
+      const res = await this.follow(
+        await this.execute(method, path, spec, combined),
+        spec,
+      );
       if (!res.ok) throw await errorFromResponse(res);
       if (res.status === 202) return await this.decodeHeld(res);
       await res.body?.cancel().catch(() => {});
@@ -182,6 +231,64 @@ export class Transport {
       cleanup();
     }
   }
+
+  /**
+   * follow turns a mutating call's 202 operation into the answer the call
+   * would have given directly: it polls the operation until it finishes and
+   * rebuilds a response from its status_code and result or error. A 202
+   * holding a hitl hold comes back unchanged, as does any other answer.
+   * Only the caller's signal bounds the polls; the operation keeps running
+   * if it aborts first.
+   */
+  private async follow(res: Response, spec: RequestSpec): Promise<Response> {
+    if (!spec.idempotencyKey || res.status !== 202) return res;
+    const text = await res.text();
+    let accepted: OperationAccepted | undefined;
+    try {
+      accepted = JSON.parse(text) as OperationAccepted;
+    } catch {
+      // not json: leave it to the caller's decode
+    }
+    // the rebuilt body differs in length from the one received.
+    const headers = new Headers(res.headers);
+    headers.delete("content-length");
+    if (!accepted?.operation_id) return new Response(text, { status: 202, headers });
+    this.onOperation?.(accepted);
+    const op = await this.waitOperation(accepted.operation_id, spec.signal);
+    const status = op.status_code || 500;
+    let body: string | null = null;
+    if (status >= 200 && status < 300) {
+      if (op.result !== undefined) body = JSON.stringify(op.result);
+    } else if (op.error) {
+      body = JSON.stringify({ error: op.error });
+    }
+    // a 204 cannot carry a body.
+    if (status === 204) body = null;
+    return new Response(body, { status, headers });
+  }
+
+  /** Fetch one operation, attaching for up to wait (e.g. "30s") first. */
+  getOperation(
+    id: string,
+    wait: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<Operation> {
+    return this.json<Operation>("GET", `/v1/operations/${encodeURIComponent(id)}`, {
+      query: { wait },
+      signal,
+      noTimeout: true,
+    });
+  }
+
+  /** Poll an operation until it finishes. */
+  async waitOperation(id: string, signal?: AbortSignal): Promise<Operation> {
+    for (;;) {
+      const op = await this.getOperation(id, OPERATION_POLL_WAIT, signal);
+      if (op.state !== OperationState.Running) return op;
+      signal?.throwIfAborted();
+    }
+  }
+
   private async decodeHeld(res: Response): Promise<Intervention> {
     const body = await this.decodeJson<{ intervention?: Intervention }>(res);
     if (!body?.intervention?.id) throw new FuseError("decode held response");
@@ -192,7 +299,10 @@ export class Transport {
   async noContent(method: string, path: string, spec: RequestSpec = {}): Promise<void> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.execute(method, path, spec, combined);
+      const res = await this.follow(
+        await this.execute(method, path, spec, combined),
+        spec,
+      );
       if (!res.ok) throw await errorFromResponse(res);
       // Release the connection even if the server sent a body.
       await res.body?.cancel().catch(() => {});
@@ -232,6 +342,7 @@ export class Transport {
     const url = this.buildUrl(path, spec.query);
     const hasBody = spec.body !== undefined && spec.body !== null;
     const headers = this.buildHeaders(hasBody, accept);
+    if (spec.idempotencyKey) headers[IDEMPOTENCY_KEY_HEADER] = spec.idempotencyKey;
     const init: RequestInit = { method, headers };
     if (hasBody) init.body = JSON.stringify(spec.body);
     if (signal) init.signal = signal;

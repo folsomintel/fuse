@@ -35,9 +35,12 @@ yourself:
 
 ```go
 func createWithRetry(ctx context.Context, c *fuse.Client, req fuse.CreateRequest) (*fuse.EnvironmentInfo, error) {
+	// one key for every attempt, so a retry attaches to a create that is
+	// still running instead of starting a second one.
+	key := fuse.WithIdempotencyKey(uuid.NewString())
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		env, err := c.Environments.Create(ctx, req)
+		env, err := c.Environments.Create(ctx, req, key)
 		if err == nil {
 			return env, nil
 		}
@@ -55,6 +58,14 @@ func createWithRetry(ctx context.Context, c *fuse.Client, req fuse.CreateRequest
 orchestrator rejecting work while shutting down, or a transient scheduling
 conflict); `IsInvalidArgument` and `IsNotFound` are not, retrying won't change the
 outcome.
+
+Passing the same `WithIdempotencyKey` on every attempt is what makes retrying a
+mutating call safe. Without it each attempt sends a fresh key, so a retry after
+a timeout or a dropped connection, when the first create may still be running,
+provisions a second environment. With it the retry attaches to the first
+attempt's operation, or gets its answer back if it already finished. A first
+attempt that failed with a 5xx (an `unavailable`, say) is not kept, so its
+retry runs again. See [Operations](/reference/go/operations#idempotency-keys).
 
 ## Request correlation
 
@@ -125,11 +136,17 @@ env, err := client.Environments.Create(context.Background(), fuse.CreateRequest{
 
 ## Choosing a timeout
 
-The default 60-second timeout on the normal-request client is generous enough
-for every non-streaming call, including `Create`, which blocks server-side until
-the environment reaches `running` or fails. If you're provisioning environments
-with a large `MaxRuntimeSeconds` or a slow custom image pull, you generally don't
-need a longer client timeout for that, `Create` itself doesn't wait for the whole
-runtime, only for the initial boot. Where you do want a shorter timeout is
-read-only calls like `List`/`Get` in a hot path, set one via `WithHTTPClient`
-rather than wrapping every call in your own `context.WithTimeout`.
+The default 60-second timeout on the normal-request client sits above the
+server's default attach bound (50s), which is the longest a mutating call such
+as `Create` holds its first request. `Create` waits server-side until the
+environment reaches `running` or fails, and a create, migrate or snapshot that
+takes longer than the bound comes back as an operation that the SDK follows on
+its no-timeout client, bounded only by `ctx`. So a slow boot or a long migrate
+does not need a longer client timeout. Two cases do: an orchestrator whose
+`-write-timeout` was raised past 70s (its attach bound is 10s below it), and
+any custom `WithHTTPClient` timeout shorter than the bound, either of which can
+time out a mutating call client-side while its operation keeps running. Retry
+such a call with the same `WithIdempotencyKey` to attach to it. Where you do
+want a shorter timeout is read-only calls like `List`/`Get` in a hot path, set
+one via `WithHTTPClient` rather than wrapping every call in your own
+`context.WithTimeout`.

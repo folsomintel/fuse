@@ -4,7 +4,8 @@ use reqwest::Method;
 use serde::Deserialize;
 
 use crate::error::Error;
-use crate::gates::{decode, Gated};
+use crate::gates::{decode_body, Gated};
+use crate::operations::CallOptions;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{Arch, Snapshot, SnapshotMode, SnapshotRequest, SnapshotState};
 
@@ -121,13 +122,24 @@ impl Snapshots {
     /// Takes a snapshot of a running environment. When a hitl gate holds
     /// it, the call waits for the decision and returns the snapshot taken.
     pub async fn create(&self, vm_id: &str, request: SnapshotRequest) -> Result<Snapshot, Error> {
+        self.create_with_options(vm_id, request, CallOptions::new())
+            .await
+    }
+
+    /// Takes a snapshot with per-call options such as an idempotency key.
+    pub async fn create_with_options(
+        &self,
+        vm_id: &str,
+        request: SnapshotRequest,
+        options: CallOptions,
+    ) -> Result<Snapshot, Error> {
         require(vm_id, "vm id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id, "snapshots"])
             .json(&request);
-        let held = match self.t.send_gated(request).await? {
-            Gated::Done(response) => return decode(response).await,
+        let held = match self.t.send_gated(options.apply(request)).await? {
+            Gated::Done(body) => return decode_body(&body),
             Gated::Held(held) => held,
         };
         let settled = self.t.settle_held(held, None, false).await?;
@@ -246,11 +258,25 @@ impl Snapshots {
 
     /// Restores a snapshot into its environment.
     pub async fn restore(&self, snapshot_id: &str) -> Result<(), Error> {
+        self.restore_with_options(snapshot_id, CallOptions::new())
+            .await
+    }
+
+    /// Restores a snapshot with per-call options such as an idempotency
+    /// key.
+    pub async fn restore_with_options(
+        &self,
+        snapshot_id: &str,
+        options: CallOptions,
+    ) -> Result<(), Error> {
         require(snapshot_id, "snapshot id")?;
         let request = self
             .t
             .request(Method::POST, &["v1", "snapshots", snapshot_id])
             .query(&[("action", "restore")]);
-        self.t.send_unit(request).await
+        if let Gated::Held(held) = self.t.send_gated(options.apply(request)).await? {
+            self.t.settle_held(held, None, false).await?;
+        }
+        Ok(())
     }
 }

@@ -61,8 +61,9 @@ orchestrator destroys healthy environments on each restart.
 :::
 
 Some state is deliberately never persisted and resets on every restart: orphan
-retry budgets, stuck-task strike counters, live provider handles, and SSE
-subscriptions. A VM one strike away from being failed as stuck starts over at
+retry budgets, stuck-task strike counters, live provider handles, SSE
+subscriptions, and [operations](/docs/concepts/environments#long-operations-and-retries)
+with their idempotency keys. A VM one strike away from being failed as stuck starts over at
 zero after a restart.
 
 Per-device GPU bindings are a good illustration of the pattern. The set of GPU

@@ -46,6 +46,7 @@ type Client struct {
 	Hosts         *HostsService
 	APIKeys       *APIKeysService
 	Interventions *InterventionsService
+	Operations    *OperationsService
 }
 
 // clientConfig holds the resolved options for New.
@@ -57,6 +58,8 @@ type clientConfig struct {
 	actor      ActorLabel
 	hitlNoWait bool
 	onHeld     func(*Intervention)
+
+	onOperation func(*OperationAccepted)
 }
 
 // Option configures a Client in New.
@@ -102,6 +105,15 @@ func WithActor(a ActorLabel) Option {
 	}
 }
 
+// WithOnOperation is called with the accepted operation whenever a mutating
+// call outlasts the server's attach bound and answers 202, before the call
+// follows the operation to its end.
+func WithOnOperation(fn func(*OperationAccepted)) Option {
+	return func(cfg *clientConfig) {
+		cfg.onOperation = fn
+	}
+}
+
 // New builds a Client. baseURL must be a non-empty, parseable URL.
 // token is sent as a bearer token and may be empty for endpoints that
 // do not require auth.
@@ -136,6 +148,8 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		actor:      cfg.actor,
 		hitlNoWait: cfg.hitlNoWait,
 		onHeld:     cfg.onHeld,
+
+		onOperation: cfg.onOperation,
 	}
 	return newClient(t), nil
 }
@@ -148,6 +162,7 @@ func newClient(t *transport) *Client {
 		Hosts:         newHostsService(t),
 		APIKeys:       newAPIKeysService(t),
 		Interventions: newInterventionsService(t),
+		Operations:    newOperationsService(t),
 	}
 }
 

@@ -27,6 +27,10 @@ client.snapshots.restore(snap.id)
   [the environments service](/reference/python/environments) for
   that instead.
 
+`create` and `restore` run as operations: both take a keyword-only
+`idempotency_key`, and one that outlasts the server's attach bound is
+followed to the end for you. See [Operations](/reference/python/operations).
+
 ## Live snapshots
 
 `SnapshotRequest.live` opts into capturing the guest's memory and vCPU state
