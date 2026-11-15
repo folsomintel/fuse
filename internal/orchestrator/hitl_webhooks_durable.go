@@ -122,10 +122,13 @@ func (fm *FleetManager) notifyWebhook(ctx context.Context, t webhookTarget, n hi
 	go func() {
 		defer fm.webhookSends.Done()
 		fm.webhookSendSlots <- struct{}{}
-		defer func() { <-fm.webhookSendSlots }()
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := hooks.SendWebhook(ctx, d); err != nil {
+		err := hooks.SendWebhook(ctx, d)
+		cancel()
+		// the slot bounds sends only: the fallback's retries must not hold
+		// up other notifications.
+		<-fm.webhookSendSlots
+		if err != nil {
 			fm.logger.Error("send durable hitl webhook failed, delivering in process", "endpoint", d.Endpoint, "event", n.Event, "intervention", n.InterventionID, "err", err)
 			fm.webhookPending(d, false)
 			fm.webhooks.deliver(fm, t, n)
