@@ -1,6 +1,9 @@
 package orchestrator
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+)
 
 type idempotencyKeyCtx struct{}
 
@@ -37,4 +40,30 @@ func reportStep(ctx context.Context, step string) {
 	if fn, ok := ctx.Value(stepReporterCtx{}).(func(string)); ok {
 		fn(step)
 	}
+}
+
+type idempotencyPartCtx struct{}
+
+type idempotencyPart struct {
+	name string
+	n    atomic.Int64
+}
+
+// WithIdempotencyPart returns ctx whose keyed host-agent calls are keyed as
+// part name of the step: the step's key, then name, then the call's number
+// under ctx. calls a step makes concurrently (its uploads) go out in no fixed
+// order, so numbering them on the step's own counter would key a retried
+// step's calls differently; naming each part keys them the same way.
+func WithIdempotencyPart(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, idempotencyPartCtx{}, &idempotencyPart{name: name})
+}
+
+// NextIdempotencyPart returns the part name on ctx and the number of the next
+// call made under it. ok is false outside WithIdempotencyPart.
+func NextIdempotencyPart(ctx context.Context) (name string, n int64, ok bool) {
+	p, _ := ctx.Value(idempotencyPartCtx{}).(*idempotencyPart)
+	if p == nil {
+		return "", 0, false
+	}
+	return p.name, p.n.Add(1), true
 }

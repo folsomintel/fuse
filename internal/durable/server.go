@@ -54,6 +54,7 @@ type Fleet interface {
 	Webhooks
 	Hitl
 	Expiry
+	Creator
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -127,6 +128,15 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("Expire", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req ExpireRequest) (restate.Void, error) {
 				return restate.Void{}, envExpire(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			})).
+		// the artifact step can wait on a whole artifact move.
+		Handler("Create", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.CreateRequest) (restate.Void, error) {
+				return restate.Void{}, createMarked(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout())))).
+		Handler("CreateInFlight", restate.NewObjectSharedHandler(
+			func(ctx restate.ObjectSharedContext, _ restate.Void) (bool, error) {
+				return createInFlight(ctx)
 			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).

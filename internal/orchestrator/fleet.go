@@ -356,6 +356,23 @@ func (fm *FleetManager) startOperation(ctx context.Context, op, subject string) 
 	}
 }
 
+// StepMetrics is an optional extension of ReconcileMetrics, timing the steps
+// of a lifecycle op the fleet runs in process. on restate durable.Run times
+// the same steps under the same names instead. *metrics.PrometheusMetrics
+// satisfies it as orchestrator_step_duration_seconds.
+type StepMetrics interface {
+	StepCompleted(op, step string, d time.Duration, err error)
+}
+
+// stepDone returns the recorder for op's in-process steps.
+func (fm *FleetManager) stepDone(op string) func(step string, d time.Duration, err error) {
+	return func(step string, d time.Duration, err error) {
+		if m, ok := fm.metrics.(StepMetrics); ok {
+			m.StepCompleted(op, step, d, err)
+		}
+	}
+}
+
 // FleetConfig configures the fleet manager.
 type FleetConfig struct {
 	Provider          Provider
@@ -636,6 +653,12 @@ type FleetManager struct {
 	// token_rotation.go.
 	durableTokens DurableTokenRotator
 
+	// durableCreate runs creates on restate; nil in mode off. see
+	// create_durable.go. createRuns holds what a create in flight keeps
+	// between its steps, by vm id, guarded by mu.
+	durableCreate DurableCreator
+	createRuns    map[string]*createRun
+
 	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
 	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in
 	// flight and webhookSends tracks them. webhookBacklog is the deliveries
@@ -749,6 +772,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		idleStrikes:              make(map[string]int),
 		hosts:                    make(map[string]*Host),
 		hostProviders:            make(map[string]Provider),
+		createRuns:               make(map[string]*createRun),
 		tokenEncryptionKey:       cfg.TokenEncryptionKey,
 		hostProviderFactory:      cfg.HostProviderFactory,
 		egressRegistry:           cfg.EgressRegistry,
@@ -878,7 +902,7 @@ func (fm *FleetManager) Stop() {
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
 // Blocks until the VM is ready or an error occurs.
 func (fm *FleetManager) ProvisionAndAssign(ctx context.Context, taskID string, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions) (*VMInfo, error) {
-	ctx, end := fm.startOperation(ctx, "create", taskID)
+	ctx, end := fm.startOperation(ctx, opCreate, taskID)
 	info, err := fm.provisionAndAssign(ctx, taskID, spec, manifest, secretMap, opts)
 	end(err)
 	return info, err
@@ -894,6 +918,10 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	} else if opts.StartupScriptTimeout > fm.maxStartupScriptTimeout {
 		return nil, fmt.Errorf("%w: requested %s, maximum is %s",
 			ErrStartupScriptTimeoutTooLarge, opts.StartupScriptTimeout, fm.maxStartupScriptTimeout)
+	}
+
+	if d := fm.durableCreator(); d != nil {
+		return fm.durableProvision(ctx, d, taskID, spec, manifest, secretMap, opts)
 	}
 
 	// Check for duplicate task.
@@ -965,98 +993,23 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	seed := fm.planSeedPlacement(ctx, spec)
 
 	// Select and reserve a host before boot so concurrent provisions cannot
-	// claim the same capacity. CPU-only legacy deployments may still use the
-	// default provider when no hosts are registered.
-	bootProvider := fm.provider
-	reservedHost := false
-	fm.mu.Lock()
-	hosts := fm.activeHostsLocked()
-	// A vm seeded from an immovable artifact can only be born where those bytes
-	// already are, so narrow the candidate set to that host and let Schedule
-	// report insufficient capacity the way it does for any other request.
-	// Narrowing the input rather than bypassing Schedule keeps one scheduling
-	// path. When the artifact CAN move, this narrowing is exactly the failure
-	// mode being removed: the pin becomes a locality preference below instead.
-	if spec.PinnedHostID != "" && !seed.movable {
-		pinned := make([]*Host, 0, 1)
-		for _, h := range hosts {
-			if h.ID == spec.PinnedHostID {
-				pinned = append(pinned, h)
-			}
-		}
-		if len(pinned) == 0 {
-			delete(fm.vms, vmID)
-			fm.mu.Unlock()
-			_ = fm.store.DeleteVM(ctx, vmID)
-			return nil, fmt.Errorf("%w: host %s is required by the seed snapshot but is not active (%s)",
-				ErrNoCapacity, spec.PinnedHostID, seed.whyImmovable())
-		}
-		hosts = pinned
-	}
-	if len(hosts) == 0 && spec.GPUs > 0 {
+	// claim the same capacity.
+	bootProvider, err := fm.placeVM(ctx, v, seed)
+	if err != nil {
+		fm.mu.Lock()
 		delete(fm.vms, vmID)
 		fm.mu.Unlock()
 		_ = fm.store.DeleteVM(ctx, vmID)
-		return nil, fmt.Errorf("%w: gpu workloads require a registered gpu host", ErrNoCapacity)
+		return nil, err
 	}
-	// A placement request cannot be honored on the legacy no-hosts path: the
-	// default provider is not a scheduled host, so a pin or a label selector
-	// there would silently boot somewhere else.
-	if len(hosts) == 0 && (spec.HostID != "" || len(spec.Labels) > 0) {
-		delete(fm.vms, vmID)
-		fm.mu.Unlock()
-		_ = fm.store.DeleteVM(ctx, vmID)
-		return nil, fmt.Errorf("%w: placement requires registered hosts", ErrNoHosts)
-	}
-	if len(hosts) > 0 {
-		selectedHost, decision, schedErr := SchedulePreferring(spec, hosts, fm.placementPolicy,
-			PlacementHints{ArtifactHosts: seed.hostPreference()})
-		if schedErr != nil {
-			delete(fm.vms, vmID)
-			fm.mu.Unlock()
-			_ = fm.store.DeleteVM(ctx, vmID)
-			// Name every rung that was tried. The operator asked for an
-			// environment, not for a particular host, so "no capacity" alone
-			// leaves them unable to tell a full fleet from an artifact that
-			// could not follow the workload.
-			if spec.SeedSnapshotID != "" {
-				return nil, fmt.Errorf("%w: seeded from %s: %w", ErrSeedUnplaceable, seed.describe(), schedErr)
-			}
-			return nil, schedErr
-		}
-		v.hostID = selectedHost.ID
-		hp, hpOK := fm.providerForHost(selectedHost.ID)
-		if !hpOK {
-			delete(fm.vms, vmID)
-			fm.mu.Unlock()
-			_ = fm.store.DeleteVM(ctx, vmID)
-			return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
-		}
-		bootProvider = hp
-		fm.allocateOnHost(selectedHost.ID, v)
-		// allocateOnHost binds concrete gpu device uuids onto v.spec; mirror
-		// them onto the local spec so Boot and the reservation-release path
-		// see the same binding. the same applies to per-instance MIG uuids.
-		spec.GPUUUIDs = v.spec.GPUUUIDs
-		spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
-		reservedHost = true
-		fm.mu.Unlock()
-		fm.logger.Info("scheduled vm",
-			"vm", vmID, "host", selectedHost.ID,
-			"policy", decision.Policy,
-			"candidates", decision.Candidates,
-			"headroom_cpus", decision.HeadroomCPUs,
-			"artifact_local", decision.ArtifactLocal,
-		)
-		fm.appendEvent(ctx, "vm", vmID, "vm.scheduled", map[string]any{
-			"host_id":        decision.HostID,
-			"policy":         string(decision.Policy),
-			"candidates":     decision.Candidates,
-			"artifact_local": decision.ArtifactLocal,
-		})
-	} else {
-		fm.mu.Unlock()
-	}
+	reservedHost := v.hostID != ""
+	// placeVM binds concrete gpu device uuids onto v.spec; mirror them onto
+	// the local spec so Boot and the reservation-release path see the same
+	// binding. the same applies to per-instance MIG uuids.
+	fm.mu.RLock()
+	spec.GPUUUIDs = v.spec.GPUUUIDs
+	spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
+	fm.mu.RUnlock()
 	releaseReservation := func() {
 		if !reservedHost {
 			return
@@ -1090,7 +1043,9 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	// resolves a seed id out of its own snapshot store, so a create issued
 	// before the bytes land would fail with a bare "snapshot not found".
 	if seed.needsMove(v.hostID) {
+		moveStart := time.Now()
 		localID, mvErr := fm.ensureArtifactOnHost(ctx, seed.record, v.hostID, false)
+		fm.stepDone(opCreate)("artifact", time.Since(moveStart), mvErr)
 		if mvErr != nil {
 			return nil, abandonProvision(fmt.Errorf("provision vm %s: %w", vmID, mvErr))
 		}
@@ -1117,10 +1072,10 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 	// which egress backends exist; Boot needs both to provision egress.
 	opts.HostID = v.hostID
 	opts.EgressRegistry = fm.egressRegistry
+	opts.stepDone = fm.stepDone(opCreate)
 	// published before boot so the guest's tunnel config goes up with the rest
 	// of its files and the sidecar starts with the agent.
 	var plan *ingressPlan
-	var err error
 	if fm.ingressSupported(v.hostID, spec) {
 		plan, err = fm.publishIngress(ctx, vmID, opts.Expose, "")
 	}
@@ -1297,6 +1252,87 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 
 	info := v.toInfo()
 	return &info, nil
+}
+
+// placeVM picks v's host and reserves its capacity there, so concurrent
+// creates cannot claim the same capacity, and returns the host's provider. a
+// vm seeded from an artifact is narrowed to, or biased towards, the hosts
+// that hold it (see planSeedPlacement). CPU-only legacy deployments with no
+// registered hosts place nothing and get the default provider. on success
+// v.hostID is set and allocateOnHost has bound any gpu devices onto v.spec.
+// the durable create and fork run it as their placement step.
+func (fm *FleetManager) placeVM(ctx context.Context, v *vm, seed seedPlacement) (Provider, error) {
+	fm.mu.Lock()
+	spec := v.spec
+	hosts := fm.activeHostsLocked()
+	// A vm seeded from an immovable artifact can only be born where those bytes
+	// already are, so narrow the candidate set to that host and let Schedule
+	// report insufficient capacity the way it does for any other request.
+	// Narrowing the input rather than bypassing Schedule keeps one scheduling
+	// path. When the artifact CAN move, this narrowing is exactly the failure
+	// mode being removed: the pin becomes a locality preference below instead.
+	if spec.PinnedHostID != "" && !seed.movable {
+		pinned := make([]*Host, 0, 1)
+		for _, h := range hosts {
+			if h.ID == spec.PinnedHostID {
+				pinned = append(pinned, h)
+			}
+		}
+		if len(pinned) == 0 {
+			fm.mu.Unlock()
+			return nil, fmt.Errorf("%w: host %s is required by the seed snapshot but is not active (%s)",
+				ErrNoCapacity, spec.PinnedHostID, seed.whyImmovable())
+		}
+		hosts = pinned
+	}
+	if len(hosts) == 0 {
+		fm.mu.Unlock()
+		if spec.GPUs > 0 {
+			return nil, fmt.Errorf("%w: gpu workloads require a registered gpu host", ErrNoCapacity)
+		}
+		// A placement request cannot be honored on the legacy no-hosts path:
+		// the default provider is not a scheduled host, so a pin or a label
+		// selector there would silently boot somewhere else.
+		if spec.HostID != "" || len(spec.Labels) > 0 {
+			return nil, fmt.Errorf("%w: placement requires registered hosts", ErrNoHosts)
+		}
+		return fm.provider, nil
+	}
+	selectedHost, decision, schedErr := SchedulePreferring(spec, hosts, fm.placementPolicy,
+		PlacementHints{ArtifactHosts: seed.hostPreference()})
+	if schedErr != nil {
+		fm.mu.Unlock()
+		// Name every rung that was tried. The operator asked for an
+		// environment, not for a particular host, so "no capacity" alone
+		// leaves them unable to tell a full fleet from an artifact that
+		// could not follow the workload.
+		if spec.SeedSnapshotID != "" {
+			return nil, fmt.Errorf("%w: seeded from %s: %w", ErrSeedUnplaceable, seed.describe(), schedErr)
+		}
+		return nil, schedErr
+	}
+	hp, hpOK := fm.providerForHost(selectedHost.ID)
+	if !hpOK {
+		fm.mu.Unlock()
+		return nil, fmt.Errorf("provider for host %s not found after scheduling", selectedHost.ID)
+	}
+	v.hostID = selectedHost.ID
+	fm.allocateOnHost(selectedHost.ID, v)
+	fm.mu.Unlock()
+	fm.logger.Info("scheduled vm",
+		"vm", v.id, "host", selectedHost.ID,
+		"policy", decision.Policy,
+		"candidates", decision.Candidates,
+		"headroom_cpus", decision.HeadroomCPUs,
+		"artifact_local", decision.ArtifactLocal,
+	)
+	fm.appendEvent(ctx, "vm", v.id, "vm.scheduled", map[string]any{
+		"host_id":        decision.HostID,
+		"policy":         string(decision.Policy),
+		"candidates":     decision.Candidates,
+		"artifact_local": decision.ArtifactLocal,
+	})
+	return hp, nil
 }
 
 // CompleteTask marks a task as done and triggers async VM destruction.
@@ -1698,6 +1734,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	fm.reconcileIdleVMs(ctx, &summary)
 	fm.reconcileStuckDraining(ctx, &summary)
 	fm.armExpiries()
+	fm.reconcileStaleCreates(ctx)
 	fm.reconcileHealth(ctx, &summary)
 	fm.reconcileEgressHealth(ctx, &summary)
 	fm.reconcileSnapshots(ctx)
@@ -1883,6 +1920,13 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		return fmt.Errorf("list persisted vms: %w", err)
 	}
 
+	// on restate a create interrupted by the restart is still an invocation,
+	// which replays to its first unfinished step and finishes or rolls back
+	// the vm itself. its vm stays provisioning with its task assigned until
+	// then, rather than being promoted to running without its files, startup
+	// script and agent.
+	durableCreate := fm.durableCreator() != nil
+
 	recovered := make(map[string]*vm, len(records))
 	for _, record := range records {
 		recoveredVM := &vm{
@@ -1917,7 +1961,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 				recoveredVM.err = "vm missing from provider during recovery"
 				recoveredVM.updatedAt = time.Now()
 			}
-		} else if recoveredVM.state == VMStateProvisioning {
+		} else if recoveredVM.state == VMStateProvisioning && !durableCreate {
 			// Provisioning was interrupted by a crash. The sandbox may
 			// already exist in the provider (a crash between Create and
 			// finalize leaves it live), so re-attach via provider.Get and
@@ -1963,7 +2007,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		if err := fm.persistVM(ctx, recoveredVM); err != nil {
 			fm.logger.Warn("persist recovered vm failed", "vm", id, "err", err)
 		}
-		if recoveredVM.taskID != "" {
+		if recoveredVM.taskID != "" && recoveredVM.state != VMStateProvisioning {
 			if err := fm.store.UpsertTask(ctx, TaskRecord{
 				TaskID:     recoveredVM.taskID,
 				VMID:       recoveredVM.id,
@@ -2005,7 +2049,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			continue
 		}
 		recoveredVM, ok := recovered[task.VMID]
-		if ok && recoveredVM.state == VMStateRunning {
+		if ok && (recoveredVM.state == VMStateRunning || recoveredVM.state == VMStateProvisioning) {
 			continue
 		}
 		task.RunStatus = TaskRunFailed

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // fakeAgent answers each attempt from a script and records what it saw.
@@ -144,6 +146,39 @@ func TestCallsInOneScopeGetSequentialKeys(t *testing.T) {
 	for i := range want {
 		if first[i] != want[i] || second[i] != want[i] {
 			t.Fatalf("got %q then %q, want %q", first, second, want)
+		}
+	}
+}
+
+// calls under a named part are keyed by the part, not by the order they go
+// out in, so a step's concurrent uploads key the same way on a retry.
+func TestPartsKeyByNameNotOrder(t *testing.T) {
+	keyOf := func(order []string) map[string]string {
+		f := &fakeAgent{script: []func() (*http.Response, error){status(200)}}
+		tr := &idempotencyTransport{Base: f, delay: 1}
+		ctx := WithIdempotencyKey(context.Background(), "inv_1:create.upload")
+		for _, part := range order {
+			if _, err := send(t, tr, orchestrator.WithIdempotencyPart(ctx, part), http.MethodPost, "{}"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out := map[string]string{}
+		for i, part := range order {
+			out[part] = f.keys[i]
+		}
+		return out
+	}
+	first := keyOf([]string{"upload:/a", "upload:/b"})
+	second := keyOf([]string{"upload:/b", "upload:/a"})
+	if first["upload:/a"] != second["upload:/a"] || first["upload:/b"] != second["upload:/b"] {
+		t.Fatalf("keys moved with the order: %v then %v", first, second)
+	}
+	if first["upload:/a"] == first["upload:/b"] {
+		t.Fatalf("two parts share key %q", first["upload:/a"])
+	}
+	for _, k := range first {
+		if !strings.HasPrefix(k, "inv_1:create.upload:") || !strings.HasSuffix(k, "/1") || !idempotencyKeyRE.MatchString(strings.TrimSuffix(k, "/1")) {
+			t.Fatalf("part key %q is not the step key, a hashed part and /1", k)
 		}
 	}
 }
