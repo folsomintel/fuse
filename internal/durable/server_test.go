@@ -153,6 +153,45 @@ func (fakeFleet) BuildDestroyBuilder(context.Context, orchestrator.BuildInput) e
 func (fakeFleet) BuildFinish(context.Context, orchestrator.BuildInput) error         { return nil }
 func (fakeFleet) BuildFailed(context.Context, orchestrator.BuildInput, string) error { return nil }
 
+func (fakeFleet) CreateBegin(context.Context, string, orchestrator.CreateRequest) (orchestrator.CreateState, error) {
+	return orchestrator.CreateState{}, nil
+}
+func (fakeFleet) CreatePlace(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
+	return "", nil
+}
+func (fakeFleet) CreateArtifact(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
+	return "", nil
+}
+func (fakeFleet) CreatePublishIngress(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (*orchestrator.CreateIngress, error) {
+	return nil, nil
+}
+func (fakeFleet) CreateRestoreOrCreate(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (bool, error) {
+	return false, nil
+}
+func (fakeFleet) CreateProvisionEgress(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateUpload(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateStartupScript(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateStartAgent(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) ([]orchestrator.Endpoint, error) {
+	return nil, nil
+}
+func (fakeFleet) CreateRunning(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
+	return nil
+}
+func (fakeFleet) CreateReleaseEgress(context.Context, string) error    { return nil }
+func (fakeFleet) CreateUnpublishIngress(context.Context, string) error { return nil }
+func (fakeFleet) CreateAbandon(context.Context, string, orchestrator.CreateRequest, string) error {
+	return nil
+}
+func (fakeFleet) CreateBeginFailed(context.Context, string, orchestrator.CreateRequest, string) error {
+	return nil
+}
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -218,9 +257,10 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken", "Drain", "Expire"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken", "Drain", "Expire", "Create"} {
 				want[h] = "EXCLUSIVE"
 			}
+			want["CreateInFlight"] = "SHARED"
 		case ArtifactsObject:
 			want = map[string]string{"Move": "EXCLUSIVE"}
 		case ArtifactPinObject:

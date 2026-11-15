@@ -577,6 +577,7 @@ func run() error {
 		fm.SetDurableHitl(restateClient)
 		fm.SetDurableBuilds(restateClient)
 		fm.SetDurableExpiry(restateClient)
+		fm.SetDurableCreator(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()

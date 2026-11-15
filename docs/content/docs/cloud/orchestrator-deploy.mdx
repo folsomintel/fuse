@@ -80,7 +80,7 @@ in-memory and does not survive a restart.
 
 ## Restate
 
-Restate is optional and off by default. With it on, destroys, artifact moves, snapshots, restores, the checkpoint chain, snapshot gc, token rotation and hitl webhook deliveries run on it. To run it next to the orchestrator:
+Restate is optional and off by default. With it on, creates, destroys, artifact moves, snapshots, restores, the checkpoint chain, snapshot gc, token rotation and hitl webhook deliveries run on it. To run it next to the orchestrator:
 
 ```bash
 docker compose -f ops/restate/compose.yaml up -d
@@ -89,6 +89,8 @@ ops/restate/register.sh   # again after every orchestrator upgrade
 ```
 
 The compose file uses host networking and binds every restate port to loopback: ingress `18080` (restate's default `8080` is the orchestrator), admin `9070`, node `5122`. The admin port has no auth, so keep it off the network. To use Restate Cloud instead, see [Restate Cloud](/docs/cloud/restate-cloud). With restate down, `/ready` stays `200` with `status: degraded` and the `restate` check set to the error.
+
+A create on restate runs as `Environment/{vm_id}/Create`, one journaled step each for begin, place, artifact, ingress, boot, egress, upload, startup, agent and running. An orchestrator restart mid-create resumes at the first unfinished step. A step that fails for good (an unschedulable spec, a startup script that exits non-zero, a step out of retries) rolls the create back: proxy egress released, ingress unpublished, the task failed, and the VM destroyed through `Environment/{vm_id}/Destroy`. The create's inputs (spec, manifest, secrets, startup script, gateway token, files) are sealed under `TOKEN_ENCRYPTION_KEY` before they reach the journal, so without that key creates stay in process.
 
 ## Postgres is the source of truth
 

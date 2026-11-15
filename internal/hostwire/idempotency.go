@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // IdempotencyHeader carries the key a host agent dedupes a mutating request
@@ -62,6 +64,12 @@ func nextIdempotencyKey(ctx context.Context) string {
 	s, _ := ctx.Value(idempotencyCtxKey{}).(*idempotencyScope)
 	if s == nil {
 		return ""
+	}
+	// a named part (orchestrator.WithIdempotencyPart) is keyed by its name,
+	// hashed into the charset, and its own counter.
+	if name, n, ok := orchestrator.NextIdempotencyPart(ctx); ok {
+		sum := sha256.Sum256([]byte(name))
+		return s.base + ":" + hex.EncodeToString(sum[:8]) + "/" + strconv.FormatInt(n, 10)
 	}
 	return s.base + "/" + strconv.FormatInt(s.n.Add(1), 10)
 }
