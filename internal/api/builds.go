@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -205,7 +206,7 @@ func (h *Handler) createBuild(w http.ResponseWriter, r *http.Request) {
 		Manifest:    manifest,
 		Arch:        orchestrator.NormalizeArch(req.Arch),
 		Keep:        req.Keep,
-		Setup:       fusefile.SetupPlan{Prelude: req.Setup.Prelude, Files: req.Setup.Files},
+		Setup:       fusefile.SetupPlan{Prelude: endLine(req.Setup.Prelude), Files: endLine(req.Setup.Files)},
 	}
 	for _, s := range req.Setup.Steps {
 		in.Setup.Steps = append(in.Setup.Steps, s.Script)
@@ -299,6 +300,16 @@ func (h *Handler) getBuild(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(min(buildPollInterval, time.Until(deadline))):
 		}
 	}
+}
+
+// endLine ends a non-empty script fragment with a newline, so the next one
+// joined after it starts a command of its own. a fragment a Fusefile compiles
+// to already ends with one and is unchanged.
+func endLine(s string) string {
+	if s == "" || strings.HasSuffix(s, "\n") {
+		return s
+	}
+	return s + "\n"
 }
 
 // buildPollInterval is how often a waiting GET re-reads the build.

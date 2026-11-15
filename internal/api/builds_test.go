@@ -183,3 +183,13 @@ func TestBuildFingerprintLeavesSecretValuesOut(t *testing.T) {
 		t.Errorf("fingerprint ignores which secrets were sent")
 	}
 }
+
+// a prelude or file block without a trailing newline still ends its command:
+// the next fragment joined after it is not glued onto it.
+func TestEndLine(t *testing.T) {
+	for in, want := range map[string]string{"": "", "set -e": "set -e\n", "set -eu\n": "set -eu\n"} {
+		if got := endLine(in); got != want {
+			t.Errorf("endLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

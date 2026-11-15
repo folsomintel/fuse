@@ -2345,10 +2345,15 @@ paths:
 
         Answers 202 with the build at once and keeps running when the
         caller goes away; follow it with GET /v1/builds/{buildId}. With
-        restate on (`FUSE_RESTATE_MODE`), the build runs as the
-        `Build/{build_id}` workflow and resumes at the step it was on after
-        an orchestrator restart; in mode off it runs in the orchestrator's
-        process and an orchestrator restart fails it.
+        restate on (`FUSE_RESTATE_MODE`) and a postgres state store, the
+        build runs as the `Build/{build_id}` workflow and resumes at the
+        step it was on after an orchestrator restart; otherwise (mode off,
+        the memory store, or secrets with no `TOKEN_ENCRYPTION_KEY` to seal
+        them) it runs in the orchestrator's process and an orchestrator
+        restart fails it.
+
+        `setup.prelude` and `setup.files` are each ended with a newline if
+        they lack one, so the next fragment starts a command of its own.
 
         An `Idempotency-Key` names the build: a retry with the same key
         and body returns it (with `Idempotent-Replayed: true`) instead of
