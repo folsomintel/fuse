@@ -129,11 +129,13 @@ type inlineCreator struct {
 	st       CreateState
 	done     []string
 	inFlight bool
+	asked    int
 }
 
 func (c *inlineCreator) CreateInFlight(context.Context, string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.asked++
 	return c.inFlight, nil
 }
 
@@ -674,5 +676,30 @@ func TestCreateErrorsRedactGatewayAndToken(t *testing.T) {
 		if strings.Contains(err.Error(), leak) {
 			t.Fatalf("error %q carries %q", err, leak)
 		}
+	}
+}
+
+// the boot-time reconcile does not ask restate about recovered vms: the
+// handler endpoint that answers is not serving yet.
+func TestStartDoesNotAskRestate(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	p := newCreateProvider()
+	fm, c := newCreateFleet(t, store, p, FleetConfig{})
+	c.crashAfter = "boot"
+	if _, err := fm.ProvisionAndAssign(ctx, "t12", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); !errors.Is(err, errCrash) {
+		t.Fatalf("create: %v, want the crash", err)
+	}
+	fm2 := NewFleetManager(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: createTestKey,
+		HostProviderFactory: func(string, string, HostBackend) Provider { return p }, ReconcileInterval: time.Hour})
+	c2 := &inlineCreator{fm: fm2}
+	fm2.SetDurableCreator(c2)
+	fm2.Start(ctx)
+	fm2.Stop()
+	if c2.asked != 0 {
+		t.Fatalf("start asked restate %d times", c2.asked)
+	}
+	if v, ok := fm2.GetVM("fuse-t12"); !ok || v.State != VMStateProvisioning {
+		t.Fatalf("recovered vm %+v, want provisioning", v)
 	}
 }
