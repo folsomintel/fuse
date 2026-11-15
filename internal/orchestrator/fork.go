@@ -139,12 +139,33 @@ type ForkOptions struct {
 // checkpointed).
 func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
 	ctx, end := fm.startOperation(ctx, "fork", srcVMID)
-	id, err := fm.forkEnvironment(ctx, srcVMID, opts)
+	var (
+		id  string
+		err error
+	)
+	if d := fm.durableForker(); d != nil {
+		id, err = fm.durableForkVM(ctx, d, srcVMID, opts)
+	} else {
+		id, err = fm.forkEnvironment(ctx, srcVMID, opts)
+	}
 	end(err)
 	return id, err
 }
 
-func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
+// forkSource is what a fork reads off its source vm.
+type forkSource struct {
+	spec              Spec
+	hostID            string
+	provider          Provider
+	hitlKeys          map[string]string
+	hitlKeysEncrypted []byte
+}
+
+// checkFork validates that srcVMID can be forked and returns its source and,
+// when reuseSnapshotID is set, the seed snapshot. it takes no snapshot and
+// writes nothing, so the in-process and durable forks refuse the same
+// requests the same way.
+func (fm *FleetManager) checkFork(ctx context.Context, srcVMID, reuseSnapshotID string) (forkSource, SnapshotRecord, error) {
 	// validate the source vm exists and is running, and resolve the
 	// provider under the lock (providerForHost requires fm.mu held),
 	// mirroring snapshotEnvironment's resolution.
@@ -152,23 +173,26 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	src, ok := fm.vms[srcVMID]
 	if !ok {
 		fm.mu.RUnlock()
-		return "", fmt.Errorf("%w: %s", ErrVMNotFound, srcVMID)
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: %s", ErrVMNotFound, srcVMID)
 	}
 	state := src.state
-	srcSpec := src.spec
-	srcHitlKeys, srcHitlKeysEncrypted := src.hitlKeys, src.hitlKeysEncrypted
+	fs := forkSource{
+		spec:              src.spec,
+		hostID:            src.hostID,
+		provider:          fm.provider,
+		hitlKeys:          src.hitlKeys,
+		hitlKeysEncrypted: src.hitlKeysEncrypted,
+	}
 	srcEnv := src.env
-	srcHostID := src.hostID
-	provider := fm.provider
-	if srcHostID != "" {
-		if hostProvider, ok := fm.providerForHost(srcHostID); ok {
-			provider = hostProvider
+	if fs.hostID != "" {
+		if hostProvider, ok := fm.providerForHost(fs.hostID); ok {
+			fs.provider = hostProvider
 		}
 	}
 	fm.mu.RUnlock()
 
 	if state != VMStateRunning {
-		return "", fmt.Errorf("vm %s in state %s: fork requires running", srcVMID, state)
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("vm %s in state %s: fork requires running", srcVMID, state)
 	}
 
 	// gpu environments cannot be forked: a vfio passthrough device cannot be
@@ -178,63 +202,73 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	// branch below, which only held while no provider implemented
 	// SnapshotForkable; the firecracker provider now does, so keying the
 	// guardrail off the type assertion would silently stop protecting gpu vms.
-	if srcSpec.GPUs > 0 {
-		return "", fmt.Errorf("%w: vm %s has a gpu passthrough device: fork is not supported for gpu environments", ErrGPUUnsupported, srcVMID)
+	if fs.spec.GPUs > 0 {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: vm %s has a gpu passthrough device: fork is not supported for gpu environments", ErrGPUUnsupported, srcVMID)
 	}
 
+	// a true fork needs a provider that can seed a new environment from a
+	// checkpoint. the firecracker provider implements this; the qemu provider
+	// deliberately does not (its gpu envs are already rejected above).
+	if _, ok := fs.provider.(SnapshotForkable); !ok {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("provider does not support fork for vm %s", srcVMID)
+	}
+
+	// an existing snapshot must belong to the source and be ready.
+	if reuseSnapshotID == "" {
+		return fs, SnapshotRecord{}, nil
+	}
+	existing, err := fm.GetSnapshotByID(ctx, reuseSnapshotID)
+	if err != nil {
+		return forkSource{}, SnapshotRecord{}, err
+	}
+	if existing.VMID != srcVMID {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: %s", ErrSnapshotNotFound, reuseSnapshotID)
+	}
+	if existing.State != SnapshotStateReady {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, reuseSnapshotID, existing.State)
+	}
+	// a fork boots the seed's rootfs on its own, and a live snapshot's
+	// rootfs is only consistent alongside the memory image it was captured
+	// with. reject it here rather than letting the fork provision a vm and
+	// die on "agent start failed" once the guest cannot mount what it got.
+	if existing.Kind == SnapshotKindLive {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is a live snapshot, whose rootfs is only consistent with its memory image; fork from a disk snapshot instead", ErrSnapshotNotSeedable, reuseSnapshotID)
+	}
+	// a ready record is not proof of an artifact on the host. fork itself
+	// writes lineage records that are ready but back no checkpoint, and a
+	// snapshot can also be deleted out from under its record. confirm the
+	// provider really holds it, the same guard RestoreSnapshot applies, so a
+	// doomed fork fails here instead of 404ing deep in the host agent.
+	if srcEnv == nil {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("vm %s has no active environment handle", srcVMID)
+	}
+	if _, found := lookupCheckpoint(ctx, srcEnv, reuseSnapshotID); !found {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: %s is not present on the host", ErrSnapshotNotFound, reuseSnapshotID)
+	}
+	return fs, existing, nil
+}
+
+func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
+	src, seed, err := fm.checkFork(ctx, srcVMID, opts.ReuseSnapshotID)
+	if err != nil {
+		return "", err
+	}
+	srcSpec, srcHostID, provider := src.spec, src.hostID, src.provider
+	forkable := provider.(SnapshotForkable)
+
 	// obtain the seed snapshot: snapshot the source when no existing
-	// snapshot was requested, otherwise validate the requested snapshot
-	// belongs to the source and is ready.
-	var seed SnapshotRecord
+	// snapshot was requested.
 	if opts.ReuseSnapshotID == "" {
 		created, err := fm.snapshotInProcess(ctx, srcVMID, SnapshotOptions{Comment: opts.Comment})
 		if err != nil {
 			return "", err
 		}
 		seed = created
-	} else {
-		existing, err := fm.GetSnapshotByID(ctx, opts.ReuseSnapshotID)
-		if err != nil {
-			return "", err
-		}
-		if existing.VMID != srcVMID {
-			return "", fmt.Errorf("%w: %s", ErrSnapshotNotFound, opts.ReuseSnapshotID)
-		}
-		if existing.State != SnapshotStateReady {
-			return "", fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, opts.ReuseSnapshotID, existing.State)
-		}
-		// a fork boots the seed's rootfs on its own, and a live snapshot's
-		// rootfs is only consistent alongside the memory image it was captured
-		// with. reject it here rather than letting the fork provision a vm and
-		// die on "agent start failed" once the guest cannot mount what it got.
-		if existing.Kind == SnapshotKindLive {
-			return "", fmt.Errorf("%w: snapshot %s is a live snapshot, whose rootfs is only consistent with its memory image; fork from a disk snapshot instead", ErrSnapshotNotSeedable, opts.ReuseSnapshotID)
-		}
-		// a ready record is not proof of an artifact on the host. fork itself
-		// writes lineage records (below) that are ready but back no checkpoint,
-		// and a snapshot can also be deleted out from under its record. confirm
-		// the provider really holds it, the same guard RestoreSnapshot applies,
-		// so a doomed fork fails here instead of 404ing deep in the host agent.
-		if srcEnv == nil {
-			return "", fmt.Errorf("vm %s has no active environment handle", srcVMID)
-		}
-		if _, found := lookupCheckpoint(ctx, srcEnv, opts.ReuseSnapshotID); !found {
-			return "", fmt.Errorf("%w: %s is not present on the host", ErrSnapshotNotFound, opts.ReuseSnapshotID)
-		}
-		seed = existing
-	}
-
-	// a true fork needs a provider that can seed a new environment from a
-	// checkpoint. the firecracker provider implements this; the qemu provider
-	// deliberately does not (its gpu envs are already rejected above).
-	forkable, ok := provider.(SnapshotForkable)
-	if !ok {
-		return "", fmt.Errorf("provider does not support fork for vm %s", srcVMID)
 	}
 
 	// mint a new vm id. vm ids are always fm.prefix + taskID, so
 	// synthesise a unique fork task id.
-	forkTaskID := "fork-" + NewEventID()
+	forkTaskID := forkTaskPrefix + NewEventID()
 	newVMID := fm.prefix + forkTaskID
 	spec := srcSpec
 	spec.Name = newVMID
@@ -295,8 +329,8 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 		createdAt:         now,
 		updatedAt:         now,
 		lastActivityAt:    now,
-		hitlKeys:          srcHitlKeys,
-		hitlKeysEncrypted: srcHitlKeysEncrypted,
+		hitlKeys:          src.hitlKeys,
+		hitlKeysEncrypted: src.hitlKeysEncrypted,
 	}
 	fm.mu.Lock()
 	fm.vms[newVMID] = v
@@ -305,10 +339,7 @@ func (fm *FleetManager) forkEnvironment(ctx context.Context, srcVMID string, opt
 	}
 	fm.mu.Unlock()
 
-	var (
-		newEnv Environment
-		err    error
-	)
+	var newEnv Environment
 	if targetHostID == srcHostID {
 		newEnv, err = forkable.CreateFromCheckpoint(ctx, spec, srcVMID, seed.SnapshotID)
 	} else {

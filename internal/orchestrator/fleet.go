@@ -659,6 +659,10 @@ type FleetManager struct {
 	durableMigrate DurableMigrator
 	migrating      map[string]int
 
+	// durableFork runs forks on restate; nil in mode off. see
+	// fork_durable.go.
+	durableFork DurableForker
+
 	// durableCreate runs creates on restate; nil in mode off. see
 	// create_durable.go. createRuns holds what a create in flight keeps
 	// between its steps, by vm id, guarded by mu.
@@ -1982,9 +1986,9 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 				recoveredVM.err = "vm missing from provider during recovery"
 				recoveredVM.updatedAt = time.Now()
 			}
-		} else if recoveredVM.state == VMStateProvisioning && fm.isMigratePlaceholder(recoveredVM) {
-			// the target of a migrate restate is still running: the migrate
-			// either finishes it or destroys it. the lookup only finds the
+		} else if recoveredVM.state == VMStateProvisioning && (fm.isMigratePlaceholder(recoveredVM) || fm.isForkPlaceholder(recoveredVM)) {
+			// the target of a migrate or fork restate is still running: the
+			// op either finishes it or destroys it. the lookup only finds the
 			// environment a create before the restart already made.
 			_ = fm.reattachVMFromProvider(ctx, recoveredVM)
 		} else if recoveredVM.state == VMStateProvisioning && !durableCreate {
