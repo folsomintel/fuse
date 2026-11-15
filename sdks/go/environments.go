@@ -27,6 +27,9 @@ type transport struct {
 	// hitlNoWait and onHeld are the client's hitl wait options.
 	hitlNoWait bool
 	onHeld     func(*Intervention)
+	// onOperation is called when a mutating call is accepted as an
+	// operation.
+	onOperation func(*OperationAccepted)
 }
 
 // setActorHeaders adds the Fuse-Actor headers when the transport has an actor.
@@ -256,7 +259,7 @@ func (s *EnvironmentsService) Get(ctx context.Context, vmID string) (*Environmen
 	return &env, nil
 }
 
-func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest) (*EnvironmentInfo, error) {
+func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest, opts ...CallOption) (*EnvironmentInfo, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
@@ -264,7 +267,7 @@ func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -284,15 +287,15 @@ func (s *EnvironmentsService) Create(ctx context.Context, reqBody CreateRequest)
 // Call Destroy afterward to remove it. A drained vm left undestroyed keeps
 // running (and billing) until the orchestrator's draining timeout (5m30s by
 // default) passes, and then the orchestrator destroys it.
-func (s *EnvironmentsService) Drain(ctx context.Context, vmID string) (*EnvironmentInfo, error) {
-	return s.action(ctx, vmID, "drain")
+func (s *EnvironmentsService) Drain(ctx context.Context, vmID string, opts ...CallOption) (*EnvironmentInfo, error) {
+	return s.action(ctx, vmID, "drain", opts)
 }
 
 // Fork creates a new environment seeded from an existing one and returns the
 // new environment. when opts.ReuseSnapshotID is empty the server snapshots the
 // source first; otherwise it reuses the named snapshot. it does not use the
 // shared action helper because fork sends a request body.
-func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions) (*EnvironmentInfo, error) {
+func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions, callOpts ...CallOption) (*EnvironmentInfo, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
@@ -306,7 +309,7 @@ func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOp
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, callOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +330,7 @@ func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOp
 	return &env, nil
 }
 
-func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts MigrateOptions) (*EnvironmentInfo, error) {
+func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts MigrateOptions, callOpts ...CallOption) (*EnvironmentInfo, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
@@ -341,7 +344,7 @@ func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts Mig
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, callOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -379,7 +382,7 @@ func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) erro
 	return s.t.doHeldNoBody(ctx, req)
 }
 
-func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error {
+func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string, opts ...CallOption) error {
 	if s == nil || s.t == nil {
 		return errors.New("environments service is not configured")
 	}
@@ -391,7 +394,11 @@ func (s *EnvironmentsService) Destroy(ctx context.Context, vmID string) error {
 	if err != nil {
 		return err
 	}
-	return s.t.doHeldNoBody(ctx, req)
+	resp, err := s.t.doOperation(ctx, req, opts)
+	if err != nil {
+		return err
+	}
+	return s.t.heldNoBody(ctx, resp)
 }
 
 // heldEnvironment waits out a held fork or migrate and returns the
@@ -414,6 +421,11 @@ func (t *transport) doHeldNoBody(ctx context.Context, req *http.Request) error {
 	if err != nil {
 		return err
 	}
+	return t.heldNoBody(ctx, resp)
+}
+
+// heldNoBody handles the answer to a call whose success has no body.
+func (t *transport) heldNoBody(ctx context.Context, resp *http.Response) error {
 	if err := CheckResponse(resp); err != nil {
 		return err
 	}
@@ -429,7 +441,7 @@ func (t *transport) doHeldNoBody(ctx context.Context, req *http.Request) error {
 	return nil
 }
 
-func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (*EnvironmentInfo, error) {
+func (s *EnvironmentsService) action(ctx context.Context, vmID, action string, opts []CallOption) (*EnvironmentInfo, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
@@ -446,7 +458,7 @@ func (s *EnvironmentsService) action(ctx context.Context, vmID, action string) (
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.t.do(req)
+	resp, err := s.t.doOperation(ctx, req, opts)
 	if err != nil {
 		return nil, err
 	}

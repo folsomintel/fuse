@@ -42,7 +42,7 @@ func (a *appState) client() (*fuse.Client, *config.Context, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	cl, err := fuse.New(cur.BaseURL, cur.Token, fuse.WithUserAgent("fuse-cli/"+version), fuse.WithOnHeld(printHeld))
+	cl, err := fuse.New(cur.BaseURL, cur.Token, fuse.WithUserAgent("fuse-cli/"+version), fuse.WithOnHeld(printHeld), fuse.WithOnOperation(printOperation))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,6 +83,7 @@ func newRootCmd() *cobra.Command {
 		newComputerCmd(),
 		newDesktopCmd(),
 		newSnapshotCmd(),
+		newOperationCmd(),
 		newAPIKeysCmd(),
 		newHitlCmd(),
 		newMetricsCmd(),
