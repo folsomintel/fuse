@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.43.0](https://github.com/folsomintel/fuse/compare/v0.42.0...v0.43.0) (2026-11-15)
+
+
+### Features
+
+* deliver hitl webhooks as the restate Webhooks.Deliver service, retrying by delayed self-sends within a 24h window ([7b14335](https://github.com/folsomintel/fuse/commit/7b143359aa56f360618a8b9f74f81b9647552b90))
+* hitl decision, decider and run latency metrics ([f1d55d3](https://github.com/folsomintel/fuse/commit/f1d55d3b337b45a2786357c2d13fa789376894ad))
+* hitl webhook attempts, failures, backlog, last status and dead letter metrics by endpoint host ([17f7ee4](https://github.com/folsomintel/fuse/commit/17f7ee46f3cdedc5bddfb50f86da8984f2ccb9db))
+* intervention object on restate runs approved hitl actions once and fires deadline timers ([de09521](https://github.com/folsomintel/fuse/commit/de0952160b74c259b2c1383d990c0d627a40cf09))
+* meter host-to-host artifact copies by bytes, duration, hosts and failures ([5d54a4a](https://github.com/folsomintel/fuse/commit/5d54a4a6065ba799f0e588ff5435b24203f6452c))
+* plan artifact moves as journal-safe jobs with retry-safe steps and a durable mover hook ([932ba41](https://github.com/folsomintel/fuse/commit/932ba416bc3135179a36919448b6470481caaca6))
+* run approved hitl actions and deadlines as fleet steps restate can drive ([6e25cca](https://github.com/folsomintel/fuse/commit/6e25ccaf0b54b3c12420c2f1c41db26358e5bb84))
+* run artifact moves and pull pins as restate Artifacts and ArtifactPin objects ([cae984a](https://github.com/folsomintel/fuse/commit/cae984a15ab511a1e6aa2f6355b9e1214ecc5eef))
+* run snapshot, restore, the checkpoint chain and snapshot gc on the restate environment object ([fb2f217](https://github.com/folsomintel/fuse/commit/fb2f217460e48eb960a94c9634b0a4b04447355d))
+* run token rotation as the restate Environment RotateToken handler ([94cf618](https://github.com/folsomintel/fuse/commit/94cf618a10da1e3fa2ab2ec5a5e65e6a5268a481))
+* split hitl webhook delivery into journal-safe steps with the endpoint sealed, a durable hook and a dead letter ([8fbf8e2](https://github.com/folsomintel/fuse/commit/8fbf8e2331853727e72c2ee4628510812cb98327))
+* split token rotation into journal-safe steps that carry only ciphertext, with a durable rotator hook and rotate_token op metric ([2a5b3ff](https://github.com/folsomintel/fuse/commit/2a5b3ff5b7bc8932454b4a498d5d8d556c3454bb))
+
+
+### Bug Fixes
+
+* keep partial copies and checkpoint files while a durable move may still be running ([472976c](https://github.com/folsomintel/fuse/commit/472976cd55d42a145898330c7c9b2192989a8435))
+* make chain holds exclusive and owned, retry a dropped chain's cleanup, and re-check pins before snapshot gc deletes ([29db969](https://github.com/folsomintel/fuse/commit/29db96945be6f92ddb3c501b6a93e003d4da6dd7))
+* publish the webhook backlog under its lock so a stale count never lands after a newer one ([f15de8c](https://github.com/folsomintel/fuse/commit/f15de8cee30ddd7041ed3e363ceb639b2f9357c9))
+* refuse to pull a move source that snapshot gc is deleting ([dbfa130](https://github.com/folsomintel/fuse/commit/dbfa130c203eb0fcac07df72e9a7fe1d96f5f418))
+* release a webhook send slot before the in-process fallback so its retries do not hold up other notifications ([042139d](https://github.com/folsomintel/fuse/commit/042139d46bf55c73eb97d04443d767f06a472aae))
+* retry a rotation's persist without an attempt bound once the guest holds the new token ([4eeb996](https://github.com/folsomintel/fuse/commit/4eeb99655bcaf5163689948d031dd91e74a34c9c))
+* settle exec retries past the agent key window, queue one run send per approval, time expiry at send and meter approved lifecycle ops ([4716e94](https://github.com/folsomintel/fuse/commit/4716e94ca4f86bd20504c008845e156229a7a099))
+* tell a failed move from an abandoned wait and hold move pins until the move releases them ([f3e8fbd](https://github.com/folsomintel/fuse/commit/f3e8fbd09f1f638aec52cf7d404528aebca569cd))
+* upload rotated credentials one at a time in path order so a retried step keys each file as before ([dc27792](https://github.com/folsomintel/fuse/commit/dc27792338558e2e6ce24661e7506fcd460f5380))
+* wait on a durable token rotation without the ingress request timeout and keep server-side refusals unexported ([1196b8f](https://github.com/folsomintel/fuse/commit/1196b8f6aba0ecfbe8311d2a6cfe4d1c3024ea30))
+
 ## [0.42.0](https://github.com/folsomintel/fuse/compare/v0.41.0...v0.42.0) (2026-11-14)
 
 
