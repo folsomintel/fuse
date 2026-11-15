@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"time"
 )
 
 // deleteFreeArtifact removes a free-standing copy (a pulled artifact or a
@@ -48,90 +47,52 @@ func (fm *FleetManager) forgetSnapshotRecord(ctx context.Context, snapshotID str
 // none: it can be the base of the next delta or a seed on that host, and
 // ensureArtifactOnHost refuses it as a source for want of live_files.
 func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecord, base, hostID string, dropBase bool) (string, error) {
-	if diffParent(child) == "" {
-		return "", fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)
-	}
-	if fm.artifactMover == nil {
-		return "", fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
-	}
-	files := liveFiles(child)
-	if len(files) == 0 {
-		return "", fmt.Errorf("%w: diff snapshot %s has no recorded digests for its delta files", ErrArtifactImmovable, child.SnapshotID)
-	}
-	holders := map[string]ArtifactHolder{child.HostID: {HostID: child.HostID, SnapshotID: child.SnapshotID}}
-	source, target, err := fm.artifactEndpoints(child, holders, hostID)
+	job, err := fm.planDeltaMove(child, base, hostID, dropBase)
 	if err != nil {
 		return "", err
 	}
+	return fm.runArtifactMove(ctx, job, func(err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("move delta %s to host %s: %w", child.SnapshotID, hostID, ctxErr)
+		}
+		return fmt.Errorf("%w: move delta %s from host %s onto %s on host %s: %w",
+			ErrArtifactTransferFailed, child.SnapshotID, job.SourceHostID, base, hostID, err)
+	})
+}
 
-	localID := liveReplicaSnapshotID(child.SnapshotID, hostID)
-	fm.beginArtifactPull(child.SnapshotID, base, localID)
-	defer fm.endArtifactPull(child.SnapshotID, base, localID)
-
-	pullCtx := ctx
-	if fm.artifactPullTimeout > 0 {
-		var cancel context.CancelFunc
-		pullCtx, cancel = context.WithTimeout(ctx, fm.artifactPullTimeout)
-		defer cancel()
+// planDeltaMove is the move moveDeltaToHost runs.
+func (fm *FleetManager) planDeltaMove(child SnapshotRecord, base, hostID string, dropBase bool) (ArtifactMoveJob, error) {
+	if diffParent(child) == "" {
+		return ArtifactMoveJob{}, fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)
 	}
-	moved, err := fm.artifactMover.MoveArtifact(pullCtx, ArtifactMove{
+	if fm.artifactMover == nil {
+		return ArtifactMoveJob{}, fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
+	}
+	files := liveFiles(child)
+	if len(files) == 0 {
+		return ArtifactMoveJob{}, fmt.Errorf("%w: diff snapshot %s has no recorded digests for its delta files", ErrArtifactImmovable, child.SnapshotID)
+	}
+	holders := map[string]ArtifactHolder{child.HostID: {HostID: child.HostID, SnapshotID: child.SnapshotID}}
+	source, _, err := fm.artifactEndpoints(child, holders, hostID)
+	if err != nil {
+		return ArtifactMoveJob{}, err
+	}
+
+	job := ArtifactMoveJob{
+		SnapshotID:       child.SnapshotID,
 		Digest:           child.Digest,
-		SnapshotID:       localID,
-		From:             source.endpoint,
-		To:               target,
-		Files:            files,
+		SourceHostID:     source.endpoint.HostID,
 		SourceSnapshotID: child.SnapshotID,
+		HostID:           hostID,
+		LocalID:          liveReplicaSnapshotID(child.SnapshotID, hostID),
+		Files:            files,
 		Base:             base,
 		DropBase:         dropBase,
-	})
-	if err == nil && moved.Kind != SnapshotKindLive {
-		err = fmt.Errorf("host %s did not commit the merged delta as a live snapshot; its host agent cannot merge deltas", hostID)
+		TenantID:         child.TenantID,
+		Arch:             child.Arch,
+		Kind:             SnapshotKindLive,
 	}
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", fmt.Errorf("move delta %s to host %s: %w", child.SnapshotID, hostID, ctxErr)
-		}
-		return "", fmt.Errorf("%w: move delta %s from host %s onto %s on host %s: %w",
-			ErrArtifactTransferFailed, child.SnapshotID, source.endpoint.HostID, base, hostID, err)
-	}
-
-	committedID := moved.SnapshotID
-	if committedID == "" {
-		committedID = localID
-	}
-	now := time.Now()
-	replicaMetadata := map[string]string{
-		"source_snapshot_id": child.SnapshotID,
-		"source_host_id":     source.endpoint.HostID,
-		"merged_onto":        base,
-	}
-	if completeLiveFiles(moved.Files) {
-		replicaMetadata = withLiveFiles(replicaMetadata, moved.Files)
-	}
-	metadata, _ := marshalSnapshotMetadata("", replicaMetadata)
-	replica := SnapshotRecord{
-		SnapshotID: committedID,
-		HostID:     hostID,
-		TenantID:   child.TenantID,
-		// build mode keeps retention gc away from it: the code that made it
-		// (a migrate or the checkpoint loop) is the code that removes it.
-		Mode:      SnapshotModeBuild,
-		Arch:      child.Arch,
-		Digest:    child.Digest,
-		Kind:      SnapshotKindLive,
-		State:     SnapshotStateReady,
-		SizeBytes: moved.SizeBytes,
-		Metadata:  metadata,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := fm.upsertSnapshotRecord(ctx, replica); err != nil {
-		return "", fmt.Errorf("persist merged delta %s on host %s: %w", committedID, hostID, err)
-	}
-	if dropBase {
-		fm.forgetSnapshotRecord(ctx, base)
-	}
-	return committedID, nil
+	return job, nil
 }
 
 // completeLiveFiles reports whether files names a digest for every file a

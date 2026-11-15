@@ -40,6 +40,15 @@ type PrometheusMetrics struct {
 	egressProvisionFailed *prometheus.CounterVec
 	egressTeardownFailed  *prometheus.CounterVec
 
+	// durable destroys that ran out of retries, through
+	// DestroyDeadLetterMetrics.
+	destroyDeadLetters prometheus.Counter
+
+	// host-to-host artifact copies, through ArtifactMoveMetrics.
+	artifactMoveDuration *prometheus.HistogramVec
+	artifactMoveBytes    *prometheus.CounterVec
+	artifactMoveFailures *prometheus.CounterVec
+
 	// lifecycle operations, through OperationMetrics.
 	operations        *prometheus.CounterVec
 	operationDuration *prometheus.HistogramVec
@@ -169,6 +178,31 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Name:      "teardown_failures_total",
 			Help:      "Total proxy egress backends that failed to release on teardown, by provider.",
 		}, []string{"provider"}),
+		destroyDeadLetters: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Name:      "destroy_dead_letters_total",
+			Help:      "Total durable destroys that ran out of retries and left their environment in destroy_failed.",
+		}),
+
+		artifactMoveDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: "orchestrator",
+			Subsystem: "artifact_move",
+			Name:      "duration_seconds",
+			Help:      "Host-to-host artifact copy attempts by source host, target host and result (ok, error).",
+			Buckets:   []float64{.1, .5, 1, 5, 10, 30, 60, 120, 300, 600, 1800},
+		}, []string{"source_host", "target_host", "result"}),
+		artifactMoveBytes: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "artifact_move",
+			Name:      "bytes_total",
+			Help:      "Bytes committed by successful host-to-host artifact copies, by source and target host.",
+		}, []string{"source_host", "target_host"}),
+		artifactMoveFailures: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "orchestrator",
+			Subsystem: "artifact_move",
+			Name:      "failures_total",
+			Help:      "Failed host-to-host artifact copy attempts, by source and target host.",
+		}, []string{"source_host", "target_host"}),
 
 		operations: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "orchestrator",
@@ -240,6 +274,10 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.egressEndpoints,
 		m.egressProvisionFailed,
 		m.egressTeardownFailed,
+		m.destroyDeadLetters,
+		m.artifactMoveDuration,
+		m.artifactMoveBytes,
+		m.artifactMoveFailures,
 		m.operations,
 		m.operationDuration,
 		m.stepDuration,
@@ -284,6 +322,23 @@ func (m *PrometheusMetrics) EgressProvisionFailed(provider string) {
 	m.egressProvisionFailed.WithLabelValues(provider).Inc()
 }
 
+// DestroyDeadLettered implements orchestrator.DestroyDeadLetterMetrics.
+func (m *PrometheusMetrics) DestroyDeadLettered() {
+	m.destroyDeadLetters.Inc()
+}
+
+// ArtifactMoveCompleted implements orchestrator.ArtifactMoveMetrics.
+func (m *PrometheusMetrics) ArtifactMoveCompleted(sourceHostID, targetHostID string, bytes int64, d time.Duration, err error) {
+	result := "ok"
+	if err != nil {
+		result = "error"
+		m.artifactMoveFailures.WithLabelValues(sourceHostID, targetHostID).Inc()
+	} else if bytes > 0 {
+		m.artifactMoveBytes.WithLabelValues(sourceHostID, targetHostID).Add(float64(bytes))
+	}
+	m.artifactMoveDuration.WithLabelValues(sourceHostID, targetHostID, result).Observe(d.Seconds())
+}
+
 // EgressTeardownFailed implements orchestrator.EgressMetrics.
 func (m *PrometheusMetrics) EgressTeardownFailed(provider string) {
 	m.egressTeardownFailed.WithLabelValues(provider).Inc()
@@ -310,7 +365,8 @@ func (m *PrometheusMetrics) StepRetried(op, step string) {
 }
 
 var (
-	_ orchestrator.EgressMetrics    = (*PrometheusMetrics)(nil)
-	_ orchestrator.OperationMetrics = (*PrometheusMetrics)(nil)
-	_ durable.StepMetrics           = (*PrometheusMetrics)(nil)
+	_ orchestrator.EgressMetrics       = (*PrometheusMetrics)(nil)
+	_ orchestrator.OperationMetrics    = (*PrometheusMetrics)(nil)
+	_ orchestrator.ArtifactMoveMetrics = (*PrometheusMetrics)(nil)
+	_ durable.StepMetrics              = (*PrometheusMetrics)(nil)
 )

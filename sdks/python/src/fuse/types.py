@@ -10,6 +10,9 @@ STATE_PROVISIONING = "provisioning"
 STATE_RUNNING = "running"
 STATE_DRAINING = "draining"
 STATE_DESTROYING = "destroying"
+# a destroy that ran out of retries. the environment may still exist on its
+# host; destroy it again to retry.
+STATE_DESTROY_FAILED = "destroy_failed"
 STATE_DESTROYED = "destroyed"
 STATE_FAILED = "failed"
 

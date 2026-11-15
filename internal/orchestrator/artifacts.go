@@ -488,24 +488,43 @@ func (fm *FleetManager) planSeedPlacement(ctx context.Context, spec Spec) seedPl
 // afterwards. the source it pages from is the record itself, so the caller can
 // pin exactly that snapshot until the target reports its memory resident.
 func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record SnapshotRecord, hostID string, lazy bool) (string, error) {
+	job, existing, err := fm.planArtifactMove(ctx, record, hostID, lazy)
+	if err != nil || existing != "" {
+		return existing, err
+	}
+	return fm.runArtifactMove(ctx, job, func(err error) error {
+		// Cancellation is reported as itself rather than as a transfer failure:
+		// the caller gave up, the peer did nothing wrong, and a dead-lettered
+		// "transfer failed" would send an operator looking at the network.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("copy artifact %s to host %s: %w", record.Digest, hostID, ctxErr)
+		}
+		return fmt.Errorf("%w: copy artifact %s from host %s to host %s: %w",
+			ErrArtifactTransferFailed, record.Digest, job.SourceHostID, hostID, err)
+	})
+}
+
+// planArtifactMove works out how record reaches hostID: the id of a copy the
+// host already holds (existing), or the move that copies it there.
+func (fm *FleetManager) planArtifactMove(ctx context.Context, record SnapshotRecord, hostID string, lazy bool) (job ArtifactMoveJob, existing string, err error) {
 	if hostID == "" {
-		return "", fmt.Errorf("%w: no target host", ErrArtifactImmovable)
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: no target host", ErrArtifactImmovable)
 	}
 	if record.HostID == hostID {
-		return record.SnapshotID, nil
+		return ArtifactMoveJob{}, record.SnapshotID, nil
 	}
 	if record.Digest == "" {
-		return "", fmt.Errorf("%w: snapshot %s has no recorded digest", ErrArtifactImmovable, record.SnapshotID)
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s has no recorded digest", ErrArtifactImmovable, record.SnapshotID)
 	}
 	if fm.artifactMover == nil {
-		return "", fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: no artifact mover is configured", ErrArtifactImmovable)
 	}
 	// a live snapshot moves whole or not at all. its rootfs was copied from a
 	// paused guest with no sync and is only consistent next to the memory
 	// captured with it, so copying the disk half alone would plant something on
 	// the target that looks like a seed and cold-boots into a corrupt guest.
 	if parent := diffParent(record); parent != "" {
-		return "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
 			ErrArtifactImmovable, record.SnapshotID, parent)
 	}
 	// a delta merged onto a version 2 base records the digests its host agent
@@ -516,13 +535,13 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		if snapshotMetadataString(record.Metadata, "merged_onto") != "" {
 			why = "a delta merged onto a base with no memory chunk table, from a host agent that predates them"
 		}
-		return "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (%s)",
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: live snapshot %s has no recorded digests for its memory image (%s)",
 			ErrArtifactImmovable, record.SnapshotID, why)
 	}
 
 	holders, err := fm.HostsHoldingArtifact(ctx, record.TenantID, record.Digest)
 	if err != nil {
-		return "", err
+		return ArtifactMoveJob{}, "", err
 	}
 	if record.Kind == SnapshotKindLive {
 		holders = fm.copiesOfLiveSnapshot(ctx, record, holders)
@@ -532,15 +551,15 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		// transfer; this is the common case on the second create against a host
 		// that pulled the artifact for the first one.
 		fm.touchArtifact(record.SnapshotID, holder.SnapshotID)
-		return holder.SnapshotID, nil
+		return ArtifactMoveJob{}, holder.SnapshotID, nil
 	}
 
-	source, target, err := fm.artifactEndpoints(record, holders, hostID)
+	source, _, err := fm.artifactEndpoints(record, holders, hostID)
 	if err != nil {
-		return "", err
+		return ArtifactMoveJob{}, "", err
 	}
 	if lazy && source.snapshotID != record.SnapshotID {
-		return "", fmt.Errorf("%w: lazy move of %s would page from a copy on host %s rather than the snapshot itself",
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: lazy move of %s would page from a copy on host %s rather than the snapshot itself",
 			ErrArtifactImmovable, record.SnapshotID, source.endpoint.HostID)
 	}
 
@@ -549,113 +568,28 @@ func (fm *FleetManager) ensureArtifactOnHost(ctx context.Context, record Snapsho
 		localID = liveReplicaSnapshotID(record.SnapshotID, hostID)
 	}
 
-	// Both ends are held for the duration: the source is being read and the
-	// destination is being written, and collecting either mid-flight leaves a
-	// torn rootfs that a later create would happily boot.
-	fm.beginArtifactPull(record.SnapshotID, source.snapshotID, localID)
-	defer fm.endArtifactPull(record.SnapshotID, source.snapshotID, localID)
-
-	pullCtx := ctx
-	if fm.artifactPullTimeout > 0 {
-		var cancel context.CancelFunc
-		pullCtx, cancel = context.WithTimeout(ctx, fm.artifactPullTimeout)
-		defer cancel()
-	}
-
 	fm.logger.Info("copying artifact between hosts",
 		"digest", record.Digest, "from", source.endpoint.HostID, "to", hostID, "snapshot", localID)
 
-	moved, err := fm.artifactMover.MoveArtifact(pullCtx, ArtifactMove{
-		Digest:     record.Digest,
-		SnapshotID: localID,
-		From:       source.endpoint,
-		To:         target,
-		Files:      files,
-		Lazy:       lazy,
-
+	// Both ends are held for the duration: the source is being read and the
+	// destination is being written, and collecting either mid-flight leaves a
+	// torn rootfs that a later create would happily boot.
+	job = ArtifactMoveJob{
+		SnapshotID:       record.SnapshotID,
+		Digest:           record.Digest,
+		SourceHostID:     source.endpoint.HostID,
 		SourceSnapshotID: source.snapshotID,
-	})
-	if err == nil && record.Kind == SnapshotKindLive && moved.Kind != SnapshotKindLive {
-		// the target took the rootfs and dropped the rest. nothing is recorded,
-		// so nothing can seed from the half it committed.
-		err = fmt.Errorf("host %s committed only the rootfs of a live snapshot; its host agent cannot receive memory images", hostID)
+		HostID:           hostID,
+		LocalID:          localID,
+		Files:            files,
+		Lazy:             lazy,
+		TenantID:         record.TenantID,
+		LayerKey:         record.LayerKey,
+		Arch:             record.Arch,
+		Kind:             record.Kind,
+		SizeBytes:        record.SizeBytes,
 	}
-	if err != nil {
-		// Cancellation is reported as itself rather than as a transfer failure:
-		// the caller gave up, the peer did nothing wrong, and a dead-lettered
-		// "transfer failed" would send an operator looking at the network.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", fmt.Errorf("copy artifact %s to host %s: %w", record.Digest, hostID, ctxErr)
-		}
-		return "", fmt.Errorf("%w: copy artifact %s from host %s to host %s: %w",
-			ErrArtifactTransferFailed, record.Digest, source.endpoint.HostID, hostID, err)
-	}
-
-	committedID := moved.SnapshotID
-	if committedID == "" {
-		committedID = localID
-	}
-	if lazy {
-		// the target holds no memory image, so it can never be the source of
-		// the next move or a seed for anything else, and its agent deletes the
-		// seed once the vm has resumed. recording it would say otherwise.
-		return committedID, nil
-	}
-	size := moved.SizeBytes
-	if size <= 0 {
-		size = record.SizeBytes
-	}
-
-	now := time.Now()
-	replicaMetadata := map[string]string{
-		"source_snapshot_id": record.SnapshotID,
-		"source_host_id":     source.endpoint.HostID,
-	}
-	if len(files) > 0 {
-		// the copy can be a source for the next move, so it carries the digests.
-		replicaMetadata = withLiveFiles(replicaMetadata, files)
-	}
-	metadata, _ := marshalSnapshotMetadata("", replicaMetadata)
-	replica := SnapshotRecord{
-		SnapshotID: committedID,
-		// No VM: this copy was not checkpointed from anything running here, it
-		// arrived over the wire. Leaving VMID empty is what marks it as a
-		// free-standing artifact rather than a vm's checkpoint.
-		VMID:     "",
-		HostID:   hostID,
-		TenantID: record.TenantID,
-		// ParentSnapshotID is deliberately NOT the source. Lineage means "this
-		// snapshot descends from that one", and deleting a snapshot with
-		// children is refused; pointing at the source would make every origin
-		// artifact undeletable the moment anything pulled a copy of it.
-		Mode:      SnapshotModeBuild,
-		LayerKey:  record.LayerKey,
-		Arch:      record.Arch,
-		Digest:    record.Digest,
-		Kind:      record.Kind,
-		State:     SnapshotStateReady,
-		SizeBytes: size,
-		Metadata:  metadata,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	if err := fm.upsertSnapshotRecord(ctx, replica); err != nil {
-		// The bytes are on the host but nothing records them. Failing is the
-		// consistent choice: the create that triggered this would fail at its
-		// own next persist anyway, and the id is derived from (digest, host) so
-		// the next attempt re-commits over the same directory rather than
-		// leaving one orphan per try.
-		return "", fmt.Errorf("persist pulled artifact %s on host %s: %w", committedID, hostID, err)
-	}
-
-	fm.appendEventBackground("host", hostID, "artifact.pulled", map[string]any{
-		"digest":             record.Digest,
-		"snapshot_id":        committedID,
-		"source_host_id":     source.endpoint.HostID,
-		"source_snapshot_id": record.SnapshotID,
-		"size_bytes":         size,
-	})
-	return committedID, nil
+	return job, "", nil
 }
 
 // artifactSource is a chosen peer to pull from, plus the id it holds the
@@ -836,6 +770,10 @@ func (fm *FleetManager) reconcileArtifacts(ctx context.Context) {
 	if fm.artifactMaxPerTenant > 0 {
 		collect = append(collect, overflowArtifacts(candidates, protected, fm.artifactMaxPerTenant)...)
 	}
+
+	// a move running on restate holds its pins there, where they outlive a
+	// restart of this process.
+	collect = fm.dropDurablyPinned(ctx, collect)
 
 	for _, record := range collect {
 		fm.evictArtifact(ctx, record)

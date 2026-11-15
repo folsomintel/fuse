@@ -22,10 +22,16 @@ const (
 	EnvironmentObject = "Environment"
 	// HostObject is keyed by host id, for allocation and cordon.
 	HostObject = "Host"
+	// ArtifactsObject is keyed by the snapshot id a move commits on its
+	// destination, so one move into a given copy runs at a time.
+	ArtifactsObject = "Artifacts"
+	// ArtifactPinObject is keyed by snapshot id and holds the pins that keep
+	// artifact gc off it.
+	ArtifactPinObject = "ArtifactPin"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -34,7 +40,16 @@ var services = []string{EnvironmentObject, HostObject}
 type Fleet interface {
 	GetVM(vmID string) (orchestrator.VMInfo, bool)
 	GetHost(hostID string) (orchestrator.Host, bool)
+	Destroyer
+	Artifacts
+	Snapshots
+	Checkpoints
 }
+
+// snapshotAbortTimeout is how long restate lets a snapshot, restore or
+// checkpoint attempt run without journal progress before it aborts and
+// retries it. a live snapshot writes the whole memory image in one step.
+const snapshotAbortTimeout = 30 * time.Minute
 
 // PingResult is what Ping returns. it never carries more than whether the
 // fleet knows the key: a Host carries its agent token, which must not leave
@@ -54,6 +69,42 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 					_, ok := fleet.GetVM(key)
 					return ok
 				})
+			})).
+		Handler("Destroy", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.DestroyRequest) (restate.Void, error) {
+				return restate.Void{}, destroy(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			})).
+		Handler("Snapshot", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
+				return snapshot(ctx, fleet, servicePolicy(cfg, EnvironmentObject), opts)
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("Restore", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, snapshotID string) (restate.Void, error) {
+				return restate.Void{}, restore(ctx, fleet, servicePolicy(cfg, EnvironmentObject), snapshotID)
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("CollectSnapshot", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, snapshotID string) (restate.Void, error) {
+				return restate.Void{}, collectSnapshot(ctx, fleet, servicePolicy(cfg, EnvironmentObject), snapshotID)
+			})).
+		Handler("Checkpoint", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, checkpointTick(ctx, fleet, servicePolicy(cfg, EnvironmentObject))
+			}, restate.WithAbortTimeout(snapshotAbortTimeout))).
+		Handler("ChainMoved", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, res orchestrator.ChainMoveResult) (restate.Void, error) {
+				return restate.Void{}, chainMovedHandler(ctx, fleet, res)
+			})).
+		Handler("HoldChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req HoldRequest) (orchestrator.ChainHold, error) {
+				return holdChain(ctx, fleet, req.Lease)
+			})).
+		Handler("ReleaseChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req ReleaseRequest) (restate.Void, error) {
+				return restate.Void{}, releaseChain(ctx, fleet, req)
+			})).
+		Handler("RetireChain", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, dropChain(ctx, fleet)
 			}))
 
 	host := restate.NewObject(HostObject, retryOption(cfg, HostObject)).
@@ -65,10 +116,36 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				})
 			}))
 
+	artifacts := restate.NewObject(ArtifactsObject, retryOption(cfg, ArtifactsObject)).
+		Handler("Move", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, job orchestrator.ArtifactMoveJob) (string, error) {
+				return move(ctx, fleet, servicePolicy(cfg, ArtifactsObject), job)
+			}, restate.WithAbortTimeout(moveAbortTimeout(fleet.ArtifactPullTimeout()))))
+
+	pins := restate.NewObject(ArtifactPinObject, retryOption(cfg, ArtifactPinObject)).
+		Handler("Pin", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req PinRequest) (restate.Void, error) {
+				return restate.Void{}, pin(ctx, req)
+			})).
+		Handler("Release", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, holder string) (restate.Void, error) {
+				return restate.Void{}, release(ctx, holder)
+			})).
+		Handler("Expire", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, e pinExpiry) (restate.Void, error) {
+				return restate.Void{}, expire(ctx, e)
+			})).
+		Handler("Pinned", restate.NewObjectSharedHandler(
+			func(ctx restate.ObjectSharedContext, _ restate.Void) (bool, error) {
+				return pinned(ctx)
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
-		Bind(host)
+		Bind(host).
+		Bind(artifacts).
+		Bind(pins)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {
@@ -93,15 +170,20 @@ func ping(ctx restate.ObjectSharedContext, object string, known func(string) boo
 
 // retryOption turns the service's configured policy into its restate option.
 func retryOption(cfg Config, service string) restate.ServiceDefinitionOption {
-	p, ok := cfg.Retry[service]
-	if !ok {
-		p = DefaultRetryPolicy
-	}
+	p := servicePolicy(cfg, service)
 	return restate.WithInvocationRetryPolicy(
 		restate.WithInitialRetryInterval(p.InitialInterval),
 		restate.WithMaxRetryInterval(p.MaxInterval),
 		restate.WithMaxRetryAttempts(uint(p.MaxAttempts)),
 	)
+}
+
+// servicePolicy is the service's configured retry policy, or the default.
+func servicePolicy(cfg Config, service string) RetryPolicy {
+	if p, ok := cfg.Retry[service]; ok {
+		return p
+	}
+	return DefaultRetryPolicy
 }
 
 // Serve runs the handler endpoint until ctx is cancelled: on cfg.Listen, or

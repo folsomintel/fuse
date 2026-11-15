@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.42.0](https://github.com/folsomintel/fuse/compare/v0.41.0...v0.42.0) (2026-11-14)
+
+
+### Features
+
+* idempotency keys on host-agent mutations so durable steps can retry after a lost response ([#370](https://github.com/folsomintel/fuse/issues/370)) ([a36dd44](https://github.com/folsomintel/fuse/commit/a36dd448e644f756cde549fba21e169660d3394c))
+* restate cloud mode with signed handler requests over the tunnel or a public url ([#369](https://github.com/folsomintel/fuse/issues/369)) ([08463b5](https://github.com/folsomintel/fuse/commit/08463b51e6d8df345800dd4bce26791c8288d1ca))
+* run a pinned restate-server in docker from the orchestrator installer with drain-aware upgrades ([#366](https://github.com/folsomintel/fuse/issues/366)) ([6337862](https://github.com/folsomintel/fuse/commit/6337862785f5536652f7d9bae207f293ec81cc37))
+* run destroy as a durable restate handler with retries, destroy_failed dead letters and reconcile re-sends ([363d24f](https://github.com/folsomintel/fuse/commit/363d24ff5638e28369120f8471ff3819cd3e3e5f))
+* trace api requests through fleet ops, restate steps and host agents with request-id propagation ([#368](https://github.com/folsomintel/fuse/issues/368)) ([05186fb](https://github.com/folsomintel/fuse/commit/05186fba7d6e3b9c3be0cfac30a9f3dd7ebe22a1))
+* wire restate sdk-go with a durable handler endpoint and a local restate-server ([#365](https://github.com/folsomintel/fuse/issues/365)) ([10e7cd4](https://github.com/folsomintel/fuse/commit/10e7cd4a0e9529340fe4760e72d8eab84c153faa))
+
+
+### Bug Fixes
+
+* fail the dead-letter step when the destroy dead letter cannot be written ([4f34392](https://github.com/folsomintel/fuse/commit/4f3439209c3f68497f9e7fd17322ad6a1ab0aec1))
+* keep destroy lifecycle events when a begin or finish write is retried ([2cde236](https://github.com/folsomintel/fuse/commit/2cde2368bd2dd00b5b4f71110a9bc27ea739eaa1))
+* revoke keys, grants and interventions of reaped destroy_failed vms ([7e1e175](https://github.com/folsomintel/fuse/commit/7e1e17546d58e85527f0ebe8548bdadbe43cf355))
+* send durable destroys off the reconcile loop with bounded concurrency ([0bd99a6](https://github.com/folsomintel/fuse/commit/0bd99a6fe5e171b1941225b7ab8004902c9e8dd8))
+* skip a create cleanup when a retried create has reused the vm id ([f275c43](https://github.com/folsomintel/fuse/commit/f275c43ec4c50f1c465934949ba46875e19b831e))
+
 ## [0.41.0](https://github.com/folsomintel/fuse/compare/v0.40.0...v0.41.0) (2026-11-11)
 
 

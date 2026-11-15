@@ -326,6 +326,28 @@ def test_environments_exec_conflict() -> None:
 
 
 @respx.mock
+def test_environments_get_destroy_failed() -> None:
+    respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "vm-1",
+                "state": "destroy_failed",
+                "task_id": "",
+                "url": "u",
+                "error": "host down",
+            },
+        )
+    )
+    with new_client() as client:
+        env = client.environments.get("vm-1")
+
+    assert env.state == fuse.STATE_DESTROY_FAILED
+    # the environment still exists, so a wait for its end must keep going.
+    assert not fuse.is_terminal_state(env.state)
+
+
+@respx.mock
 def test_environments_get_with_endpoints() -> None:
     respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(
         return_value=httpx.Response(

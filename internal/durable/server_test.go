@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -32,6 +33,71 @@ func (fakeFleet) GetVM(id string) (orchestrator.VMInfo, bool) {
 func (fakeFleet) GetHost(id string) (orchestrator.Host, bool) {
 	return orchestrator.Host{ID: id, Token: "secret"}, id == "host-known"
 }
+
+func (fakeFleet) DestroyBegin(context.Context, string, string) (orchestrator.DestroyTarget, error) {
+	return orchestrator.DestroyTarget{}, nil
+}
+func (fakeFleet) DestroyReleaseEgress(context.Context, string) error          { return nil }
+func (fakeFleet) DestroyOnHost(context.Context, string, string) error         { return nil }
+func (fakeFleet) DestroyUnpublishIngress(context.Context, string) error       { return nil }
+func (fakeFleet) DestroyFinish(context.Context, string, string) error         { return nil }
+func (fakeFleet) DestroyFailed(context.Context, string, string, string) error { return nil }
+
+func (fakeFleet) ArtifactMoveCommitted(context.Context, orchestrator.ArtifactMoveJob) (string, error) {
+	return "", nil
+}
+func (fakeFleet) ArtifactPull(context.Context, orchestrator.ArtifactMoveJob) (orchestrator.ArtifactMoved, error) {
+	return orchestrator.ArtifactMoved{}, nil
+}
+func (fakeFleet) ArtifactRecord(_ context.Context, job orchestrator.ArtifactMoveJob, _ orchestrator.ArtifactMoved) (string, error) {
+	return job.LocalID, nil
+}
+func (fakeFleet) ArtifactDiscard(context.Context, orchestrator.ArtifactMoveJob) error { return nil }
+func (fakeFleet) ArtifactPullTimeout() time.Duration                                  { return 0 }
+
+func (fakeFleet) SnapshotBegin(_ context.Context, _ string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotPlan, error) {
+	return orchestrator.SnapshotPlan{Options: opts}, nil
+}
+func (fakeFleet) SnapshotCheckpoint(context.Context, string, orchestrator.SnapshotPlan) (orchestrator.Checkpoint, error) {
+	return orchestrator.Checkpoint{ID: "snap-1"}, nil
+}
+func (fakeFleet) SnapshotRecordCreating(_ context.Context, vm string, _ orchestrator.SnapshotPlan, cp orchestrator.Checkpoint) (orchestrator.SnapshotRecord, error) {
+	return orchestrator.SnapshotRecord{SnapshotID: cp.ID, VMID: vm, State: orchestrator.SnapshotStateCreating}, nil
+}
+func (fakeFleet) SnapshotList(context.Context, string, string) (orchestrator.Checkpoint, error) {
+	return orchestrator.Checkpoint{}, nil
+}
+func (fakeFleet) SnapshotReady(_ context.Context, rec orchestrator.SnapshotRecord, _ orchestrator.Checkpoint) (orchestrator.SnapshotRecord, error) {
+	rec.State = orchestrator.SnapshotStateReady
+	return rec, nil
+}
+func (fakeFleet) SnapshotAbort(context.Context, string, orchestrator.SnapshotPlan, orchestrator.Checkpoint, string) error {
+	return nil
+}
+func (fakeFleet) RestoreValidate(_ context.Context, vm, id string) (orchestrator.SnapshotRecord, error) {
+	return orchestrator.SnapshotRecord{SnapshotID: id, VMID: vm}, nil
+}
+func (fakeFleet) RestoreBegin(context.Context, orchestrator.SnapshotRecord) error  { return nil }
+func (fakeFleet) RestoreOnHost(context.Context, string, string) error              { return nil }
+func (fakeFleet) RestoreFinish(context.Context, orchestrator.SnapshotRecord) error { return nil }
+func (fakeFleet) RestoreFailed(context.Context, orchestrator.SnapshotRecord, string) error {
+	return nil
+}
+func (fakeFleet) SnapshotCollect(context.Context, string) error               { return nil }
+func (fakeFleet) SnapshotCollectFailed(context.Context, string, string) error { return nil }
+
+func (fakeFleet) ChainBegin(context.Context, string, orchestrator.ChainState) (orchestrator.ChainPlan, error) {
+	return orchestrator.ChainPlan{}, nil
+}
+func (fakeFleet) ChainMovePlan(context.Context, orchestrator.ChainState, orchestrator.ChainPlan, orchestrator.SnapshotRecord) (orchestrator.ChainMove, error) {
+	return orchestrator.ChainMove{}, nil
+}
+func (fakeFleet) ChainRetire(context.Context, string, orchestrator.ChainState) error { return nil }
+func (fakeFleet) ChainReset(context.Context, string, string) error                   { return nil }
+func (fakeFleet) ChainAdvanced(context.Context, string, orchestrator.ChainState, bool) error {
+	return nil
+}
+func (fakeFleet) MirrorChain(string, orchestrator.ChainState, bool) {}
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -84,8 +150,23 @@ func TestDiscoveryManifest(t *testing.T) {
 		if s.Ty != "VIRTUAL_OBJECT" {
 			t.Errorf("%s: type %q, want VIRTUAL_OBJECT", s.Name, s.Ty)
 		}
-		if len(s.Handlers) != 1 || s.Handlers[0].Name != "Ping" || s.Handlers[0].Ty != "SHARED" {
-			t.Errorf("%s: handlers %+v, want one shared Ping", s.Name, s.Handlers)
+		handlers := map[string]string{}
+		for _, h := range s.Handlers {
+			handlers[h.Name] = h.Ty
+		}
+		want := map[string]string{"Ping": "SHARED"}
+		switch s.Name {
+		case EnvironmentObject:
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain"} {
+				want[h] = "EXCLUSIVE"
+			}
+		case ArtifactsObject:
+			want = map[string]string{"Move": "EXCLUSIVE"}
+		case ArtifactPinObject:
+			want = map[string]string{"Pin": "EXCLUSIVE", "Release": "EXCLUSIVE", "Expire": "EXCLUSIVE", "Pinned": "SHARED"}
+		}
+		if fmt.Sprint(handlers) != fmt.Sprint(want) {
+			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)
 		}
 		var p RetryPolicy
 		if s.RetryPolicyMaxAttempts != nil {

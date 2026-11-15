@@ -353,3 +353,44 @@ func TestCheckpointChain_aRefusedDiffStartsOver(t *testing.T) {
 		t.Errorf("moves = %+v, want the restart to copy a fresh full checkpoint", moves)
 	}
 }
+
+// TestCheckpointChain_anUnsettledCopyKeepsItsFiles: a durable copy the loop
+// stopped waiting on may still be running, so the checkpoint it reads stays
+// recorded and the base it writes is not deleted.
+func TestCheckpointChain_anUnsettledCopyKeepsItsFiles(t *testing.T) {
+	provider := newDeltaMigrateProvider()
+	fm := newDeltaFleet(t, provider, &deltaMover{})
+	d := newFakeDurableArtifacts()
+	d.moveErr = fmt.Errorf("%w: context deadline exceeded", ErrArtifactMoveUnsettled)
+	fm.SetDurableArtifacts(d)
+	ctx := context.Background()
+
+	fm.advanceChain(ctx, "fuse-task-src")
+	if len(d.jobs) != 1 {
+		t.Fatalf("%d durable moves, want the full copy", len(d.jobs))
+	}
+	if _, err := fm.GetSnapshotByID(ctx, d.jobs[0].SnapshotID); err != nil {
+		t.Fatalf("full checkpoint %s deleted while its copy may still run: %v", d.jobs[0].SnapshotID, err)
+	}
+
+	// a settled copy, then an unsettled delta: the chain is forgotten, its
+	// child and base left alone.
+	d.moveErr = nil
+	fm.advanceChain(ctx, "fuse-task-src")
+	c := fm.chainFor("fuse-task-src")
+	head := c.head.SnapshotID
+	d.moveErr = fmt.Errorf("%w: connection reset", ErrArtifactMoveUnsettled)
+	fm.advanceChain(ctx, "fuse-task-src")
+	child := d.jobs[len(d.jobs)-1].SnapshotID
+	if c.base != "" || c.head.SnapshotID != "" {
+		t.Errorf("chain = head %s base %s, want it forgotten", c.head.SnapshotID, c.base)
+	}
+	if _, err := fm.GetSnapshotByID(ctx, child); err != nil {
+		t.Errorf("delta child %s deleted while its merge may still run: %v", child, err)
+	}
+	// retiring the chain would have deleted the head the delta is taken
+	// against, and the base on the standby with it.
+	if _, err := fm.GetSnapshotByID(ctx, head); err != nil {
+		t.Errorf("chain head %s deleted, so the chain was retired rather than forgotten: %v", head, err)
+	}
+}

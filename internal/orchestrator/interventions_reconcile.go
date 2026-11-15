@@ -35,7 +35,7 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 		}
 		fm.mu.RLock()
 		v, ok := fm.vms[rec.EnvID]
-		gone := !ok || v.state == VMStateDestroying
+		gone := !ok || v.state.tearingDown()
 		fm.mu.RUnlock()
 		if gone {
 			if _, err := fm.resolveIntervention(ctx, rec.ID, auditMeta{}, func(in hitl.Intervention, now time.Time) (hitl.Intervention, error) {

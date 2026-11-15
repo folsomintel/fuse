@@ -140,7 +140,8 @@ var (
 // VMState represents the lifecycle state of a managed VM.
 //
 // Stored states (recorded on a vm and persisted to the state store):
-//   - VMStateProvisioning, VMStateRunning, VMStateDraining, VMStateDestroying.
+//   - VMStateProvisioning, VMStateRunning, VMStateDraining, VMStateDestroying,
+//     VMStateDestroyFailed.
 //
 // Synthetic terminal states (emitted only over the wire as SSE events
 // — never stored on a vm record because the underlying record is gone
@@ -161,7 +162,16 @@ const (
 	// supported state transition out of Draining (no "undrain").
 	VMStateDraining   VMState = "draining"
 	VMStateDestroying VMState = "destroying"
+	// VMStateDestroyFailed is a durable destroy that ran out of retries. the
+	// vm may still exist on its host and still holds its allocation; the last
+	// error is on the vm and in a dead letter, and a DELETE retries it.
+	VMStateDestroyFailed VMState = "destroy_failed"
 )
+
+// tearingDown reports whether s is a state a destroy has started on.
+func (s VMState) tearingDown() bool {
+	return s == VMStateDestroying || s == VMStateDestroyFailed
+}
 
 // vm is the internal representation of a tracked VM.
 type vm struct {
@@ -603,6 +613,22 @@ type FleetManager struct {
 	envKeys   EnvKeyStore
 	publicURL string
 	webhooks  webhookSender
+
+	// durableDestroy runs destroys on restate; nil in mode off. see
+	// destroy_durable.go. destroySendSlots bounds the one-way sends in
+	// flight and destroySends tracks them.
+	durableDestroy   DurableDestroyer
+	destroySendSlots chan struct{}
+	destroySends     sync.WaitGroup
+
+	// durableArtifacts runs artifact moves and holds pull pins on restate;
+	// nil in mode off. see artifacts_durable.go.
+	durableArtifacts DurableArtifacts
+
+	// durableSnapshots runs snapshots, restores, the checkpoint chain and
+	// retention gc on restate; nil in mode off. see snapshot_durable.go and
+	// checkpoints_durable.go.
+	durableSnapshots DurableSnapshots
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -1107,13 +1133,7 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 		fm.publishTerminalEvent(vmID, VMStateFailed, redactedErr)
 
 		// Best-effort cleanup.
-		// TODO: Track this goroutine so Stop() can wait for it to finish
-		// instead of leaking on shutdown.
-		go func() {
-			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
-				fm.logger.Error("cleanup destroy failed", "vm", vmID, "err", destroyErr)
-			}
-		}()
+		fm.cleanupFailedCreate(bootProvider, nil, vmID, v.hostID)
 
 		return nil, fmt.Errorf("provision vm %s: %w", vmID, err)
 	}
@@ -1178,12 +1198,7 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 		fm.deleteVMBackground(vmID)
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
-		go func() {
-			fm.releaseEgress(context.Background(), v)
-			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
-				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
-			}
-		}()
+		fm.cleanupFailedCreate(bootProvider, v, vmID, v.hostID)
 
 		return nil, fmt.Errorf("persist vm %s running state: %w", vmID, err)
 	}
@@ -1215,12 +1230,7 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 		fm.deleteVMBackground(vmID)
 		fm.publishTerminalEvent(vmID, VMStateFailed, errMsg)
 
-		go func() {
-			fm.releaseEgress(context.Background(), v)
-			if destroyErr := bootProvider.Destroy(context.Background(), vmID); destroyErr != nil {
-				fm.logger.Error("cleanup destroy failed after persist error", "vm", vmID, "err", destroyErr)
-			}
-		}()
+		fm.cleanupFailedCreate(bootProvider, v, vmID, v.hostID)
 
 		return nil, fmt.Errorf("persist task %s running state: %w", taskID, err)
 	}
@@ -1309,7 +1319,7 @@ func (fm *FleetManager) CompleteTask(taskID string) error {
 	fm.publishStateChange(vmID, "")
 
 	fm.logger.Info("completing task, destroying vm", "vm", found.id, "task", taskID)
-	go fm.destroyAndRemove(vmID)
+	fm.destroyAsync(vmID, DestroyReasonTaskCompleted)
 
 	return nil
 }
@@ -1317,7 +1327,12 @@ func (fm *FleetManager) CompleteTask(taskID string) error {
 // DestroyVM forcefully tears down a VM by ID.
 func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 	ctx, end := fm.startOperation(ctx, "destroy", vmID)
-	err := fm.destroyVM(ctx, vmID)
+	var err error
+	if d := fm.durableDestroyer(); d != nil {
+		err = fm.durableDestroyVM(ctx, d, vmID)
+	} else {
+		err = fm.destroyVM(ctx, vmID)
+	}
 	end(err)
 	return err
 }
@@ -1591,7 +1606,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	changedVMs := make([]string, 0)
 	failedTasks := make([]TaskRecord, 0)
 	for id, v := range fm.vms {
-		if v.state == VMStateProvisioning || v.state == VMStateDestroying {
+		if v.state == VMStateProvisioning || v.state.tearingDown() {
 			continue
 		}
 		if !providerVMs[id] {
@@ -1649,7 +1664,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
 	fm.retryFailedTeardowns(providerVMs)
-	fm.reapDestroyedVMs(providerVMs)
+	fm.reapDestroyedVMs(ctx, providerVMs)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan
 	// is untracked by definition, so it has no persisted Spec for
@@ -1715,12 +1730,15 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 // reapDestroyedVMs removes tracked VMs that are in the Destroying state
 // and are no longer present in the provider (set provided by reconcile).
 // VM resources are returned to their host, the VM is removed from the
-// in-memory fleet, and the persisted record is deleted.
-func (fm *FleetManager) reapDestroyedVMs(providerVMs map[string]bool) {
+// in-memory fleet, and the persisted record is deleted. what belonged to the
+// vm is closed out as a finished destroy would: a destroy_failed vm has no
+// destroy left running to do it.
+func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool) {
 	fm.mu.Lock()
 	toRemove := make([]string, 0)
+	removed := make([]*vm, 0)
 	for id, v := range fm.vms {
-		if v.state != VMStateDestroying {
+		if !v.state.tearingDown() {
 			continue
 		}
 		if providerVMs[id] {
@@ -1731,12 +1749,16 @@ func (fm *FleetManager) reapDestroyedVMs(providerVMs map[string]bool) {
 		}
 		delete(fm.vms, id)
 		toRemove = append(toRemove, id)
+		removed = append(removed, v)
 	}
 	fm.mu.Unlock()
-	for _, id := range toRemove {
+	for i, id := range toRemove {
 		fm.deleteVMBackground(id)
 		fm.appendEventBackground("vm", id, "vm.removed", map[string]any{"reason": "destroyed"})
 		fm.publishTerminalEvent(id, VMStateDestroyed, "")
+		fm.cancelEnvInterventions(ctx, removed[i], id, "environment destroyed")
+		fm.dropEnvGrants(ctx, id)
+		fm.revokeEnvKeys(ctx, id)
 	}
 }
 

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -30,6 +31,10 @@ type checkpointChain struct {
 	// size, so it is not updated per tick (the merged record only carries
 	// the delta that moved).
 	bytes int64
+	// pending is set on restate while a tick's copy to the standby runs.
+	// there the chain's state lives on the Environment object, and this
+	// struct only mirrors it (MirrorChain).
+	pending bool
 }
 
 // setStandbyLocked records where the chain's base lives and how big it is.
@@ -160,6 +165,10 @@ func (fm *FleetManager) checkpointLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if d := fm.durableSnapshotsClient(); d != nil {
+				fm.checkpointTickDurable(ctx, d)
+				continue
+			}
 			fm.checkpointTick(ctx)
 		}
 	}
@@ -348,7 +357,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		}
 	}
 	if keep {
-		child, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+		child, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 			Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 			Live: true, Diff: true, Parent: c.head.SnapshotID, NoLineage: true,
 		})
@@ -362,6 +371,13 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 		if err != nil {
 			fm.logger.Warn("move checkpoint delta failed; chain reset", "vm", vmID, "host", c.standby, "err", err)
 			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{"error": err.Error()})
+			if errors.Is(err, ErrArtifactMoveUnsettled) {
+				// the merge may still be reading the child and writing onto
+				// the base, so neither is deleted: the chain is only
+				// forgotten. retention gc takes the child later.
+				fm.resetChainLocked(c)
+				return
+			}
 			// the base may or may not have been merged and dropped; either way
 			// the chain no longer has an agreed state.
 			fm.deleteCheckpoint(ctx, child)
@@ -386,7 +402,7 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	if standby == "" {
 		return
 	}
-	full, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+	full, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 		Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
 		Live: true, NoLineage: true,
 	})
@@ -397,7 +413,11 @@ func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
 	base, err := fm.ensureArtifactOnHost(ctx, full, standby, false)
 	if err != nil {
 		fm.logger.Warn("copy full checkpoint to standby failed", "vm", vmID, "host", standby, "err", err)
-		fm.deleteCheckpoint(ctx, full)
+		if !errors.Is(err, ErrArtifactMoveUnsettled) {
+			// an unsettled copy may still be reading it; retention gc takes
+			// it later instead.
+			fm.deleteCheckpoint(ctx, full)
+		}
 		return
 	}
 	fm.beginArtifactPull(base)

@@ -192,7 +192,18 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	srcDelta, _ := srcEnv.(DeltaSnapshotCapable)
 	delta := opts.Live && !opts.Lazy && srcDelta != nil && fm.artifactMover != nil
 	var chain *checkpointChain
-	if delta {
+	if d := fm.durableSnapshotsClient(); delta && d != nil {
+		// on restate the chain lives on the vm's Environment object, and
+		// the hold is what keeps the checkpoint loop off it.
+		var holder string
+		chain, holder = fm.holdDurableChain(ctx, d, vmID)
+		if chain == nil {
+			delta = false
+		} else {
+			held := chain.base
+			defer func() { fm.releaseDurableChain(d, vmID, holder, held != "" && chain.base == "") }()
+		}
+	} else if delta {
 		// held for the whole migrate so the checkpoint loop cannot take a live
 		// snapshot of this vm in between, which would break the diff's parent.
 		chain = fm.chainFor(vmID)
@@ -220,7 +231,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	} else {
 		// a live seed is the bulk of what moves, so the guest gives back what
 		// it is not using first.
-		seed, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
+		seed, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{Comment: "migration seed", Live: opts.Live, ShrinkMemory: opts.Live})
 		if err != nil {
 			return "", err
 		}
@@ -279,7 +290,7 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 		}
 		if err == nil && delta {
 			var child SnapshotRecord
-			child, err = fm.CreateSnapshot(ctx, vmID, SnapshotOptions{
+			child, err = fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
 				Comment: "migration delta", Live: true, Diff: true,
 				Parent: seed.SnapshotID, KeepPaused: true, NoLineage: true,
 			})
@@ -421,9 +432,11 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 	if opts.Lazy {
 		// the seed on the source is now the only copy of every page the new
 		// vm has not touched yet, so it is held until the target has them all.
-		// taken before the source vm goes, and released by the watcher.
-		fm.beginArtifactPull(seed.SnapshotID)
-		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID)
+		// taken before the source vm goes, and released by the watcher. on
+		// restate the pin outlives a restart that loses the watcher, and
+		// lapses once no chunk could still arrive.
+		release := fm.holdArtifact(ctx, "lazy:"+newVMID, lazyMemoryPinTTL, seed.SnapshotID)
+		go fm.watchLazyMemory(targetProvider, newVMID, seed.SnapshotID, release)
 	}
 
 	// from here the target is the guest; the source is only torn down.
@@ -453,6 +466,10 @@ func (fm *FleetManager) migrateVM(ctx context.Context, vmID string, opts Migrate
 // target's grant is dead and no further chunk can arrive.
 const lazyMemoryWatchTimeout = 30 * time.Minute
 
+// lazyMemoryPinTTL is how long a durable lazy-memory pin lasts when no
+// watcher releases it: a little past the grant.
+const lazyMemoryPinTTL = lazyMemoryWatchTimeout + 5*time.Minute
+
 // lazyMemoryPollInterval is how often the target is asked how far along it is.
 var lazyMemoryPollInterval = 2 * time.Second
 
@@ -460,8 +477,9 @@ var lazyMemoryPollInterval = 2 * time.Second
 // target, then releases the seed it was paging from. the outcome is an event
 // either way: a failed transfer leaves a guest that will hang on its next
 // missing page, and the only thing the orchestrator can do is say so.
-func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string) {
-	defer fm.endArtifactPull(seedID)
+// release drops the pin on the seed.
+func (fm *FleetManager) watchLazyMemory(provider Provider, vmID, seedID string, release func()) {
+	defer release()
 	w, ok := provider.(MemoryWatcher)
 	if !ok {
 		return

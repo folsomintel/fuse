@@ -126,11 +126,79 @@ docker exec fuse-restate restate invocations cancel <id>   # or kill
 
 or the ui at `http://127.0.0.1:9070/ui` (through the ssh tunnel).
 
+destroys run as `Environment/<vm_id>/Destroy`. one stuck retrying a host shows
+its last error in the ui; one that ran out of retries left the environment in
+`destroy_failed` with a `destroy` dead letter
+(`orchestrator_destroy_dead_letters_total`). fix the host, then `DELETE` the
+environment again.
+
+artifact moves between hosts (seeding a create, an off-host fork, a migrate,
+a checkpoint delta) run as `Artifacts/<destination snapshot id>/Move`. the
+pull is retried under the `ARTIFACTS` policy with the host-agent idempotency
+key, so a restart mid-copy resumes it instead of starting a second one. a pull
+that fails for good deletes the partial copy on the destination. while a move
+runs, every snapshot it reads or writes is pinned in `ArtifactPin/<snapshot
+id>` state, which artifact gc reads before it deletes anything. a move's pins
+have no timer: every way the move ends (done, failed, cancelled) releases
+them, so only a killed invocation leaves them behind. release those by hand
+with the holder the state query below shows:
+
+```sh
+curl -s localhost:18080/ArtifactPin/<snapshot id>/Release \
+  -H 'content-type: application/json' -d '"move:<invocation id>"'
+```
+
+a lazy migrate's seed pin lapses after 35m if its watcher never releases it.
+gc skips an artifact whose pin it cannot read, so with restate down nothing
+is collected. a caller that stops waiting on a move (a restart, or an hour
+with no answer) leaves the files that move uses alone; the checkpoint loop
+forgets its chain instead of deleting it.
+
+```sh
+q "SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'ArtifactPin'"
+```
+
+snapshots and restores run as `Environment/<vm_id>/Snapshot` and
+`Environment/<vm_id>/Restore`. the host checkpoint carries the host-agent
+idempotency key, so a restart between it and the row write records the
+checkpoint already taken. a snapshot whose record cannot be finished deletes
+the host artifact and leaves the row `error` (`snapshot.failed` event). a
+restore resumes at its first unfinished step after a restart.
+
+the checkpoint loop runs each vm's tick as `Environment/<vm_id>/Checkpoint`.
+the chain (head, base, standby) is that object's state, so a restart keeps it,
+and its base is pinned in `ArtifactPin` with holder `chain:<vm_id>`. the copy
+to the standby is a one-way `Artifacts` move that reports back to
+`Environment/<vm_id>/ChainMoved`, so a long copy does not hold the
+environment's other ops. a delta migrate takes `HoldChain` (a 1h lease) for
+the whole migrate; a tick on a held chain does nothing, and a second migrate
+finds it busy and takes a full seed. a destroy drops the
+chain. a copy that never reports back (a killed `Artifacts` invocation) is
+forgotten after 2h without deleting anything.
+
+```sh
+q "SELECT service_key, value_utf8 FROM state WHERE service_name = 'Environment' AND key = 'chain'"
+```
+
+retention gc marks an expired snapshot `deleting` and sends
+`Environment/<vm_id>/CollectSnapshot`, which retries the host delete under the
+`ENVIRONMENT` policy and only then moves the row to `error`
+(`snapshot.gc_failed`); the next sweep marks it again. gc skips a snapshot any
+pin holds, in process or in `ArtifactPin`.
+
+copies are metered by `orchestrator_artifact_move_duration_seconds`,
+`orchestrator_artifact_move_bytes_total` and
+`orchestrator_artifact_move_failures_total`, labeled `source_host` and
+`target_host`.
+
 ## restate-server is down
 
 - the orchestrator keeps serving its api; `/ready` reports restate degraded.
   operations that run on restate wait and resume once it is back; nothing
   in flight is lost, it is in `/var/lib/restate`.
+- a `DELETE /v1/environments/{id}` fails with a 500 until restate is back.
+  background teardowns (task completion, reconcile) stay `destroying` and
+  are re-sent by reconcile once it answers.
 - `systemctl status restate-server`, `journalctl -u restate-server -n 200`.
 - `docker` down takes restate with it (`Requires=docker.service`):
   `systemctl status docker`.

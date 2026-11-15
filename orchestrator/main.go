@@ -254,7 +254,8 @@ func run() error {
 		"largest startup script bound a request may ask for; must stay under -write-timeout")
 	flag.DurationVar(&artifactPullTimeout, "artifact-pull-timeout",
 		time.Duration(envInt("ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS", 0))*time.Second,
-		"bound on one host-to-host artifact copy (0 = bound only by the request context)")
+		"bound on one attempt at a host-to-host artifact copy; with restate on it is the pull step's timeout, "+
+			"not the request's (0 = bound only by the request context, or the agent client's timeout on restate)")
 	flag.DurationVar(&checkpointInterval, "checkpoint-interval",
 		time.Duration(envInt("ORCH_CHECKPOINT_INTERVAL_SECONDS", 0))*time.Second,
 		"take a background diff checkpoint of every firecracker vm this often and keep it merged on "+
@@ -563,6 +564,15 @@ func run() error {
 	// the base url hitl webhook notifications link to, e.g.
 	// https://fuse.example.com. empty leaves the link out.
 	fm.SetPublicURL(strings.TrimRight(env("ORCH_PUBLIC_URL", ""), "/"))
+	// restate client, made before the fleet starts so the reconcile loop's
+	// first teardown already goes through restate. mode off makes none.
+	var restateClient *durable.Client
+	if durableCfg.Mode != durable.ModeOff {
+		restateClient = durable.NewClient(durableCfg)
+		fm.SetDurableDestroyer(restateClient)
+		fm.SetDurableArtifacts(restateClient)
+		fm.SetDurableSnapshots(restateClient)
+	}
 	fm.Start(rootCtx)
 	defer fm.Stop()
 
@@ -572,9 +582,7 @@ func run() error {
 
 	// restate handler endpoint. mode off starts nothing and leaves the
 	// readiness check out.
-	var restateClient *durable.Client
-	if durableCfg.Mode != durable.ModeOff {
-		restateClient = durable.NewClient(durableCfg)
+	if restateClient != nil {
 		go func() {
 			if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
 				errCh <- fmt.Errorf("restate handler endpoint: %w", err)
