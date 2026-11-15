@@ -46,19 +46,19 @@ to dispatch correctly, then walks the persisted VMs and triages them:
 - A VM recorded as **running** is probed against its provider. If the provider
   still has it, the live handle is re-attached and the per-VM auth token is
   decrypted and re-injected. If not, it is demoted to `destroying`.
-- A VM recorded as **provisioning** is demoted to `destroying` unconditionally,
-  on the grounds that a boot interrupted by a crash cannot be trusted.
+- A VM recorded as **provisioning** was mid-create when the orchestrator
+  stopped. With [restate](/docs/cloud/orchestrator-deploy#restate) off, it is
+  probed like a running VM: re-attached and marked `running` if the provider
+  has it, demoted to `destroying` if not. A VM re-attached this way keeps
+  whatever files, startup script run and agent the create got to before the
+  crash. With restate on, it stays `provisioning` with its task assigned: the
+  create is a restate invocation, which resumes at its first unfinished step
+  and either finishes the VM (files, startup script, agent) or rolls it back.
 - Host allocation counters are then **recomputed from the live VMs** rather than
   trusted from the database, which repairs the drift a crash mid-allocation
   leaves behind.
 - Still-running VMs have their secrets re-uploaded, which is cheap, idempotent,
   and covers the case where the guest rebooted on its own.
-
-:::warning[Known limitation]
-The provisioning demotion does not check the provider first. A VM that was
-mid-boot and actually succeeded is torn down anyway, so a crash-looping
-orchestrator destroys healthy environments on each restart.
-:::
 
 Some state is deliberately never persisted and resets on every restart: orphan
 retry budgets, stuck-task strike counters, live provider handles, SSE
