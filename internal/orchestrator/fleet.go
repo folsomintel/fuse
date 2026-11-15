@@ -634,6 +634,17 @@ type FleetManager struct {
 	// token_rotation.go.
 	durableTokens DurableTokenRotator
 
+	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
+	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in
+	// flight and webhookSends tracks them. webhookBacklog is the deliveries
+	// not yet delivered or dead-lettered, by endpoint and delivery id,
+	// guarded by webhookMu.
+	durableHooks     DurableWebhooks
+	webhookSendSlots chan struct{}
+	webhookSends     sync.WaitGroup
+	webhookMu        sync.Mutex
+	webhookBacklog   map[string]map[string]struct{}
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }

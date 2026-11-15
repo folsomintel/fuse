@@ -78,7 +78,7 @@ func (fm *FleetManager) recordAudit(ctx context.Context, e hitl.AuditEntry, targ
 		n.URL = base + "/v1/interventions/" + url.PathEscape(e.InterventionID)
 	}
 	for _, t := range targets {
-		go fm.webhooks.deliver(fm, t, n)
+		fm.notifyWebhook(ctx, t, n)
 	}
 }
 
@@ -200,8 +200,10 @@ var defaultWebhookClient = &http.Client{
 }
 
 // deliver posts n to t, retrying on any non-2xx answer or transport error.
-// deliveries are best-effort and not persisted: the audit row is the
-// record, the webhook is a nudge.
+// in-process deliveries (mode off) are best-effort and not persisted: the
+// audit row is the record, the webhook is a nudge. on restate the
+// Webhooks.Deliver handler retries for longer and dead-letters what it
+// cannot deliver; see hitl_webhooks_durable.go.
 func (s webhookSender) deliver(fm *FleetManager, t webhookTarget, n hitl.Notification) {
 	client, backoff := s.client, s.backoff
 	if client == nil {
@@ -215,31 +217,37 @@ func (s webhookSender) deliver(fm *FleetManager, t webhookTarget, n hitl.Notific
 		fm.logger.Warn("encode hitl webhook failed", "err", err)
 		return
 	}
+	endpoint := webhookEndpoint(t.url)
 	var lastErr error
 	for _, wait := range backoff {
 		time.Sleep(wait)
-		if lastErr = postWebhook(client, t, body); lastErr == nil {
+		var status int
+		status, lastErr = postWebhook(client, t, body)
+		fm.webhookAttempted(endpoint, status, lastErr)
+		if lastErr == nil {
 			return
 		}
 	}
-	fm.logger.Warn("hitl webhook delivery failed", "url", t.url, "event", n.Event, "intervention", n.InterventionID, "err", lastErr)
+	fm.logger.Warn("hitl webhook delivery failed", "endpoint", endpoint, "event", n.Event, "intervention", n.InterventionID, "err", webhookError(lastErr))
 }
 
-func postWebhook(client *http.Client, t webhookTarget, body []byte) error {
+// postWebhook signs body for t and posts it once. status is the receiver's
+// answer, 0 when none came back.
+func postWebhook(client *http.Client, t webhookTarget, body []byte) (int, error) {
 	req, err := http.NewRequest(http.MethodPost, t.url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "fuse-orchestrator")
 	req.Header.Set(hitl.HeaderSignature, hitl.Sign(t.secret, time.Now(), body))
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	_ = resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("receiver answered %d", resp.StatusCode)
+		return resp.StatusCode, fmt.Errorf("receiver answered %d", resp.StatusCode)
 	}
-	return nil
+	return resp.StatusCode, nil
 }
