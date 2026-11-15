@@ -125,6 +125,14 @@ func (fakeFleet) HitlRunFinish(context.Context, string, orchestrator.HitlRunPlan
 	return nil
 }
 func (fakeFleet) HitlExpire(context.Context, string) (time.Duration, error) { return 0, nil }
+func (fakeFleet) DrainCheck(context.Context, string) error                  { return nil }
+func (fakeFleet) DrainBegin(context.Context, string) (orchestrator.DrainPlan, error) {
+	return orchestrator.DrainPlan{}, nil
+}
+func (fakeFleet) DrainCommand(context.Context, string) string { return "" }
+func (fakeFleet) ExpiryCheck(context.Context, string, string) (orchestrator.ExpiryVerdict, error) {
+	return orchestrator.ExpiryVerdict{}, nil
+}
 
 func (fakeFleet) CreateBegin(context.Context, string, orchestrator.CreateRequest) (orchestrator.CreateState, error) {
 	return orchestrator.CreateState{}, nil
@@ -224,7 +232,7 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken", "Create"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "HoldChain", "ReleaseChain", "RetireChain", "RotateToken", "Drain", "Expire", "Create"} {
 				want[h] = "EXCLUSIVE"
 			}
 		case ArtifactsObject:
