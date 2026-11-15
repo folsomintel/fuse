@@ -92,6 +92,8 @@ The compose file uses host networking and binds every restate port to loopback: 
 
 A create on restate runs as `Environment/{vm_id}/Create`, one journaled step each for begin, place, artifact, ingress, boot, egress, upload, startup, agent and running. An orchestrator restart mid-create resumes at the first unfinished step. A step that fails for good (an unschedulable spec, a startup script that exits non-zero, a step out of retries) rolls the create back: proxy egress released, ingress unpublished, the task failed, and the VM destroyed through `Environment/{vm_id}/Destroy`. The create's inputs (spec, manifest, secrets, startup script, gateway token, files) are sealed under `TOKEN_ENCRYPTION_KEY` before they reach the journal, so without that key creates stay in process.
 
+A fork on restate runs as `Environment/{new_vm_id}/Fork`, keyed by the fork's own VM id: begin, a provisioning placeholder row, the seed snapshot (a call to the source's `Environment/{vm_id}/Snapshot`, so only the snapshot waits behind the source's other operations), place, artifact (for an off-host fork), create, ingress, credentials, upload, start agent, running, task and lineage. An orchestrator restart mid-fork resumes at the first unfinished step. A step that fails for good before running rolls the fork back: ingress unpublished, the placeholder dropped, the new VM destroyed through `Environment/{new_vm_id}/Destroy` (reason `fork_rollback`) and a seed snapshot the fork took deleted. Like creates, forks stay in process without `TOKEN_ENCRYPTION_KEY`.
+
 ## Postgres is the source of truth
 
 Fuse doesn't ship any backup or disaster-recovery tooling of its own, no
