@@ -208,10 +208,16 @@ func (s *operationStore) begin(op *operation) (existing *operation, err error) {
 	return nil, nil
 }
 
+// get returns the operation id names. one past its retention is dropped and
+// reads as not found.
 func (s *operationStore) get(id string) (*operation, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	op, ok := s.byID[id]
+	if ok && op.expired(time.Now()) {
+		s.dropLocked(op)
+		return nil, false
+	}
 	return op, ok
 }
 

@@ -258,3 +258,17 @@ func TestOperationStore_refusesNewWorkAtCapacity(t *testing.T) {
 		t.Fatalf("begin at capacity: err = %v, want errOperationsFull", err)
 	}
 }
+
+func TestOperationStore_getDropsExpired(t *testing.T) {
+	s := newOperationStore()
+	op := &operation{id: newOperationID(), done: make(chan struct{})}
+	close(op.done)
+	op.finishedAt = time.Now().Add(-operationRetention - time.Minute)
+	s.byID[op.id] = op
+	if _, ok := s.get(op.id); ok {
+		t.Fatal("get returned an operation past its retention")
+	}
+	if _, ok := s.byID[op.id]; ok {
+		t.Fatal("expired operation still in the store")
+	}
+}
