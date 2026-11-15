@@ -1,4 +1,9 @@
-import type { CallOptions, Transport } from "./transport.js";
+import {
+  idempotencyKey,
+  type CallOptions,
+  type MutatingCallOptions,
+  type Transport,
+} from "./transport.js";
 import type { ResolveSnapshotResponse, Snapshot, SnapshotRequest } from "./types.js";
 import { requireArg } from "./validate.js";
 import { FuseError } from "./errors.js";
@@ -63,13 +68,13 @@ export class SnapshotsService {
   async create(
     vmId: string,
     body: SnapshotRequest = {},
-    opts: CallOptions = {},
+    opts: MutatingCallOptions = {},
   ): Promise<Snapshot> {
     requireArg(vmId, "vm id");
     const out = await this.t.gated<Snapshot>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}/snapshots`,
-      { body, signal: opts.signal },
+      { body, signal: opts.signal, idempotencyKey: idempotencyKey(opts) },
     );
     if (!out.held) return out.value;
     const i = await settleHeld(this.t, out.held, {}, opts);
@@ -170,11 +175,12 @@ export class SnapshotsService {
   }
 
   /** Restore an environment from a snapshot. */
-  async restore(snapshotId: string, opts: CallOptions = {}): Promise<void> {
+  async restore(snapshotId: string, opts: MutatingCallOptions = {}): Promise<void> {
     requireArg(snapshotId, "snapshot id");
     await this.t.noContent("POST", `/v1/snapshots/${encodeURIComponent(snapshotId)}`, {
       query: { action: "restore" },
       signal: opts.signal,
+      idempotencyKey: idempotencyKey(opts),
     });
   }
 }
