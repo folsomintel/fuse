@@ -169,6 +169,9 @@ func (fm *FleetManager) storeRunResult(ctx context.Context, id string, res hitl.
 	}
 	fm.hitlMu.Unlock()
 
+	if m := fm.hitlMetrics(); m != nil && in.Decision != nil {
+		m.HitlRunFinished(runAction(in), res.FinishedAt.Sub(in.Decision.DecidedAt), res.Error != "")
+	}
 	fm.appendEvent(ctx, "intervention", id, "intervention.ran", map[string]any{
 		"env_id": in.EnvID, "error": res.Error != "",
 	})

@@ -10,9 +10,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/egress"
+	"github.com/folsomintel/fuse/internal/hitl"
 	"github.com/folsomintel/fuse/internal/secrets"
 	"github.com/folsomintel/fuse/internal/telemetry"
 	"go.opentelemetry.io/otel/attribute"
@@ -644,6 +646,18 @@ type FleetManager struct {
 	webhookSends     sync.WaitGroup
 	webhookMu        sync.Mutex
 	webhookBacklog   map[string]map[string]struct{}
+
+	// durableHitlRuns runs approved hitl actions and intervention deadlines
+	// on restate; nil in mode off. see hitl_durable.go. hitlSendSlots
+	// bounds the one-way sends in flight and hitlSends tracks them.
+	// hitlResend asks the next reconcile to send every approved action
+	// still owed a result again, after a send failed. hitlUnstored holds a
+	// result whose write failed, for the step's retry; guarded by hitlMu.
+	durableHitlRuns DurableHitl
+	hitlSendSlots   chan struct{}
+	hitlSends       sync.WaitGroup
+	hitlResend      atomic.Bool
+	hitlUnstored    map[string]hitl.Result
 
 	cancel context.CancelFunc
 	done   chan struct{}

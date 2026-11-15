@@ -164,7 +164,15 @@ func (fm *FleetManager) applyVerdict(ctx context.Context, envID string, spec hit
 		}
 		in := open(g)
 		if g.Decide != nil {
+			start := time.Now()
 			res, err := fm.askDecider(ctx, g, in)
+			if m := fm.hitlMetrics(); m != nil {
+				verdict := string(res.Decision)
+				if err != nil {
+					verdict = "error"
+				}
+				m.HitlDeciderAsked(verdict, time.Since(start))
+			}
 			switch {
 			case err != nil:
 				fm.logger.Warn("hitl decider failed; holding for a human", "vm", envID, "gate", g.Name, "err", err)
@@ -225,6 +233,7 @@ func (fm *FleetManager) recordGateIntervention(ctx context.Context, in hitl.Inte
 	if in.State.Terminal() {
 		fm.auditIntervention(ctx, in, auditMeta{})
 	}
+	fm.scheduleExpiry(in)
 	return nil
 }
 
