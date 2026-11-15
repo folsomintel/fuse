@@ -55,6 +55,9 @@ var (
 	// ErrBuildConflict is a build id (an Idempotency-Key) already used for a
 	// different build.
 	ErrBuildConflict = errors.New("build id already used for a different build")
+	// ErrBuildNotStarted is a build restate did not take, so nothing runs
+	// it.
+	ErrBuildNotStarted = errors.New("build could not be started")
 	// errBuildStepFailed is a setup exec that exited non-zero. a retry runs
 	// the same script on the same disk, so it is final.
 	errBuildStepFailed = errors.New("build step failed")
@@ -294,7 +297,7 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 			if derr := bs.DeleteBuild(context.WithoutCancel(ctx), in.ID); derr != nil {
 				fm.logger.ErrorContext(ctx, "drop unsubmitted build record failed", "build", in.ID, "err", derr)
 			}
-			return BuildRecord{}, false, fmt.Errorf("submit build %s: %w", in.ID, err)
+			return BuildRecord{}, false, fmt.Errorf("%w: submit build %s: %v", ErrBuildNotStarted, in.ID, err)
 		}
 		return rec, false, nil
 	}
