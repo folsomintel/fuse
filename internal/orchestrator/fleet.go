@@ -637,8 +637,10 @@ type FleetManager struct {
 	durableTokens DurableTokenRotator
 
 	// durableMigrate runs migrates on restate; nil in mode off. see
-	// migrate_durable.go.
+	// migrate_durable.go. migrating counts the migrates this process is
+	// waiting on, by source vm, guarded by mu.
 	durableMigrate DurableMigrator
+	migrating      map[string]int
 
 	// durableHooks delivers hitl webhooks on restate; nil in mode off. see
 	// hitl_webhooks_durable.go. webhookSendSlots bounds the one-way sends in

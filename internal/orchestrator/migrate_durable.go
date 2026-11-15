@@ -134,12 +134,23 @@ func (fm *FleetManager) durableMigrator() DurableMigrator {
 // durableMigrateVM is migrateVM in mode self or cloud. a caller that gives up
 // does not stop the migrate.
 func (fm *FleetManager) durableMigrateVM(ctx context.Context, d DurableMigrator, vmID string, opts MigrateOptions) (string, error) {
-	fm.mu.RLock()
-	_, ok := fm.vms[vmID]
-	fm.mu.RUnlock()
-	if !ok {
+	fm.mu.Lock()
+	if _, ok := fm.vms[vmID]; !ok {
+		fm.mu.Unlock()
 		return "", fmt.Errorf("%w: %s", ErrVMNotFound, vmID)
 	}
+	if fm.migrating == nil {
+		fm.migrating = make(map[string]int)
+	}
+	fm.migrating[vmID]++
+	fm.mu.Unlock()
+	defer func() {
+		fm.mu.Lock()
+		if fm.migrating[vmID]--; fm.migrating[vmID] <= 0 {
+			delete(fm.migrating, vmID)
+		}
+		fm.mu.Unlock()
+	}()
 	ctx, cancel := durableWait(ctx)
 	defer cancel()
 	return d.Migrate(ctx, vmID, MigrateRequest{TargetHostID: opts.TargetHostID, Live: opts.Live, Lazy: opts.Lazy})

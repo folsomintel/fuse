@@ -230,3 +230,46 @@ func TestMigrateVM_credentialsUploadedInPathOrder(t *testing.T) {
 		t.Fatalf("stored token %q (%v), want the guest's", plain, err)
 	}
 }
+
+// blockingMigrator holds every migrate until release is closed.
+type blockingMigrator struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingMigrator) Migrate(ctx context.Context, _ string, _ MigrateRequest) (string, error) {
+	b.entered <- struct{}{}
+	select {
+	case <-b.release:
+	case <-ctx.Done():
+	}
+	return "fuse-migrate-new", nil
+}
+
+// TestCheckpointCandidates_skipADurableMigrate: while restate migrates a vm
+// the checkpoint loop leaves it out, rather than queue a tick behind the
+// migrate on its object, and takes it back once the migrate returns.
+func TestCheckpointCandidates_skipADurableMigrate(t *testing.T) {
+	fm := newDeltaFleet(t, newDeltaMigrateProvider(), &deltaMover{})
+	b := &blockingMigrator{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	fm.SetDurableMigrator(b)
+	if got := fmt.Sprint(fm.checkpointCandidates()); got != "[fuse-task-src]" {
+		t.Fatalf("candidates %s before the migrate", got)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: true})
+		done <- err
+	}()
+	<-b.entered
+	if got := fm.checkpointCandidates(); len(got) != 0 {
+		t.Fatalf("candidates %v during the migrate, want none", got)
+	}
+	close(b.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(fm.checkpointCandidates()); got != "[fuse-task-src]" {
+		t.Fatalf("candidates %s after the migrate", got)
+	}
+}
