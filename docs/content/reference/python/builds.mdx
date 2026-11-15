@@ -77,7 +77,7 @@ class CreateBuildRequest(BaseModel):
 
 - `name` and `setup.prelude` are required, and `setup.steps` needs at least
   one step.
-- `key` is a step's layer cache key; a step without one is not cacheable.
+- `key` is a step's layer cache key; a step without one, and every step after it, is not cached.
 - `spec` is the same `Spec` `environments.create` takes.
 - `manifest_inline` is a base64 manifest.
 - `arch` is the arch layers are looked up and filed under; unset lets the

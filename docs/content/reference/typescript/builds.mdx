@@ -83,7 +83,7 @@ interface BuildStep {
   the server derive it.
 - `keep` keeps the builder environment instead of destroying it.
 - `steps` needs at least one. A step's `key` is its layer cache key; a step
-  without one is not cacheable.
+  without one, and every step after it, is not cached.
 
 ## Build
 
