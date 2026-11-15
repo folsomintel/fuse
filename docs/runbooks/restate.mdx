@@ -189,7 +189,9 @@ pin holds, in process or in `ArtifactPin`.
 token rotation runs as `Environment/<vm_id>/RotateToken`: generate, upload,
 persist. generate is journaled, so a restart between the upload and the
 persist writes the token already in the guest to the state store instead of
-making a second one. the journaled value is ciphertext under
+making a second one. the upload retries under the `ENVIRONMENT` policy; the
+persist has no attempt bound, so a state store that stays down holds the
+rotation (and the vm's other environment ops) until it is back. the journaled value is ciphertext under
 `TOKEN_ENCRYPTION_KEY` (the token, cert and key), and the steps decrypt it
 themselves; no plaintext token reaches the journal. a rotation left unfinished
 across a `TOKEN_ENCRYPTION_KEY` change fails, since its ciphertext no longer

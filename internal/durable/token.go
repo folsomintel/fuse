@@ -37,6 +37,7 @@ func rotatePermanent(err error) error {
 }
 
 // rotateToken is Environment/{vm_id}.RotateToken: generate, upload, persist.
+// the upload retries under policy; the persist retries until it succeeds.
 // generate is journaled, so a replay after a crash uploads and persists the
 // token it already made instead of a second one, and the stored token ends up
 // the one in the guest. its journaled value is ciphertext only: the plaintext
@@ -56,9 +57,13 @@ func rotateToken(ctx restate.ObjectContext, fleet Tokens, policy RetryPolicy) er
 	}, retry...); err != nil {
 		return err
 	}
+	// the guest holds the new token now, so the persist has no attempt
+	// bound: a state store that stays down holds the rotation here until it
+	// is back, instead of ending it with the old token stored.
 	return runStep(ctx, opRotateToken, "persist", func(c context.Context) error {
 		return rotatePermanent(fleet.RotateTokenPersist(c, vmID, rotated))
-	}, retry...)
+	}, restate.WithInitialRetryInterval(policy.InitialInterval),
+		restate.WithMaxRetryInterval(policy.MaxInterval))
 }
 
 // RotateToken runs Environment/{vmID}.RotateToken and waits for it. the
