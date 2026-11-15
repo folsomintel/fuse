@@ -28,7 +28,7 @@ const createFailedCode restate.Code = 529
 type Creator interface {
 	CreateBegin(ctx context.Context, vmID string, req orchestrator.CreateRequest) (orchestrator.CreateState, error)
 	CreatePlace(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) (string, error)
-	CreateArtifact(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) error
+	CreateArtifact(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) (string, error)
 	CreatePublishIngress(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) (*orchestrator.CreateIngress, error)
 	CreateRestoreOrCreate(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) (bool, error)
 	CreateProvisionEgress(ctx context.Context, vmID string, req orchestrator.CreateRequest, st orchestrator.CreateState) error
@@ -68,12 +68,17 @@ func createPermanent(err error) error {
 func create(ctx restate.ObjectContext, fleet Creator, policy RetryPolicy, req orchestrator.CreateRequest) error {
 	vmID := restate.Key(ctx)
 	retry := retryUnder(policy)
-	// begin rolls its own writes back when it fails, so there is nothing to
-	// compensate for if it never succeeds.
+	// begin fails for good only on a refusal it makes before writing
+	// anything (a task already assigned, inputs that do not decrypt, a bad
+	// hitl spec), so there is nothing to compensate for then. its writes are
+	// retried without an attempt bound: a begin that gave up after an earlier
+	// attempt's row landed would leave the vm provisioning with no create
+	// left to finish it.
 	st, err := Run(ctx, opCreate, "begin", func(c context.Context) (orchestrator.CreateState, error) {
 		st, err := fleet.CreateBegin(c, vmID, req)
 		return st, createPermanent(err)
-	}, retry...)
+	}, restate.WithInitialRetryInterval(policy.InitialInterval),
+		restate.WithMaxRetryInterval(policy.MaxInterval))
 	if err != nil {
 		return err
 	}
@@ -102,11 +107,14 @@ func createSteps(ctx restate.ObjectContext, fleet Creator, retry []restate.RunOp
 	}
 	st.HostID = hostID
 
-	if err := createStep(ctx, "artifact", retry, func(c context.Context) error {
-		return fleet.CreateArtifact(c, vmID, req, *st)
-	}); err != nil {
+	seedID, err := Run(ctx, opCreate, "artifact", func(c context.Context) (string, error) {
+		seedID, err := fleet.CreateArtifact(c, vmID, req, *st)
+		return seedID, createPermanent(err)
+	}, retry...)
+	if err != nil {
 		return err
 	}
+	st.SeedSnapshotID = seedID
 
 	published, err := Run(ctx, opCreate, "ingress", func(c context.Context) (*orchestrator.CreateIngress, error) {
 		published, err := fleet.CreatePublishIngress(c, vmID, req, *st)

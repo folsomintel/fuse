@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +20,6 @@ import (
 type createFleet struct {
 	*snapFleet
 
-	dmu       sync.Mutex
 	destroyed chan string
 }
 
@@ -40,8 +38,8 @@ func (f *createFleet) CreatePlace(ctx context.Context, _ string, _ orchestrator.
 	return "h1", f.enter(ctx, "place")
 }
 
-func (f *createFleet) CreateArtifact(ctx context.Context, _ string, _ orchestrator.CreateRequest, _ orchestrator.CreateState) error {
-	return f.enter(ctx, "artifact")
+func (f *createFleet) CreateArtifact(ctx context.Context, _ string, _ orchestrator.CreateRequest, _ orchestrator.CreateState) (string, error) {
+	return "seed-on-h1", f.enter(ctx, "artifact")
 }
 
 func (f *createFleet) CreatePublishIngress(ctx context.Context, _ string, _ orchestrator.CreateRequest, _ orchestrator.CreateState) (*orchestrator.CreateIngress, error) {
@@ -49,7 +47,7 @@ func (f *createFleet) CreatePublishIngress(ctx context.Context, _ string, _ orch
 }
 
 func (f *createFleet) CreateRestoreOrCreate(ctx context.Context, _ string, _ orchestrator.CreateRequest, st orchestrator.CreateState) (bool, error) {
-	if st.HostID != "h1" || st.Ingress == nil || !st.Booted {
+	if st.HostID != "h1" || st.SeedSnapshotID != "seed-on-h1" || st.Ingress == nil || !st.Booted {
 		return false, fmt.Errorf("boot got state %+v, want the placement and ingress", st)
 	}
 	return false, f.enter(ctx, "boot")

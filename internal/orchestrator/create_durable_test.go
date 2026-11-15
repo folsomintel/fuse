@@ -19,10 +19,9 @@ var createTestKey = bytes.Repeat([]byte{9}, 32)
 // createEnv is a guest that remembers what a create put in it.
 type createEnv struct {
 	*mockEnv
-	mu       sync.Mutex
-	files    map[string][]byte
-	agents   int
-	failExec error
+	mu     sync.Mutex
+	files  map[string][]byte
+	agents int
 }
 
 func (e *createEnv) Upload(_ context.Context, data []byte, path string) error {
@@ -55,6 +54,7 @@ type createProvider struct {
 	mu       sync.Mutex
 	envs     map[string]*createEnv
 	creates  int
+	specs    []Spec
 	execErr  error
 	destroys []string
 }
@@ -67,6 +67,7 @@ func (p *createProvider) Create(_ context.Context, spec Spec) (Environment, erro
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.creates++
+	p.specs = append(p.specs, spec)
 	e := &createEnv{mockEnv: &mockEnv{name: spec.Name, url: "http://" + spec.Name + ".test", execErr: p.execErr}, files: map[string][]byte{}}
 	p.envs[spec.Name] = e
 	return e, nil
@@ -174,7 +175,7 @@ func (c *inlineCreator) run(ctx context.Context, vmID string, done map[string]bo
 		fn   func() error
 	}{
 		{"place", func() (err error) { c.st.HostID, err = fm.CreatePlace(ctx, vmID, req, c.st); return err }},
-		{"artifact", func() error { return fm.CreateArtifact(ctx, vmID, req, c.st) }},
+		{"artifact", func() (err error) { c.st.SeedSnapshotID, err = fm.CreateArtifact(ctx, vmID, req, c.st); return err }},
 		{"ingress", func() (err error) { c.st.Ingress, err = fm.CreatePublishIngress(ctx, vmID, req, c.st); return err }},
 		{"boot", func() (err error) {
 			c.st.Booted = true
@@ -275,22 +276,37 @@ func keys(m map[string][]byte) []string {
 	return out
 }
 
+// lossyStore reads vms back the way postgres does: without the parts of a
+// spec it has no column for.
+type lossyStore struct{ *MemoryStateStore }
+
+func (s lossyStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
+	records, err := s.MemoryStateStore.ListVMs(ctx)
+	for i := range records {
+		records[i].Spec.Name = ""
+		records[i].Spec.Image = ""
+		records[i].Spec.SeedSnapshotID = ""
+		records[i].Spec.Egress.Secret = ""
+	}
+	return records, err
+}
+
 // TestDurableCreateResumesAfterRestart stands in for kill -9 of the
 // orchestrator after the vm is created and before anything is uploaded: the
 // restarted fleet keeps the vm provisioning and its task assigned, and the
 // resumed create finishes it with its files and agent.
 func TestDurableCreateResumesAfterRestart(t *testing.T) {
 	ctx := context.Background()
-	store := NewMemoryStateStore()
+	store := lossyStore{NewMemoryStateStore()}
 	p := newCreateProvider()
 	fm, c := newCreateFleet(t, store, p, FleetConfig{})
-	c.crashAfter = "boot"
-	if _, err := fm.ProvisionAndAssign(ctx, "t2", Spec{CPUs: 1, RamMB: 512}, []byte(`{"version":"1"}`),
+	c.crashAfter = "place"
+	if _, err := fm.ProvisionAndAssign(ctx, "t2", Spec{CPUs: 1, RamMB: 512, Image: "img-x"}, []byte(`{"version":"1"}`),
 		map[string]string{"K": "v"}, BootOptions{}); !errors.Is(err, errCrash) {
 		t.Fatalf("create: %v, want the crash", err)
 	}
-	if files, _ := p.env("fuse-t2").state(); len(files) != 0 {
-		t.Fatalf("guest has files before the crash point: %v", keys(files))
+	if p.env("fuse-t2") != nil {
+		t.Fatal("vm exists on the host before the crash point")
 	}
 
 	fm2, _ := newCreateFleet(t, store, p, FleetConfig{})
@@ -315,8 +331,8 @@ func TestDurableCreateResumesAfterRestart(t *testing.T) {
 	if agents != 1 || len(files[fuseManifestPath]) == 0 || len(files[FuseSecretsPath]) == 0 {
 		t.Fatalf("guest after resume has files %v and %d agent starts", keys(files), agents)
 	}
-	if p.creates != 1 {
-		t.Fatalf("host saw %d creates, want 1", p.creates)
+	if p.creates != 1 || p.specs[0].Name != "fuse-t2" || p.specs[0].Image != "img-x" {
+		t.Fatalf("host saw creates %+v, want one of fuse-t2 from img-x", p.specs)
 	}
 	tasks, _ = store.ListTasks(ctx)
 	if tasks[0].RunStatus != TaskRunRunning {

@@ -133,6 +133,9 @@ type CreateState struct {
 	Credentials []byte `json:"credentials,omitempty"`
 	// HostID is where placement put the vm, "" on a fleet with no hosts.
 	HostID string `json:"host_id,omitempty"`
+	// SeedSnapshotID is the seed artifact's copy on the vm's host, "" when
+	// the vm is not seeded.
+	SeedSnapshotID string `json:"seed_snapshot_id,omitempty"`
 	// Ingress is the vm's fuse-proxy publication, nil when it has none.
 	Ingress *CreateIngress `json:"ingress,omitempty"`
 	// Booted is set once the boot step has started: from then on a vm may
@@ -310,6 +313,24 @@ func (fm *FleetManager) createVM(vmID string) (*vm, error) {
 	return v, nil
 }
 
+// createSpec is the spec the create's steps work from: the one the caller
+// asked for, from the sealed request, with what earlier steps resolved. the
+// vm row keeps only part of a spec (no image, seed or egress secret), so a
+// create resumed after a restart must not read it back from there. caller
+// holds fm.mu.
+func createSpec(v *vm, run *createRun, st CreateState) Spec {
+	spec := run.in.Spec
+	spec.Name = v.id
+	// placement binds gpu devices onto the tracked spec, which the row keeps.
+	spec.GPUUUIDs = v.spec.GPUUUIDs
+	spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
+	if st.SeedSnapshotID != "" {
+		spec.SeedSnapshotID = st.SeedSnapshotID
+		spec.PinnedHostID = st.HostID
+	}
+	return spec
+}
+
 // createBoot returns the boot the steps after placement drive: the vm's
 // provider, inputs and environment handle. needEnv looks the vm up on its
 // host when this process has no handle for it, as after a restart.
@@ -327,7 +348,7 @@ func (fm *FleetManager) createBoot(ctx context.Context, vmID string, req CreateR
 		return nil, nil, nil, err
 	}
 	fm.mu.RLock()
-	spec := v.spec
+	spec := createSpec(v, run, st)
 	status := v.egress
 	fm.mu.RUnlock()
 
@@ -477,15 +498,24 @@ func (fm *FleetManager) CreateBegin(ctx context.Context, vmID string, req Create
 // placement so a restart re-derives the reservation. a vm already placed by
 // an earlier run of this step keeps its host. every scheduling failure is
 // permanent: the create fails as it does in mode off.
-func (fm *FleetManager) CreatePlace(ctx context.Context, vmID string, _ CreateRequest, _ CreateState) (string, error) {
+func (fm *FleetManager) CreatePlace(ctx context.Context, vmID string, req CreateRequest, st CreateState) (string, error) {
 	v, err := fm.createVM(vmID)
 	if err != nil {
 		return "", err
 	}
-	fm.mu.RLock()
+	run, err := fm.createRunFor(vmID, req, st)
+	if err != nil {
+		return "", err
+	}
+	fm.mu.Lock()
 	hostID := v.hostID
+	if hostID == "" {
+		// schedule on the spec the caller asked for, not the partial one a
+		// restart read back from the row.
+		v.spec = createSpec(v, run, st)
+	}
 	spec := v.spec
-	fm.mu.RUnlock()
+	fm.mu.Unlock()
 	if hostID != "" {
 		return hostID, nil
 	}
@@ -507,37 +537,40 @@ func (fm *FleetManager) CreatePlace(ctx context.Context, vmID string, _ CreateRe
 }
 
 // CreateArtifact copies the seed artifact to the vm's host when placement put
-// it somewhere that does not hold it, and points the vm at the copy. it
-// happens before the vm is created: the host agent resolves a seed id out of
-// its own snapshot store. a copy that already landed is found again.
-func (fm *FleetManager) CreateArtifact(ctx context.Context, vmID string, _ CreateRequest, st CreateState) error {
+// it somewhere that does not hold it, and returns the id of the copy the vm
+// boots from, "" for a vm that is not seeded. it happens before the vm is
+// created: the host agent resolves a seed id out of its own snapshot store. a
+// copy that already landed is found again. the id is journaled, so a restart
+// before the boot does not lose it.
+func (fm *FleetManager) CreateArtifact(ctx context.Context, vmID string, req CreateRequest, st CreateState) (string, error) {
 	v, err := fm.createVM(vmID)
 	if err != nil {
-		return err
+		return "", err
+	}
+	run, err := fm.createRunFor(vmID, req, st)
+	if err != nil {
+		return "", err
 	}
 	fm.mu.RLock()
-	spec := v.spec
+	spec := createSpec(v, run, st)
 	fm.mu.RUnlock()
 	if spec.SeedSnapshotID == "" {
-		return nil
+		return "", nil
 	}
 	seed := fm.planSeedPlacement(ctx, spec)
+	localID := spec.SeedSnapshotID
 	if seed.needsMove(st.HostID) {
-		localID, err := fm.ensureArtifactOnHost(ctx, seed.record, st.HostID, false)
-		if err != nil {
-			return createPermanentErr(fmt.Errorf("provision vm %s: %w", vmID, err))
+		if localID, err = fm.ensureArtifactOnHost(ctx, seed.record, st.HostID, false); err != nil {
+			return "", createPermanentErr(fmt.Errorf("provision vm %s: %w", vmID, err))
 		}
-		fm.mu.Lock()
-		v.spec.SeedSnapshotID = localID
-		v.spec.PinnedHostID = st.HostID
-		fm.mu.Unlock()
-		if err := fm.persistVM(ctx, v); err != nil {
-			return fmt.Errorf("persist vm %s seed copy: %w", vmID, err)
-		}
-		spec.SeedSnapshotID = localID
 	}
-	fm.touchArtifact(spec.SeedSnapshotID, seed.record.SnapshotID)
-	return nil
+	// the tracked spec is what the collector reads to see the copy in use.
+	fm.mu.Lock()
+	v.spec.SeedSnapshotID = localID
+	v.spec.PinnedHostID = st.HostID
+	fm.mu.Unlock()
+	fm.touchArtifact(localID, seed.record.SnapshotID)
+	return localID, nil
 }
 
 // CreatePublishIngress publishes the vm through fuse-proxy before it boots,
@@ -549,15 +582,15 @@ func (fm *FleetManager) CreatePublishIngress(ctx context.Context, vmID string, r
 	if err != nil {
 		return nil, err
 	}
-	fm.mu.RLock()
-	spec := v.spec
-	fm.mu.RUnlock()
-	if !fm.ingressSupported(st.HostID, spec) {
-		return nil, nil
-	}
 	run, err := fm.createRunFor(vmID, req, st)
 	if err != nil {
 		return nil, err
+	}
+	fm.mu.RLock()
+	spec := createSpec(v, run, st)
+	fm.mu.RUnlock()
+	if !fm.ingressSupported(st.HostID, spec) {
+		return nil, nil
 	}
 	plan, err := fm.publishIngress(ctx, vmID, run.in.Expose, "")
 	if err != nil || plan == nil {
@@ -707,6 +740,7 @@ func (fm *FleetManager) CreateRunning(ctx context.Context, vmID string, req Crea
 	}
 
 	fm.mu.Lock()
+	v.spec = b.in.spec
 	v.env = b.env
 	v.url = b.env.URL()
 	v.state = VMStateRunning

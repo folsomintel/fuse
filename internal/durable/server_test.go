@@ -132,8 +132,8 @@ func (fakeFleet) CreateBegin(context.Context, string, orchestrator.CreateRequest
 func (fakeFleet) CreatePlace(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
 	return "", nil
 }
-func (fakeFleet) CreateArtifact(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) error {
-	return nil
+func (fakeFleet) CreateArtifact(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (string, error) {
+	return "", nil
 }
 func (fakeFleet) CreatePublishIngress(context.Context, string, orchestrator.CreateRequest, orchestrator.CreateState) (*orchestrator.CreateIngress, error) {
 	return nil, nil
