@@ -18,15 +18,13 @@ cd "$FC_DIR"
 BASE=rootfs.ext4
 OUT=rootfs-fused.ext4
 SIZE=${FC_ROOTFS_SIZE:-4G}
-PODMAN_STATIC_VERSION=${PODMAN_STATIC_VERSION:-v5.8.1}
-PODMAN_STATIC_URL="https://github.com/mgoltzsche/podman-static/releases/download/${PODMAN_STATIC_VERSION}/podman-linux-amd64.tar.gz"
-DOCKER_COMPOSE_VERSION=${DOCKER_COMPOSE_VERSION:-v2.40.3}
-DOCKER_COMPOSE_URL="https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"
 MOUNT_POINT=${FC_BAKE_MOUNT:-/tmp/fcbake}
 WORK=${FC_BAKE_WORK:-/tmp/fcbake-work}
 
-log() { printf '\033[1;36m[bake] %s\033[0m\n' "$*"; }
-need() { command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }; }
+# log, need and the fused/podman/compose/containers.conf steps shared with
+# fc-bake-distro-rootfs.sh
+# shellcheck source=fc-bake-lib.sh
+source "$FC_DIR/scripts/fc-bake-lib.sh"
 for c in sudo mount umount truncate e2fsck resize2fs curl tar podman; do need "$c"; done
 
 [ -f "$BASE" ]  || { echo "$BASE not found — run ./scripts/fc-install.sh first" >&2; exit 1; }
@@ -65,59 +63,11 @@ log "mount loopback at $MOUNT_POINT"
 sudo -n mkdir -p "$MOUNT_POINT"
 sudo -n mount -o loop "$OUT" "$MOUNT_POINT"
 
-# --- 1. fused + systemd unit + /fuse + /var/tmp + CA bundle ------------------
+# --- 1. fused, ca bundle, podman-static, docker-compose, containers config ---
 
-log "inject fused + systemd unit"
-sudo -n mkdir -p \
-  "$MOUNT_POINT/fuse" \
-  "$MOUNT_POINT/usr/local/bin" \
-  "$MOUNT_POINT/var/tmp" \
-  "$MOUNT_POINT/var/lib/containers" \
-  "$MOUNT_POINT/run/containers" \
-  "$MOUNT_POINT/etc/ssl/certs" \
-  "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants" \
-  "$MOUNT_POINT/etc/containers"
-sudo -n chmod 1777 "$MOUNT_POINT/var/tmp"
-sudo -n install -m 0755 fused "$MOUNT_POINT/usr/local/bin/fused"
-sudo -n install -m 0644 fused.service "$MOUNT_POINT/etc/systemd/system/fused.service"
-sudo -n ln -sf /etc/systemd/system/fused.service \
-  "$MOUNT_POINT/etc/systemd/system/multi-user.target.wants/fused.service"
-echo '# populated by fc-agent start-agent' | \
-  sudo -n tee "$MOUNT_POINT/etc/default/fused" >/dev/null
+bake_inject_common "$MOUNT_POINT" "$WORK"
 
-if [ -f /etc/ssl/certs/ca-certificates.crt ]; then
-  sudo -n install -m 0644 /etc/ssl/certs/ca-certificates.crt \
-    "$MOUNT_POINT/etc/ssl/certs/ca-certificates.crt"
-fi
-
-# --- 2. podman-static --------------------------------------------------------
-
-if [ ! -f "$WORK/podman-static.tgz" ]; then
-  log "download podman-static $PODMAN_STATIC_VERSION"
-  curl -fsSL -o "$WORK/podman-static.tgz" "$PODMAN_STATIC_URL"
-fi
-log "inject podman-static"
-sudo -n tar -xzf "$WORK/podman-static.tgz" -C "$MOUNT_POINT" --strip-components=1
-
-log "enable podman.socket (docker-compose needs the API)"
-sudo -n mkdir -p "$MOUNT_POINT/etc/systemd/system/sockets.target.wants"
-sudo -n ln -sf /usr/local/lib/systemd/system/podman.socket \
-  "$MOUNT_POINT/etc/systemd/system/sockets.target.wants/podman.socket"
-
-# --- 2b. docker-compose v2 (podman compose provider) ------------------------
-
-if [ ! -f "$WORK/docker-compose" ]; then
-  log "download docker-compose $DOCKER_COMPOSE_VERSION"
-  curl -fsSL -o "$WORK/docker-compose" "$DOCKER_COMPOSE_URL"
-fi
-log "inject docker-compose as podman compose provider"
-sudo -n mkdir -p "$MOUNT_POINT/usr/libexec/docker/cli-plugins"
-sudo -n install -m 0755 "$WORK/docker-compose" \
-  "$MOUNT_POINT/usr/libexec/docker/cli-plugins/docker-compose"
-sudo -n ln -sf /usr/libexec/docker/cli-plugins/docker-compose \
-  "$MOUNT_POINT/usr/local/bin/docker-compose"
-
-# --- 3. iptables bundle (extracted from ubuntu:22.04 via host podman) --------
+# --- 2. iptables bundle (extracted from ubuntu:22.04 via host podman) --------
 
 if [ ! -f "$WORK/iptables-full.tar" ]; then
   log "build iptables bundle from ubuntu:22.04"
@@ -154,49 +104,13 @@ if [ ! -f "$WORK/iptables-full.tar" ]; then
 fi
 log "inject iptables"
 sudo -n tar -xf "$WORK/iptables-full.tar" -C "$MOUNT_POINT"
-for n in iptables iptables-save iptables-restore ip6tables ip6tables-save ip6tables-restore; do
-  sudo -n ln -sf xtables-legacy-multi "$MOUNT_POINT/usr/sbin/$n"
-done
+bake_legacy_iptables "$MOUNT_POINT"
 
-# --- 4. containers.conf / storage.conf ---------------------------------------
-
-log "write containers.conf (host netns + no firewall)"
-sudo -n tee "$MOUNT_POINT/etc/containers/containers.conf" >/dev/null <<'CONF'
-[containers]
-netns = "host"
-
-[engine]
-compose_warning_logs = false
-
-[network]
-firewall_driver = "none"
-CONF
-
-log "write storage.conf (native overlay)"
-sudo -n tee "$MOUNT_POINT/etc/containers/storage.conf" >/dev/null <<'CONF'
-[storage]
-driver = "overlay"
-runroot = "/run/containers/storage"
-graphroot = "/var/lib/containers/storage"
-[storage.options.overlay]
-mountopt = "nodev"
-CONF
-
-# --- 5. sanity ---------------------------------------------------------------
+# --- 3. sanity ---------------------------------------------------------------
 
 log "sanity check"
-# name the missing artefact. a bare `test` under `set -e` aborts with no output,
-# which is how a half-baked image previously reached a boot attempt and only
-# failed later with "agent binary not found at /usr/local/bin/fused".
-check() {
-  sudo -n test "$1" "$MOUNT_POINT$2" \
-    || { echo "[bake] sanity check FAILED: $2 missing or wrong type ($1)" >&2; exit 1; }
-}
-check -x /usr/local/bin/fused
-check -x /usr/local/bin/podman
-check -x /usr/libexec/docker/cli-plugins/docker-compose
-check -L /usr/sbin/iptables
-check -f /usr/lib/x86_64-linux-gnu/xtables/libxt_comment.so
+bake_check_common "$MOUNT_POINT"
+bake_check "$MOUNT_POINT" -f /usr/lib/x86_64-linux-gnu/xtables/libxt_comment.so
 
 sudo -n umount "$MOUNT_POINT"
 trap - EXIT

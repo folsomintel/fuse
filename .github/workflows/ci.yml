@@ -117,6 +117,9 @@ jobs:
       - name: Checksum verification tests
         run: ./host-agent/firecracker/tests/test-verify-checksum.sh
 
+      - name: Distro rootfs bake tests
+        run: ./host-agent/firecracker/tests/test-bake-distro-rootfs.sh
+
   # Validate the GoReleaser config on every PR so a CD-breaking change is caught
   # here instead of only when a release tag is pushed.
   release-config:

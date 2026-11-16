@@ -272,6 +272,33 @@ instead). `podman run` without `--network=host` falls back to host netns anyway
 (bridged per-container networking isn't supported). The kernel lacks fuse and
 nftables support.
 
+### Distro images
+
+`fc-bake-distro-rootfs.sh <oci-ref> <name>` bakes an apt or dnf based OCI image
+into `$IMAGES_DIR/<name>.ext4` (default `images/`), which a Fusefile then boots
+with `image: <name>`. It pulls the image with podman, installs systemd, sshd,
+iptables (legacy backend) and ca-certificates with the image's own package
+manager, injects the same `fused`, podman-static, docker-compose and containers
+config as the base bake, puts the public half of `ubuntu.id_rsa` in root's
+`authorized_keys`, and writes the image with `mkfs.ext4 -d`. Alpine and other
+distros without apt-get or dnf are refused. It needs `fused` and
+`ubuntu.id_rsa` in `host-agent/firecracker/`, passwordless sudo, and
+e2fsprogs 1.43 or newer.
+
+```bash
+cd host-agent/firecracker
+./scripts/fc-bake-distro-catalogue.sh               # debian-12, ubuntu-24.04, fedora-40
+./scripts/fc-bake-distro-catalogue.sh fedora-40     # just one
+./scripts/fc-bake-distro-rootfs.sh docker.io/library/debian@sha256:<digest> my-debian
+```
+
+The script never prompts and is safe to re-run. The image is built in a temp
+file and moved into place at the end, so a failed bake never leaves a partial
+`<name>.ext4`. On failure it exits nonzero with the reason as the last line on
+stderr. `FC_BAKE_WORK` overrides the work dir (default
+`/tmp/fcbake-distro-<name>`) and `FC_ROOTFS_SIZE` the image size (default
+`4G`, sparse). Re-run it after the agent binary changes, as with the base bake.
+
 ## The host agent's HTTP contract
 
 VM routes are under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON

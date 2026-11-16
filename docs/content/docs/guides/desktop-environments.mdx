@@ -27,6 +27,11 @@ cd host-agent/firecracker
 mkdir -p images && cp rootfs-desktop.ext4 images/desktop.ext4
 ```
 
+`fc-bake-desktop-rootfs.sh [base.ext4 [out.ext4]]` layers onto another baked
+image instead of `rootfs-fused.ext4`. The desktop bundle is built from ubuntu
+22.04 packages, so the base must be ubuntu 22.04 too, and the bake refuses a
+base whose `os-release` names another release.
+
 The bake installs the desktop stack (Xvfb, a window manager, tint2, xdotool, scrot,
 xclip, Firefox ESR, pcmanfm) by resolving it in an `ubuntu:22.04` container on
 the host and extracting the result into the image — the guest itself cannot run
