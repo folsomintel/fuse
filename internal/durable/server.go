@@ -40,10 +40,13 @@ const (
 	// migrate leaves running once its source is gone. the migrate itself
 	// runs on the source's Environment object.
 	MigrateObject = "Migrate"
+	// ImagesService is a plain service: Convert starts one oci image
+	// conversion on a host, Watch follows it to ready or failed.
+	ImagesService = "Images"
 )
 
 // services is every service this endpoint registers, in a fixed order.
-var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject, MigrateObject, BuildWorkflow}
+var services = []string{EnvironmentObject, HostObject, ArtifactsObject, ArtifactPinObject, WebhooksService, InterventionObject, MigrateObject, BuildWorkflow, ImagesService}
 
 // Fleet is all the handlers may see of the FleetManager. kept narrow on
 // purpose: handlers go through these calls, never into the manager's vm map,
@@ -64,6 +67,7 @@ type Fleet interface {
 	Expiry
 	Creator
 	Forker
+	Images
 }
 
 // snapshotAbortTimeout is how long restate lets a snapshot, restore or
@@ -210,6 +214,16 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 				return restate.Void{}, build(ctx, fleet, servicePolicy(cfg, BuildWorkflow), in)
 			}, restate.WithAbortTimeout(buildAbortTimeout)))
 
+	images := restate.NewService(ImagesService, retryOption(cfg, ImagesService)).
+		Handler("Convert", restate.NewServiceHandler(
+			func(ctx restate.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+				return convertImage(ctx, fleet, req)
+			})).
+		Handler("Watch", restate.NewServiceHandler(
+			func(ctx restate.Context, img orchestrator.Image) (restate.Void, error) {
+				return restate.Void{}, watchImage(ctx, fleet, servicePolicy(cfg, ImagesService), img)
+			}))
+
 	srv := server.NewRestate().
 		WithLogger(logger.Handler(), true).
 		Bind(env).
@@ -219,7 +233,8 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Bind(hooks).
 		Bind(interventions).
 		Bind(migrations).
-		Bind(builds)
+		Bind(builds).
+		Bind(images)
 	// a request without a valid signature from this key gets a 401 before
 	// any handler runs. self mode leaves it unset: the endpoint is loopback.
 	if cfg.IdentityKey != "" {

@@ -663,6 +663,10 @@ type FleetManager struct {
 	// fork_durable.go.
 	durableFork DurableForker
 
+	// durableImage runs image converts on restate; nil in mode off. see
+	// images_durable.go.
+	durableImage DurableImages
+
 	// durableCreate runs creates on restate; nil in mode off. see
 	// create_durable.go. createRuns holds what a create in flight keeps
 	// between its steps, by vm id, guarded by mu.

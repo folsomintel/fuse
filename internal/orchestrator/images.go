@@ -32,14 +32,19 @@ const (
 // host's arch and the digest of the fused binary baked into it, so the same
 // ref on two hosts with different fused builds is two images. Name is the
 // rootfs the host resolves it to (spec.Image at create).
+//
+// CreatedAt is when the host started the current conversion attempt, as the
+// agent wrote it: a retry of a failed image is a new attempt with a new time.
+// "" from an agent that predates the field.
 type Image struct {
-	Digest         string
-	Ref            string
-	ManifestDigest string
-	Name           string
-	HostID         string
-	State          ImageState
-	Error          string
+	Digest         string     `json:"digest"`
+	Ref            string     `json:"ref"`
+	ManifestDigest string     `json:"manifest_digest"`
+	Name           string     `json:"name"`
+	HostID         string     `json:"host_id"`
+	State          ImageState `json:"state"`
+	Error          string     `json:"error,omitempty"`
+	CreatedAt      string     `json:"created_at,omitempty"`
 }
 
 // ImageConverter is implemented by a provider whose host agent can convert
@@ -100,17 +105,28 @@ const (
 // applies, so a caller that will pin the create can convert where it will
 // land.
 type ConvertImageRequest struct {
-	Ref    string
-	HostID string
-	Region string
-	Labels map[string]string
+	Ref    string            `json:"ref"`
+	HostID string            `json:"host_id,omitempty"`
+	Region string            `json:"region,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ConvertImage picks a firecracker host for req and starts the conversion
-// there. It is the plain step a durable convert wraps: one agent call, no
-// polling, and safe to repeat because the agent answers a repeat with the
-// record it already has.
+// there: through restate when it is configured (see SetDurableImages), in
+// this process otherwise.
 func (fm *FleetManager) ConvertImage(ctx context.Context, req ConvertImageRequest) (Image, error) {
+	if d := fm.durableImages(); d != nil {
+		ctx, cancel := durableWait(ctx)
+		defer cancel()
+		return d.ConvertImage(ctx, req)
+	}
+	return fm.ImageConvert(ctx, req)
+}
+
+// ImageConvert is the plain step a convert runs: one agent call, no polling,
+// and safe to repeat because the agent answers a repeat with the record it
+// already has.
+func (fm *FleetManager) ImageConvert(ctx context.Context, req ConvertImageRequest) (Image, error) {
 	hostID, conv, err := fm.imageConvertHost(req)
 	if err != nil {
 		return Image{}, err

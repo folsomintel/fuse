@@ -276,6 +276,14 @@ func (fakeFleet) ForkUnpublishIngress(context.Context, orchestrator.ForkPlan) er
 func (fakeFleet) ForkAbandon(context.Context, orchestrator.ForkPlan, string) error  { return nil }
 func (fakeFleet) ForkDeleteSeed(context.Context, orchestrator.SnapshotRecord) error { return nil }
 
+func (fakeFleet) ImageConvert(_ context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+	return orchestrator.Image{Ref: req.Ref, State: orchestrator.ImageReady}, nil
+}
+func (fakeFleet) ImagePoll(_ context.Context, img orchestrator.Image) (orchestrator.Image, error) {
+	return img, nil
+}
+func (fakeFleet) ImageConvertDone(context.Context, orchestrator.Image, bool) error { return nil }
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -326,7 +334,7 @@ func TestDiscoveryManifest(t *testing.T) {
 	for _, s := range manifest.Services {
 		wantTy := "VIRTUAL_OBJECT"
 		switch s.Name {
-		case WebhooksService:
+		case WebhooksService, ImagesService:
 			wantTy = "SERVICE"
 		case BuildWorkflow:
 			wantTy = "WORKFLOW"
@@ -358,6 +366,8 @@ func TestDiscoveryManifest(t *testing.T) {
 			want = map[string]string{"Deliver": ""}
 		case BuildWorkflow:
 			want = map[string]string{"Run": "WORKFLOW"}
+		case ImagesService:
+			want = map[string]string{"Convert": "", "Watch": ""}
 		}
 		if fmt.Sprint(handlers) != fmt.Sprint(want) {
 			t.Errorf("%s: handlers %v, want %v", s.Name, handlers, want)
