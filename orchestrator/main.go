@@ -580,6 +580,7 @@ func run() error {
 		fm.SetDurableExpiry(restateClient)
 		fm.SetDurableCreator(restateClient)
 		fm.SetDurableForker(restateClient)
+		fm.SetDurableImages(restateClient)
 	}
 	fm.Start(rootCtx)
 	defer fm.Stop()
