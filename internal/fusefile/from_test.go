@@ -1,6 +1,7 @@
 package fusefile
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -91,6 +92,15 @@ func TestLayerKeysFromImageUseDigest(t *testing.T) {
 	}
 	if unconverted[0].Cacheable || unconverted[0].Reason != ReasonImageUnconverted {
 		t.Fatalf("step 0 = %+v, want uncacheable with %q", unconverted[0], ReasonImageUnconverted)
+	}
+
+	// the inputs are checked before the digest is known, so a bad entry
+	// fails before the conversion is waited on.
+	withInputs := &Fusefile{Version: 1, From: "ubuntu:24.04", Cache: Cache{Enabled: true},
+		Build: []Step{{Run: "a", Inputs: []string{"missing.txt"}}}}
+	bad := func([]string) (string, error) { return "", errors.New("no such file") }
+	if _, err := LayerKeys(withInputs, bad, LayerOptions{}); err == nil || !strings.Contains(err.Error(), "inputs") {
+		t.Fatalf("LayerKeys with a bad input before conversion: err = %v, want an inputs error", err)
 	}
 
 	a, err := LayerKeys(f, nil, LayerOptions{ImageDigest: strings.Repeat("a", 64)})

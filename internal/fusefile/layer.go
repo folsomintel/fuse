@@ -149,6 +149,18 @@ func LayerKeys(f *Fusefile, inputs InputDigester, opts LayerOptions) ([]LayerKey
 		lk := LayerKey{Index: i, Script: scripts[i]}
 
 		switch {
+		case global == ReasonImageUnconverted:
+			lk.Reason = global
+			// the digest only exists once the image is converted, but the
+			// inputs can be read now. check the ones the converted plan will
+			// digest, so a bad entry fails before the conversion is waited on.
+			if !chainBroken && step.cacheable() {
+				if _, err := digestInputs(inputs, step.Inputs); err != nil {
+					return nil, fmt.Errorf("%s[%d].inputs: %w", f.buildField(), i, err)
+				}
+			} else {
+				chainBroken = true
+			}
 		case global != "":
 			lk.Reason = global
 		case chainBroken:
