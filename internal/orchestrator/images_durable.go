@@ -61,7 +61,10 @@ func (fm *FleetManager) ImageHost(_ context.Context, req ConvertImageRequest) (s
 // ImagePoll reads img's record on the host it converts on and returns img
 // with the host's state and error. a host that cannot be asked counts as
 // still converting, so the watch keeps polling until its bound. a host that
-// is gone, or no longer has the record, ends the watch as failed.
+// is gone, or no longer has the record, ends the watch as failed. a record
+// from a later attempt means img's attempt failed and was retried between
+// polls: that ends the watch as failed too, and the retry's own watch
+// reports the new attempt.
 func (fm *FleetManager) ImagePoll(ctx context.Context, img Image) (Image, error) {
 	fm.mu.RLock()
 	p, ok := fm.providerForHost(img.HostID)
@@ -81,6 +84,9 @@ func (fm *FleetManager) ImagePoll(ctx context.Context, img Image) (Image, error)
 		img.Error = fmt.Sprintf("host %s no longer has a record of the image", img.HostID)
 	case err != nil:
 		fm.logger.WarnContext(ctx, "image status failed", "digest", img.Digest, "host", img.HostID, "err", err)
+	case img.CreatedAt != "" && got.CreatedAt != "" && got.CreatedAt != img.CreatedAt:
+		img.State = ImageFailed
+		img.Error = fmt.Sprintf("the attempt failed and was retried (new attempt started %s)", got.CreatedAt)
 	default:
 		img.State = got.State
 		img.Error = got.Error
