@@ -97,7 +97,7 @@ class ResolveManifestTest(unittest.TestCase):
         resp = mock.MagicMock(status=200, headers=msg)
         resp.read.return_value = b"{}"
         resp.__enter__.return_value = resp
-        with mock.patch.object(fc_agent.urllib.request, "urlopen", return_value=resp):
+        with mock.patch.object(fc_agent._REGISTRY_OPENER, "open", return_value=resp):
             code, headers, _ = fc_agent._registry_get("https://registry.example/v2/", "application/json")
         self.assertEqual(code, 200)
         self.assertEqual(headers["www-authenticate"], 'Bearer realm="https://auth.example/token"')
@@ -138,6 +138,64 @@ class ResolveManifestTest(unittest.TestCase):
             with self.assertRaises(fc_agent.HTTPError) as cm:
                 fc_agent.resolve_manifest_digest("org/app", "amd64")
         self.assertEqual(cm.exception.code, 400)
+
+
+class RegistryDestinationTest(unittest.TestCase):
+    """The registry, its redirects and its token realm all come from the
+    caller's ref, so none of them may reach a non-public address."""
+
+    def test_refuses_non_public_addresses(self):
+        for ip in ("127.0.0.1", "10.0.0.1", "192.168.1.1", "172.16.0.1", "100.64.0.1",
+                   "169.254.169.254", "0.0.0.0", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1",
+                   "224.0.0.1"):
+            fam = fc_agent.socket.AF_INET6 if ":" in ip else fc_agent.socket.AF_INET
+            info = [(fam, fc_agent.socket.SOCK_STREAM, 6, "", (ip, 443))]
+            with mock.patch.object(fc_agent.socket, "getaddrinfo", return_value=info), \
+                    mock.patch.object(fc_agent.socket, "socket") as sock:
+                with self.assertRaises(fc_agent.HTTPError, msg=ip) as cm:
+                    fc_agent._public_create_connection(("registry.example", 443), 5)
+            self.assertEqual(cm.exception.code, 400, ip)
+            sock.assert_not_called()
+
+    def test_one_private_answer_refuses_the_name(self):
+        info = [(fc_agent.socket.AF_INET, fc_agent.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443)),
+                (fc_agent.socket.AF_INET, fc_agent.socket.SOCK_STREAM, 6, "", ("10.1.2.3", 443))]
+        with mock.patch.object(fc_agent.socket, "getaddrinfo", return_value=info), \
+                mock.patch.object(fc_agent.socket, "socket") as sock:
+            with self.assertRaises(fc_agent.HTTPError):
+                fc_agent._public_create_connection(("registry.example", 443), 5)
+        sock.assert_not_called()
+
+    def test_connects_to_the_checked_address(self):
+        info = [(fc_agent.socket.AF_INET, fc_agent.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        with mock.patch.object(fc_agent.socket, "getaddrinfo", return_value=info), \
+                mock.patch.object(fc_agent.socket, "socket") as sock:
+            fc_agent._public_create_connection(("registry.example", 443), 5)
+        sock.return_value.connect.assert_called_once_with(("8.8.8.8", 443))
+
+    def test_get_refuses_loopback_and_plain_http(self):
+        # the token realm goes through _registry_get too, so this covers it.
+        for url in ("https://127.0.0.1/token", "https://[::1]:5000/v2/", "http://registry.example/v2/"):
+            with self.assertRaises(fc_agent.HTTPError, msg=url) as cm:
+                fc_agent._registry_get(url, "application/json")
+            self.assertEqual(cm.exception.code, 400, url)
+
+    def test_redirects_only_to_https(self):
+        handler = fc_agent._HTTPSOnlyRedirect()
+        req = fc_agent.urllib.request.Request("https://registry.example/v2/x/blobs/y")
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            handler.redirect_request(req, None, 302, "Found", {}, "http://169.254.169.254/latest/")
+        self.assertEqual(cm.exception.code, 400)
+        self.assertIsNotNone(handler.redirect_request(req, None, 307, "Temporary", {}, "https://cdn.example/blob"))
+
+    def test_the_opener_uses_the_checked_connection(self):
+        # every https connection, the first and each redirect, goes through
+        # the address check.
+        handlers = [h for h in fc_agent._REGISTRY_OPENER.handlers
+                    if isinstance(h, fc_agent.urllib.request.HTTPSHandler)]
+        self.assertEqual([type(h) for h in handlers], [fc_agent._PublicHTTPSHandler])
+        conn = fc_agent._PublicHTTPSConnection("registry.example")
+        self.assertIs(conn._create_connection, fc_agent._public_create_connection)
 
 
 class ResolveImagePathTest(unittest.TestCase):

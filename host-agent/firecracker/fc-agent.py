@@ -3043,13 +3043,74 @@ def _lower_headers(headers) -> dict:
     return {k.lower(): v for k, v in (headers or {}).items()}
 
 
+def _public_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
+    """socket.create_connection, refusing any address that is not public.
+
+    The registry, its redirects and its token realm all come from the caller's
+    ref, so without this a ref could make the host fetch from loopback, the
+    lan, the tailnet or a cloud metadata endpoint. The check runs on the
+    resolved addresses and the socket connects to exactly the one checked, so
+    a name that resolves differently on a second lookup cannot slip past."""
+    host, port = address[0], address[1]
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError as e:
+        raise HTTPError(502, f"registry unreachable: cannot resolve {host}: {e}")
+    if not infos:
+        raise HTTPError(502, f"registry unreachable: {host} has no address")
+    for *_, sockaddr in infos:
+        ip = ipaddress.ip_address(sockaddr[0].split("%", 1)[0])
+        if ip.version == 6 and ip.ipv4_mapped:
+            ip = ip.ipv4_mapped
+        if not ip.is_global or ip.is_multicast:
+            raise HTTPError(400, f"registry host {host} resolves to {ip}, which is not a public address")
+    family, kind, proto, _, sockaddr = infos[0]
+    sock = socket.socket(family, kind, proto)
+    try:
+        if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+            sock.settimeout(timeout)
+        if source_address:
+            sock.bind(source_address)
+        sock.connect(sockaddr)
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+class _PublicHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _public_create_connection
+
+
+class _PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_PublicHTTPSConnection, req, context=self._context)
+
+
+class _HTTPSOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    # a redirect to plain http would go through the stock handler, which has
+    # no address check, so registries are only followed to https.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlparse(newurl).scheme != "https":
+            raise HTTPError(400, f"registry redirected to a non-https url: {newurl[:200]}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_REGISTRY_OPENER = urllib.request.build_opener(_PublicHTTPSHandler, _HTTPSOnlyRedirect)
+
+
 def _registry_get(url: str, accept: str, token: str = "") -> tuple[int, dict, bytes]:
-    """GET url from a registry: (status, headers keyed in lowercase, body)."""
+    """GET url from a registry: (status, headers keyed in lowercase, body).
+    Only https to a public address, including redirects (_REGISTRY_OPENER)."""
+    if urlparse(url).scheme != "https":
+        raise HTTPError(400, f"registry urls must be https: {url[:200]}")
     req = urllib.request.Request(url, headers={"Accept": accept})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(req, timeout=REGISTRY_TIMEOUT) as resp:
+        with _REGISTRY_OPENER.open(req, timeout=REGISTRY_TIMEOUT) as resp:
             return resp.status, _lower_headers(resp.headers), resp.read(MAX_REGISTRY_BYTES)
     except urllib.error.HTTPError as e:
         return e.code, _lower_headers(e.headers), b""
