@@ -249,7 +249,7 @@ func TestForkTaskID_followsIdempotencyKey(t *testing.T) {
 	if forkTaskID("fuse-src", "key-2") == a || forkTaskID("fuse-other", "key-1") == a {
 		t.Fatal("a different key or source named the same fork")
 	}
-	if forkTaskID("fuse-src", "") == forkTaskID("fuse-src", "") {
+	if c, d := forkTaskID("fuse-src", ""), forkTaskID("fuse-src", ""); c == d {
 		t.Fatal("forks without a key share a name")
 	}
 }
