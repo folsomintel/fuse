@@ -68,15 +68,20 @@ func convertImage(ctx restate.Context, fleet Images, req orchestrator.ConvertIma
 		return orchestrator.Image{}, err
 	}
 	if img.State == orchestrator.ImageConverting {
-		restate.ServiceSend(ctx, ImagesService, "Watch").
-			Send(img, restate.WithIdempotencyKey(imageWatchKey(img)))
+		restate.ServiceSend(ctx, ImagesService, "Watch").Send(img, imageWatchKey(img)...)
 	}
 	return img, nil
 }
 
-// imageWatchKey is the idempotency key of img's watch.
-func imageWatchKey(img orchestrator.Image) string {
-	return "image-watch:" + img.HostID + ":" + img.Digest + ":" + img.CreatedAt
+// imageWatchKey is the idempotency key of img's watch. an agent that predates
+// created_at gives no attempt to key on, and a key of host and digest alone
+// would let a retry of a failed image join the first attempt's finished watch,
+// so such a convert gets a watch of its own, unkeyed.
+func imageWatchKey(img orchestrator.Image) []restate.SendOption {
+	if img.CreatedAt == "" {
+		return nil
+	}
+	return []restate.SendOption{restate.WithIdempotencyKey("image-watch:" + img.HostID + ":" + img.Digest + ":" + img.CreatedAt)}
 }
 
 // imageTerminal marks every convert failure terminal: in mode off each one is
