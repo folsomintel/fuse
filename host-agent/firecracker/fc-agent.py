@@ -3258,18 +3258,30 @@ def image_records() -> list[dict]:
 
 
 def parse_size(s: str) -> int:
-    """a truncate(1) size such as 4G (1024 based) in bytes, or 0 if unreadable."""
-    m = re.fullmatch(r"(\d+)([KMGT]?)", s.strip().upper())
+    """a truncate(1) size in bytes: 4G and 4GiB are 1024 based, 4GB is 1000
+    based. 0 if unreadable."""
+    m = re.fullmatch(r"(\d+)(?:([KMGTPE])(iB|B)?)?", s.strip(), re.IGNORECASE)
     if not m:
         return 0
-    return int(m.group(1)) << (10 * " KMGT".index(m.group(2) or " "))
+    n, unit, suffix = int(m.group(1)), (m.group(2) or "").upper(), (m.group(3) or "").upper()
+    if not unit:
+        return n
+    return n * (1000 if suffix == "B" else 1024) ** ("KMGTPE".index(unit) + 1)
 
 
 def image_convert_estimate() -> int:
     """the disk a new conversion may take. the bake writes a sparse ext4 of
     FC_ROOTFS_SIZE, so its allocated size can never exceed that: an upper
-    bound, which keeps a finished bake under the cap."""
-    return parse_size(os.environ.get("FC_ROOTFS_SIZE", "")) or 4 << 30
+    bound, which keeps a finished bake under the cap. a size this cannot read
+    is refused rather than guessed, since the bake would still use it."""
+    raw = os.environ.get("FC_ROOTFS_SIZE", "").strip()
+    if not raw:
+        return 4 << 30
+    size = parse_size(raw)
+    if not size:
+        raise HTTPError(503, f"this host cannot convert images: FC_ROOTFS_SIZE={raw!r} is not a size "
+                             f"the image cache cap can account for; set a plain size such as 8G")
+    return size
 
 
 def image_disk_bytes(rec: dict) -> int:
@@ -3369,6 +3381,7 @@ def image_convert_start(ref: str) -> dict:
         raise HTTPError(503, f"this host cannot convert images: no fused binary at {FUSED_BIN}")
     if not DISTRO_BAKE_SCRIPT.exists():
         raise HTTPError(503, f"this host cannot convert images: {DISTRO_BAKE_SCRIPT} is missing")
+    image_convert_estimate()
     bake_name, manifest_digest = resolve_manifest_digest(ref, goarch())
     digest = image_key(manifest_digest, file_digest(FUSED_BIN))
     name = "oci-" + digest[:32]

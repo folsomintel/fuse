@@ -376,8 +376,20 @@ class EvictionTest(ConvertBase):
     def test_estimate_parses_the_bake_size(self):
         self.assertEqual(fc_agent.image_convert_estimate(), 128 * KIB)
         self.assertEqual(fc_agent.parse_size("4G"), 4 << 30)
-        with mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": "lots"}):
+        # every unit truncate takes, so a valid size never slips under the cap.
+        self.assertEqual(fc_agent.parse_size("8GiB"), 8 << 30)
+        self.assertEqual(fc_agent.parse_size("8GB"), 8 * 10**9)
+        self.assertEqual(fc_agent.parse_size("2t"), 2 << 40)
+        self.assertEqual(fc_agent.parse_size("4096"), 4096)
+        with mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": ""}):
             self.assertEqual(fc_agent.image_convert_estimate(), 4 << 30)
+
+    def test_an_unreadable_bake_size_refuses_the_convert(self):
+        with mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": "lots"}):
+            with self.assertRaises(fc_agent.HTTPError) as cm:
+                fc_agent.image_convert_start("alpine")
+        self.assertEqual(cm.exception.code, 503)
+        self.assertEqual(fc_agent.image_records(), [])
 
     def test_evicts_the_least_recently_used(self):
         a = self.convert("alpine")
