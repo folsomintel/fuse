@@ -110,7 +110,8 @@ task completes aren't included; the reconcile counters above cover the first
 group. `snapshot` includes the snapshots fork, migrate and checkpoint chains
 take internally, because each is a real checkpoint the host had
 to write; with restate on, a migrate's seed and delta snapshots are its own
-steps (`op="migrate_seed"` and `op="migrate_delta"` below) instead. Watch `rate(orchestrator_operations_total{result="error"}[5m])` by
+steps (`op="migrate_seed"` and `op="migrate_delta"` below) instead, and a
+fork's seed is the source's own snapshot steps (`op="snapshot"`). Watch `rate(orchestrator_operations_total{result="error"}[5m])` by
 `op`, and the p99 of the duration histogram per `op`: a cold migrate taking
 minutes is normal, a fork taking minutes is not.
 

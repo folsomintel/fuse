@@ -56,7 +56,9 @@ to dispatch correctly, then walks the persisted VMs and triages them:
   and either finishes the VM (files, startup script, agent) or rolls it back. A
   provisioning VM restate holds no create for, such as one left by an
   in-process create before restate was turned on, is failed and destroyed by
-  reconcile.
+  reconcile. A fork in flight on restate leaves its new VM `provisioning` the
+  same way, and the fork either finishes it or rolls it back, deleting the
+  seed snapshot it took.
 - Host allocation counters are then **recomputed from the live VMs** rather than
   trusted from the database, which repairs the drift a crash mid-allocation
   leaves behind.

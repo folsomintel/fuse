@@ -217,6 +217,25 @@ watch.
 q "SELECT id, target, status FROM sys_invocation WHERE target LIKE 'Environment/%/Migrate' OR target_service_name = 'Migrate'"
 ```
 
+forks run as `Environment/<new vm_id>/Fork`, keyed by the fork's own vm id so
+the new vm's other ops queue behind it: begin (the same refusals as in mode
+off), a provisioning placeholder row, the seed snapshot as a call to
+`Environment/<source vm_id>/Snapshot` (skipped for `reuse_snapshot_id`), place,
+artifact (off-host only), create, ingress, credentials, upload, start agent,
+running, task and lineage. the fork holds the same in-flight mark as a create,
+so reconcile leaves its placeholder alone after a restart. a step that fails
+for good before running unpublishes ingress, drops the placeholder and its row
+(retried with no attempt bound), sends `Environment/<new vm_id>/Destroy`
+(reason `fork_rollback`) when the vm may exist on its host, and deletes a seed
+the fork took. on a fleet with no hosts that destroy names no host, so the vm
+goes with reconcile's orphan sweep instead. a retried fork request with the
+same `Idempotency-Key` names the same new vm and attaches to the first
+invocation.
+
+```sh
+q "SELECT id, target, status FROM sys_invocation WHERE target LIKE 'Environment/%/Fork'"
+```
+
 token rotation runs as `Environment/<vm_id>/RotateToken`: generate, upload,
 persist. generate is journaled, so a restart between the upload and the
 persist writes the token already in the guest to the state store instead of

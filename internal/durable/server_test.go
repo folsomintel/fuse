@@ -242,6 +242,40 @@ func (fakeFleet) CreateBeginFailed(context.Context, string, orchestrator.CreateR
 	return nil
 }
 
+func (fakeFleet) ForkBegin(context.Context, string, orchestrator.ForkRequest) (orchestrator.ForkPlan, error) {
+	return orchestrator.ForkPlan{}, nil
+}
+func (fakeFleet) ForkPlaceholder(context.Context, orchestrator.ForkPlan) error { return nil }
+func (fakeFleet) ForkPlace(context.Context, orchestrator.ForkPlan, orchestrator.SnapshotRecord) (string, error) {
+	return "", nil
+}
+func (fakeFleet) ForkArtifact(context.Context, orchestrator.ForkPlan, orchestrator.SnapshotRecord, string) (string, error) {
+	return "", nil
+}
+func (fakeFleet) ForkCreate(context.Context, orchestrator.ForkPlan, orchestrator.SnapshotRecord, string, string) error {
+	return nil
+}
+func (fakeFleet) ForkIngress(context.Context, orchestrator.ForkPlan) ([]byte, error) { return nil, nil }
+func (fakeFleet) ForkCredentials(context.Context, orchestrator.ForkPlan) (orchestrator.RotatedCredentials, error) {
+	return orchestrator.RotatedCredentials{}, nil
+}
+func (fakeFleet) ForkUpload(context.Context, orchestrator.ForkPlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) ForkStartAgent(context.Context, orchestrator.ForkPlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) ForkRunning(context.Context, orchestrator.ForkPlan, orchestrator.MigrateStarted) error {
+	return nil
+}
+func (fakeFleet) ForkTask(context.Context, orchestrator.ForkPlan) error { return nil }
+func (fakeFleet) ForkLineage(context.Context, orchestrator.ForkPlan, orchestrator.SnapshotRecord) error {
+	return nil
+}
+func (fakeFleet) ForkUnpublishIngress(context.Context, orchestrator.ForkPlan) error { return nil }
+func (fakeFleet) ForkAbandon(context.Context, orchestrator.ForkPlan, string) error  { return nil }
+func (fakeFleet) ForkDeleteSeed(context.Context, orchestrator.SnapshotRecord) error { return nil }
+
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // discovery is the manifest restate-server reads on registration. checking it
@@ -307,7 +341,7 @@ func TestDiscoveryManifest(t *testing.T) {
 		want := map[string]string{"Ping": "SHARED"}
 		switch s.Name {
 		case EnvironmentObject:
-			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "RetireChain", "RotateToken", "Migrate", "Drain", "Expire", "Create"} {
+			for _, h := range []string{"Destroy", "Snapshot", "Restore", "CollectSnapshot", "Checkpoint", "ChainMoved", "RetireChain", "RotateToken", "Migrate", "Drain", "Expire", "Create", "Fork"} {
 				want[h] = "EXCLUSIVE"
 			}
 			want["CreateInFlight"] = "SHARED"
