@@ -199,6 +199,27 @@ func TestConvertImageFailedWatch(t *testing.T) {
 	}
 }
 
+// TestConvertImageRetryWithoutAttemptGetsAWatch: an agent that predates
+// created_at answers a retry of a failed image with the same host and digest;
+// the retry still gets a watch of its own instead of the first one's.
+func TestConvertImageRetryWithoutAttemptGetsAWatch(t *testing.T) {
+	fastImagePolls(t)
+	fleet := newImageFleet("busybox", orchestrator.ImageFailed)
+	fleet.img.CreatedAt = ""
+	client, _, _ := serveBuildFleet(t, fleet, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i := 0; i < 2; i++ {
+		if _, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "busybox"}); err != nil {
+			t.Fatalf("convert %d: %v", i, err)
+		}
+		if d := waitImageDone(t, fleet); d.img.State != orchestrator.ImageFailed {
+			t.Fatalf("watch %d ended with %+v", i, d)
+		}
+	}
+}
+
 // TestConvertImageReadyStartsNoWatch: an image the host already has ready
 // answers at once and starts no watch.
 func TestConvertImageReadyStartsNoWatch(t *testing.T) {
