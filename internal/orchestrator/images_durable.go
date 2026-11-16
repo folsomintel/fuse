@@ -46,6 +46,14 @@ func (fm *FleetManager) durableImages() DurableImages {
 	return fm.durableImage
 }
 
+// ImageHost is the first step a durable convert runs: the host req converts
+// on, picked the way ImageConvert picks it. the convert step then runs pinned
+// to it, so a retry after a restart reaches the same host.
+func (fm *FleetManager) ImageHost(_ context.Context, req ConvertImageRequest) (string, error) {
+	hostID, _, err := fm.imageConvertHost(req)
+	return hostID, err
+}
+
 // the methods below are the steps a durable convert runs after ImageConvert:
 // a poll of the host, repeated, and the outcome. each runs inside a journaled
 // restate step and must be safe to run again.

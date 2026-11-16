@@ -276,6 +276,9 @@ func (fakeFleet) ForkUnpublishIngress(context.Context, orchestrator.ForkPlan) er
 func (fakeFleet) ForkAbandon(context.Context, orchestrator.ForkPlan, string) error  { return nil }
 func (fakeFleet) ForkDeleteSeed(context.Context, orchestrator.SnapshotRecord) error { return nil }
 
+func (fakeFleet) ImageHost(_ context.Context, req orchestrator.ConvertImageRequest) (string, error) {
+	return req.HostID, nil
+}
 func (fakeFleet) ImageConvert(_ context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
 	return orchestrator.Image{Ref: req.Ref, State: orchestrator.ImageReady}, nil
 }
