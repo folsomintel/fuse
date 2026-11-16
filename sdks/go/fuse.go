@@ -48,6 +48,7 @@ type Client struct {
 	Interventions *InterventionsService
 	Operations    *OperationsService
 	Builds        *BuildsService
+	Images        *ImagesService
 }
 
 // clientConfig holds the resolved options for New.
@@ -165,6 +166,7 @@ func newClient(t *transport) *Client {
 		Interventions: newInterventionsService(t),
 		Operations:    newOperationsService(t),
 		Builds:        &BuildsService{t: t},
+		Images:        &ImagesService{t: t},
 	}
 }
 

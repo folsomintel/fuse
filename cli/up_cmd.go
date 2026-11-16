@@ -127,7 +127,7 @@ func newUpCmd() *cobra.Command {
 				// derive layer keys when caching is on (so a bad `inputs` entry
 				// fails here rather than mid-provision) or when the user asked
 				// to see the plan.
-				lp, err = planSetupLayers(path, f, plan)
+				lp, err = planSetupLayers(path, f, plan, "")
 				if err != nil {
 					return err
 				}
@@ -179,6 +179,9 @@ func newUpCmd() *cobra.Command {
 				if c.Spec.Image != "" {
 					return fmt.Errorf("--from-build and the Fusefile's `image` are mutually exclusive: both name the rootfs to boot")
 				}
+				if c.Spec.From != "" {
+					return fmt.Errorf("--from-build and the Fusefile's `from` are mutually exclusive: both name the rootfs to boot")
+				}
 				startupScript = c.RunScript
 			}
 
@@ -211,6 +214,23 @@ func newUpCmd() *cobra.Command {
 			// build` already made and skipping the setup steps it covers.
 			seedID := fromBuild
 			image := c.Spec.Image
+			// a `from:` image is converted on a host first, and the create
+			// names the digest that comes back, so it lands where the image
+			// is ready. the layer keys root at that digest, which only exists
+			// now, so the plan is derived again with it.
+			imageDigest := ""
+			if c.Spec.From != "" {
+				img, err := convertImage(cmd.Context(), cl, fuse.ConvertImageRequest{Ref: c.Spec.From, HostID: c.Spec.HostID, Labels: c.Spec.Labels})
+				if err != nil {
+					return err
+				}
+				imageDigest = img.Digest
+				if lp != nil {
+					if lp, err = planSetupLayers(path, f, false, imageDigest); err != nil {
+						return err
+					}
+				}
+			}
 			if lp != nil && lp.CacheEnabled {
 				if arch := targetArch(cmd.Context(), cl, cur.ActiveHost); arch != "" {
 					lp.Arch = arch
@@ -223,6 +243,7 @@ func newUpCmd() *cobra.Command {
 						// seed and image both name the rootfs to boot, and the
 						// api rejects being given two answers.
 						image = ""
+						imageDigest = ""
 						startupScript = fusefile.StartupScriptFrom(f, hit.Index+1)
 						successf("reusing %d cached layer(s) from %s", lp.hitCount(), hit.Snapshot.ID)
 					}
@@ -240,6 +261,7 @@ func newUpCmd() *cobra.Command {
 					MaxRuntimeSeconds:  c.Spec.MaxRuntimeSeconds,
 					IdleTimeoutSeconds: c.Spec.IdleTimeoutSeconds,
 					Image:              image,
+					ImageDigest:        imageDigest,
 					GPUs:               c.Spec.GPUs,
 					GPUKind:            c.Spec.GPUKind,
 					GPUProfile:         c.Spec.GPUProfile,

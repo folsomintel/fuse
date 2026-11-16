@@ -1,0 +1,25 @@
+---
+title: fuse image get
+sidebar:
+  icon: search
+  label: get
+description: Show an image's conversion state
+---
+
+```bash
+fuse image get <digest>
+```
+
+No flags beyond the globals. Prints the image named by `<digest>` (the hex
+sha256 [`fuse image convert`](/reference/cli/image/convert) printed) at once,
+without waiting: its `digest`, `ref`, `manifest` (the manifest digest for the
+host's arch), `host`, and `state`, which is `converting`, `ready` or `failed`.
+A failed image adds an `error` row with the host's reason. With `-o json` the
+image prints as JSON, the same shape as
+[`GET /v1/images/{digest}`](/reference/api).
+
+When more than one host holds the digest, the most usable record wins: ready,
+then converting, then failed. An unknown digest is a not-found error.
+
+`get` exits 0 for a failed image too. Read `state` when the exit code should
+say whether it worked.

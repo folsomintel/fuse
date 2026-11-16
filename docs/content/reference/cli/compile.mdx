@@ -118,9 +118,10 @@ fuse compile --format json
 }
 ```
 
-This is the `POST /v1/environments` body `fuse up` would send, with two
-differences: `secrets` is always empty, and `required_secrets` is added so the
-names are visible. It is meant for reading, diffing, and review, not for posting
+This is the `POST /v1/environments` body `fuse up` would send, with these
+differences: `secrets` is always empty, `required_secrets` is added so the
+names are visible, and a `from:` Fusefile carries its ref as `from` where
+`fuse up` would send the converted `spec.image_digest`. It is meant for reading, diffing, and review, not for posting
 back to the API.
 
 `--format yaml` prints the same document with the same keys, which diffs better
@@ -184,8 +185,17 @@ fuse compile --from-build snap-4f1c9a
 
 The compiled output then carries `seed_snapshot_id` and a `startup_script` with
 no setup lines. Because a build artifact and `image` both name the rootfs to
-boot, passing `--from-build` for a Fusefile that sets `image` is an error here,
-exactly as it is at `fuse up`.
+boot, passing `--from-build` for a Fusefile that sets `image` or `from` is an
+error here, exactly as it is at `fuse up`.
+
+## A Fusefile with `from:`
+
+`compile` converts nothing, so for a Fusefile that sets
+[`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from) the output
+has no `spec.image_digest`. The human view shows the ref as a `from` row,
+`<ref> (converted by fuse up)`, and the wire form carries it as a top-level
+`from` field next to `required_secrets`. Like those names, it is compile output
+only: `fuse up` converts the ref and sends the digest instead.
 
 ## What it does and does not check
 

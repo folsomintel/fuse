@@ -1,0 +1,60 @@
+---
+title: fuse image convert
+sidebar:
+  icon: circle-plus
+  label: convert
+description: Convert an OCI image to a rootfs on a Firecracker host
+---
+
+```bash
+fuse image convert <ref> [--host <id>] [--label key=value]... [--no-wait]
+```
+
+Sends [`POST /v1/images`](/reference/api) for `<ref>`. The orchestrator picks
+an active Firecracker host (the one `--host` names, or one matching every
+`--label`), which resolves the ref to the manifest for its arch and bakes it
+into a rootfs in the background. The command then polls the image every 2
+seconds until it leaves `converting`, and prints it.
+
+`<ref>` is an OCI reference: an optional registry host (with port), a
+lowercase repository path, an optional tag and an optional `@sha256:` digest,
+255 characters at most. `ubuntu:24.04` and
+`ghcr.io/org/app@sha256:<digest>` are both accepted.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--host` | Convert on this Firecracker host. |
+| `--label` | Convert on a host with this label, as `key=value`. Repeatable; every pair must match. |
+| `--no-wait` | Start the conversion and print the image at once, usually still `converting`. |
+
+Pick the host the same way the environment will be placed: a create with
+`spec.image_digest` lands only on a host where that image is ready. A Fusefile's
+`from:` does this for you by converting with the Fusefile's `placement`.
+
+## Behavior
+
+Converting a ref that is already converting or ready returns that image
+instead of baking again; one that failed is converted again. While it waits,
+the command reports on stderr:
+
+```
+converting <ref> on host <host> (image <digest>)
+image <ref> ready on host <host>
+```
+
+A conversion that ends `failed` exits non-zero with the host's reason:
+
+```
+image <ref> (<digest>) is failed on host <host>: <error>
+```
+
+Interrupting the command stops only the waiting. The conversion keeps running
+on the host; check on it with [`fuse image get`](/reference/cli/image/get).
+
+The printed image has the same rows as `fuse image get`. With `-o json` it is
+the image object instead.
+
+A malformed ref, a registry that needs credentials, or a `--host` that runs
+the QEMU backend is a 400. A ref the registry does not have is a 404.

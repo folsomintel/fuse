@@ -159,6 +159,18 @@ a VM is up and holding host capacity.
 `--from-build` and a Fusefile `image:` are mutually exclusive: both name the
 rootfs to boot from.
 
+## Building on an OCI image
+
+A Fusefile that sets
+[`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from) builds on
+that image. `build` converts it first, exactly as
+[`fuse image convert`](/reference/cli/image/convert) would, waits until it is
+`ready` and exits non-zero with the host's reason if the conversion fails. It
+then derives the layer keys again, rooted at the converted image's digest, and
+submits the build with that digest as `spec.image_digest`. `--plan` exits
+before the conversion, so it reports every step as uncacheable with
+`the from: image has not been converted yet`.
+
 ## Exit status
 
 `fuse build` exits non-zero if the builder fails to come up, if the setup phase

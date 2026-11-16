@@ -183,6 +183,11 @@ pub struct Spec {
     pub idle_timeout_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Boots from an oci image converted with
+    /// [`Images::convert`](crate::Images::convert), named by its digest once
+    /// it is ready. Mutually exclusive with `image`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_digest: Option<String>,
     /// Pins the environment to an exact host id (the Fusefile's
     /// `placement.host`). The pinned host still has to be active, run the
     /// right backend, and fit the request.
@@ -261,6 +266,11 @@ impl Spec {
 
     pub fn image(mut self, image: impl Into<String>) -> Self {
         self.image = Some(image.into());
+        self
+    }
+
+    pub fn image_digest(mut self, digest: impl Into<String>) -> Self {
+        self.image_digest = Some(digest.into());
         self
     }
 
@@ -2617,4 +2627,60 @@ impl Build {
     pub fn is_terminal(&self) -> bool {
         self.state.is_terminal()
     }
+}
+
+/// The body of [`Images::convert`](crate::Images::convert). `host_id` and
+/// `labels` pick the host the way a create's placement does.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConvertImageRequest {
+    pub r#ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub labels: HashMap<String, String>,
+}
+
+impl ConvertImageRequest {
+    pub fn new(r#ref: impl Into<String>) -> Self {
+        Self {
+            r#ref: r#ref.into(),
+            ..Self::default()
+        }
+    }
+
+    pub fn host_id(mut self, host_id: impl Into<String>) -> Self {
+        self.host_id = Some(host_id.into());
+        self
+    }
+
+    /// Adds one placement label selector.
+    pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.labels.insert(key.into(), value.into());
+        self
+    }
+}
+
+string_enum! {
+    /// States for [`Image::state`]. Converting is the only non-terminal one.
+    pub enum ImageState {
+        Converting => "converting",
+        Ready => "ready",
+        Failed => "failed",
+    }
+}
+
+/// An oci image converted, or being converted, on a host. `digest` is what
+/// a create names in [`Spec::image_digest`] once `state` is ready; `error`
+/// says why when it failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub digest: String,
+    pub r#ref: String,
+    #[serde(default)]
+    pub manifest_digest: String,
+    #[serde(default)]
+    pub host_id: String,
+    pub state: ImageState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }

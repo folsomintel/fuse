@@ -37,8 +37,14 @@ type ResourceSpec struct {
 	// this is measured from the last control-plane activity.
 	IdleTimeoutSeconds int64  `json:"idle_timeout_seconds,omitempty"`
 	Image              string `json:"image,omitempty"`
-	GPUs               int32  `json:"gpus,omitempty"`
-	GPUKind            string `json:"gpu_kind,omitempty"`
+	// ImageDigest boots an oci image converted with POST /v1/images (the
+	// Image.digest it returned). The image must be ready on the host the
+	// environment lands on, so the create is pinned to such a host; one that
+	// is not ready anywhere is a 409. Mutually exclusive with image and
+	// seed_snapshot_id; not allowed with gpus or a desktop.
+	ImageDigest string `json:"image_digest,omitempty"`
+	GPUs        int32  `json:"gpus,omitempty"`
+	GPUKind     string `json:"gpu_kind,omitempty"`
 	// GPUProfile requests fractional GPU allocation: a MIG profile in
 	// mig-parted vocabulary (e.g. "1g.10gb"). When set, GPUs counts MIG
 	// instances of this profile rather than whole devices (decision D5).

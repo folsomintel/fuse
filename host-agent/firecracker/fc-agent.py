@@ -31,11 +31,13 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 # code shared with qemu-agent.py lives in host-agent/shared/agentlib.py. a
 # standalone install (fuse local) puts it next to this file instead.
@@ -83,9 +85,10 @@ SOCK_DIR = Path(os.environ.get("FC_SOCK_DIR", "/tmp/fuse-fc-socks"))
 KERNEL = FC_DIR / "vmlinux.bin"
 BASE_ROOTFS = Path(os.environ.get("BASE_ROOTFS", str(FC_DIR / "rootfs-fused.ext4")))
 # Named rootfs images for bring-your-own-image (see internal/fusefile's
-# ResourceSpec.Image): <IMAGES_DIR>/<name>.ext4. There is no OCI pull here —
-# an operator bakes and places a rootfs there (e.g. with fc-bake-rootfs.sh)
-# before a Fusefile can reference it by name.
+# ResourceSpec.Image): <IMAGES_DIR>/<name>.ext4. An operator bakes and places
+# a rootfs there (e.g. with fc-bake-rootfs.sh) before a Fusefile can
+# reference it by name, or POST /v1/images converts an oci image into one
+# (see the oci image section below).
 IMAGES_DIR = Path(os.environ.get("IMAGES_DIR", str(FC_DIR / "images")))
 # Snapshot artifacts live here, NOT under the vm dir, so a snapshot outlives the
 # vm that produced it. destroy_vm rm -rf's the whole vm dir, so anything stored
@@ -1097,6 +1100,32 @@ def stop_firecracker(meta: dict) -> None:
         sudo(["rm", "-f", sock], check=False)
 
 
+def resolve_image_path(image: str) -> Path:
+    """Resolve a caller-supplied image name to a path inside IMAGES_DIR.
+
+    image names the request into a filesystem path, so resolve it and confirm
+    it stays under IMAGES_DIR; "../../etc/shadow" would else reach a file
+    outside it and get copied into the caller's guest. realpath resolves
+    symlinks too, so a link planted inside IMAGES_DIR that points out of it is
+    rejected as well. Raises HTTPError(400) on anything outside. qemu-agent.py
+    has the same guard for its .qcow2 images.
+    """
+    if not isinstance(image, str) or not image.strip():
+        raise HTTPError(400, f"invalid base image name: {image!r}")
+    # NUL and other control bytes never name a real image and would either
+    # raise deep inside os.path or truncate the path at the C boundary.
+    if any(ord(c) < 0x20 or c == "\x7f" for c in image):
+        raise HTTPError(400, f"invalid base image name: {image!r}")
+    if os.path.isabs(image) or image.startswith("~"):
+        raise HTTPError(400, f"base image name must be relative to IMAGES_DIR: {image!r}")
+
+    images_root = os.path.realpath(IMAGES_DIR)
+    resolved = os.path.realpath(os.path.join(images_root, f"{image}.ext4"))
+    if not resolved.startswith(images_root.rstrip(os.sep) + os.sep):
+        raise HTTPError(400, f"invalid base image name: {image!r}")
+    return Path(resolved)
+
+
 def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     egress_mode = parse_egress_mode(req)
@@ -1134,14 +1163,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         image = req.get("image") or ""
         source_rootfs = BASE_ROOTFS
         if image:
-            # image names the request into a filesystem path, so resolve it and
-            # confirm it stays under IMAGES_DIR; "../../etc/shadow" would else
-            # reach a file outside it and get copied into the caller's guest.
-            images_root = os.path.realpath(IMAGES_DIR)
-            resolved = os.path.realpath(os.path.join(images_root, f"{image}.ext4"))
-            if not resolved.startswith(images_root + os.sep):
-                raise HTTPError(400, f"invalid base image name: {image!r}")
-            source_rootfs = Path(resolved)
+            source_rootfs = resolve_image_path(image)
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
 
@@ -2950,6 +2972,283 @@ def pull_artifact_delta(digest: str, peer_url: str, grant: str, snapshot_id: str
 
 # -- Upload / Exec / start-agent ---------------------------------------------
 
+# -- oci images ---------------------------------------------------------------
+#
+# POST /v1/images turns an oci image (a Fusefile's `from:`) into a rootfs under
+# IMAGES_DIR that a create then boots by name. The ref is resolved here to the
+# manifest for this host's arch, and fc-bake-distro-rootfs.sh does the bake
+# from that pinned digest in the background. The record of every converted
+# image lives in IMAGE_STATE_DIR/<digest>.json and is written only by
+# image_record_save, so that is where size accounting and eviction hook in.
+
+DISTRO_BAKE_SCRIPT = FC_DIR / "scripts" / "fc-bake-distro-rootfs.sh"
+# the fused binary the bake script copies into the rootfs. its digest is half
+# of an image's identity: a new fused build is a new rootfs.
+FUSED_BIN = FC_DIR / "fused"
+IMAGE_STATE_DIR = STATE_DIR / "images"
+IMAGE_CONVERT_TIMEOUT = float(os.environ.get("FC_IMAGE_CONVERT_TIMEOUT", "1800"))
+# per registry request; a convert makes at most four, inside the
+# orchestrator's 60s bound on the call.
+REGISTRY_TIMEOUT = float(os.environ.get("FC_REGISTRY_TIMEOUT", "10"))
+MAX_REGISTRY_BYTES = 4 << 20
+IMAGE_KEY_DOMAIN = "fuse-oci-image/v1"
+IMAGES_LOCK = threading.Lock()
+DOCKER_HUB = "registry-1.docker.io"
+
+# the same grammar as fusefile.ValidImageRef. it never starts with a dash, so a
+# ref is safe as the bake script's first argument.
+_IMAGE_REF_RE = re.compile(
+    r"(?:[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"
+    r"(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*"
+    r"(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?"
+    r"(?:@sha256:[a-f0-9]{64})?"
+)
+_INDEX_TYPES = (
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+)
+_MANIFEST_ACCEPT = ", ".join(_INDEX_TYPES + (
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+))
+
+
+def parse_image_ref(ref: str) -> tuple[str, str, str, str]:
+    """Split an oci ref into (registry host, repository, tag or digest, the
+    name the bake script is given). Docker Hub refs are normalised the way
+    docker does: "ubuntu" is docker.io/library/ubuntu:latest."""
+    if not isinstance(ref, str) or len(ref) > 255 or not _IMAGE_REF_RE.fullmatch(ref):
+        raise HTTPError(400, f"invalid oci image reference: {ref!r}")
+    name, digest = ref, ""
+    if "@" in ref:
+        name, digest = ref.split("@", 1)
+    tag = "latest"
+    last = name.rsplit("/", 1)[-1]
+    if ":" in last:
+        name, tag = name.rsplit(":", 1)
+    first, _, rest = name.partition("/")
+    if rest and ("." in first or ":" in first or first == "localhost"):
+        registry, repo, display = first, rest, first
+    else:
+        registry, repo, display = DOCKER_HUB, name, "docker.io"
+        if "/" not in repo:
+            repo = "library/" + repo
+    return registry, repo, digest or tag, f"{display}/{repo}"
+
+
+def _registry_get(url: str, accept: str, token: str = "") -> tuple[int, dict, bytes]:
+    req = urllib.request.Request(url, headers={"Accept": accept})
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=REGISTRY_TIMEOUT) as resp:
+            return resp.status, dict(resp.headers), resp.read(MAX_REGISTRY_BYTES)
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers or {}), b""
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        raise HTTPError(502, f"registry unreachable: {e}")
+
+
+def _registry_token(challenge: str) -> str:
+    """An anonymous pull token for a registry's Bearer challenge. Only public
+    images are supported, so no credentials are ever sent."""
+    if not challenge.lower().startswith("bearer "):
+        raise HTTPError(400, "private registries are not supported")
+    params = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    realm = params.pop("realm", "")
+    if not realm.startswith("https://"):
+        raise HTTPError(502, "registry sent an unusable auth challenge")
+    url = realm + "?" + "&".join(f"{k}={quote(v, safe='')}" for k, v in params.items())
+    code, _, body = _registry_get(url, "application/json")
+    if code != 200:
+        raise HTTPError(502, f"registry token endpoint answered {code}")
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        raise HTTPError(502, "registry token endpoint sent invalid json")
+    return doc.get("token") or doc.get("access_token") or ""
+
+
+def _registry_fetch(registry: str, repo: str, kind: str, reference: str, accept: str,
+                    token: str) -> tuple[dict, bytes, str]:
+    url = f"https://{registry}/v2/{repo}/{kind}/{reference}"
+    code, headers, body = _registry_get(url, accept, token)
+    if code == 401 and not token:
+        token = _registry_token(headers.get("WWW-Authenticate") or headers.get("Www-Authenticate") or "")
+        code, headers, body = _registry_get(url, accept, token)
+    if code in (401, 403):
+        raise HTTPError(400, f"{registry}/{repo} needs credentials; private registries are not supported")
+    if code == 404:
+        raise HTTPError(404, f"{registry}/{repo}:{reference} not found in the registry")
+    if code != 200:
+        raise HTTPError(502, f"registry answered {code} for {registry}/{repo}")
+    return headers, body, token
+
+
+def resolve_manifest_digest(ref: str, arch: str) -> tuple[str, str]:
+    """Resolve ref to (the bake script's repository name, the sha256 digest of
+    the linux/<arch> image manifest). An index is narrowed to this host's
+    platform; a single manifest has its config checked for the arch."""
+    registry, repo, reference, bake_name = parse_image_ref(ref)
+    headers, body, token = _registry_fetch(registry, repo, "manifests", reference, _MANIFEST_ACCEPT, "")
+    try:
+        doc = json.loads(body)
+    except ValueError:
+        raise HTTPError(502, f"registry sent an invalid manifest for {ref}")
+    ctype = (headers.get("Content-Type") or headers.get("content-type") or doc.get("mediaType") or "").split(";")[0]
+    if ctype in _INDEX_TYPES or "manifests" in doc:
+        for m in doc.get("manifests") or []:
+            plat = m.get("platform") or {}
+            digest = m.get("digest") or ""
+            if (plat.get("os") == "linux" and plat.get("architecture") == arch
+                    and digest.startswith("sha256:") and _DIGEST_RE.fullmatch(digest[7:])):
+                return bake_name, digest
+        raise HTTPError(400, f"{ref} has no linux/{arch} image")
+    digest = headers.get("Docker-Content-Digest") or headers.get("docker-content-digest") or ""
+    if not digest.startswith("sha256:"):
+        digest = "sha256:" + hashlib.sha256(body).hexdigest()
+    config = (doc.get("config") or {}).get("digest", "")
+    if config:
+        _, cbody, _ = _registry_fetch(registry, repo, "blobs", config, "application/json", token)
+        try:
+            image_arch = json.loads(cbody).get("architecture", "")
+        except ValueError:
+            image_arch = ""
+        if image_arch and image_arch != arch:
+            raise HTTPError(400, f"{ref} is a linux/{image_arch} image, this host is {arch}")
+    return bake_name, digest
+
+
+def image_key(manifest_digest: str, fused_digest: str) -> str:
+    """The cache key of a converted image: this arch's manifest digest and the
+    fused binary baked in. hex sha256, the shape the api calls a digest."""
+    h = hashlib.sha256()
+    for part in (IMAGE_KEY_DOMAIN, manifest_digest, fused_digest):
+        h.update(part.encode() + b"\n")
+    return h.hexdigest()
+
+
+def image_record_path(digest: str) -> Path:
+    if not _DIGEST_RE.fullmatch(digest or ""):
+        raise HTTPError(400, f"invalid image digest: {digest!r}")
+    return IMAGE_STATE_DIR / f"{digest}.json"
+
+
+def image_record_load(digest: str) -> dict | None:
+    try:
+        return json.loads(image_record_path(digest).read_text())
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return None
+
+
+def image_record_save(rec: dict) -> None:
+    """The one writer of image records, atomically (temp + rename)."""
+    rec["updated_at"] = now_iso()
+    path = image_record_path(rec["digest"])
+    IMAGE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(rec))
+    os.replace(tmp, path)
+
+
+def image_public(rec: dict) -> dict:
+    return {k: rec.get(k, "") for k in ("digest", "ref", "manifest_digest", "name", "state", "error")}
+
+
+def image_convert_start(ref: str) -> dict:
+    """Resolve ref and start converting it, or return the record that already
+    exists for the digest. A failed record is retried. The name is derived
+    from the digest, so one digest never bakes twice at once and two digests
+    never share a work dir."""
+    parse_image_ref(ref)
+    if not FUSED_BIN.exists():
+        raise HTTPError(503, f"this host cannot convert images: no fused binary at {FUSED_BIN}")
+    if not DISTRO_BAKE_SCRIPT.exists():
+        raise HTTPError(503, f"this host cannot convert images: {DISTRO_BAKE_SCRIPT} is missing")
+    bake_name, manifest_digest = resolve_manifest_digest(ref, goarch())
+    digest = image_key(manifest_digest, file_digest(FUSED_BIN))
+    name = "oci-" + digest[:32]
+    with IMAGES_LOCK:
+        rec = image_record_load(digest)
+        if rec and rec.get("state") in ("converting", "ready"):
+            if rec["state"] == "converting" or resolve_image_path(rec["name"]).exists():
+                return rec
+        rec = {
+            "digest": digest,
+            "ref": ref,
+            "manifest_digest": manifest_digest,
+            "source": f"{bake_name}@{manifest_digest}",
+            "name": name,
+            "state": "converting",
+            "error": "",
+            "created_at": now_iso(),
+        }
+        image_record_save(rec)
+    threading.Thread(target=image_convert_run, args=(dict(rec),), daemon=True).start()
+    return rec
+
+
+def bake_error(stderr: str, code: int) -> str:
+    """The reason a bake failed: the script's own `fc-bake-distro-rootfs:`
+    line when it wrote one, else its last line of stderr."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    for ln in reversed(lines):
+        if ln.startswith("fc-bake-distro-rootfs:"):
+            return ln[:500]
+    return (lines[-1] if lines else f"bake exited {code}")[:500]
+
+
+def image_convert_run(rec: dict) -> None:
+    """Run the bake for rec in the background and record the outcome. The
+    script has no timeout of its own, so it runs in its own process group and
+    the whole group is killed when IMAGE_CONVERT_TIMEOUT passes."""
+    target = resolve_image_path(rec["name"])
+    try:
+        proc = subprocess.Popen(
+            [str(DISTRO_BAKE_SCRIPT), rec["source"], rec["name"]],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            start_new_session=True,
+            env={**os.environ, "IMAGES_DIR": str(IMAGES_DIR)},
+        )
+        try:
+            _, err = proc.communicate(timeout=IMAGE_CONVERT_TIMEOUT)
+            code = proc.returncode
+            error = "" if code == 0 else bake_error(err.decode(errors="replace"), code)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.wait()
+            error = f"conversion timed out after {IMAGE_CONVERT_TIMEOUT:.0f}s"
+        if not error and not target.exists():
+            error = f"bake finished but {target} is missing"
+    except Exception as e:
+        error = f"bake could not run: {e}"
+    with IMAGES_LOCK:
+        rec["state"] = "failed" if error else "ready"
+        rec["error"] = error
+        if not error:
+            rec["size_bytes"] = target.stat().st_size
+        image_record_save(rec)
+    sys.stderr.write(f"[fc-agent] image {rec['digest']} ({rec['ref']}) {rec['state']} {error}\n")
+
+
+def image_sweep_interrupted() -> None:
+    """A conversion the agent was running when it stopped has no thread left to
+    finish it, so its record is failed and the next convert retries it."""
+    if not IMAGE_STATE_DIR.is_dir():
+        return
+    for path in IMAGE_STATE_DIR.glob("*.json"):
+        rec = image_record_load(path.stem)
+        if rec and rec.get("state") == "converting":
+            rec["state"] = "failed"
+            rec["error"] = "the host agent restarted during the conversion; convert again to retry"
+            image_record_save(rec)
+
 
 def do_start_agent(vm_id: str, manifest_path: str, secrets_path: str,
                    gateway: str | None = None, extra_args: str | None = None,
@@ -3592,6 +3891,16 @@ class Handler(agentlib.BaseHandler):
                     bool(body.get("lazy")),
                     body.get("source_snapshot_id", ""),
                 ))
+            # oci images: start a conversion, then poll it by digest.
+            if path == "/v1/images" and method == "POST":
+                body = self._read_json()
+                return self._json(202, image_public(image_convert_start(body["ref"])))
+            m = re.fullmatch(r"/v1/images/([^/]+)", path)
+            if m and method == "GET":
+                rec = image_record_load(m.group(1))
+                if not rec:
+                    raise HTTPError(404, "image not found")
+                return self._json(200, image_public(rec))
             # Capacity
             if path == "/v1/capacity" and method == "GET":
                 return self._json(200, host_capacity())
@@ -3655,6 +3964,7 @@ def main():
     # another host's snapshot brings its hotplug device with it.
     threading.Thread(target=hotplug_loop, daemon=True).start()
     resume_pending_rootfs_digests()
+    image_sweep_interrupted()
     srv =ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"[fc-agent] listening :{PORT}", flush=True)
     srv.serve_forever()

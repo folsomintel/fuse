@@ -941,6 +941,13 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 			ErrStartupScriptTimeoutTooLarge, opts.StartupScriptTimeout, fm.maxStartupScriptTimeout)
 	}
 
+	// a converted oci image names a rootfs on the hosts where it is ready,
+	// so it is resolved to one of them before either create path places it.
+	spec, err := fm.resolveImage(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+
 	if d := fm.durableCreator(); d != nil {
 		return fm.durableProvision(ctx, d, taskID, spec, manifest, secretMap, opts)
 	}

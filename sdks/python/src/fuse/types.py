@@ -119,6 +119,11 @@ BUILD_RUNNING = "running"
 BUILD_SUCCEEDED = "succeeded"
 BUILD_FAILED = "failed"
 
+# image states. converting is the only non-terminal one.
+IMAGE_CONVERTING = "converting"
+IMAGE_READY = "ready"
+IMAGE_FAILED = "failed"
+
 
 def is_terminal_state(state: str) -> bool:
     # reports whether state is a terminal lifecycle state.
@@ -149,6 +154,9 @@ class Spec(_Model):
     # attach session. none or 0 means no idle expiry.
     idle_timeout_seconds: Optional[int] = None
     image: Optional[str] = None
+    # boots an oci image converted with images.convert (its Image.digest).
+    # the image must be ready; mutually exclusive with image.
+    image_digest: Optional[str] = None
     # pins the environment to an exact host id (the fusefile's placement.host).
     host_id: Optional[str] = None
     # placement label selectors (the fusefile's placement.labels); every pair
@@ -1173,6 +1181,26 @@ class BuildEvent(_Model):
     id: str = ""
     state: str = ""
     step: str = ""
+
+
+class ConvertImageRequest(_Model):
+    # body for images.convert. host_id and labels pick the firecracker host
+    # the way a create's placement does.
+    ref: str = ""
+    host_id: Optional[str] = None
+    labels: Optional[dict[str, str]] = None
+
+
+class Image(_Model):
+    # an oci image converted, or being converted, on a host. digest is what a
+    # create names in Spec.image_digest once state is ready; error says why
+    # when it failed.
+    digest: str = ""
+    ref: str = ""
+    manifest_digest: str = ""
+    host_id: str = ""
+    state: str = ""
+    error: str = ""
 
 
 Event.model_rebuild()

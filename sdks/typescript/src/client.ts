@@ -6,6 +6,7 @@ import { ApiKeysService } from "./apiKeys.js";
 import { InterventionsService } from "./interventions.js";
 import { OperationsService } from "./operations.js";
 import { BuildsService } from "./builds.js";
+import { ImagesService } from "./images.js";
 import { VERSION } from "./version.js";
 import type { ActorLabel, Intervention, OperationAccepted } from "./types.js";
 
@@ -56,6 +57,7 @@ export class FuseClient {
   readonly interventions: InterventionsService;
   readonly operations: OperationsService;
   readonly builds: BuildsService;
+  readonly images: ImagesService;
   private readonly options: FuseClientOptions;
 
   constructor(options: FuseClientOptions) {
@@ -80,6 +82,7 @@ export class FuseClient {
     this.interventions = new InterventionsService(transport);
     this.operations = new OperationsService(transport);
     this.builds = new BuildsService(transport);
+    this.images = new ImagesService(transport);
   }
 
   /**

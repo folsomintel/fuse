@@ -91,6 +91,7 @@ func newRootCmd() *cobra.Command {
 		newUpCmd(),
 		newLocalCmd(),
 		newBuildCmd(),
+		newImageCmd(),
 		newInitCmd(),
 		newCompileCmd(),
 		newValidateCmd(),

@@ -73,12 +73,13 @@ func (p *layerPlan) hitCount() int {
 // to. show is the caller's --plan: it forces derivation so the plan can be
 // printed. otherwise the plan is only derived when caching is enabled, where
 // its value is failing on a bad `inputs` entry before anything is provisioned
-// rather than mid-build.
-func planSetupLayers(fusefilePath string, f *fusefile.Fusefile, show bool) (*layerPlan, error) {
+// rather than mid-build. imageDigest is the converted digest of a `from:`
+// image, "" before the conversion (every step is then uncacheable).
+func planSetupLayers(fusefilePath string, f *fusefile.Fusefile, show bool, imageDigest string) (*layerPlan, error) {
 	if !show && !f.Cache.Enabled {
 		return nil, nil
 	}
-	lp, err := buildLayerPlan(fusefilePath, f)
+	lp, err := buildLayerPlan(fusefilePath, f, imageDigest)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", fusefilePath, err)
 	}
@@ -88,16 +89,17 @@ func planSetupLayers(fusefilePath string, f *fusefile.Fusefile, show bool) (*lay
 // buildLayerPlan derives the layer key of every setup step. fusefilePath is
 // the Fusefile's path; declared `inputs` are resolved relative to its
 // directory, which is the only directory the CLI will read project files from.
-func buildLayerPlan(fusefilePath string, f *fusefile.Fusefile) (*layerPlan, error) {
+func buildLayerPlan(fusefilePath string, f *fusefile.Fusefile, imageDigest string) (*layerPlan, error) {
 	dir := filepath.Dir(fusefilePath)
 
-	keys, err := fusefile.LayerKeys(f, inputDigester(dir), fusefile.LayerOptions{})
+	opts := fusefile.LayerOptions{ImageDigest: imageDigest}
+	keys, err := fusefile.LayerKeys(f, inputDigester(dir), opts)
 	if err != nil {
 		return nil, err
 	}
 
 	plan := &layerPlan{
-		BaseKey: fusefile.BaseKey(f.Image, f.Files),
+		BaseKey: fusefile.ResolveBaseKey(f, opts),
 		// arch is not a key component and is not knowable client-side: the
 		// build has not been scheduled onto a host yet, and the client's own
 		// arch says nothing about the host's. left empty so the plan does not

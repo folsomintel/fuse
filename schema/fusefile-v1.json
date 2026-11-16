@@ -22,6 +22,12 @@
       "type": "string",
       "description": "Name of a rootfs pre-baked on the host, not an OCI reference. Omit for the host's default base rootfs."
     },
+    "from": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "An OCI image reference (e.g. ubuntu:24.04) converted to a rootfs on a firecracker host before the environment boots. Public registries only; apt and dnf based images. Mutually exclusive with image, and not allowed with desktop or a gpu."
+    },
     "resources": { "$ref": "#/$defs/resources" },
     "placement": { "$ref": "#/$defs/placement" },
     "cache": { "$ref": "#/$defs/cache" },

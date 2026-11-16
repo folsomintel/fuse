@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -279,6 +280,56 @@ func (p *Provider) Capacity(ctx context.Context) (orchestrator.HostCapacity, err
 }
 
 var _ orchestrator.CapacityProber = (*Provider)(nil)
+
+// imageWire is the agent's record of one converted oci image, the answer to
+// both POST /v1/images and GET /v1/images/{digest}.
+type imageWire struct {
+	Digest         string `json:"digest"`
+	Ref            string `json:"ref"`
+	ManifestDigest string `json:"manifest_digest"`
+	Name           string `json:"name"`
+	State          string `json:"state"`
+	Error          string `json:"error,omitempty"`
+}
+
+func (w imageWire) image() orchestrator.Image {
+	return orchestrator.Image{
+		Digest:         w.Digest,
+		Ref:            w.Ref,
+		ManifestDigest: w.ManifestDigest,
+		Name:           w.Name,
+		State:          orchestrator.ImageState(w.State),
+		Error:          w.Error,
+	}
+}
+
+// ConvertImage asks the agent to resolve ref for its arch and convert it to a
+// rootfs in the background.
+func (p *Provider) ConvertImage(ctx context.Context, ref string) (orchestrator.Image, error) {
+	if p.stub != nil {
+		return orchestrator.Image{}, fmt.Errorf("%w: the in-memory firecracker stub cannot convert images", orchestrator.ErrImageUnsupported)
+	}
+	var resp imageWire
+	if err := p.doJSON(ctx, http.MethodPost, "/v1/images", map[string]string{"ref": ref}, &resp); err != nil {
+		return orchestrator.Image{}, fmt.Errorf("firecracker convert image: %w", err)
+	}
+	return resp.image(), nil
+}
+
+// GetImage reads the agent's record for digest. the agent answers 404 for a
+// digest it never converted.
+func (p *Provider) GetImage(ctx context.Context, digest string) (orchestrator.Image, error) {
+	if p.stub != nil {
+		return orchestrator.Image{}, &orchestrator.HTTPStatusError{Code: http.StatusNotFound, Body: "the in-memory firecracker stub holds no images"}
+	}
+	var resp imageWire
+	if err := p.doJSON(ctx, http.MethodGet, "/v1/images/"+url.PathEscape(digest), nil, &resp); err != nil {
+		return orchestrator.Image{}, fmt.Errorf("firecracker get image: %w", err)
+	}
+	return resp.image(), nil
+}
+
+var _ orchestrator.ImageConverter = (*Provider)(nil)
 
 // remoteEnv represents a Firecracker VM managed by the host agent.
 type remoteEnv struct {

@@ -58,6 +58,8 @@ tags:
     description: Mutating calls (create, destroy, fork, migrate, snapshot, restore, drain) run past their own request
   - name: builds
     description: Fusefile setup phases run on the orchestrator, with the setup layer cache
+  - name: images
+    description: OCI images converted to a bootable rootfs on a firecracker host (the Fusefile's `from:`)
 
 paths:
   /health:
@@ -2432,6 +2434,76 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /v1/images:
+    post:
+      tags: [images]
+      operationId: convertImage
+      summary: Convert an oci image
+      description: |
+        Resolves `ref` to its manifest for a firecracker host's arch and
+        starts converting it to a rootfs on that host in the background.
+        Answers 202 with the image's `digest` and `state`; poll
+        GET /v1/images/{digest} until it is `ready`, then create with
+        `spec.image_digest`. A create is pinned to a host where the image
+        is ready.
+
+        `host_id` and `labels` pick the host the way a create's placement
+        does. Without them the same ref keeps landing on the same host, so
+        converting it again finds the earlier conversion: a ref that is
+        already converting or ready answers with that record, and one that
+        failed is retried.
+
+        Public registries only, and only apt and dnf based images convert.
+        A qemu host cannot convert: pinning to one is a 400.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConvertImageRequest"
+      responses:
+        "202":
+          description: The image, converting, ready or failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /v1/images/{digest}:
+    parameters:
+      - name: digest
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        description: The image digest POST /v1/images returned.
+    get:
+      tags: [images]
+      operationId: getImage
+      summary: Get an image
+      description: |
+        Reports an image's conversion state, read from the firecracker
+        hosts. When more than one host holds the digest the most usable
+        record wins: ready, then converting, then failed.
+      responses:
+        "200":
+          description: The image.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Image"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -2782,6 +2854,16 @@ components:
             Optional named base rootfs for the provider to boot from
             (resolved by the host agent against its named-rootfs
             directory). Empty means the provider's default base image.
+        image_digest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: |
+            Boots an oci image converted with POST /v1/images (the
+            `digest` it returned). The create is pinned to a host where
+            the image is ready; a digest that is not ready on any host the
+            environment could land on is a 409. Mutually exclusive with
+            `image` and `seed_snapshot_id`; not allowed with `gpus` or a
+            `desktop`.
         region:
           type: string
         host_id:
@@ -5192,3 +5274,44 @@ components:
         snapshot_id:
           type: string
           description: The layer this build snapshotted for the step.
+
+    ConvertImageRequest:
+      type: object
+      required: [ref]
+      properties:
+        ref:
+          type: string
+          maxLength: 255
+          description: An oci image reference, e.g. `ubuntu:24.04` or `ghcr.io/org/app@sha256:<digest>`.
+        host_id:
+          type: string
+          description: Convert on this host. It must be a registered firecracker host.
+        labels:
+          type: object
+          additionalProperties:
+            type: string
+          description: Convert on a host carrying every one of these labels.
+
+    Image:
+      type: object
+      required: [digest, ref, manifest_digest, host_id, state]
+      properties:
+        digest:
+          type: string
+          description: |
+            Hex sha256 of the image's manifest digest for the host's arch
+            together with the digest of the fused binary baked into the
+            rootfs. A create names it in `spec.image_digest`.
+        ref:
+          type: string
+        manifest_digest:
+          type: string
+          description: The `sha256:` manifest digest for the host's arch the conversion is pinned to.
+        host_id:
+          type: string
+        state:
+          type: string
+          enum: [converting, ready, failed]
+        error:
+          type: string
+          description: Why the conversion failed, set when `state` is `failed`.

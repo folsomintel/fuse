@@ -93,7 +93,7 @@ func planFor(t *testing.T) *layerPlan {
 	if err := fusefile.ResolveFiles(f, dir); err != nil {
 		t.Fatalf("resolve files: %v", err)
 	}
-	lp, err := buildLayerPlan(path, f)
+	lp, err := buildLayerPlan(path, f, "")
 	if err != nil {
 		t.Fatalf("plan: %v", err)
 	}

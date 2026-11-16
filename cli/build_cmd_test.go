@@ -93,7 +93,7 @@ func TestBuildSubmitsTheClientSideLayerPlan(t *testing.T) {
 	}
 
 	f := parseFusefile(t, path)
-	lp, err := buildLayerPlan(path, f)
+	lp, err := buildLayerPlan(path, f, "")
 	if err != nil {
 		t.Fatal(err)
 	}

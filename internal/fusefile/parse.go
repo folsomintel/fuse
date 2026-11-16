@@ -144,6 +144,8 @@ func validate(f *Fusefile) error {
 		}
 	}
 
+	errs = append(errs, validateFrom(f)...)
+
 	// build and setup are two names for one phase, so setting both is rejected
 	// rather than resolved: concatenating them would run steps in an order
 	// nobody wrote, and picking a winner would silently drop the other half.
@@ -371,6 +373,29 @@ func validate(f *Fusefile) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// validateFrom checks the `from:` oci reference and what it cannot be
+// combined with. An oci image is converted on a firecracker host, so it has
+// no gpu, and it is a plain distro image, so it has no desktop stack.
+func validateFrom(f *Fusefile) []error {
+	if f.From == "" {
+		return nil
+	}
+	var errs []error
+	if !ValidImageRef(f.From) {
+		errs = append(errs, fmt.Errorf("from: invalid oci image reference %q (e.g. ubuntu:24.04 or ghcr.io/org/app@sha256:<digest>)", f.From))
+	}
+	if f.Image != "" {
+		errs = append(errs, fmt.Errorf("from and image: both name the rootfs to boot, set one of them, not both"))
+	}
+	if f.Desktop != nil {
+		errs = append(errs, fmt.Errorf("from and desktop: an oci image does not carry the desktop stack, use an image baked with fc-bake-desktop-rootfs.sh instead"))
+	}
+	if f.Resources.GPU > 0 {
+		errs = append(errs, fmt.Errorf("from and resources.gpu: oci images boot only on firecracker hosts, which have no gpus"))
+	}
+	return errs
 }
 
 // reservedGuestPorts are the guest VM's own control-plane ports, drawn from the

@@ -1,0 +1,90 @@
+---
+title: Images
+sidebar:
+  icon: package
+description: Convert OCI images into bootable rootfs images with the images service
+---
+
+The images service converts an OCI image, such as `ubuntu:24.04`, into a
+rootfs on a Firecracker host, the step a Fusefile's
+[`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from) runs inside
+`fuse up`. A create boots the result by naming its digest in
+`spec.image_digest`. Public registries only, and only apt and dnf based images
+convert.
+
+## client.images
+
+```ts
+convert(req: ConvertImageRequest, opts?: CallOptions): Promise<Image>
+get(digest: string, opts?: CallOptions): Promise<Image>
+```
+
+`convert` sends `POST /v1/images` and resolves at once with the image (a
+`202`), usually still `converting`. The bake keeps running on the host if your
+process goes away. Converting a ref that is already converting or ready returns
+that image; one that failed is converted again. A malformed ref, a registry
+that needs credentials, or a `host_id` that runs the QEMU backend rejects with
+a `FuseApiError` whose `code` is `invalid_argument`; a ref the registry does
+not have rejects with `not_found`.
+
+`get` reads an image by digest. When more than one host holds it, the most
+usable record wins: ready, then converting, then failed. An unknown digest
+rejects with a `FuseApiError` whose `code` is `not_found`. There is no `wait`:
+poll `get` until `state` is no longer `converting`.
+
+```ts
+import { ImageState } from "@folsom/fuse";
+
+let img = await client.images.convert({ ref: "ubuntu:24.04" });
+while (img.state === ImageState.Converting) {
+  await new Promise((r) => setTimeout(r, 2000));
+  img = await client.images.get(img.digest);
+}
+if (img.state !== ImageState.Ready) throw new Error(img.error);
+const env = await client.environments.create({
+  task_id: "t",
+  spec: { image_digest: img.digest },
+});
+```
+
+## ConvertImageRequest
+
+```ts
+interface ConvertImageRequest {
+  ref: string;
+  host_id?: string;
+  labels?: Record<string, string>;
+}
+```
+
+- `ref` is required: an OCI reference such as `ubuntu:24.04` or
+  `ghcr.io/org/app@sha256:<digest>`.
+- `host_id` and `labels` pick the Firecracker host the way a create's placement
+  does. Convert where the environment will run: a create lands only on a host
+  where the image is ready.
+
+## Image
+
+```ts
+interface Image {
+  digest: string;
+  ref: string;
+  manifest_digest: string;
+  host_id: string;
+  state: string; // one of ImageState: "converting", "ready" or "failed"
+  error?: string;
+}
+```
+
+- `digest` is a hex sha256 of the manifest digest for the host's arch and the
+  `fused` binary baked into the rootfs, so a moved tag or a new `fused` is a
+  new image.
+- `error` says why when `state` is `failed`.
+
+## spec.image_digest
+
+`spec.image_digest` boots a converted image. The create is pinned to a host
+where the image is ready; one that is not ready on any host rejects with a
+`409` `conflict`. It is mutually exclusive with `spec.image` and
+`seed_snapshot_id`, and is refused with `spec.gpus` and with a desktop (a
+`400`).

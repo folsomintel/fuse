@@ -48,7 +48,10 @@ and pointing it at `ghcr.io/...` fails the create with `base image not found`.
 Bake one with
 [`qemu-bake-cuda-rootfs.sh <driver-version>`](/docs/cloud/gpu-host-setup) and
 place it in the agent's images directory. `services[].image` _is_ an OCI
-reference, since those run as containers inside the guest.
+reference, since those run as containers inside the guest. A Fusefile's
+[`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from), which boots
+an OCI image, is refused with `gpu`: OCI images convert and boot only on
+Firecracker hosts.
 :::
 
 ```bash

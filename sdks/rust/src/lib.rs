@@ -3,9 +3,10 @@
 //! The crate is published as `folsom-fuse`; the library target is `fuse`,
 //! mirroring the Python SDK's `import fuse`.
 //!
-//! [`Client`] is the entry point. It groups seven resource services behind
+//! [`Client`] is the entry point. It groups eight resource services behind
 //! one shared transport: [`Environments`], [`Snapshots`], [`Hosts`],
-//! [`ApiKeys`], [`Interventions`], [`Operations`], and [`Builds`].
+//! [`ApiKeys`], [`Interventions`], [`Operations`], [`Builds`], and
+//! [`Images`].
 //!
 //! ```no_run
 //! use fuse::{Client, CreateRequest, ExecRequest, Spec};
@@ -57,6 +58,7 @@ mod error;
 mod events;
 mod gates;
 mod hosts;
+mod images;
 mod interventions;
 mod operations;
 mod snapshots;
@@ -79,6 +81,7 @@ pub use error::{ApiError, Error, ErrorCode, ForbiddenReason};
 pub use events::EventStream;
 pub use gates::OnHeld;
 pub use hosts::{HostPage, Hosts, ListHostsOptions};
+pub use images::Images;
 pub use interventions::{
     ApproveOptions, AuditOptions, AuditPage, HumanRequest, InterventionPage, Interventions,
     ListInterventionsOptions, ReviewRequest, ReviewResult,
@@ -89,18 +92,19 @@ pub use takeover::{LockedError, ReleaseOptions, TakeoverOptions};
 pub use types::{
     Actor, ActorLabel, ActorSource, ApiKey, Arch, AuditEntry, AuditEvent, Build, BuildEvent,
     BuildLayer, BuildLayerStatus, BuildSetup, BuildState, BuildStep, ComputerPayload,
-    CreateBuildRequest, CreateRequest, CreatedApiKey, DeciderNote, DeciderVerdict, DesktopSpec,
-    DesktopWm, EgressHealth, EgressHealthState, EgressMode, EgressProtocol, EgressSpec,
-    EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event, EventKind, ExecPayload,
-    ExposeSpec, ForkOptions, GateMode, GpuDevice, Health, HealthState, HealthcheckHttp,
-    HealthcheckProbe, HealthcheckSpec, HitlAskRequests, HitlDecider, HitlExecPolicy, HitlGate,
-    HitlGateMatch, HitlKind, HitlOnTimeout, HitlRequests, HitlReviewRequests, HitlScope,
-    HitlSecretRequests, HitlSecretTarget, HitlSpec, HitlTakeoverRequests, HitlWebhook, Host,
-    HostBackend, HostCapacity, HostState, Intervention, InterventionDecision, InterventionOutcome,
-    InterventionPayload, InterventionResult, InterventionSecret, InterventionSignal,
-    InterventionState, InterventionTakeover, LifecycleAction, LifecyclePayload, MigInstance,
-    MigrateOptions, MissReason, Operation, OperationAccepted, OperationError, OperationKind,
-    OperationState, Protocol, Reaper, RegisterHostRequest, ReviewFormat, ReviewPayload, Snapshot,
-    SnapshotExport, SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia,
-    VersionInfo, ALLOWLIST_GATE,
+    ConvertImageRequest, CreateBuildRequest, CreateRequest, CreatedApiKey, DeciderNote,
+    DeciderVerdict, DesktopSpec, DesktopWm, EgressHealth, EgressHealthState, EgressMode,
+    EgressProtocol, EgressSpec, EgressStatus, Endpoint, EnvironmentInfo, EnvironmentState, Event,
+    EventKind, ExecPayload, ExposeSpec, ForkOptions, GateMode, GpuDevice, Health, HealthState,
+    HealthcheckHttp, HealthcheckProbe, HealthcheckSpec, HitlAskRequests, HitlDecider,
+    HitlExecPolicy, HitlGate, HitlGateMatch, HitlKind, HitlOnTimeout, HitlRequests,
+    HitlReviewRequests, HitlScope, HitlSecretRequests, HitlSecretTarget, HitlSpec,
+    HitlTakeoverRequests, HitlWebhook, Host, HostBackend, HostCapacity, HostState, Image,
+    ImageState, Intervention, InterventionDecision, InterventionOutcome, InterventionPayload,
+    InterventionResult, InterventionSecret, InterventionSignal, InterventionState,
+    InterventionTakeover, LifecycleAction, LifecyclePayload, MigInstance, MigrateOptions,
+    MissReason, Operation, OperationAccepted, OperationError, OperationKind, OperationState,
+    Protocol, Reaper, RegisterHostRequest, ReviewFormat, ReviewPayload, Snapshot, SnapshotExport,
+    SnapshotKind, SnapshotMode, SnapshotRequest, SnapshotState, Spec, TakeoverVia, VersionInfo,
+    ALLOWLIST_GATE,
 };

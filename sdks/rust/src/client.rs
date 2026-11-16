@@ -11,6 +11,7 @@ use crate::environments::Environments;
 use crate::error::Error;
 use crate::gates::{HitlWait, OnHeld};
 use crate::hosts::Hosts;
+use crate::images::Images;
 use crate::interventions::Interventions;
 use crate::operations::{OnOperation, Operations};
 use crate::snapshots::Snapshots;
@@ -106,6 +107,11 @@ impl Client {
     /// The builds service.
     pub fn builds(&self) -> Builds {
         Builds::new(self.transport.clone())
+    }
+
+    /// The images service.
+    pub fn images(&self) -> Images {
+        Images::new(self.transport.clone())
     }
 
     /// Probes `GET /v1/version` (unauthenticated) and reports what the

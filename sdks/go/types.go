@@ -24,6 +24,10 @@ type Spec struct {
 	// from the last exec or attach.
 	IdleTimeoutSeconds int64  `json:"idle_timeout_seconds,omitempty"`
 	Image              string `json:"image,omitempty"`
+	// ImageDigest boots an oci image converted with Images.Convert (its
+	// Image.Digest). The image must be ready; the environment is pinned to
+	// a host where it is. Mutually exclusive with Image.
+	ImageDigest string `json:"image_digest,omitempty"`
 	// HostID pins the environment to an exact host id (the Fusefile's
 	// placement.host). The pinned host still has to be active, run the right
 	// backend, and fit the request.

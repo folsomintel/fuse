@@ -828,6 +828,12 @@ class IdempotencyTest(unittest.TestCase):
         finally:
             c.close()
 
+    def test_oci_images_are_refused(self):
+        code, body, _ = self.call("POST", "/v1/images", {"ref": "ubuntu:24.04"})
+        self.assertEqual(code, 501)
+        self.assertIn(b"not supported on qemu hosts", body)
+        self.assertEqual(self.call("GET", "/v1/images/" + "a" * 64)[0], 501)
+
     def test_repeat_create_makes_one_vm(self):
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:
             first = self.call("POST", "/v1/vm", {"name": "a"}, key="inv_1:create.boot/1")

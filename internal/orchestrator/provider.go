@@ -105,6 +105,12 @@ type Spec struct {
 	// named-rootfs directory). Empty means the provider's default base.
 	Image string
 
+	// ImageDigest boots a converted oci image (see images.go). the fleet
+	// resolves it at create into Image (the rootfs name on the host) and
+	// PinnedHostID (a host where it is ready), so nothing past placement
+	// reads it. Mutually exclusive with Image and SeedSnapshotID.
+	ImageDigest string
+
 	// SeedSnapshotID boots this VM from a persisted snapshot artifact instead
 	// of Image. Unlike a fork there is no live source VM: the artifact is
 	// resolved out of the host agent's snapshot store. It is host-local, which

@@ -675,6 +675,10 @@ func hostRejection(h *Host, spec Spec) string {
 	// against a stale or hand-edited host record.
 	case spec.GPUs > 0 && h.Backend != BackendQEMU:
 		return fmt.Sprintf("has backend %q, gpu environments require %q", h.Backend, BackendQEMU)
+	// a converted oci image is an ext4 rootfs on a firecracker host; qemu
+	// hosts boot qcow2 images and convert nothing.
+	case spec.ImageDigest != "" && !isFirecracker(h):
+		return fmt.Sprintf("has backend %q, oci images boot only on %q", h.Backend, BackendFirecracker)
 	case !labelsMatch(h.Labels, spec.Labels):
 		return "does not have labels " + formatLabels(unmatchedLabels(h.Labels, spec.Labels))
 	case !fits(h.Capacity, h.Allocated, spec):
