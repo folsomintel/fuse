@@ -95,3 +95,24 @@ func TestImagePoll(t *testing.T) {
 		t.Fatalf("missing host: poll = %+v", got)
 	}
 }
+
+// TestImagePollSupersededAttempt: a record from a later attempt ends the
+// earlier attempt's watch failed instead of following the retry.
+func TestImagePollSupersededAttempt(t *testing.T) {
+	d := digestOf("a")
+	fc := newImageProvider(Image{Digest: d, State: ImageConverting, CreatedAt: "2026-11-16T10:05:00Z"})
+	fm := imageFleet(t, map[string]Provider{"fc-1": fc}, nil)
+
+	old := Image{Digest: d, HostID: "fc-1", State: ImageConverting, CreatedAt: "2026-11-16T10:00:00Z"}
+	got, err := fm.ImagePoll(context.Background(), old)
+	if err != nil || got.State != ImageFailed || got.CreatedAt != old.CreatedAt || !strings.Contains(got.Error, "retried") {
+		t.Fatalf("superseded poll = %+v, %v; want the old attempt failed", got, err)
+	}
+
+	// the current attempt's watch, and one without an attempt, follow the record.
+	for _, w := range []Image{{Digest: d, HostID: "fc-1", State: ImageConverting, CreatedAt: "2026-11-16T10:05:00Z"}, {Digest: d, HostID: "fc-1", State: ImageConverting}} {
+		if got, err := fm.ImagePoll(context.Background(), w); err != nil || got.State != ImageConverting {
+			t.Fatalf("poll of %+v = %+v, %v; want converting", w, got, err)
+		}
+	}
+}
