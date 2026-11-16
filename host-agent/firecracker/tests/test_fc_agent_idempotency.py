@@ -6,6 +6,7 @@ import http.client
 import importlib.util
 import json
 import os
+import sys
 import socket
 import tempfile
 import threading
@@ -24,6 +25,9 @@ os.environ["PUBLIC_HOST"] = "127.0.0.1"
 _spec = importlib.util.spec_from_file_location("fc_agent", Path(__file__).parent.parent / "fc-agent.py")
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 AUTH = {"Authorization": "Bearer test-token"}
@@ -33,7 +37,7 @@ DIGEST = "a" * 64
 class IdempotencyTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.state = mock.patch.object(fc_agent, "STATE_DIR", Path(self.tmp.name))
+        self.state = mock.patch.object(fc_agent.agentlib, "STATE_DIR", Path(self.tmp.name))
         self.state.start()
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -118,21 +122,21 @@ class IdempotencyTest(unittest.TestCase):
         calls, p = self.fake_create()
         with p:
             self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
-            with mock.patch.object(fc_agent, "IDEMPOTENCY_TTL", 0.0):
+            with mock.patch.object(fc_agent.agentlib, "IDEMPOTENCY_TTL", 0.0):
                 time.sleep(0.01)
                 _, _, replayed = self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
         self.assertEqual(len(calls), 2)
         self.assertIsNone(replayed)
 
     def test_sweep_removes_expired_records(self):
-        fc_agent.idem_save("old", "POST /v1/vm", 200, "application/json", b"{}")
-        p = fc_agent._idem_path("old")
+        fc_agent.agentlib.idem_save("old", "POST /v1/vm", 200, "application/json", b"{}")
+        p = fc_agent.agentlib._idem_path("old")
         os.utime(p, (0, 0))
-        fc_agent.idem_save("new", "POST /v1/vm", 200, "application/json", b"{}")
-        with mock.patch.object(fc_agent, "_idem_last_sweep", 0.0):
-            fc_agent.idem_sweep()
+        fc_agent.agentlib.idem_save("new", "POST /v1/vm", 200, "application/json", b"{}")
+        with mock.patch.object(fc_agent.agentlib, "_idem_last_sweep", 0.0):
+            fc_agent.agentlib.idem_sweep()
         self.assertFalse(p.exists())
-        self.assertTrue(fc_agent._idem_path("new").exists())
+        self.assertTrue(fc_agent.agentlib._idem_path("new").exists())
 
     def test_dropped_connection_after_move_does_not_move_again(self):
         moved = threading.Event()
@@ -155,7 +159,7 @@ class IdempotencyTest(unittest.TestCase):
             s.close()
             self.assertTrue(moved.wait(5))
             for _ in range(100):
-                if fc_agent.idem_load("inv_2:move.pull/1"):
+                if fc_agent.agentlib.idem_load("inv_2:move.pull/1"):
                     break
                 time.sleep(0.02)
             code, out, replayed = self.call(
@@ -187,7 +191,7 @@ class IdempotencyTest(unittest.TestCase):
         # a full disk after the command ran: the repeat gets the first answer
         # from memory instead of running the command again.
         calls, p = self.fake_create()
-        with p, mock.patch.dict(fc_agent._idem_unsaved, clear=True), \
+        with p, mock.patch.dict(fc_agent.agentlib._idem_unsaved, clear=True), \
                 mock.patch.object(fc_agent.os, "replace", side_effect=OSError(28, "no space left on device")):
             first = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
             second = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
@@ -203,7 +207,7 @@ class IdempotencyTest(unittest.TestCase):
                 self.call("POST", "/v1/vm", {"name": "a"}, key="k-private")
         finally:
             os.umask(old)
-        d = fc_agent.idem_dir()
+        d = fc_agent.agentlib.idem_dir()
         self.assertEqual(d.stat().st_mode & 0o777, 0o700)
         records = list(d.iterdir())
         self.assertEqual(len(records), 1)
@@ -242,8 +246,11 @@ class NaturalIdempotencyTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.vms = mock.patch.object(fc_agent, "VMS_DIR", Path(self.tmp.name))
         self.vms.start()
+        self.lib_vms = mock.patch.object(fc_agent.agentlib, "VMS_DIR", Path(self.tmp.name))
+        self.lib_vms.start()
 
     def tearDown(self):
+        self.lib_vms.stop()
         self.vms.stop()
         self.tmp.cleanup()
 

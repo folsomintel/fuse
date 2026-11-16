@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import sys
 import socket
 import struct
 import tempfile
@@ -31,6 +32,9 @@ def load(name: str, filename: str):
     spec = importlib.util.spec_from_file_location(name, Path(__file__).parent.parent / filename)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
+    # a fresh agentlib per load, so each agent copy keeps the paths it was
+    # configured with instead of sharing the last one loaded.
+    sys.modules.pop("agentlib", None)
     spec.loader.exec_module(module)
     return module
 
@@ -308,6 +312,7 @@ class PeerKeepAliveTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         fc_agent.sudo = lambda cmd, check=True: fc_agent.run(cmd, check=check)
+        fc_agent.agentlib.sudo = fc_agent.sudo
         cls.server = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
         cls.peer = f"http://127.0.0.1:{cls.server.server_address[1]}"

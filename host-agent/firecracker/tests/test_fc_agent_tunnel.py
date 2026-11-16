@@ -10,6 +10,7 @@ stdlib-only, no VMs: importing fc-agent.py only needs FC_DIR/FC_AGENT_TOKEN.
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,9 @@ _spec = importlib.util.spec_from_file_location(
 )
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 

@@ -225,9 +225,9 @@ func TestCanceledContextStopsRetry(t *testing.T) {
 func TestAgentsShareIdempotencyKeyRule(t *testing.T) {
 	want := `IDEMPOTENCY_KEY_RE = re.compile(r"` + idempotencyKeyChars + `{1,256}")`
 	header := `IDEMPOTENCY_HEADER = "` + IdempotencyHeader + `"`
+	// both agents import these from shared/agentlib.py.
 	for _, f := range []string{
-		"../../host-agent/firecracker/fc-agent.py",
-		"../../host-agent/qemu/qemu-agent.py",
+		"../../host-agent/shared/agentlib.py",
 	} {
 		b, err := os.ReadFile(f)
 		if err != nil {

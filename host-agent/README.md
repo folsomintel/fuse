@@ -26,7 +26,9 @@ exposes `/dev/kvm`:
 ```
 firecracker/        # everything to run a Firecracker host — see below
 qemu/                # everything to run a QEMU/GPU host — see below
-shared/              # fc-build-agent.sh, the guest-agent build step used by both backends
+shared/              # agentlib.py, the python both agents import (http plumbing, idempotency,
+                     # exec/upload/attach over ssh), and fc-build-agent.sh, the guest-agent
+                     # build step used by both backends
 ```
 
 ```
@@ -135,7 +137,9 @@ cd host-agent/qemu
 ./scripts/qemu-vfio-bind.sh --list
 sudo ./scripts/qemu-vfio-bind.sh
 
-# install and start the host agent
+# install and start the host agent. qemu-agent.py imports ../shared/agentlib.py;
+# if the unit's /home/ubuntu/qemu is a copy rather than this checkout, copy
+# agentlib.py next to qemu-agent.py too.
 sudo cp qemu-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now qemu-agent

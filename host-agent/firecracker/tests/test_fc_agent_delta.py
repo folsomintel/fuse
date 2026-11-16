@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -27,10 +28,14 @@ os.environ["PUBLIC_HOST"] = "127.0.0.1"
 _spec = importlib.util.spec_from_file_location("fc_agent", Path(__file__).parent.parent / "fc-agent.py")
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 # the commit step shells out through sudo; the test store is ours already.
 fc_agent.sudo = lambda cmd, check=True: fc_agent.run(cmd, check=check)
+fc_agent.agentlib.sudo = fc_agent.sudo
 
 B = 4096
 fc_agent.ROOTFS_BLOCK_BYTES = B

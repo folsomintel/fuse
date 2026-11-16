@@ -14,7 +14,7 @@
 #   FUSE_LOCAL_DIR    state dir (required). layout:
 #                       bin/{firecracker,orchestrator,restate-server}
 #                       fc/{vmlinux.bin,rootfs.ext4,ubuntu.id_rsa}  restate/ (restate data)
-#                       fc-agent.py  *.log  *.pid  env
+#                       fc-agent.py  agentlib.py  *.log  *.pid  env
 #   FC_AGENT_TOKEN    bearer token the orchestrator uses to call fc-agent (required by install)
 #   ORCH_AUTH_TOKEN   orchestrator master token (required by install)
 #   FUSE_VERSION      fuse release tag for orchestrator/fused assets (default: latest)
@@ -137,6 +137,7 @@ install_stack() {
   command -v curl >/dev/null 2>&1 || die "curl is required"
   [ -e /dev/kvm ] || die "/dev/kvm not present: firecracker needs kvm (on macOS this script runs inside the appliance VM, which needs nested virtualization: M3 or later + macOS 15+)"
   [ -f "$DIR/fc-agent.py" ] || die "$DIR/fc-agent.py missing: fuse local writes it before calling install"
+  [ -f "$DIR/agentlib.py" ] || die "$DIR/agentlib.py missing: fuse local writes it next to fc-agent.py"
 
   mkdir -p "$DIR/bin" "$DIR/fc"
 

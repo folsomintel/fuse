@@ -3,6 +3,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -21,6 +22,9 @@ _spec = importlib.util.spec_from_file_location(
 )
 qemu_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(qemu_agent)
 
 
@@ -32,6 +36,8 @@ class QEMUAgentTest(unittest.TestCase):
         qemu_agent.STATE_DIR = self.root / "agent-state"
         qemu_agent.VMS_DIR = qemu_agent.STATE_DIR / "vms"
         qemu_agent.VMS_DIR.mkdir(parents=True)
+        qemu_agent.agentlib.STATE_DIR = qemu_agent.STATE_DIR
+        qemu_agent.agentlib.VMS_DIR = qemu_agent.VMS_DIR
         qemu_agent.BASE_ROOTFS = self.root / "rootfs-cuda.qcow2"
         qemu_agent.IMAGES_DIR = self.root / "images"
         qemu_agent.IMAGES_DIR.mkdir()
@@ -539,12 +545,12 @@ class PublicHostTest(unittest.TestCase):
             return "203.0.113.7" if "-4" in cmd else "2607:5300:203:535a::"
 
         with mock.patch.dict(os.environ, {"PUBLIC_HOST": ""}):
-            with mock.patch.object(qemu_agent, "_probe", side_effect=fake_probe):
+            with mock.patch.object(qemu_agent.agentlib, "_probe", side_effect=fake_probe):
                 self.assertEqual(qemu_agent.resolve_public_host(), "203.0.113.7")
 
     def test_probe_exhausted_fails_loudly(self):
         with mock.patch.dict(os.environ, {"PUBLIC_HOST": ""}):
-            with mock.patch.object(qemu_agent, "_probe", return_value=""):
+            with mock.patch.object(qemu_agent.agentlib, "_probe", return_value=""):
                 with self.assertRaises(SystemExit):
                     qemu_agent.resolve_public_host()
 
@@ -605,7 +611,7 @@ class UploadRemoteCommandTest(unittest.TestCase):
     def test_reserved_files_are_root_only(self):
         for path in self.RESERVED:
             with self.subTest(path=path):
-                cmd = qemu_agent.upload_remote_command(path)
+                cmd = qemu_agent.agentlib.upload_remote_command(path)
                 self.assertIn(f"chmod 0600 {path}", cmd)
 
     def test_reserved_files_are_created_restricted(self):
@@ -614,33 +620,33 @@ class UploadRemoteCommandTest(unittest.TestCase):
         for path in self.RESERVED:
             with self.subTest(path=path):
                 self.assertTrue(
-                    qemu_agent.upload_remote_command(path).startswith("umask 0077 &&")
+                    qemu_agent.agentlib.upload_remote_command(path).startswith("umask 0077 &&")
                 )
 
     def test_reserved_directory_is_locked_down(self):
         # A pre-existing /fuse keeps its own mode through umask, so it is
         # chmod'd explicitly. A nested path locks both it and its parent.
-        self.assertIn("chmod 0700 /fuse", qemu_agent.upload_remote_command("/fuse/env"))
-        nested = qemu_agent.upload_remote_command("/fuse/tls/key.pem")
+        self.assertIn("chmod 0700 /fuse", qemu_agent.agentlib.upload_remote_command("/fuse/env"))
+        nested = qemu_agent.agentlib.upload_remote_command("/fuse/tls/key.pem")
         self.assertIn("/fuse", nested)
         self.assertIn("/fuse/tls", nested)
 
     def test_ordinary_paths_are_unchanged(self):
         # Caller files keep the previous behaviour and the default mode: a
         # workload's own files are not the agent's to restrict.
-        cmd = qemu_agent.upload_remote_command("/workspace/app/main.py")
+        cmd = qemu_agent.agentlib.upload_remote_command("/workspace/app/main.py")
         self.assertEqual(cmd, "mkdir -p /workspace/app && cat > /workspace/app/main.py")
 
     def test_a_path_merely_prefixed_fuse_is_not_reserved(self):
         # /fused and /fuse-backup share the prefix but are not the directory.
         for path in ["/fused/x", "/fuse-backup/x"]:
             with self.subTest(path=path):
-                self.assertNotIn("chmod", qemu_agent.upload_remote_command(path))
+                self.assertNotIn("chmod", qemu_agent.agentlib.upload_remote_command(path))
 
     def test_traversal_cannot_aim_the_chmod_outside_fuse(self):
         # The dangerous shape: a reserved-looking path that normalizes out of
         # /fuse would otherwise chmod 0700 a directory like / or /etc.
-        cmd = qemu_agent.upload_remote_command("/fuse/../etc/passwd")
+        cmd = qemu_agent.agentlib.upload_remote_command("/fuse/../etc/passwd")
         self.assertNotIn("chmod", cmd)
         self.assertIn("cat > /etc/passwd", cmd)
 
@@ -666,6 +672,10 @@ class EgressTest(unittest.TestCase):
             p = mock.patch.object(qemu_agent, name, value)
             p.start()
             self.addCleanup(p.stop)
+            if name in ("STATE_DIR", "VMS_DIR"):
+                p = mock.patch.object(qemu_agent.agentlib, name, value)
+                p.start()
+                self.addCleanup(p.stop)
         qemu_agent.VMS_DIR.mkdir(parents=True)
         qemu_agent.IMAGES_DIR.mkdir()
         qemu_agent.BASE_ROOTFS.write_bytes(b"default")
@@ -732,16 +742,16 @@ class EgressTest(unittest.TestCase):
 
     def test_exec_sources_the_egress_hook_first(self):
         self.create({"name": "plain"})
-        with mock.patch.object(qemu_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+        with mock.patch.object(qemu_agent.agentlib, "ssh_exec", return_value=(0, b"", b"")) as ssh:
             qemu_agent.do_exec("plain", ["env"])
         remote = ssh.call_args.args[1]
-        self.assertTrue(remote.startswith(qemu_agent.EGRESS_ENV_PREFIX), remote)
+        self.assertTrue(remote.startswith(qemu_agent.agentlib.EGRESS_ENV_PREFIX), remote)
         self.assertTrue(remote.endswith("env"), remote)
 
     def test_attach_with_command_sources_the_hook_and_bare_attach_does_not(self):
-        with_cmd = qemu_agent.attach_argv("10.200.1.2", ["bash"])
-        self.assertEqual(with_cmd[-2:], [qemu_agent.EGRESS_ENV_PREFIX, "bash"])
-        bare = qemu_agent.attach_argv("10.200.1.2", [])
+        with_cmd = qemu_agent.agentlib.attach_argv("10.200.1.2", ["bash"])
+        self.assertEqual(with_cmd[-2:], [qemu_agent.agentlib.EGRESS_ENV_PREFIX, "bash"])
+        bare = qemu_agent.agentlib.attach_argv("10.200.1.2", [])
         self.assertEqual(bare[-2:], ["-tt", "root@10.200.1.2"])
 
     def test_vm_public_reports_tap_ends_and_direct(self):
@@ -794,7 +804,7 @@ class IdempotencyTest(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.state = mock.patch.object(qemu_agent, "STATE_DIR", Path(self.tmp.name))
+        self.state = mock.patch.object(qemu_agent.agentlib, "STATE_DIR", Path(self.tmp.name))
         self.state.start()
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), qemu_agent.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
@@ -854,7 +864,7 @@ class IdempotencyTest(unittest.TestCase):
         # a full disk after the command ran: the repeat gets the first answer
         # from memory instead of running the command again.
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create, \
-                mock.patch.dict(qemu_agent._idem_unsaved, clear=True), \
+                mock.patch.dict(qemu_agent.agentlib._idem_unsaved, clear=True), \
                 mock.patch.object(qemu_agent.os, "replace", side_effect=OSError(28, "no space left on device")):
             first = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
             second = self.call("POST", "/v1/vm", {"name": "a"}, key="k-full")
@@ -869,7 +879,7 @@ class IdempotencyTest(unittest.TestCase):
                 self.call("POST", "/v1/vm", {"name": "a"}, key="k-private")
         finally:
             os.umask(old)
-        d = qemu_agent.idem_dir()
+        d = qemu_agent.agentlib.idem_dir()
         self.assertEqual(d.stat().st_mode & 0o777, 0o700)
         records = list(d.iterdir())
         self.assertEqual(len(records), 1)
@@ -878,7 +888,7 @@ class IdempotencyTest(unittest.TestCase):
     def test_expired_key_runs_again(self):
         with mock.patch.object(qemu_agent, "create_vm", return_value={"vm_id": "a", "url": "u"}) as create:
             self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
-            with mock.patch.object(qemu_agent, "IDEMPOTENCY_TTL", 0.0):
+            with mock.patch.object(qemu_agent.agentlib, "IDEMPOTENCY_TTL", 0.0):
                 time.sleep(0.01)
                 self.call("POST", "/v1/vm", {"name": "a"}, key="k1")
         self.assertEqual(create.call_count, 2)
@@ -913,8 +923,11 @@ class NaturalIdempotencyTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.vms = mock.patch.object(qemu_agent, "VMS_DIR", Path(self.tmp.name))
         self.vms.start()
+        self.lib_vms = mock.patch.object(qemu_agent.agentlib, "VMS_DIR", Path(self.tmp.name))
+        self.lib_vms.start()
 
     def tearDown(self):
+        self.lib_vms.stop()
         self.vms.stop()
         self.tmp.cleanup()
 

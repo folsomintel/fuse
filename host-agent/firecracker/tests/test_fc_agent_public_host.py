@@ -9,6 +9,7 @@ FC_DIR/FC_AGENT_TOKEN/PUBLIC_HOST in the env.
 """
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,9 @@ _spec = importlib.util.spec_from_file_location(
 )
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 
@@ -77,23 +81,23 @@ class ResolvePublicHostTest(unittest.TestCase):
                 return "203.0.113.7"
             return "2607:5300:203:535a::"
 
-        with mock.patch.object(fc_agent, "_probe", side_effect=fake_probe):
+        with mock.patch.object(fc_agent.agentlib, "_probe", side_effect=fake_probe):
             self.assertEqual(self.resolve(None), "203.0.113.7")
 
     def test_probe_falls_back_to_ipv6(self):
         def fake_probe(cmd):
             return "2607:5300:203:535a::" if "-6" in cmd else ""
 
-        with mock.patch.object(fc_agent, "_probe", side_effect=fake_probe):
+        with mock.patch.object(fc_agent.agentlib, "_probe", side_effect=fake_probe):
             self.assertEqual(self.resolve(None), "2607:5300:203:535a::")
 
     def test_probe_skips_non_ip_output(self):
-        with mock.patch.object(fc_agent, "_probe", return_value="<html>error</html>"):
+        with mock.patch.object(fc_agent.agentlib, "_probe", return_value="<html>error</html>"):
             with self.assertRaises(SystemExit):
                 self.resolve(None)
 
     def test_probe_exhausted_fails_loudly(self):
-        with mock.patch.object(fc_agent, "_probe", return_value=""):
+        with mock.patch.object(fc_agent.agentlib, "_probe", return_value=""):
             with self.assertRaises(SystemExit):
                 self.resolve(None)
 
@@ -154,7 +158,7 @@ class UploadRemoteCommandTest(unittest.TestCase):
     def test_reserved_files_are_root_only(self):
         for path in self.RESERVED:
             with self.subTest(path=path):
-                cmd = fc_agent.upload_remote_command(path)
+                cmd = fc_agent.agentlib.upload_remote_command(path)
                 self.assertIn(f"chmod 0600 {path}", cmd)
 
     def test_reserved_files_are_created_restricted(self):
@@ -162,32 +166,32 @@ class UploadRemoteCommandTest(unittest.TestCase):
         # the chmod, so the mode is also set at creation.
         for path in self.RESERVED:
             with self.subTest(path=path):
-                self.assertTrue(fc_agent.upload_remote_command(path).startswith("umask 0077 &&"))
+                self.assertTrue(fc_agent.agentlib.upload_remote_command(path).startswith("umask 0077 &&"))
 
     def test_reserved_directory_is_locked_down(self):
         # A pre-existing /fuse keeps its own mode through umask, so it is
         # chmod'd explicitly. A nested path locks both it and its parent.
-        self.assertIn("chmod 0700 /fuse", fc_agent.upload_remote_command("/fuse/env"))
-        nested = fc_agent.upload_remote_command("/fuse/tls/key.pem")
+        self.assertIn("chmod 0700 /fuse", fc_agent.agentlib.upload_remote_command("/fuse/env"))
+        nested = fc_agent.agentlib.upload_remote_command("/fuse/tls/key.pem")
         self.assertIn("/fuse", nested)
         self.assertIn("/fuse/tls", nested)
 
     def test_ordinary_paths_are_unchanged(self):
         # Caller files keep the previous behaviour and the default mode: a
         # workload's own files are not the agent's to restrict.
-        cmd = fc_agent.upload_remote_command("/workspace/app/main.py")
+        cmd = fc_agent.agentlib.upload_remote_command("/workspace/app/main.py")
         self.assertEqual(cmd, "mkdir -p /workspace/app && cat > /workspace/app/main.py")
 
     def test_a_path_merely_prefixed_fuse_is_not_reserved(self):
         # /fused and /fuse-backup share the prefix but are not the directory.
         for path in ["/fused/x", "/fuse-backup/x"]:
             with self.subTest(path=path):
-                self.assertNotIn("chmod", fc_agent.upload_remote_command(path))
+                self.assertNotIn("chmod", fc_agent.agentlib.upload_remote_command(path))
 
     def test_traversal_cannot_aim_the_chmod_outside_fuse(self):
         # The dangerous shape: a reserved-looking path that normalizes out of
         # /fuse would otherwise chmod 0700 a directory like / or /etc.
-        cmd = fc_agent.upload_remote_command("/fuse/../etc/passwd")
+        cmd = fc_agent.agentlib.upload_remote_command("/fuse/../etc/passwd")
         self.assertNotIn("chmod", cmd)
         self.assertIn("cat > /etc/passwd", cmd)
 
