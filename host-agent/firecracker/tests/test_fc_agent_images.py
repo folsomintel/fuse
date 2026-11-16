@@ -219,6 +219,7 @@ echo "cleanup" >&2
 exit 1
 """
 BAKE_HANG = """#!/bin/sh
+printf 'part' > "$IMAGES_DIR/.$2.ext4.tmp"
 sleep 30
 """
 
@@ -303,6 +304,8 @@ class ConvertTest(ConvertBase):
             rec = self.wait(fc_agent.image_convert_start("ubuntu")["digest"])
         self.assertEqual(rec["state"], "failed")
         self.assertIn("timed out", rec["error"])
+        # the kill skips the script's trap, so the agent removes the partial.
+        self.assertFalse((fc_agent.IMAGES_DIR / f".{rec['name']}.ext4.tmp").exists())
 
     def test_a_second_convert_while_converting_does_not_bake_twice(self):
         self.bake(BAKE_HANG)
@@ -366,7 +369,8 @@ class RoutesTest(ConvertBase):
         code, body = self.call("POST", "/v1/images", {"ref": "ubuntu:24.04"})
         self.assertEqual(code, 202, body)
         rec = json.loads(body)
-        self.assertEqual(set(rec), {"digest", "ref", "manifest_digest", "name", "state", "error"})
+        self.assertEqual(set(rec), {"digest", "ref", "manifest_digest", "name", "state", "error", "created_at"})
+        self.assertTrue(rec["created_at"])
         self.wait(rec["digest"])
         code, body = self.call("GET", f"/v1/images/{rec['digest']}")
         self.assertEqual(code, 200)

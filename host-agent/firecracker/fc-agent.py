@@ -3224,7 +3224,9 @@ def image_record_save(rec: dict) -> None:
 
 
 def image_public(rec: dict) -> dict:
-    return {k: rec.get(k, "") for k in ("digest", "ref", "manifest_digest", "name", "state", "error")}
+    """The record as the orchestrator sees it. created_at marks the attempt: a
+    retry of a failed image writes a new one, which keys a durable watch."""
+    return {k: rec.get(k, "") for k in ("digest", "ref", "manifest_digest", "name", "state", "error", "created_at")}
 
 
 def image_convert_start(ref: str) -> dict:
@@ -3293,6 +3295,9 @@ def image_convert_run(rec: dict) -> None:
                 pass
             proc.wait()
             error = f"conversion timed out after {IMAGE_CONVERT_TIMEOUT:.0f}s"
+            # sigkill skips the script's exit trap, which is what removes a
+            # partial rootfs, so remove it here.
+            image_remove_partial(rec["name"])
         if not error and not target.exists():
             error = f"bake finished but {target} is missing"
     except Exception as e:
@@ -3304,6 +3309,16 @@ def image_convert_run(rec: dict) -> None:
             rec["size_bytes"] = target.stat().st_size
         image_record_save(rec)
     sys.stderr.write(f"[fc-agent] image {rec['digest']} ({rec['ref']}) {rec['state']} {error}\n")
+
+
+def image_remove_partial(name: str) -> None:
+    """Remove the temp rootfs fc-bake-distro-rootfs.sh writes before its mv.
+    mkfs runs under sudo, so the file can be root's."""
+    tmp = IMAGES_DIR / f".{name}.ext4.tmp"
+    try:
+        tmp.unlink(missing_ok=True)
+    except OSError:
+        sudo(["rm", "-f", str(tmp)], check=False)
 
 
 def image_sweep_interrupted() -> None:

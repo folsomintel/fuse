@@ -290,6 +290,7 @@ type imageWire struct {
 	Name           string `json:"name"`
 	State          string `json:"state"`
 	Error          string `json:"error,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
 }
 
 func (w imageWire) image() orchestrator.Image {
@@ -300,6 +301,7 @@ func (w imageWire) image() orchestrator.Image {
 		Name:           w.Name,
 		State:          orchestrator.ImageState(w.State),
 		Error:          w.Error,
+		CreatedAt:      w.CreatedAt,
 	}
 }
 
