@@ -16,6 +16,7 @@ type imageProvider struct {
 	images     map[string]Image
 	convertErr error
 	createErr  error
+	getErr     error
 	converted  []string
 	created    []Spec
 }
@@ -52,6 +53,9 @@ func (p *imageProvider) ConvertImage(_ context.Context, ref string) (Image, erro
 func (p *imageProvider) GetImage(_ context.Context, digest string) (Image, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.getErr != nil {
+		return Image{}, p.getErr
+	}
 	img, ok := p.images[digest]
 	if !ok {
 		return Image{}, &HTTPStatusError{Code: http.StatusNotFound, Body: "image not found"}
