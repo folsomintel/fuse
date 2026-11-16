@@ -668,6 +668,11 @@ The limits:
   with `fc-bake-desktop-rootfs.sh` for that.
 - `from` and `image` both name the rootfs to boot, so set one of them. For the
   same reason `--from-build` is an error with a Fusefile that sets `from`.
+- Each host caps the disk its converted images hold (`FC_IMAGE_CACHE_GB`,
+  default 50). Going over it evicts the least recently booted images that no
+  vm or snapshot uses, so a `from` image unused for a while is converted again
+  on the next `fuse up`. When nothing can be evicted the convert fails with a
+  507.
 
 ## Workspace
 

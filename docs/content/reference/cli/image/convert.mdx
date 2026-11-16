@@ -46,6 +46,11 @@ converting <ref> on host <host> (image <digest>)
 image <ref> ready on host <host>
 ```
 
+Each host caps the disk its converted images hold (`FC_IMAGE_CACHE_GB`). A
+new conversion over the cap first evicts the host's least recently used images
+that no vm or snapshot uses; when nothing can go, the convert fails with a
+`507` and the command exits non-zero.
+
 A conversion that ends `failed` exits non-zero with the host's reason:
 
 ```

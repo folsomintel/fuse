@@ -164,6 +164,7 @@ func TestImageSentinels(t *testing.T) {
 		{orchestrator.ErrImageNotFound, http.StatusNotFound},
 		{orchestrator.ErrImageNotReady, http.StatusConflict},
 		{orchestrator.ErrImageHostFailed, http.StatusServiceUnavailable},
+		{orchestrator.ErrImageCacheFull, http.StatusInsufficientStorage},
 	} {
 		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
 			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)

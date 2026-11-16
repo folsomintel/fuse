@@ -60,6 +60,10 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrBuildNotStarted),
 		errors.Is(err, orchestrator.ErrImageHostFailed):
 		return http.StatusServiceUnavailable, CodeUnavailable
+	case errors.Is(err, orchestrator.ErrImageCacheFull):
+		// the host is out of room until something is destroyed, the same
+		// retry-later shape as unavailable.
+		return http.StatusInsufficientStorage, CodeUnavailable
 	case errors.Is(err, orchestrator.ErrSnapshotQuotaExceeded),
 		errors.Is(err, orchestrator.ErrSnapshotInvalidState),
 		errors.Is(err, orchestrator.ErrSnapshotHasChildren),

@@ -299,6 +299,15 @@ stderr. `FC_BAKE_WORK` overrides the work dir (default
 `/tmp/fcbake-distro-<name>`) and `FC_ROOTFS_SIZE` the image size (default
 `4G`, sparse). Re-run it after the agent binary changes, as with the base bake.
 
+Images converted through `POST /v1/images` (a Fusefile's `from:`) land in the
+same directory as `oci-<digest>.ext4`, under a per-host cap: `FC_IMAGE_CACHE_GB`
+on the agent (default `50`) bounds the disk they allocate. Before a new
+conversion that could pass it, counted at `FC_ROOTFS_SIZE` since a bake never
+allocates more, the agent evicts the least recently booted converted images that
+no vm or snapshot on the host was booted from. When nothing can be evicted the
+convert answers 507. Baked catalogue images and anything else in `IMAGES_DIR`
+are never counted or evicted.
+
 ## The host agent's HTTP contract
 
 VM routes are under `/v1/vm`, bearer auth (`Authorization: Bearer $TOKEN`), JSON

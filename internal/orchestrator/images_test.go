@@ -132,6 +132,7 @@ func TestConvertImageMapsAgentErrors(t *testing.T) {
 		{http.StatusBadRequest, ErrInvalidImage},
 		{http.StatusNotFound, ErrImageNotFound},
 		{http.StatusNotImplemented, ErrImageUnsupported},
+		{http.StatusInsufficientStorage, ErrImageCacheFull},
 		{http.StatusBadGateway, ErrImageHostFailed},
 	}
 	for _, tc := range cases {
