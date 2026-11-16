@@ -214,5 +214,27 @@ check "default work dir is keyed by name" [ -d "/tmp/fcbake-distro-$NAME" ]
 rm -rf "/tmp/fcbake-distro-$NAME"
 rm -f "$IMAGES_DIR/$NAME.ext4"
 
+printf '\n== desktop bake refuses a non-22.04 base ==\n'
+# the desktop script finds its units at ../../ops/systemd, so it gets a tree
+# of its own; mount does nothing and the "mounted" base is a plain dir
+DFC="$WORK/repo/host-agent/firecracker"
+mkdir -p "$DFC/scripts" "$WORK/repo/ops/systemd"
+cp "$SRC/scripts/fc-bake-desktop-rootfs.sh" "$DFC/scripts/"
+for r in fuse-display-run fuse-wm-run; do : > "$DFC/$r"; done
+for u in fuse-display fuse-wm fuse-panel fuse-vnc; do : > "$WORK/repo/ops/systemd/$u.service"; done
+for c in mount umount e2fsck resize2fs chroot; do printf '#!/bin/sh\nexit 0\n' > "$STUBS/$c"; chmod +x "$STUBS/$c"; done
+DMNT="$WORK/desktop-mnt"
+mkdir -p "$DMNT/etc"
+printf 'ID=debian\nVERSION_ID="12"\n' > "$DMNT/etc/os-release"
+echo base > "$DFC/base.ext4"
+echo "old desktop" > "$DFC/out.ext4"
+FC_BAKE_MOUNT="$DMNT" FC_BAKE_WORK="$WORK/desktop-work" \
+  "$DFC/scripts/fc-bake-desktop-rootfs.sh" "$DFC/base.ext4" "$DFC/out.ext4" >/dev/null 2>"$WORK/err"
+RC=$?
+check "debian base refused" [ "$RC" -ne 0 ]
+check "refusal names the base release" grep -q "is debian-12, not ubuntu-22.04" "$WORK/err"
+check "refused base leaves the existing output alone" grep -qx "old desktop" "$DFC/out.ext4"
+check "refused base leaves no temp image" [ ! -e "$DFC/.out.ext4.tmp" ]
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

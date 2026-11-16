@@ -44,6 +44,9 @@ OPS_SYSTEMD="$(cd "$FC_DIR/../../ops/systemd" && pwd)"
 BASE=${1:-rootfs-fused.ext4}
 OUT=${2:-rootfs-desktop.ext4}
 [ "$BASE" != "$OUT" ] || { echo "base and output are the same file: $BASE" >&2; exit 1; }
+# built under a temp name and moved into place at the end, so a refused base
+# or a failed bake never clobbers an existing output
+TMP_OUT="$(dirname "$OUT")/.$(basename "$OUT").tmp"
 SIZE=${FC_DESKTOP_ROOTFS_SIZE:-8G}
 GEOMETRY=${FC_DESKTOP_GEOMETRY:-1024x768x24}
 MOUNT_POINT=${FC_BAKE_MOUNT:-/tmp/fcbake-desktop}
@@ -94,6 +97,7 @@ cleanup() {
   sudo -n umount "$MOUNT_POINT/dev" 2>/dev/null || true
   sudo -n umount "$MOUNT_POINT/proc" 2>/dev/null || true
   sudo -n umount "$MOUNT_POINT" 2>/dev/null || true
+  rm -f "$TMP_OUT" 2>/dev/null || sudo -n rm -f "$TMP_OUT" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -112,16 +116,16 @@ fsck_ok() {
 mkdir -p "$WORK"
 
 log "copy base -> $OUT"
-cp -f "$BASE" "$OUT"
+cp -f "$BASE" "$TMP_OUT"
 
 log "grow $OUT to $SIZE"
-sudo -n truncate -s "$SIZE" "$OUT"
-fsck_ok "$OUT"
-sudo -n resize2fs "$OUT" >/dev/null
+sudo -n truncate -s "$SIZE" "$TMP_OUT"
+fsck_ok "$TMP_OUT"
+sudo -n resize2fs "$TMP_OUT" >/dev/null
 
 log "mount loopback at $MOUNT_POINT"
 sudo -n mkdir -p "$MOUNT_POINT"
-sudo -n mount -o loop "$OUT" "$MOUNT_POINT"
+sudo -n mount -o loop "$TMP_OUT" "$MOUNT_POINT"
 
 # the bundle carries ubuntu 22.04's libc and libraries; on any other release
 # they would replace the base's own and leave it unbootable. read the file
@@ -302,6 +306,7 @@ if [ "${FC_DESKTOP_SKIP_DISPLAY_CHECK:-0}" != "1" ]; then
 fi
 
 sudo -n umount "$MOUNT_POINT"
+mv -f "$TMP_OUT" "$OUT"
 trap - EXIT
 
 log "done -> $OUT ($(du -h "$OUT" | cut -f1))"
