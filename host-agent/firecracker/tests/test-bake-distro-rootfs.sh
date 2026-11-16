@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Unit test for fc-bake-distro-rootfs.sh against stubbed sudo, podman, curl,
 # ssh-keygen and mkfs.ext4: argument validation, the unsupported-distro
-# refusal, failure reporting, the atomic write and the per-name work dir.
+# refusal, failure reporting, the atomic write, the per-name work dir and an
+# image whose symlinks point out of the tree.
 # The real bake (pull, apt/dnf, boot) is not exercised here.
 #
 # No network, no root, no VMs:  ./host-agent/firecracker/tests/test-bake-distro-rootfs.sh
@@ -70,7 +71,10 @@ EOF
 cat > "$STUBS/mkfs.ext4" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${STUB_MKFS_FAIL:-}" ] || exit 1
-for a in "$@"; do out=$a; done
+prev=
+for a in "$@"; do [ "$prev" != -d ] || dir=$a; prev=$a; out=$a; done
+# keep the tree mkfs was handed, for the hostile image checks
+[ -z "${STUB_SNAP:-}" ] || cp -a "$dir" "$STUB_SNAP"
 echo "ext4 $*" > "$out"
 EOF
 cat > "$STUBS/truncate" <<'EOF'
@@ -124,6 +128,44 @@ check "missing sshd fails the sanity check" grep -q "/usr/sbin/sshd missing" "$W
 check "sanity failure ends with the step it died in" grep -q "failed during 'sanity check'" <<<"$LAST"
 check "sanity failure leaves no partial image" no_partial
 printf '#!/bin/sh\n' > "$EXPORT/usr/sbin/sshd"; chmod +x "$EXPORT/usr/sbin/sshd"
+
+printf '\n== hostile image symlinks stay inside the tree ==\n'
+# every link points at VICTIM, which stands in for the host: absolute links,
+# a relative one that climbs past the root, and a final-component link
+VICTIM="$WORK/victim"
+mkdir -p "$VICTIM/ssh" "$VICTIM/tmp" "$VICTIM/usrlocal/bin" "$VICTIM/systemd" "$VICTIM/sbin" "$VICTIM/run"
+echo "host key" > "$VICTIM/ssh/authorized_keys"
+echo host > "$VICTIM/hostname"
+: > "$VICTIM/run/.containerenv"
+chmod 0755 "$VICTIM/tmp"
+HOSTILE="$WORK/hostile"
+mkdir -p "$HOSTILE/usr/sbin" "$HOSTILE/usr/share" "$HOSTILE/etc" "$HOSTILE/root"
+for b in sshd xtables-legacy-multi; do printf '#!/bin/sh\n' > "$HOSTILE/usr/sbin/$b"; chmod +x "$HOSTILE/usr/sbin/$b"; done
+ln -s "$VICTIM/ssh" "$HOSTILE/root/.ssh"
+# /var/tmp, not /tmp: VICTIM lives under /tmp on linux, so a hostile /tmp
+# link would loop (which the bake refuses) instead of escaping
+mkdir -p "$HOSTILE/var"
+ln -s "$VICTIM/tmp" "$HOSTILE/var/tmp"
+ln -s "$VICTIM/run" "$HOSTILE/run"
+ln -s "$VICTIM/usrlocal" "$HOSTILE/usr/local"
+ln -s "../../../../../../../../..$VICTIM/systemd" "$HOSTILE/etc/systemd"
+ln -s "$VICTIM/sbin" "$HOSTILE/usr/sbin/iptables"
+ln -s "$VICTIM/hostname" "$HOSTILE/etc/hostname"
+# an ordinary relative link (fedora's /etc/ssl/certs is one) still resolves
+ln -s ../usr/share/containers "$HOSTILE/etc/containers"
+fingerprint() { ls -lRA "$VICTIM"; find "$VICTIM" -type f -exec cat {} +; }
+BEFORE=$(fingerprint)
+SNAP="$WORK/snap"
+STUB_EXPORT="$HOSTILE" STUB_SNAP="$SNAP" run docker.io/library/debian:12 hostile
+check "hostile image bakes" [ "$RC" -eq 0 ]
+check "nothing outside the tree was written" [ "$(fingerprint)" = "$BEFORE" ]
+check "root's key lands inside the tree" grep -q AAAAstub "$SNAP$VICTIM/ssh/authorized_keys"
+check "podman-static lands inside the tree" [ -x "$SNAP$VICTIM/usrlocal/bin/podman" ]
+check "fused unit link lands inside the tree" [ -L "$SNAP$VICTIM/systemd/system/multi-user.target.wants/fused.service" ]
+check "iptables link replaced, not followed" [ "$(readlink "$SNAP/usr/sbin/iptables")" = xtables-legacy-multi ]
+check "hostname written through the link inside the tree" grep -qx fuse "$SNAP$VICTIM/hostname"
+check "relative link still resolves" [ -f "$SNAP/usr/share/containers/containers.conf" ]
+rm -rf "$SNAP" "$IMAGES_DIR/hostile.ext4"
 
 printf '\n== bake ==\n'
 DIGEST=docker.io/library/debian@sha256:$(printf '%064d' 0)

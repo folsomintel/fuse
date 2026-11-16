@@ -141,9 +141,11 @@ sudo -n mkdir -p "$ROOT"
 sudo -n podman export "$CTR" | sudo -n tar -xf - -C "$ROOT" --numeric-owner \
   || die "exporting the container fs failed"
 sudo -n podman rm -f "$CTR" >/dev/null
-# mount points the kernel and systemd need, whether or not the export kept them
-sudo -n mkdir -p "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/run" "$ROOT/tmp"
-sudo -n chmod 1777 "$ROOT/tmp"
+# mount points the kernel and systemd need, whether or not the export kept
+# them. the tree is the image's, so every write from here on goes through
+# bake_path / bake_parent (fc-bake-lib.sh) and stays inside it
+bake_mkdir "$ROOT" /dev /proc /sys /run /tmp
+sudo -n chmod 1777 "$(bake_path "$ROOT" /tmp)"
 
 # --- 3. what every image carries (shared with fc-bake-rootfs.sh) -------------
 
@@ -153,21 +155,20 @@ bake_legacy_iptables "$ROOT"
 # --- 4. guest plumbing a container image lacks ------------------------------
 
 log "root ssh key, hostname, init"
-sudo -n mkdir -p "$ROOT/root/.ssh"
-sudo -n chmod 0700 "$ROOT/root/.ssh"
-printf '%s\n' "$PUBKEY" | sudo -n tee "$ROOT/root/.ssh/authorized_keys" >/dev/null
-sudo -n chmod 0600 "$ROOT/root/.ssh/authorized_keys"
-echo fuse | sudo -n tee "$ROOT/etc/hostname" >/dev/null
-printf '127.0.0.1 localhost fuse\n::1 localhost\n' | sudo -n tee "$ROOT/etc/hosts" >/dev/null
+bake_mkdir "$ROOT" /root/.ssh
+sudo -n chmod 0700 "$(bake_path "$ROOT" /root/.ssh)"
+printf '%s\n' "$PUBKEY" | bake_write "$ROOT" /root/.ssh/authorized_keys 0600
+echo fuse | bake_write "$ROOT" /etc/hostname
+printf '127.0.0.1 localhost fuse\n::1 localhost\n' | bake_write "$ROOT" /etc/hosts
 # podman export leaves the bind-mounted resolv.conf behind as a dangling or
 # empty file; the fc-agent writes a real one after boot
-sudo -n rm -f "$ROOT/etc/resolv.conf"
-sudo -n touch "$ROOT/etc/resolv.conf"
+bake_rm "$ROOT" /etc/resolv.conf
+bake_write "$ROOT" /etc/resolv.conf </dev/null
 # an empty machine-id makes systemd generate one on first boot
-sudo -n rm -f "$ROOT/etc/machine-id"
-sudo -n touch "$ROOT/etc/machine-id"
+bake_rm "$ROOT" /etc/machine-id
+bake_write "$ROOT" /etc/machine-id </dev/null
 # podman leaves a marker that makes systemd think it runs in a container
-sudo -n rm -f "$ROOT/run/.containerenv" "$ROOT/.dockerenv"
+bake_rm "$ROOT" /run/.containerenv /.dockerenv
 
 # --- 5. sanity ---------------------------------------------------------------
 
