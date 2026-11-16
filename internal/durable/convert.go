@@ -34,14 +34,17 @@ var (
 // Images is the part of the fleet the convert and watch handlers drive, one
 // method per step. *FleetManager satisfies it.
 type Images interface {
+	ImageHost(ctx context.Context, req orchestrator.ConvertImageRequest) (string, error)
 	ImageConvert(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error)
 	ImagePoll(ctx context.Context, img orchestrator.Image) (orchestrator.Image, error)
 	ImageConvertDone(ctx context.Context, img orchestrator.Image, timedOut bool) error
 }
 
-// convertImage is Images.Convert: the agent call that resolves the ref and
-// starts the bake, as one step, then a send of Images.Watch for a conversion
-// still running. the ref only becomes a digest on the host, so the watch is
+// convertImage is Images.Convert: a step that picks the host, then the agent
+// call that resolves the ref and starts the bake there, as a second step, then
+// a send of Images.Watch for a conversion still running. the host is its own
+// step so a restart mid agent call sends the retry to the host the first try
+// reached, even if the fleet's hosts changed in between. the ref only becomes a digest on the host, so the watch is
 // what is keyed by it: its idempotency key is the host, the digest and the
 // attempt's start, so a duplicate or retried convert of the same ref on the
 // same host joins the watch the first one started, and a retry of a failed
@@ -49,6 +52,14 @@ type Images interface {
 // the step, so a restart before it was journaled gets the agent's first
 // answer back instead of starting another bake.
 func convertImage(ctx restate.Context, fleet Images, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+	hostID, err := Run(ctx, opImage, "place", func(c context.Context) (string, error) {
+		hostID, err := fleet.ImageHost(c, req)
+		return hostID, imageTerminal(err)
+	})
+	if err != nil {
+		return orchestrator.Image{}, err
+	}
+	req.HostID = hostID
 	img, err := Run(ctx, opImage, "convert", func(c context.Context) (orchestrator.Image, error) {
 		img, err := fleet.ImageConvert(c, req)
 		return img, imageTerminal(err)

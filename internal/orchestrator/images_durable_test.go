@@ -44,6 +44,28 @@ func TestConvertImageGoesThroughRestateWhenSet(t *testing.T) {
 	}
 }
 
+// TestImageHost: the place step picks the host ImageConvert would, and the
+// convert pinned to it lands there.
+func TestImageHost(t *testing.T) {
+	fm := imageFleet(t, map[string]Provider{"fc-1": newImageProvider(), "fc-2": newImageProvider()}, nil)
+	req := ConvertImageRequest{Ref: "ubuntu"}
+	hostID, err := fm.ImageHost(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ImageHost: %v", err)
+	}
+	img, err := fm.ImageConvert(context.Background(), req)
+	if err != nil || img.HostID != hostID {
+		t.Fatalf("ImageConvert = %+v, %v; want host %s", img, err, hostID)
+	}
+	req.HostID = hostID
+	if img, err := fm.ImageConvert(context.Background(), req); err != nil || img.HostID != hostID {
+		t.Fatalf("pinned ImageConvert = %+v, %v; want host %s", img, err, hostID)
+	}
+	if _, err := fm.ImageHost(context.Background(), ConvertImageRequest{Ref: "ubuntu", HostID: "gone"}); !errors.Is(err, ErrHostNotFound) {
+		t.Fatalf("ImageHost on an unknown host: %v, want ErrHostNotFound", err)
+	}
+}
+
 func TestImagePoll(t *testing.T) {
 	d := digestOf("a")
 	fc := newImageProvider(Image{Digest: d, State: ImageFailed, Error: "boom"})
