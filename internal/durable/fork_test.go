@@ -158,6 +158,36 @@ func TestForkReuseSkipsSnapshot(t *testing.T) {
 	}
 }
 
+// TestForkPinsSeedThroughRestate: the seed stays pinned against gc while the
+// fork waits between steps, and the pin goes once the fork has ended.
+func TestForkPinsSeedThroughRestate(t *testing.T) {
+	fleet := newForkFleet()
+	seedID := fmt.Sprintf("snap-pin-%d", time.Now().UnixNano())
+	fleet.reuse = orchestrator.SnapshotRecord{SnapshotID: seedID, State: orchestrator.SnapshotStateReady}
+	fleet.block["create"] = make(chan struct{})
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req := forkRequest(uniqueVM("src"))
+	req.ReuseSnapshotID = seedID
+	done := make(chan error, 1)
+	go func() { done <- client.Fork(ctx, uniqueVM("fork-pin"), req) }()
+	select {
+	case <-fleet.entered:
+	case <-ctx.Done():
+		t.Fatal("fork never reached the create")
+	}
+	if p := pinState(t, ctx, client, []string{seedID}); !p[0] {
+		t.Fatal("seed not pinned while the fork waits")
+	}
+	close(fleet.block["create"])
+	if err := <-done; err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	waitUnpinned(t, ctx, client, []string{seedID})
+}
+
 // TestForkRollsBackThroughRestate: an agent that refuses the fork's
 // credentials for good unpublishes ingress, abandons the placeholder,
 // destroys the new vm on its host through Environment.Destroy and deletes the

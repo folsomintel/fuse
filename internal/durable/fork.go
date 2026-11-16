@@ -3,6 +3,7 @@ package durable
 import (
 	"context"
 	"errors"
+	"time"
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
@@ -24,6 +25,13 @@ const (
 	forkRefusedCode restate.Code = 551
 	forkErrorBase   restate.Code = 552
 )
+
+// forkSeedPinTTL bounds the pin a fork holds on its seed, in case the fork's
+// invocation is killed and never releases it. far longer than any fork.
+const forkSeedPinTTL = 24 * time.Hour
+
+// forkSeedHolder is the pin holder a fork's new vm id makes.
+func forkSeedHolder(vmID string) string { return "fork:" + vmID }
 
 // Forker is the part of the fleet the fork handler drives, one method per
 // step and per compensation step. *FleetManager satisfies it.
@@ -99,6 +107,9 @@ type forking struct {
 	// seed is the snapshot the fork took and deletes on failure. empty for a
 	// reused one, which belongs to the caller.
 	seed orchestrator.SnapshotRecord
+	// pinned is the seed the fork holds against gc until it ends, taken or
+	// reused.
+	pinned string
 }
 
 func (f *forking) step(name string, fn func(context.Context) error) error {
@@ -179,6 +190,13 @@ func (f *forking) run() (orchestrator.SnapshotRecord, error) {
 		}
 		f.seed = seed
 	}
+	// until the lineage row lands the seed has no child, so retention gc
+	// could collect it while the fork waits between steps.
+	if _, err := restate.Object[restate.Void](ctx, ArtifactPinObject, seed.SnapshotID, "Pin").
+		Request(PinRequest{Holder: forkSeedHolder(plan.NewVMID), TTL: forkSeedPinTTL}); err != nil {
+		return seed, err
+	}
+	f.pinned = seed.SnapshotID
 
 	hostID, err := Run(ctx, opFork, "place", func(c context.Context) (string, error) {
 		hostID, err := fleet.ForkPlace(c, plan, seed)
@@ -246,9 +264,21 @@ func (f *forking) finish(seed orchestrator.SnapshotRecord) error {
 	}); err != nil {
 		return err
 	}
-	return f.step("lineage", func(c context.Context) error {
+	if err := f.step("lineage", func(c context.Context) error {
 		return f.fleet.ForkLineage(c, f.plan, seed)
-	})
+	}); err != nil {
+		return err
+	}
+	// the lineage row is the seed's child now, which keeps gc off it.
+	f.release()
+	return nil
+}
+
+// release drops the fork's pin on its seed.
+func (f *forking) release() {
+	if f.pinned != "" {
+		restate.ObjectSend(f.ctx, ArtifactPinObject, f.pinned, "Release").Send(forkSeedHolder(f.plan.NewVMID))
+	}
 }
 
 // compensate rolls back a fork that failed for good with cause. the unpublish
@@ -275,6 +305,7 @@ func (f *forking) compensate(cause error) error {
 		restate.ObjectSend(ctx, EnvironmentObject, plan.NewVMID, "Destroy").
 			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonForkRollback, HostID: f.hostID})
 	}
+	f.release()
 	if f.seed.SnapshotID != "" {
 		if err := f.step("delete_seed", func(c context.Context) error {
 			return fleet.ForkDeleteSeed(c, f.seed)
