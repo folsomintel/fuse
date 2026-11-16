@@ -18,14 +18,18 @@ import (
 type imageFleet struct {
 	fakeFleet
 
-	mu         sync.Mutex
-	calls      []string
-	img        orchestrator.Image
-	convertErr error
-	polls      []orchestrator.ImageState
-	block      chan struct{}
-	entered    chan struct{}
-	done       chan imageDone
+	mu           sync.Mutex
+	calls        []string
+	host         string
+	hostReqs     []orchestrator.ConvertImageRequest
+	convertReqs  []orchestrator.ConvertImageRequest
+	convertBlock chan struct{}
+	img          orchestrator.Image
+	convertErr   error
+	polls        []orchestrator.ImageState
+	block        chan struct{}
+	entered      chan struct{}
+	done         chan imageDone
 }
 
 type imageDone struct {
@@ -40,6 +44,7 @@ func newImageFleet(name string, polls ...orchestrator.ImageState) *imageFleet {
 			Digest: fmt.Sprintf("%064d", now), Ref: name, HostID: "fc-1",
 			State: orchestrator.ImageConverting, CreatedAt: fmt.Sprint(now),
 		},
+		host:    "fc-1",
 		polls:   polls,
 		entered: make(chan struct{}, 16),
 		done:    make(chan imageDone, 4),
@@ -58,8 +63,31 @@ func (f *imageFleet) steps() string {
 	return strings.Join(f.calls, ",")
 }
 
-func (f *imageFleet) ImageConvert(context.Context, orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+func (f *imageFleet) ImageHost(_ context.Context, req orchestrator.ConvertImageRequest) (string, error) {
+	f.record("place")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hostReqs = append(f.hostReqs, req)
+	return f.host, nil
+}
+
+func (f *imageFleet) ImageConvert(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
 	f.record("convert")
+	f.mu.Lock()
+	f.convertReqs = append(f.convertReqs, req)
+	block := f.convertBlock
+	f.mu.Unlock()
+	if block != nil {
+		select {
+		case f.entered <- struct{}{}:
+		default:
+		}
+		select {
+		case <-block:
+		case <-ctx.Done():
+			return orchestrator.Image{}, ctx.Err()
+		}
+	}
 	return f.img, f.convertErr
 }
 
@@ -148,7 +176,7 @@ func TestConvertImageThroughRestate(t *testing.T) {
 		t.Fatalf("a second watch ran: %+v; steps %s", extra, fleet.steps())
 	case <-time.After(500 * time.Millisecond):
 	}
-	if got, want := fleet.steps(), "convert,convert,poll,poll,poll,done"; got != want {
+	if got, want := fleet.steps(), "place,convert,place,convert,poll,poll,poll,done"; got != want {
 		t.Fatalf("steps %s, want %s", got, want)
 	}
 }
@@ -186,8 +214,8 @@ func TestConvertImageReadyStartsNoWatch(t *testing.T) {
 		t.Fatalf("convert: %+v, %v", img, err)
 	}
 	time.Sleep(300 * time.Millisecond)
-	if got := fleet.steps(); got != "convert" {
-		t.Fatalf("steps %s, want convert", got)
+	if got := fleet.steps(); got != "place,convert" {
+		t.Fatalf("steps %s, want place,convert", got)
 	}
 }
 
@@ -205,8 +233,8 @@ func TestConvertImageRefusalKeepsSentinel(t *testing.T) {
 		if !errors.Is(err, sentinel) || !strings.Contains(err.Error(), "refused") {
 			t.Fatalf("convert error %v, want %v", err, sentinel)
 		}
-		if got := fleet.steps(); got != "convert" {
-			t.Fatalf("steps %s, want one convert", got)
+		if got := fleet.steps(); got != "place,convert" {
+			t.Fatalf("steps %s, want place,convert", got)
 		}
 	}
 }
@@ -259,5 +287,51 @@ func TestConvertImageWatchSurvivesEndpointRestart(t *testing.T) {
 	}
 	if got, want := second.steps(), "poll,done"; got != want {
 		t.Fatalf("steps after the restart %s, want %s", got, want)
+	}
+}
+
+// TestConvertImageKeepsHostAcrossRestart stands in for kill -9 of the
+// orchestrator during the agent call, with the fleet's hosts changed by the
+// time it comes back: the retried agent call goes to the host the first try
+// picked, not to a fresh pick.
+func TestConvertImageKeepsHostAcrossRestart(t *testing.T) {
+	fastImagePolls(t)
+	first := newImageFleet("ubuntu", orchestrator.ImageReady)
+	first.convertBlock = make(chan struct{})
+	defer close(first.convertBlock)
+	client, addr, stop := serveBuildFleet(t, first, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	type result struct {
+		img orchestrator.Image
+		err error
+	}
+	res := make(chan result, 1)
+	go func() {
+		img, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "ubuntu"})
+		res <- result{img, err}
+	}()
+	select {
+	case <-first.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("agent call never started; steps %s", first.steps())
+	}
+	stop()
+
+	// the restarted orchestrator would now pick another host.
+	second := newImageFleet("ubuntu", orchestrator.ImageReady)
+	second.img = first.img
+	second.host = "fc-2"
+	_, _, _ = serveBuildFleet(t, second, addr)
+	r := <-res
+	if r.err != nil {
+		t.Fatalf("convert: %v", r.err)
+	}
+	if got, want := second.steps(), "convert"; got != want {
+		t.Fatalf("steps after the restart %s, want %s", got, want)
+	}
+	if len(second.convertReqs) != 1 || second.convertReqs[0].HostID != "fc-1" {
+		t.Fatalf("retried agent call went to %+v, want host fc-1", second.convertReqs)
 	}
 }
