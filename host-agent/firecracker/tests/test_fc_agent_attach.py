@@ -10,6 +10,7 @@ exit-code reporting.
 import importlib.util
 import json
 import os
+import sys
 import socket
 import tempfile
 import threading
@@ -27,14 +28,17 @@ _spec = importlib.util.spec_from_file_location(
 )
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 
 def read_frame(sock):
     """Read one whole frame, or return (None, None) at EOF."""
     head = b""
-    while len(head) < fc_agent.FRAME_HEADER:
-        chunk = sock.recv(fc_agent.FRAME_HEADER - len(head))
+    while len(head) < fc_agent.agentlib.FRAME_HEADER:
+        chunk = sock.recv(fc_agent.agentlib.FRAME_HEADER - len(head))
         if not chunk:
             return None, None
         head += chunk
@@ -56,50 +60,50 @@ def read_until_exit(sock, deadline_frames=200):
         ftype, payload = read_frame(sock)
         if ftype is None:
             return out, None
-        if ftype == fc_agent.FRAME_STDOUT:
+        if ftype == fc_agent.agentlib.FRAME_STDOUT:
             out += payload
-        elif ftype == fc_agent.FRAME_EXIT:
+        elif ftype == fc_agent.agentlib.FRAME_EXIT:
             return out, json.loads(payload)["exit_code"]
     raise AssertionError("no exit frame arrived")
 
 
 class FrameCodecTest(unittest.TestCase):
     def test_roundtrip(self):
-        raw = fc_agent.encode_frame(fc_agent.FRAME_STDOUT, b"hello")
-        dec = fc_agent.FrameDecoder()
+        raw = fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDOUT, b"hello")
+        dec = fc_agent.agentlib.FrameDecoder()
         self.assertEqual(
-            list(dec.feed(raw)), [(fc_agent.FRAME_STDOUT, b"hello")]
+            list(dec.feed(raw)), [(fc_agent.agentlib.FRAME_STDOUT, b"hello")]
         )
 
     def test_split_across_reads(self):
         """A TCP read has no relationship to a frame boundary."""
-        raw = fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"abcdef")
-        dec = fc_agent.FrameDecoder()
+        raw = fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDIN, b"abcdef")
+        dec = fc_agent.agentlib.FrameDecoder()
         self.assertEqual(list(dec.feed(raw[:3])), [])
         self.assertEqual(list(dec.feed(raw[3:9])), [])
         self.assertEqual(
-            list(dec.feed(raw[9:])), [(fc_agent.FRAME_STDIN, b"abcdef")]
+            list(dec.feed(raw[9:])), [(fc_agent.agentlib.FRAME_STDIN, b"abcdef")]
         )
 
     def test_multiple_frames_in_one_read(self):
-        raw = fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"a") + fc_agent.encode_frame(
-            fc_agent.FRAME_STDIN, b"bb"
+        raw = fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDIN, b"a") + fc_agent.agentlib.encode_frame(
+            fc_agent.agentlib.FRAME_STDIN, b"bb"
         )
-        dec = fc_agent.FrameDecoder()
+        dec = fc_agent.agentlib.FrameDecoder()
         self.assertEqual(
             list(dec.feed(raw)),
-            [(fc_agent.FRAME_STDIN, b"a"), (fc_agent.FRAME_STDIN, b"bb")],
+            [(fc_agent.agentlib.FRAME_STDIN, b"a"), (fc_agent.agentlib.FRAME_STDIN, b"bb")],
         )
 
     def test_empty_payload(self):
-        raw = fc_agent.encode_frame(fc_agent.FRAME_STDOUT, b"")
-        dec = fc_agent.FrameDecoder()
-        self.assertEqual(list(dec.feed(raw)), [(fc_agent.FRAME_STDOUT, b"")])
+        raw = fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDOUT, b"")
+        dec = fc_agent.agentlib.FrameDecoder()
+        self.assertEqual(list(dec.feed(raw)), [(fc_agent.agentlib.FRAME_STDOUT, b"")])
 
     def test_oversized_length_is_rejected(self):
         """A bogus length must not let a peer make us allocate gigabytes."""
-        raw = bytes([fc_agent.FRAME_STDIN, 0, 0, 0]) + (1 << 30).to_bytes(4, "big")
-        dec = fc_agent.FrameDecoder()
+        raw = bytes([fc_agent.agentlib.FRAME_STDIN, 0, 0, 0]) + (1 << 30).to_bytes(4, "big")
+        dec = fc_agent.agentlib.FrameDecoder()
         with self.assertRaises(ValueError):
             list(dec.feed(raw))
 
@@ -134,11 +138,18 @@ class AttachRelayTest(unittest.TestCase):
         fc_agent.STATE_DIR = root / "agent-state"
         fc_agent.VMS_DIR = fc_agent.STATE_DIR / "vms"
         fc_agent.VMS_DIR.mkdir(parents=True)
+        fc_agent.agentlib.STATE_DIR = fc_agent.STATE_DIR
+        fc_agent.agentlib.VMS_DIR = fc_agent.VMS_DIR
 
         self.meta_patch = mock.patch.object(
             fc_agent, "load_meta", return_value={"guest_ip": "10.200.1.2"}
         )
         self.meta_patch.start()
+        # do_attach lives in agentlib and reads meta through its own name.
+        self.lib_meta_patch = mock.patch.object(
+            fc_agent.agentlib, "load_meta", return_value={"guest_ip": "10.200.1.2"}
+        )
+        self.lib_meta_patch.start()
 
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
         self.port = self.srv.server_address[1]
@@ -146,6 +157,7 @@ class AttachRelayTest(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self):
+        self.lib_meta_patch.stop()
         self.meta_patch.stop()
         self.srv.shutdown()
         self.srv.server_close()
@@ -159,7 +171,7 @@ class AttachRelayTest(unittest.TestCase):
             f"Host: localhost\r\n"
             f"Authorization: Bearer test-token\r\n"
             f"Connection: Upgrade\r\n"
-            f"Upgrade: {fc_agent.ATTACH_PROTO}\r\n\r\n".encode()
+            f"Upgrade: {fc_agent.agentlib.ATTACH_PROTO}\r\n\r\n".encode()
         )
         head = b""
         while b"\r\n\r\n" not in head:
@@ -170,12 +182,11 @@ class AttachRelayTest(unittest.TestCase):
         return s, head.decode()
 
     def test_upgrade_and_command_output(self):
-        with mock.patch.object(
-            fc_agent, "attach_argv", return_value=["/bin/sh", "-c", "echo hello-guest"]
+        with mock.patch.object(fc_agent.agentlib, "attach_argv", return_value=["/bin/sh", "-c", "echo hello-guest"]
         ):
             sock, head = self.dial("tty=1&rows=24&cols=80")
             self.assertIn("101 Switching Protocols", head)
-            self.assertIn(fc_agent.ATTACH_PROTO, head)
+            self.assertIn(fc_agent.agentlib.ATTACH_PROTO, head)
 
             out, code = read_until_exit(sock)
             self.assertIn(b"hello-guest", out)
@@ -183,8 +194,7 @@ class AttachRelayTest(unittest.TestCase):
             sock.close()
 
     def test_exit_code_is_reported(self):
-        with mock.patch.object(
-            fc_agent, "attach_argv", return_value=["/bin/sh", "-c", "exit 7"]
+        with mock.patch.object(fc_agent.agentlib, "attach_argv", return_value=["/bin/sh", "-c", "exit 7"]
         ):
             sock, head = self.dial("tty=1")
             self.assertIn("101", head)
@@ -194,12 +204,11 @@ class AttachRelayTest(unittest.TestCase):
 
     def test_stdin_reaches_the_process(self):
         """cat echoes what we type back through the pty."""
-        with mock.patch.object(
-            fc_agent, "attach_argv", return_value=["/bin/sh", "-c", "read line; echo got:$line"]
+        with mock.patch.object(fc_agent.agentlib, "attach_argv", return_value=["/bin/sh", "-c", "read line; echo got:$line"]
         ):
             sock, head = self.dial("tty=1&rows=24&cols=80")
             self.assertIn("101", head)
-            sock.sendall(fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"ping\n"))
+            sock.sendall(fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDIN, b"ping\n"))
             out, code = read_until_exit(sock)
             self.assertIn(b"got:ping", out)
             self.assertEqual(code, 0)
@@ -211,20 +220,19 @@ class AttachRelayTest(unittest.TestCase):
         left _reap blocked in waitpid forever, wedging the thread and leaking
         the ssh child. Here the session must still complete and report its exit.
         """
-        with mock.patch.object(
-            fc_agent, "attach_argv", return_value=["/bin/sh", "-c", "read _; exit 0"]
+        with mock.patch.object(fc_agent.agentlib, "attach_argv", return_value=["/bin/sh", "-c", "read _; exit 0"]
         ):
             sock, head = self.dial("tty=1&rows=24&cols=80")
             self.assertIn("101", head)
 
             sock.sendall(
-                fc_agent.encode_frame(
-                    fc_agent.FRAME_RESIZE, json.dumps({"rows": 70000, "cols": 80}).encode()
+                fc_agent.agentlib.encode_frame(
+                    fc_agent.agentlib.FRAME_RESIZE, json.dumps({"rows": 70000, "cols": 80}).encode()
                 )
             )
             # If the resize wedged the relay, this stdin never gets read and
             # read_until_exit hangs until the socket timeout fails the test.
-            sock.sendall(fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"\n"))
+            sock.sendall(fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDIN, b"\n"))
             _, code = read_until_exit(sock)
             self.assertEqual(code, 0)
             sock.close()
@@ -239,7 +247,7 @@ class AttachRelayTest(unittest.TestCase):
             seen["cmd"] = cmd
             return ["/bin/sh", "-c", "exit 0"]
 
-        with mock.patch.object(fc_agent, "attach_argv", side_effect=capture):
+        with mock.patch.object(fc_agent.agentlib, "attach_argv", side_effect=capture):
             sock, head = self.dial("tty=1&cmd=grep&cmd=&cmd=file")
             self.assertIn("101", head)
             read_until_exit(sock)
@@ -256,9 +264,7 @@ class AttachRelayTest(unittest.TestCase):
         resize can win the race and both readings show the new size -- which
         would pass while proving nothing about the initial one.
         """
-        with mock.patch.object(
-            fc_agent,
-            "attach_argv",
+        with mock.patch.object(fc_agent.agentlib, "attach_argv",
             return_value=["/bin/sh", "-c", "stty size; read _; stty size"],
         ):
             sock, head = self.dial("tty=1&rows=24&cols=80")
@@ -269,15 +275,15 @@ class AttachRelayTest(unittest.TestCase):
                 ftype, payload = read_frame(sock)
                 if ftype is None:
                     self.fail(f"stream ended before the initial size; got {before!r}")
-                if ftype == fc_agent.FRAME_STDOUT:
+                if ftype == fc_agent.agentlib.FRAME_STDOUT:
                     before += payload
 
             sock.sendall(
-                fc_agent.encode_frame(
-                    fc_agent.FRAME_RESIZE, json.dumps({"rows": 50, "cols": 100}).encode()
+                fc_agent.agentlib.encode_frame(
+                    fc_agent.agentlib.FRAME_RESIZE, json.dumps({"rows": 50, "cols": 100}).encode()
                 )
             )
-            sock.sendall(fc_agent.encode_frame(fc_agent.FRAME_STDIN, b"\n"))
+            sock.sendall(fc_agent.agentlib.encode_frame(fc_agent.agentlib.FRAME_STDIN, b"\n"))
 
             after, code = read_until_exit(sock)
             self.assertIn(b"50 100", after)

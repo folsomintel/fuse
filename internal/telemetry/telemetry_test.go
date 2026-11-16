@@ -82,9 +82,9 @@ func TestValidRequestID(t *testing.T) {
 // other two.
 func TestAgentsShareRequestIDRule(t *testing.T) {
 	want := `REQUEST_ID_RE = re.compile(r"` + RequestIDPattern + `")`
+	// both agents import these from shared/agentlib.py.
 	for _, f := range []string{
-		"../../host-agent/firecracker/fc-agent.py",
-		"../../host-agent/qemu/qemu-agent.py",
+		"../../host-agent/shared/agentlib.py",
 	} {
 		b, err := os.ReadFile(f)
 		if err != nil {

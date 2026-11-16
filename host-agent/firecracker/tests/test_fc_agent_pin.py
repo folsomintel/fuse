@@ -7,6 +7,7 @@ actually runs next to it. stdlib-only, no VMs.
 """
 import importlib.util
 import os
+import sys
 import stat
 import subprocess
 import tempfile
@@ -23,6 +24,9 @@ HERE = Path(__file__).parent.parent
 _spec = importlib.util.spec_from_file_location("fc_agent", HERE / "fc-agent.py")
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 # the expression every installer reads the pin with.

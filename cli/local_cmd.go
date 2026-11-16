@@ -63,6 +63,7 @@ type localState struct {
 	orchAuthToken   string
 	setupScript     string // path to the written fuse-local-setup.sh
 	fcAgentScript   string // path to the written fc-agent.py
+	agentLibScript  string // path to the written agentlib.py, imported by fc-agent.py
 	sshKey          string // path to the appliance ssh private key (darwin)
 	applianceDisk   string // path to the appliance raw disk (darwin)
 	vfkitPid        string // path to the vfkit pidfile (darwin)
@@ -92,6 +93,7 @@ func loadLocalState() (*localState, error) {
 		dir:             dir,
 		setupScript:     filepath.Join(dir, "fuse-local-setup.sh"),
 		fcAgentScript:   filepath.Join(dir, "fc-agent.py"),
+		agentLibScript:  filepath.Join(dir, "agentlib.py"),
 		sshKey:          filepath.Join(dir, "appliance_ed25519"),
 		applianceDisk:   filepath.Join(dir, "appliance.raw"),
 		vfkitPid:        filepath.Join(dir, "vfkit.pid"),
@@ -103,6 +105,9 @@ func loadLocalState() (*localState, error) {
 		return nil, err
 	}
 	if err := os.WriteFile(s.fcAgentScript, hostagent.FCAgentPy, 0o644); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(s.agentLibScript, hostagent.AgentLibPy, 0o644); err != nil {
 		return nil, err
 	}
 	if s.fcAgentToken, err = loadOrMintToken(filepath.Join(dir, "fc-agent.token")); err != nil {

@@ -157,7 +157,7 @@ func findRaw(dir string) (string, error) {
 
 // writeCloudInit renders user-data/meta-data. cloud-init only applies on the
 // appliance's first boot; it creates the ssh user and writes the stack files
-// (fc-agent.py, the setup script, the env file). install/start themselves run
+// (fc-agent.py and its agentlib.py, the setup script, the env file). install/start themselves run
 // over ssh so first boot and every later boot share one code path.
 func writeCloudInit(s *localState) error {
 	pub, err := os.ReadFile(s.sshKey + ".pub")
@@ -165,6 +165,10 @@ func writeCloudInit(s *localState) error {
 		return err
 	}
 	fcAgent, err := os.ReadFile(s.fcAgentScript)
+	if err != nil {
+		return err
+	}
+	agentLib, err := os.ReadFile(s.agentLibScript)
 	if err != nil {
 		return err
 	}
@@ -189,6 +193,10 @@ write_files:
     encoding: b64
     content: %s
     permissions: "0644"
+  - path: %s/agentlib.py
+    encoding: b64
+    content: %s
+    permissions: "0644"
   - path: %s/fuse-local-setup.sh
     encoding: b64
     content: %s
@@ -201,6 +209,7 @@ write_files:
 		applianceSSHUser,
 		strings.TrimSpace(string(pub)),
 		applianceDir, base64.StdEncoding.EncodeToString(fcAgent),
+		applianceDir, base64.StdEncoding.EncodeToString(agentLib),
 		applianceDir, base64.StdEncoding.EncodeToString(setup),
 		applianceDir, base64.StdEncoding.EncodeToString([]byte(env)),
 	)

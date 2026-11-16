@@ -11,6 +11,7 @@ Stdlib-only, no VMs: sudo is captured, never run.
 import importlib.util
 import json
 import os
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -27,6 +28,9 @@ _spec = importlib.util.spec_from_file_location(
 )
 fc_agent = importlib.util.module_from_spec(_spec)
 assert _spec.loader is not None
+# a fresh agentlib per load, so each agent copy keeps the paths it was
+# configured with instead of sharing the last one loaded.
+sys.modules.pop("agentlib", None)
 _spec.loader.exec_module(fc_agent)
 
 
@@ -132,7 +136,7 @@ class AgentForwardTest(unittest.TestCase):
         # destination-matched FORWARD accept; none of it is keyed on the tap
         # as an input interface, so proxy mode's drop cannot cut it off.
         calls, fake = capture_sudo()
-        with mock.patch.object(fc_agent, "sudo", side_effect=fake):
+        with mock.patch.object(fc_agent.agentlib, "sudo", side_effect=fake):
             fc_agent.add_agent_forward(19553, "10.200.3.2", "eth0")
         self.assertEqual(calls, [
             ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "19553", "-j", "DNAT", "--to-destination", "10.200.3.2:9550"],
@@ -189,9 +193,10 @@ class EgressWireTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.vms = Path(self.tmp.name) / "vms"
         self.vms.mkdir()
-        patcher = mock.patch.object(fc_agent, "VMS_DIR", self.vms)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for mod in (fc_agent, fc_agent.agentlib):
+            patcher = mock.patch.object(mod, "VMS_DIR", self.vms)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         self.provisioned = []
         self.destroyed = []
 
@@ -303,9 +308,10 @@ class DestroyVMTest(unittest.TestCase):
         self.vms = Path(self.tmp.name) / "vms"
         self.vms.mkdir()
         for target, value in (("VMS_DIR", self.vms), ("SSH_CONTROL_DIR", Path(self.tmp.name))):
-            p = mock.patch.object(fc_agent, target, value)
-            p.start()
-            self.addCleanup(p.stop)
+            for mod in (fc_agent, fc_agent.agentlib):
+                p = mock.patch.object(mod, target, value)
+                p.start()
+                self.addCleanup(p.stop)
         self.destroyed = []
         providers = mock.patch.dict(fc_agent.EGRESS_PROVIDERS, {"fake": (None, self.destroyed.append)}, clear=True)
         providers.start()
@@ -320,8 +326,10 @@ class DestroyVMTest(unittest.TestCase):
     def destroy(self):
         calls, fake = capture_sudo()
         with mock.patch.object(fc_agent, "sudo", side_effect=fake), \
+             mock.patch.object(fc_agent.agentlib, "sudo", side_effect=fake), \
              mock.patch.object(fc_agent, "stop_firecracker"), \
-             mock.patch.object(fc_agent, "host_iface", return_value="eth0"):
+             mock.patch.object(fc_agent, "host_iface", return_value="eth0"), \
+             mock.patch.object(fc_agent.agentlib, "host_iface", return_value="eth0"):
             fc_agent.destroy_vm("vm-a")
         return calls
 
@@ -671,35 +679,36 @@ class ExecEnvTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.vms = Path(self.tmp.name) / "vms"
         self.vms.mkdir()
-        patcher = mock.patch.object(fc_agent, "VMS_DIR", self.vms)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for mod in (fc_agent, fc_agent.agentlib):
+            patcher = mock.patch.object(mod, "VMS_DIR", self.vms)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         (self.vms / "vm-a").mkdir()
         fc_agent.save_meta({"vm_id": "vm-a", "guest_ip": "10.200.3.2"})
 
     def test_exec_sources_the_egress_hook_first(self):
-        with mock.patch.object(fc_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+        with mock.patch.object(fc_agent.agentlib, "ssh_exec", return_value=(0, b"", b"")) as ssh:
             fc_agent.do_exec("vm-a", ["env"])
         remote = ssh.call_args.args[1]
-        self.assertTrue(remote.startswith(fc_agent.EGRESS_ENV_PREFIX), remote)
+        self.assertTrue(remote.startswith(fc_agent.agentlib.EGRESS_ENV_PREFIX), remote)
         self.assertTrue(remote.endswith("env"), remote)
         # the guard keeps a guest with no hook file unchanged.
         self.assertIn("[ -r /etc/profile.d/fuse-egress.sh ] &&", remote)
 
     def test_exec_still_quotes_the_command(self):
-        with mock.patch.object(fc_agent, "ssh_exec", return_value=(0, b"", b"")) as ssh:
+        with mock.patch.object(fc_agent.agentlib, "ssh_exec", return_value=(0, b"", b"")) as ssh:
             fc_agent.do_exec("vm-a", ["sh", "-c", "echo $HTTP_PROXY"])
         remote = ssh.call_args.args[1]
         self.assertTrue(remote.endswith("sh -c 'echo $HTTP_PROXY'"), remote)
 
     def test_attach_with_command_sources_the_hook(self):
-        argv = fc_agent.attach_argv("10.200.3.2", ["bash"])
-        self.assertEqual(argv[-2:], [fc_agent.EGRESS_ENV_PREFIX, "bash"])
+        argv = fc_agent.agentlib.attach_argv("10.200.3.2", ["bash"])
+        self.assertEqual(argv[-2:], [fc_agent.agentlib.EGRESS_ENV_PREFIX, "bash"])
 
     def test_bare_attach_is_a_plain_login_shell(self):
-        argv = fc_agent.attach_argv("10.200.3.2", [])
+        argv = fc_agent.agentlib.attach_argv("10.200.3.2", [])
         self.assertEqual(argv[-2:], ["-tt", "root@10.200.3.2"])
-        self.assertNotIn(fc_agent.EGRESS_ENV_PREFIX, argv)
+        self.assertNotIn(fc_agent.agentlib.EGRESS_ENV_PREFIX, argv)
 
 
 class VMPublicTest(unittest.TestCase):
