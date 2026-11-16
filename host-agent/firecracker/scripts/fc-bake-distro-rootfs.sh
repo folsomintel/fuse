@@ -17,11 +17,13 @@
 #
 # non-interactive (sudo -n) and idempotent: every run starts from a fresh
 # unpack and the image lands with an atomic mv, so a failed or interrupted
-# run never leaves a partial <name>.ext4. any failure exits nonzero with a
+# run never leaves a partial <name>.ext4. a second bake of the same name in
+# the same IMAGES_DIR while one runs is refused, since they would share the
+# container, work files and temp image. any failure exits nonzero with a
 # one-line reason as the last line on stderr.
 #
 # Requires: sudo (passwordless), podman, tar, mkfs.ext4 (e2fsprogs >= 1.43
-# for -d), truncate, curl, ssh-keygen.
+# for -d), truncate, curl, ssh-keygen, flock.
 #
 # Inputs in host-agent/firecracker/: fused, fused.service, ubuntu.id_rsa.
 #
@@ -57,9 +59,10 @@ SIZE=${FC_ROOTFS_SIZE:-4G}
 ROOT="$WORK/rootfs"
 OUT="$IMAGES_DIR/$NAME.ext4"
 TMP_OUT="$IMAGES_DIR/.$NAME.ext4.tmp"
+LOCK="$IMAGES_DIR/.$NAME.ext4.lock"
 CTR="fcbake-distro-$NAME"
 
-for c in sudo podman tar mkfs.ext4 truncate curl ssh-keygen; do
+for c in sudo podman tar mkfs.ext4 truncate curl ssh-keygen flock; do
   command -v "$c" >/dev/null 2>&1 || die "missing: $c"
 done
 sudo -n true 2>/dev/null || die "needs passwordless sudo (sudo -n failed)"
@@ -68,6 +71,12 @@ sudo -n true 2>/dev/null || die "needs passwordless sudo (sudo -n failed)"
 [ -f fused.service ] || die "fused.service not found in $FC_DIR"
 [ -f ubuntu.id_rsa ] || die "ubuntu.id_rsa not found in $FC_DIR (run ./scripts/fc-install.sh)"
 PUBKEY=$(ssh-keygen -y -f ubuntu.id_rsa 2>/dev/null) || die "cannot read a public key from ubuntu.id_rsa"
+
+# held until exit, and taken before the exit trap exists: a refused run must
+# not clean up the container or temp image of the run that holds it
+mkdir -p "$IMAGES_DIR"
+exec 9>>"$LOCK"
+flock -n 9 || die "another bake of '$NAME' is running in $IMAGES_DIR"
 
 # an exit trap, not an err trap: set -e failing inside a sourced lib function
 # never reaches a top-level err trap, and the last stderr line must say why
@@ -81,7 +90,7 @@ on_exit() {
 }
 trap on_exit EXIT
 
-mkdir -p "$WORK" "$IMAGES_DIR"
+mkdir -p "$WORK"
 
 log "pull $REF"
 # stdin from /dev/null: podman asks which registry a short name means when it

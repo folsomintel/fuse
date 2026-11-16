@@ -81,6 +81,11 @@ cat > "$STUBS/truncate" <<'EOF'
 #!/usr/bin/env bash
 : > "${!#}"
 EOF
+# macos has no flock; a no-op stand-in keeps the rest of the test running there
+if ! command -v flock >/dev/null 2>&1; then
+  printf '#!/bin/sh\nexit 0\n' > "$STUBS/flock"
+  NO_FLOCK=1
+fi
 chmod +x "$STUBS"/*
 
 export PATH="$STUBS:$PATH" STUB_LOG="$WORK/podman.log" STUB_EXPORT="$EXPORT"
@@ -93,7 +98,9 @@ run() {
   RC=$?
   LAST=$(awk 'NF{l=$0} END{print l}' "$WORK/err")
 }
-no_partial() { [ -z "$(ls -A "$IMAGES_DIR")" ]; }
+# the lock file is kept on purpose: removing it would race the next bake
+images() { (cd "$IMAGES_DIR" && find . -mindepth 1 -maxdepth 1 ! -name '*.lock' | sed 's|^\./||'); }
+no_partial() { [ -z "$(images)" ]; }
 
 printf '\n== arguments ==\n'
 run
@@ -173,11 +180,33 @@ run "$DIGEST" debian-12
 check "digest-pinned ref bakes" [ "$RC" -eq 0 ]
 check "digest ref reaches podman pull verbatim" grep -qF "podman pull -q $DIGEST" "$STUB_LOG"
 check "image written" [ -s "$IMAGES_DIR/debian-12.ext4" ]
-check "only the image is left in IMAGES_DIR" [ "$(ls -A "$IMAGES_DIR")" = "debian-12.ext4" ]
+check "only the image is left in IMAGES_DIR" [ "$(images)" = "debian-12.ext4" ]
 check "unpacked root removed" [ ! -e "$WORK/work/rootfs" ]
 run "$DIGEST" debian-12
 check "re-run with the same args succeeds" [ "$RC" -eq 0 ]
-check "re-run still leaves only the image" [ "$(ls -A "$IMAGES_DIR")" = "debian-12.ext4" ]
+check "re-run still leaves only the image" [ "$(images)" = "debian-12.ext4" ]
+
+if [ -z "${NO_FLOCK:-}" ]; then
+  printf '\n== a second bake of the same name is refused ==\n'
+  # stand in for a running bake: hold the lock, with its temp image present
+  echo partial > "$IMAGES_DIR/.debian-12.ext4.tmp"
+  # exec, so the pid killed below is the one holding the lock fd
+  ( exec 8>>"$IMAGES_DIR/.debian-12.ext4.lock"; flock 8; exec sleep 30 ) &
+  HOLDER=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    flock -n "$IMAGES_DIR/.debian-12.ext4.lock" true || break
+    sleep 0.1
+  done
+  run "$DIGEST" debian-12
+  check "concurrent bake exits nonzero" [ "$RC" -ne 0 ]
+  check "concurrent bake says another is running" grep -q "another bake of 'debian-12' is running" <<<"$LAST"
+  check "concurrent bake never reaches podman" [ ! -s "$STUB_LOG" ]
+  check "concurrent bake leaves the other run's temp image" [ -f "$IMAGES_DIR/.debian-12.ext4.tmp" ]
+  kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
+  rm -f "$IMAGES_DIR/.debian-12.ext4.tmp"
+  run "$DIGEST" debian-12
+  check "bake runs once the lock is free" [ "$RC" -eq 0 ]
+fi
 
 NAME="fcbake-test-$$"
 FC_BAKE_WORK_OVERRIDE="" run docker.io/library/debian:12 "$NAME"
