@@ -15,6 +15,7 @@ type imageProvider struct {
 	mu         sync.Mutex
 	images     map[string]Image
 	convertErr error
+	createErr  error
 	converted  []string
 	created    []Spec
 }
@@ -30,7 +31,11 @@ func newImageProvider(images ...Image) *imageProvider {
 func (p *imageProvider) Create(ctx context.Context, spec Spec) (Environment, error) {
 	p.mu.Lock()
 	p.created = append(p.created, spec)
+	err := p.createErr
 	p.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
 	return p.buildProvider.Create(ctx, spec)
 }
 
@@ -199,6 +204,20 @@ func TestCreateFromImageDigest(t *testing.T) {
 	}
 	if _, ok := fm.GetVMByTask("t2"); ok {
 		t.Fatal("a refused create left a vm behind")
+	}
+}
+
+// an image evicted between resolveImage and the agent's create is not
+// ready, the same 409 as one that was never converted.
+func TestCreateFromAnEvictedImageIsNotReady(t *testing.T) {
+	d := digestOf("a")
+	fc := newImageProvider(Image{Digest: d, State: ImageReady, Name: "oci-aaaa"})
+	fc.createErr = &HTTPStatusError{Code: http.StatusNotFound, Body: "image 'oci-aaaa' is no longer converted on this host"}
+	fm := imageFleet(t, map[string]Provider{"fc-1": fc}, nil)
+
+	_, err := fm.ProvisionAndAssign(context.Background(), "t1", Spec{CPUs: 1, RamMB: 256, ImageDigest: d}, []byte(`{}`), nil, BootOptions{})
+	if !errors.Is(err, ErrImageNotReady) {
+		t.Fatalf("evicted image: err = %v, want ErrImageNotReady", err)
 	}
 }
 

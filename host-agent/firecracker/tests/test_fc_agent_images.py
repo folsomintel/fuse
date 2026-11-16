@@ -462,6 +462,18 @@ class EvictionTest(ConvertBase):
         self.assertGreater(fc_agent.image_record_load(a["digest"])["last_used"], before)
         self.assertEqual(fc_agent.image_references(), {a["name"]})
 
+    def test_create_from_an_evicted_image_is_404(self):
+        a = self.convert("alpine")
+        fc_agent.image_evict(fc_agent.image_record_load(a["digest"]))
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            fc_agent.create_vm({"name": "late", "image": a["name"]})
+        self.assertEqual(cm.exception.code, 404)
+        self.assertFalse(fc_agent.vm_dir("late").exists())
+        # a baked catalogue name that is missing is still the operator's 400.
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            fc_agent.create_vm({"name": "late", "image": "nope"})
+        self.assertEqual(cm.exception.code, 400)
+
     def test_snapshot_base_image(self):
         snap = fc_agent.SNAPSHOTS_DIR / "snap-2"
         snap.mkdir()

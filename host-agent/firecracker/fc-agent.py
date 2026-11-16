@@ -1167,6 +1167,11 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         source_rootfs = BASE_ROOTFS
         if image:
             source_rootfs = resolve_image_path(image)
+            if not source_rootfs.exists() and image.startswith("oci-"):
+                # the orchestrator saw it ready, then a convert evicted it
+                # before this create took _create_lock. 404, so it reads as
+                # not ready rather than as a bad request.
+                raise HTTPError(404, f"image {image!r} is no longer converted on this host; convert it again")
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
             if image.startswith("oci-"):
