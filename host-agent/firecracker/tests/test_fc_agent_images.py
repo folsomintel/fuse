@@ -79,7 +79,7 @@ class ResolveManifestTest(unittest.TestCase):
             if url.startswith("https://auth.example/token"):
                 return 200, {}, b'{"token":"t0k"}'
             if not token:
-                return 401, {"WWW-Authenticate": challenge}, b""
+                return 401, {"www-authenticate": challenge}, b""
             return 200, {}, index_body()
 
         with mock.patch.object(fc_agent, "_registry_get", side_effect=get):
@@ -88,8 +88,35 @@ class ResolveManifestTest(unittest.TestCase):
         self.assertIn("scope=repository%3Alibrary%2Fubuntu%3Apull", calls[1][0])
         self.assertEqual(calls[2][1], "t0k")
 
+    def test_registry_get_keys_headers_in_lowercase(self):
+        # a registry or proxy may send any case; the challenge must still be
+        # found, or a public image reads as a private one.
+        msg = http.client.HTTPMessage()
+        msg["www-authenticate"] = 'Bearer realm="https://auth.example/token"'
+        msg["Docker-Content-Digest"] = AMD64
+        resp = mock.MagicMock(status=200, headers=msg)
+        resp.read.return_value = b"{}"
+        resp.__enter__.return_value = resp
+        with mock.patch.object(fc_agent.urllib.request, "urlopen", return_value=resp):
+            code, headers, _ = fc_agent._registry_get("https://registry.example/v2/", "application/json")
+        self.assertEqual(code, 200)
+        self.assertEqual(headers["www-authenticate"], 'Bearer realm="https://auth.example/token"')
+        self.assertEqual(headers["docker-content-digest"], AMD64)
+
+    def test_token_realm_with_a_query(self):
+        calls = []
+
+        def get(url, accept, token=""):
+            calls.append(url)
+            return 200, {}, b'{"access_token":"t0k"}'
+
+        with mock.patch.object(fc_agent, "_registry_get", side_effect=get):
+            token = fc_agent._registry_token('Bearer realm="https://auth.example/token?a=1",service="reg"')
+        self.assertEqual(token, "t0k")
+        self.assertEqual(calls[0], "https://auth.example/token?a=1&service=reg")
+
     def test_private_and_missing_are_4xx(self):
-        with mock.patch.object(fc_agent, "_registry_get", return_value=(401, {"WWW-Authenticate": "Basic"}, b"")):
+        with mock.patch.object(fc_agent, "_registry_get", return_value=(401, {"www-authenticate": "Basic"}, b"")):
             with self.assertRaises(fc_agent.HTTPError) as cm:
                 fc_agent.resolve_manifest_digest("ghcr.io/org/secret", "amd64")
         self.assertEqual(cm.exception.code, 400)
@@ -104,7 +131,7 @@ class ResolveManifestTest(unittest.TestCase):
         def get(url, accept, token=""):
             if "/blobs/" in url:
                 return 200, {}, b'{"architecture":"arm64"}'
-            return 200, {"Docker-Content-Digest": AMD64}, manifest
+            return 200, {"docker-content-digest": AMD64}, manifest
 
         with mock.patch.object(fc_agent, "_registry_get", side_effect=get):
             self.assertEqual(fc_agent.resolve_manifest_digest("org/app", "arm64")[1], AMD64)

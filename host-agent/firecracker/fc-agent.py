@@ -3037,15 +3037,22 @@ def parse_image_ref(ref: str) -> tuple[str, str, str, str]:
     return registry, repo, digest or tag, f"{display}/{repo}"
 
 
+def _lower_headers(headers) -> dict:
+    """Header names are case-insensitive and registries and proxies send them
+    in any case, so callers read them from a dict keyed in lowercase."""
+    return {k.lower(): v for k, v in (headers or {}).items()}
+
+
 def _registry_get(url: str, accept: str, token: str = "") -> tuple[int, dict, bytes]:
+    """GET url from a registry: (status, headers keyed in lowercase, body)."""
     req = urllib.request.Request(url, headers={"Accept": accept})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(req, timeout=REGISTRY_TIMEOUT) as resp:
-            return resp.status, dict(resp.headers), resp.read(MAX_REGISTRY_BYTES)
+            return resp.status, _lower_headers(resp.headers), resp.read(MAX_REGISTRY_BYTES)
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers or {}), b""
+        return e.code, _lower_headers(e.headers), b""
     except (urllib.error.URLError, OSError, ValueError) as e:
         raise HTTPError(502, f"registry unreachable: {e}")
 
@@ -3059,7 +3066,8 @@ def _registry_token(challenge: str) -> str:
     realm = params.pop("realm", "")
     if not realm.startswith("https://"):
         raise HTTPError(502, "registry sent an unusable auth challenge")
-    url = realm + "?" + "&".join(f"{k}={quote(v, safe='')}" for k, v in params.items())
+    sep = "&" if "?" in realm else "?"
+    url = realm + sep + "&".join(f"{k}={quote(v, safe='')}" for k, v in params.items())
     code, _, body = _registry_get(url, "application/json")
     if code != 200:
         raise HTTPError(502, f"registry token endpoint answered {code}")
@@ -3075,7 +3083,7 @@ def _registry_fetch(registry: str, repo: str, kind: str, reference: str, accept:
     url = f"https://{registry}/v2/{repo}/{kind}/{reference}"
     code, headers, body = _registry_get(url, accept, token)
     if code == 401 and not token:
-        token = _registry_token(headers.get("WWW-Authenticate") or headers.get("Www-Authenticate") or "")
+        token = _registry_token(headers.get("www-authenticate", ""))
         code, headers, body = _registry_get(url, accept, token)
     if code in (401, 403):
         raise HTTPError(400, f"{registry}/{repo} needs credentials; private registries are not supported")
@@ -3096,7 +3104,7 @@ def resolve_manifest_digest(ref: str, arch: str) -> tuple[str, str]:
         doc = json.loads(body)
     except ValueError:
         raise HTTPError(502, f"registry sent an invalid manifest for {ref}")
-    ctype = (headers.get("Content-Type") or headers.get("content-type") or doc.get("mediaType") or "").split(";")[0]
+    ctype = (headers.get("content-type") or doc.get("mediaType") or "").split(";")[0]
     if ctype in _INDEX_TYPES or "manifests" in doc:
         for m in doc.get("manifests") or []:
             plat = m.get("platform") or {}
@@ -3105,7 +3113,7 @@ def resolve_manifest_digest(ref: str, arch: str) -> tuple[str, str]:
                     and digest.startswith("sha256:") and _DIGEST_RE.fullmatch(digest[7:])):
                 return bake_name, digest
         raise HTTPError(400, f"{ref} has no linux/{arch} image")
-    digest = headers.get("Docker-Content-Digest") or headers.get("docker-content-digest") or ""
+    digest = headers.get("docker-content-digest", "")
     if not digest.startswith("sha256:"):
         digest = "sha256:" + hashlib.sha256(body).hexdigest()
     config = (doc.get("config") or {}).get("digest", "")
