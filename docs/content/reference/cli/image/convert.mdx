@@ -7,12 +7,12 @@ description: Convert an OCI image to a rootfs on a Firecracker host
 ---
 
 ```bash
-fuse image convert <ref> [--host <id>] [--label key=value]... [--no-wait]
+fuse image convert <ref> [--host <id>] [--region <region>] [--label key=value]... [--no-wait]
 ```
 
 Sends [`POST /v1/images`](/reference/api) for `<ref>`. The orchestrator picks
-an active Firecracker host (the one `--host` names, or one matching every
-`--label`), which resolves the ref to the manifest for its arch and bakes it
+an active Firecracker host (the one `--host` names, or one in `--region`
+matching every `--label`), which resolves the ref to the manifest for its arch and bakes it
 into a rootfs in the background. The command then polls the image every 2
 seconds until it leaves `converting`, and prints it.
 
@@ -26,12 +26,14 @@ lowercase repository path, an optional tag and an optional `@sha256:` digest,
 | Flag | Purpose |
 | --- | --- |
 | `--host` | Convert on this Firecracker host. |
+| `--region` | Convert on a Firecracker host in this region. |
 | `--label` | Convert on a host with this label, as `key=value`. Repeatable; every pair must match. |
 | `--no-wait` | Start the conversion and print the image at once, usually still `converting`. |
 
 Pick the host the same way the environment will be placed: a create with
 `spec.image_digest` lands only on a host where that image is ready. A Fusefile's
-`from:` does this for you by converting with the Fusefile's `placement`.
+`from:` does this for you by converting with the Fusefile's `placement` and
+`resources.region`.
 
 ## Behavior
 

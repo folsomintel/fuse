@@ -77,6 +77,7 @@ func TestConvertImageRejections(t *testing.T) {
 		{"bad label", ConvertImageRequest{Ref: "ubuntu", Labels: map[string]string{"a": "b c"}}, http.StatusBadRequest},
 		{"qemu host", ConvertImageRequest{Ref: "ubuntu", HostID: "gpu-1"}, http.StatusBadRequest},
 		{"unknown host", ConvertImageRequest{Ref: "ubuntu", HostID: "nope"}, http.StatusNotFound},
+		{"no host in the region", ConvertImageRequest{Ref: "ubuntu", Region: "eu-west"}, http.StatusServiceUnavailable},
 		{"agent refuses the ref", ConvertImageRequest{Ref: "private/app"}, http.StatusBadRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

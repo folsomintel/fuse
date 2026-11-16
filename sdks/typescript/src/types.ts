@@ -1287,11 +1287,12 @@ export const ImageState = {
 export type ImageState = (typeof ImageState)[keyof typeof ImageState];
 
 /** ConvertImageRequest asks for an oci image to be converted to a rootfs on a
- * firecracker host. host_id and labels pick the host the way a create's
- * placement does. */
+ * firecracker host. host_id, region and labels pick the host the way a
+ * create's placement does. */
 export interface ConvertImageRequest {
   ref: string;
   host_id?: string;
+  region?: string;
   labels?: Record<string, string>;
 }
 

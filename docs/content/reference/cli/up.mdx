@@ -59,7 +59,7 @@ Fusefile path and `fuse environment create`.
 When the Fusefile sets [`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from),
 `up` converts that image before it creates anything, exactly as
 [`fuse image convert`](/reference/cli/image/convert) would, on a Firecracker
-host picked by the Fusefile's `placement`. It waits until the image is `ready`
+host picked by the Fusefile's `placement` and `resources.region`. It waits until the image is `ready`
 and exits non-zero with the host's reason if the conversion fails. The create
 then carries the image's digest as `spec.image_digest`, which pins the
 environment to a host where the image is ready.

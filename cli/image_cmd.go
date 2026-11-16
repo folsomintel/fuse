@@ -29,6 +29,7 @@ func newImageCmd() *cobra.Command {
 func newImageConvertCmd() *cobra.Command {
 	var (
 		host   string
+		region string
 		labels []string
 		noWait bool
 	)
@@ -50,7 +51,7 @@ func newImageConvertCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			req := fuse.ConvertImageRequest{Ref: args[0], HostID: host, Labels: labelMap}
+			req := fuse.ConvertImageRequest{Ref: args[0], HostID: host, Region: region, Labels: labelMap}
 			var img *fuse.Image
 			if noWait {
 				img, err = cl.Images.Convert(cmd.Context(), req)
@@ -68,6 +69,7 @@ func newImageConvertCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&host, "host", "", "convert on this firecracker host")
+	cmd.Flags().StringVar(&region, "region", "", "convert on a firecracker host in this region")
 	cmd.Flags().StringArrayVar(&labels, "label", nil, "convert on a host with this label, as key=value (repeatable)")
 	cmd.Flags().BoolVar(&noWait, "no-wait", false, "start the conversion and exit without waiting for it")
 	return cmd

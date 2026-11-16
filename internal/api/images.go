@@ -11,11 +11,13 @@ import (
 )
 
 // ConvertImageRequest asks for an oci image to be converted to a rootfs on a
-// firecracker host. HostID and Labels pick the host the same way a create's
-// placement does, so a create pinned the same way can boot the result.
+// firecracker host. HostID, Region and Labels pick the host the same way a
+// create's placement does, so a create placed the same way can boot the
+// result.
 type ConvertImageRequest struct {
 	Ref    string            `json:"ref"`
 	HostID string            `json:"host_id,omitempty"`
+	Region string            `json:"region,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
@@ -81,6 +83,7 @@ func (h *Handler) convertImage(w http.ResponseWriter, r *http.Request) {
 	img, err := h.Fleet.ConvertImage(r.Context(), orchestrator.ConvertImageRequest{
 		Ref:    req.Ref,
 		HostID: req.HostID,
+		Region: req.Region,
 		Labels: copyLabels(req.Labels),
 	})
 	if err != nil {

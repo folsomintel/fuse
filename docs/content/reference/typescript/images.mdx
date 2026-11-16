@@ -53,14 +53,15 @@ const env = await client.environments.create({
 interface ConvertImageRequest {
   ref: string;
   host_id?: string;
+  region?: string;
   labels?: Record<string, string>;
 }
 ```
 
 - `ref` is required: an OCI reference such as `ubuntu:24.04` or
   `ghcr.io/org/app@sha256:<digest>`.
-- `host_id` and `labels` pick the Firecracker host the way a create's placement
-  does. Convert where the environment will run: a create lands only on a host
+- `host_id`, `region` and `labels` pick the Firecracker host the way a create's
+  placement does. Convert where the environment will run: a create lands only on a host
   where the image is ready.
 
 ## Image

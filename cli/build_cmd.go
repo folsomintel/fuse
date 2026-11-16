@@ -115,7 +115,7 @@ func newBuildCmd() *cobra.Command {
 			// the digest that comes back, so the plan is derived again with it.
 			imageDigest := ""
 			if c.Spec.From != "" {
-				img, err := convertImage(cmd.Context(), cl, fuse.ConvertImageRequest{Ref: c.Spec.From, HostID: c.Spec.HostID, Labels: c.Spec.Labels})
+				img, err := convertImage(cmd.Context(), cl, fuse.ConvertImageRequest{Ref: c.Spec.From, HostID: c.Spec.HostID, Region: c.Spec.Region, Labels: c.Spec.Labels})
 				if err != nil {
 					return err
 				}

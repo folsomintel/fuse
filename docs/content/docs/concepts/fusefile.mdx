@@ -645,7 +645,7 @@ run: cat /etc/os-release > os-release.txt
 
 `from` boots an image from a public registry. Before the create, `fuse up` (and
 `fuse build`) converts it with [`POST /v1/images`](/reference/api): a
-Firecracker host picked by the Fusefile's `placement` resolves the ref to the
+Firecracker host picked by the Fusefile's `placement` and `resources.region` resolves the ref to the
 manifest for its own arch and bakes that into an ext4 rootfs. The CLI waits
 until the image is `ready`, failing with the host's reason if it ends `failed`,
 then creates with `spec.image_digest`, which pins the environment to a host

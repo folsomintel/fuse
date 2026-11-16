@@ -17,11 +17,12 @@ const (
 )
 
 // ConvertImageRequest asks for an oci image to be converted to a rootfs on a
-// firecracker host. HostID and Labels pick the host the way a create's
-// placement does.
+// firecracker host. HostID, Region and Labels pick the host the way a
+// create's placement does.
 type ConvertImageRequest struct {
 	Ref    string            `json:"ref"`
 	HostID string            `json:"host_id,omitempty"`
+	Region string            `json:"region,omitempty"`
 	Labels map[string]string `json:"labels,omitempty"`
 }
 

@@ -5286,6 +5286,9 @@ components:
         host_id:
           type: string
           description: Convert on this host. It must be a registered firecracker host.
+        region:
+          type: string
+          description: Convert on a host in this region. Set it to the create's `spec.region`, so the image lands where the create can boot it.
         labels:
           type: object
           additionalProperties:

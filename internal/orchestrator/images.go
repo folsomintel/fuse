@@ -92,11 +92,13 @@ const (
 )
 
 // ConvertImageRequest asks for ref to be converted on a firecracker host.
-// HostID and Labels narrow which host, the same gates a create applies, so a
-// caller that will pin the create can convert where it will land.
+// HostID, Region and Labels narrow which host, the same gates a create
+// applies, so a caller that will pin the create can convert where it will
+// land.
 type ConvertImageRequest struct {
 	Ref    string
 	HostID string
+	Region string
 	Labels map[string]string
 }
 
@@ -267,7 +269,7 @@ func (fm *FleetManager) imageRecords(ctx context.Context, digest string, hostIDs
 }
 
 // imageConvertHost picks the host a convert runs on: the pinned one, or one
-// of the active firecracker hosts matching the labels. the pick hashes the
+// of the active firecracker hosts in the region and matching the labels. the pick hashes the
 // ref over the sorted candidates, so the same ref keeps landing on the same
 // host (and finds its earlier conversion there) while different refs spread.
 func (fm *FleetManager) imageConvertHost(req ConvertImageRequest) (string, ImageConverter, error) {
@@ -287,7 +289,8 @@ func (fm *FleetManager) imageConvertHost(req ConvertImageRequest) (string, Image
 	}
 	var candidates []*Host
 	for _, h := range fm.hosts {
-		if servesImages(h) && (req.HostID == "" || h.ID == req.HostID) && labelsMatch(h.Labels, req.Labels) {
+		if servesImages(h) && (req.HostID == "" || h.ID == req.HostID) &&
+			(req.Region == "" || h.Region == req.Region) && labelsMatch(h.Labels, req.Labels) {
 			candidates = append(candidates, h)
 		}
 	}

@@ -40,7 +40,12 @@ describe("images", () => {
       json(res, 202, image("converting"));
     });
 
-    const req = { ref: "ubuntu:24.04", host_id: "fc-1", labels: { zone: "a" } };
+    const req = {
+      ref: "ubuntu:24.04",
+      host_id: "fc-1",
+      region: "eu-west",
+      labels: { zone: "a" },
+    };
     const img = await current.client.images.convert(req);
 
     expect(method).toBe("POST");

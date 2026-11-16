@@ -23,11 +23,11 @@ func TestImagesConvert_sendsRefAndDecodes(t *testing.T) {
 	})
 	defer done()
 
-	img, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu:24.04", HostID: "fc-1", Labels: map[string]string{"zone": "a"}})
+	img, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu:24.04", HostID: "fc-1", Region: "eu-west", Labels: map[string]string{"zone": "a"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Ref != "ubuntu:24.04" || got.HostID != "fc-1" || got.Labels["zone"] != "a" {
+	if got.Ref != "ubuntu:24.04" || got.HostID != "fc-1" || got.Region != "eu-west" || got.Labels["zone"] != "a" {
 		t.Fatalf("sent %+v", got)
 	}
 	if img.Digest != strings.Repeat("a", 64) || img.State != ImageConverting || img.HostID != "fc-1" || !strings.HasPrefix(img.ManifestDigest, "sha256:") {

@@ -63,7 +63,7 @@ func runUpFrom(t *testing.T, srv *imageServer) error {
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	path := filepath.Join(t.TempDir(), "Fusefile")
-	src := "version: 1\nfrom: ubuntu:24.04\nplacement:\n  host: fc-1\nrun: ./start.sh\n"
+	src := "version: 1\nfrom: ubuntu:24.04\nplacement:\n  host: fc-1\nresources:\n  region: eu-west\nrun: ./start.sh\n"
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -77,14 +77,15 @@ func runUpFrom(t *testing.T, srv *imageServer) error {
 }
 
 // `from:` converts the image, waits for it, and creates with its digest,
-// never with an image name.
+// never with an image name. the convert carries the create's placement,
+// region included, so the image lands where the create can boot it.
 func TestUpFromConvertsThenCreatesWithTheDigest(t *testing.T) {
 	srv := &imageServer{}
 	if err := runUpFrom(t, srv); err != nil {
 		t.Fatalf("up: %v", err)
 	}
-	if srv.convert["ref"] != "ubuntu:24.04" || srv.convert["host_id"] != "fc-1" {
-		t.Fatalf("convert body = %v, want the ref and the placement host", srv.convert)
+	if srv.convert["ref"] != "ubuntu:24.04" || srv.convert["host_id"] != "fc-1" || srv.convert["region"] != "eu-west" {
+		t.Fatalf("convert body = %v, want the ref, the placement host and the region", srv.convert)
 	}
 	if srv.polls < 2 {
 		t.Fatalf("polled %d times, want until ready", srv.polls)

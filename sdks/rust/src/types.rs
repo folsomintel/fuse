@@ -2629,13 +2629,15 @@ impl Build {
     }
 }
 
-/// The body of [`Images::convert`](crate::Images::convert). `host_id` and
-/// `labels` pick the host the way a create's placement does.
+/// The body of [`Images::convert`](crate::Images::convert). `host_id`,
+/// `region` and `labels` pick the host the way a create's placement does.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConvertImageRequest {
     pub r#ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub labels: HashMap<String, String>,
 }
@@ -2650,6 +2652,12 @@ impl ConvertImageRequest {
 
     pub fn host_id(mut self, host_id: impl Into<String>) -> Self {
         self.host_id = Some(host_id.into());
+        self
+    }
+
+    /// Converts on a host in this region; set it to the create's region.
+    pub fn region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
         self
     }
 

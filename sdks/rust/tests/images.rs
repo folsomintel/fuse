@@ -31,6 +31,7 @@ async fn convert_sends_the_body_and_decodes_the_image() {
         .convert(
             ConvertImageRequest::new("docker.io/library/python:3.12-slim")
                 .host_id("host-1")
+                .region("eu-west")
                 .label("zone", "a"),
         )
         .await
@@ -49,6 +50,7 @@ async fn convert_sends_the_body_and_decodes_the_image() {
         json!({
             "ref": "docker.io/library/python:3.12-slim",
             "host_id": "host-1",
+            "region": "eu-west",
             "labels": {"zone": "a"},
         })
     );

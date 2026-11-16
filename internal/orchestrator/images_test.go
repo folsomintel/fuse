@@ -98,6 +98,32 @@ func TestConvertImageRunsOnAFirecrackerHost(t *testing.T) {
 	}
 }
 
+// a create with spec.region only lands in that region, so the conversion it
+// boots from has to run there too, whatever host the ref hashes onto.
+func TestConvertImageStaysInTheRegion(t *testing.T) {
+	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-"})
+	for _, h := range []struct{ id, region string }{{"fc-a", "us-east"}, {"fc-b", "us-east"}, {"fc-c", "eu-west"}} {
+		host := layerHost(h.id, "amd64")
+		host.Region = h.region
+		if err := fm.RegisterHost(context.Background(), host, newImageProvider()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, ref := range []string{"ubuntu", "ubuntu:24.04", "debian:12", "fedora:40", "org/app", "ghcr.io/org/app"} {
+		img, err := fm.ConvertImage(context.Background(), ConvertImageRequest{Ref: ref, Region: "eu-west"})
+		if err != nil {
+			t.Fatalf("ConvertImage(%s): %v", ref, err)
+		}
+		if img.HostID != "fc-c" {
+			t.Fatalf("ConvertImage(%s) in eu-west ran on %s, want fc-c", ref, img.HostID)
+		}
+	}
+	_, err := fm.ConvertImage(context.Background(), ConvertImageRequest{Ref: "ubuntu", Region: "ap-south"})
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("convert in a region with no host: err = %v, want ErrNoCapacity", err)
+	}
+}
+
 func TestConvertImageMapsAgentErrors(t *testing.T) {
 	cases := []struct {
 		code int

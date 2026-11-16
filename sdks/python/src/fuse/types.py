@@ -1184,10 +1184,11 @@ class BuildEvent(_Model):
 
 
 class ConvertImageRequest(_Model):
-    # body for images.convert. host_id and labels pick the firecracker host
-    # the way a create's placement does.
+    # body for images.convert. host_id, region and labels pick the
+    # firecracker host the way a create's placement does.
     ref: str = ""
     host_id: Optional[str] = None
+    region: Optional[str] = None
     labels: Optional[dict[str, str]] = None
 
 

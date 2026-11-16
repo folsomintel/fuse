@@ -30,12 +30,18 @@ def test_convert_sends_body_and_decodes_image() -> None:
     )
     with fuse.Client(BASE_URL, "tok") as client:
         img = client.images.convert(
-            fuse.ConvertImageRequest(ref="docker.io/library/python:3.12", labels={"zone": "a"})
+            fuse.ConvertImageRequest(
+                ref="docker.io/library/python:3.12", region="eu-west", labels={"zone": "a"}
+            )
         )
 
     assert route.calls.last.request.method == "POST"
     body = json.loads(route.calls.last.request.content)
-    assert body == {"ref": "docker.io/library/python:3.12", "labels": {"zone": "a"}}
+    assert body == {
+        "ref": "docker.io/library/python:3.12",
+        "region": "eu-west",
+        "labels": {"zone": "a"},
+    }
     assert isinstance(img, fuse.Image)
     assert img.digest == DIGEST
     assert img.state == fuse.IMAGE_CONVERTING

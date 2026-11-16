@@ -58,14 +58,15 @@ env, err := client.Environments.Create(ctx, fuse.CreateRequest{
 type ConvertImageRequest struct {
 	Ref    string
 	HostID string
+	Region string
 	Labels map[string]string
 }
 ```
 
 - `Ref` is required: an OCI reference such as `ubuntu:24.04` or
   `ghcr.io/org/app@sha256:<digest>`.
-- `HostID` and `Labels` pick the Firecracker host the way a create's placement
-  does. Convert where the environment will run: a create lands only on a host
+- `HostID`, `Region` and `Labels` pick the Firecracker host the way a create's
+  placement does. Convert where the environment will run: a create lands only on a host
   where the image is ready.
 
 ## Image
