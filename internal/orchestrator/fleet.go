@@ -2299,8 +2299,16 @@ func (fm *FleetManager) AuditEvent(ctx context.Context, entityType, entityID, ev
 }
 
 func (fm *FleetManager) appendEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) {
+	if err := fm.writeEvent(ctx, entityType, entityID, eventType, payload); err != nil {
+		fm.logger.Warn("append event failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
+	}
+}
+
+// writeEvent is appendEvent for a caller that has to know the row landed,
+// such as a durable step that must retry rather than journal a lost event.
+func (fm *FleetManager) writeEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) error {
 	if fm.store == nil {
-		return
+		return nil
 	}
 	// tie the row to the api request that caused it. the caller's map is
 	// copied rather than written to.
@@ -2318,20 +2326,17 @@ func (fm *FleetManager) appendEvent(ctx context.Context, entityType, entityID, e
 	if payload != nil {
 		payloadJSON, err := json.Marshal(payload)
 		if err != nil {
-			fm.logger.Warn("marshal event payload failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
-			return
+			return fmt.Errorf("marshal event payload: %w", err)
 		}
 		raw = payloadJSON
 	}
-	if err := fm.store.AppendEvent(ctx, EventRecord{
+	return fm.store.AppendEvent(ctx, EventRecord{
 		EntityType: entityType,
 		EntityID:   entityID,
 		EventType:  eventType,
 		Payload:    raw,
 		CreatedAt:  time.Now(),
-	}); err != nil {
-		fm.logger.Warn("append event failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
-	}
+	})
 }
 
 func (fm *FleetManager) appendEventBackground(entityType, entityID, eventType string, payload map[string]any) {

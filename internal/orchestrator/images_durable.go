@@ -110,10 +110,11 @@ func (fm *FleetManager) ImageConvertDone(ctx context.Context, img Image, timedOu
 	default:
 		fm.logger.ErrorContext(ctx, "image convert failed", append(attrs, "err", img.Error)...)
 	}
-	fm.appendEvent(ctx, "image", img.Digest, event, map[string]any{
+	// the error goes back so the durable step retries instead of journaling
+	// a done whose event never landed.
+	return fm.writeEvent(ctx, "image", img.Digest, event, map[string]any{
 		"ref":     img.Ref,
 		"host_id": img.HostID,
 		"error":   img.Error,
 	})
-	return nil
 }
