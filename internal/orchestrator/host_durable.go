@@ -6,9 +6,9 @@ import (
 	"fmt"
 )
 
-// HostRefusals are the host op failures the api answers with a status of
-// their own. the durable Host handler carries each one across restate as its
-// own error code, so the api answers it as in mode off.
+// HostRefusals are the host op failures a retry cannot change. the durable
+// Host handler fails each one for good, under its own error code, so the api
+// gets the same sentinel, and the same status, as in mode off.
 var HostRefusals = []error{
 	ErrHostNotFound,
 	ErrHostHasVMs,

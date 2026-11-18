@@ -2534,14 +2534,15 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 
 // restoreEgressLeases hands each recovered vm's egress lease back to its
 // backend, so state a backend keeps in memory (the wireguard one-host-per-key
-// reservation) holds across the restart. a vm tearing down keeps its lease
-// until its destroy, or its reap, releases it.
+// reservation) holds across the restart. a vm tearing down is not restored:
+// its destroy may have released the lease already, and a resumed destroy does
+// not release it again.
 func (fm *FleetManager) restoreEgressLeases(recovered map[string]*vm) {
 	if fm.egressRegistry == nil {
 		return
 	}
 	for id, v := range recovered {
-		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" {
+		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" || v.state.tearingDown() {
 			continue
 		}
 		if err := fm.egressRegistry.Restore(v.egress.Provider, v.hostID, id, v.egress.Lease); err != nil {

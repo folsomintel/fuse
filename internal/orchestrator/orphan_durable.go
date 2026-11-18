@@ -19,10 +19,6 @@ type OrphanDestroyRequest struct {
 	HostID string `json:"host_id,omitempty"`
 	// MaxRetries is how many failed attempts dead-letter the orphan.
 	MaxRetries int `json:"max_retries"`
-	// Interval is the reconcile interval. an invocation within it of the
-	// last attempt makes none, so sends that queued up behind a slow one on
-	// the object count as one attempt, not one each.
-	Interval time.Duration `json:"interval"`
 }
 
 // OrphanDestroyResult is what one DestroyOrphan invocation found.
@@ -74,7 +70,7 @@ func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string)
 	fm.orphanInFlight[vmID] = true
 	fm.mu.Unlock()
 
-	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries, Interval: fm.reconcileInterval}
+	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries}
 	fm.destroySends.Add(1)
 	go func() {
 		defer fm.destroySends.Done()
@@ -142,8 +138,8 @@ func (fm *FleetManager) OrphanDestroyed(ctx context.Context, vmID string) error 
 }
 
 // OrphanFailed records a failed attempt. at the last one the orphan is
-// dead-lettered; that write is not best effort here, since the step retries
-// until it lands.
+// dead-lettered; that row is not best effort here, since the step retries
+// until it lands. the event beside it is, as events are everywhere else.
 func (fm *FleetManager) OrphanFailed(ctx context.Context, vmID string, attempt int, lastErr string, deadLetter bool) error {
 	fm.logger.Error("orphan destroy failed", "vm", vmID, "err", lastErr, "attempt", attempt)
 	if deadLetter {

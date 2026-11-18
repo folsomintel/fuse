@@ -61,6 +61,7 @@ func (f *orphanFleet) OrphanFailed(_ context.Context, _ string, attempt int, _ s
 // object state, so an orchestrator that restarts mid-retry carries on from
 // the count it had and dead-letters at the limit, then stops attempting.
 func TestDestroyOrphanCountSurvivesRestart(t *testing.T) {
+	noQueuedWindow(t)
 	vm := fmt.Sprintf("fuse-orphan-%d", time.Now().UnixNano())
 	req := orchestrator.OrphanDestroyRequest{HostID: "h1", MaxRetries: 5}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -105,6 +106,7 @@ func TestDestroyOrphanCountSurvivesRestart(t *testing.T) {
 // TestDestroyOrphanSuccessClearsCount: a success after failures finishes the
 // orphan and clears its count; a vm the fleet now tracks is left alone.
 func TestDestroyOrphanSuccessClearsCount(t *testing.T) {
+	noQueuedWindow(t)
 	vm := fmt.Sprintf("fuse-orphan-ok-%d", time.Now().UnixNano())
 	req := orchestrator.OrphanDestroyRequest{MaxRetries: 2}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -153,7 +155,7 @@ func TestDestroyOrphanSuccessClearsCount(t *testing.T) {
 // cannot dead-letter an orphan early.
 func TestDestroyOrphanQueuedSendsCountOnce(t *testing.T) {
 	vm := fmt.Sprintf("fuse-orphan-q-%d", time.Now().UnixNano())
-	req := orchestrator.OrphanDestroyRequest{MaxRetries: 2, Interval: time.Hour}
+	req := orchestrator.OrphanDestroyRequest{MaxRetries: 2}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -168,4 +170,11 @@ func TestDestroyOrphanQueuedSendsCountOnce(t *testing.T) {
 	if fleet.attempts != 1 || fmt.Sprint(fleet.failures) != "[1]" {
 		t.Fatalf("attempts = %d failures = %v, want one attempt", fleet.attempts, fleet.failures)
 	}
+}
+
+// noQueuedWindow lets a test's sends each make an attempt, back to back.
+func noQueuedWindow(t *testing.T) {
+	old := orphanQueuedWindow
+	orphanQueuedWindow = 0
+	t.Cleanup(func() { orphanQueuedWindow = old })
 }
