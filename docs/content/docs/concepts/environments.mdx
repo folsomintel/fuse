@@ -26,8 +26,7 @@ provisioning -> running -> draining -> destroying -> destroyed
   **not yet destroyed**. Only running environments can be drained; any other state
   returns a conflict.
 - **destroying / destroyed**: the VM is being (or has been) torn down.
-- **destroy_failed**: with restate on (`FUSE_RESTATE_MODE=self` or `cloud`), a
-  destroy whose host kept failing after every retry. The VM may still exist on
+- **destroy_failed**: a destroy whose host kept failing after every retry. The VM may still exist on
   its host and still counts against the host's capacity. The last error is on
   the environment and in a `destroy` dead letter. `DELETE` it again to retry.
 - **failed**: provisioning or an operation failed.
@@ -40,11 +39,10 @@ carrying the failure. The error text survives on the task record, and `--follow`
 on the environment.
 
 Drain itself does not destroy the VM. A subsequent explicit destroy call removes
-it. If none arrives, the [reconcile loop](/docs/concepts/reconcile#stuck-draining)
-destroys an environment that has been draining longer than the draining timeout,
-5m30s by default (`--draining-timeout` on the orchestrator). With restate on, a
-durable timer the drain arms does it instead, and survives an orchestrator
-restart ([expiry on restate](/docs/concepts/reconcile#expiry-on-restate)).
+it. If none arrives, a durable timer the drain arms destroys an environment that
+has been draining longer than the draining timeout, 5m30s by default
+(`--draining-timeout` on the orchestrator), and survives an orchestrator restart
+([stuck draining](/docs/concepts/reconcile#stuck-draining)).
 
 ## Health is not a state
 
@@ -108,10 +106,9 @@ The SDKs and the CLI follow a `202` for you, polling
 finishes, so a long call simply takes longer to return. Leaving early (a
 cancelled context, an interrupted CLI) leaves the operation running; pick it
 up with [`fuse operation wait`](/reference/cli/operation/wait) or the SDKs'
-`operations.wait`. While a migrate runs, its operation's `step` reports how
-far it got: `snapshot`, `transfer`, `delta`, `boot`, then `cutover`. With
-[restate](/docs/cloud/orchestrator-deploy#restate) on, the migrate runs on
-restate and `step` stays empty; its steps show in the restate ui and in
+`operations.wait`. Every operation runs on
+[restate](/docs/cloud/orchestrator-deploy#restate), so its `step` stays empty;
+a migrate's steps show in the restate ui and in
 `orchestrator_step_duration_seconds{op="migrate_live"}` instead.
 
 An `Idempotency-Key` header makes a mutating call safe to retry. A retry of
@@ -128,8 +125,7 @@ call that cannot provision a second environment. The rules:
 - A finished operation and its key are kept for 24 hours. One that finished
   with a 5xx is not kept, so its retry runs again.
 - Operations and keys live in the orchestrator's memory, and a restart forgets
-  them. With [restate](/docs/cloud/orchestrator-deploy#restate) on, a create,
-  destroy, snapshot, restore or migrate also hands the key to restate as the
+  them. A create, destroy, snapshot, restore or migrate also hands the key to restate as the
   invocation's idempotency key, so a retry after a restart still attaches to
   the same invocation. A destroy or migrate that already finished is the
   exception: the vm it acted on is gone, so that retry answers `404`. Fork and
@@ -185,9 +181,8 @@ Generates fresh TLS credentials and an auth token for a running environment, wri
 them into the guest's credential files, and persists the new encrypted token on the
 orchestrator, all without recreating the VM.
 
-Rotation requires the environment to be **running**, and it requires an orchestrator
-started with a 32-byte `TOKEN_ENCRYPTION_KEY`, a dev-mode orchestrator without one
-generates no per-VM credentials in the first place and so has nothing to rotate.
+Rotation requires the environment to be **running**. The new token is sealed with
+the orchestrator's `TOKEN_ENCRYPTION_KEY`, which every orchestrator now starts with.
 
 :::warning[Known limitation]
 Rotation does **not** take effect inside a running guest. `fused` reads its auth

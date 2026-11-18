@@ -19,8 +19,7 @@ environment. The CLI prints a reminder of this after a successful drain. Follow
 up with [`fuse environment destroy`](/reference/cli/environment/destroy)
 to actually remove it. An environment left draining longer than the
 orchestrator's draining timeout (5m30s by default) is destroyed by the
-[reconcile loop](/docs/concepts/reconcile#stuck-draining), or with restate on
-by the timer the drain arms ([expiry on restate](/docs/concepts/reconcile#expiry-on-restate)):
+timer the drain arms ([stuck draining](/docs/concepts/reconcile#stuck-draining)):
 
 ```bash
 fuse environment drain fuse-abc123

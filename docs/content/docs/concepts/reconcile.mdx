@@ -29,9 +29,10 @@ Each cycle, in order:
 2. **Mark missing VMs.** A tracked VM the provider no longer reports is moved to
    `destroying` and its task is failed.
 3. **Destroy orphans**, VMs the provider has that Fuse does not track.
-4. **Fail stuck tasks** that have exceeded their runtime ceiling.
-5. **Destroy idle environments** past their idle timeout, and environments left
-   draining past the draining timeout.
+4. **Arm expiry timers** for `running` and `draining` environments this
+   process has not armed yet. Stuck-task, idle and stuck-draining expiry run on
+   those timers, not in the cycle; see [Expiry timer](#expiry-timer).
+5. **Fail stale creates**: a VM recovered `provisioning` at startup that no create will finish.
 6. **Read health verdicts** back from the guests of environments that declared a
    [`healthcheck`](/docs/concepts/fusefile#healthcheck).
 7. **Probe egress endpoints** of environments running with
@@ -41,8 +42,8 @@ Each cycle, in order:
 
 :::warning[Known limitation]
 A failure listing VMs from any host aborts the entire cycle, it does not isolate
-the bad host. One unreachable host agent therefore suppresses stuck-task
-detection and snapshot GC fleet-wide until it recovers, and the only outward sign
+the bad host. One unreachable host agent therefore suppresses orphan
+cleanup and snapshot GC fleet-wide until it recovers, and the only outward sign
 is a flat cycle in the metrics.
 :::
 
@@ -71,6 +72,10 @@ orchestrator restarts, which recomputes allocations from live VMs.
 
 ## Stuck tasks
 
+The three expiry rules below (stuck tasks, idle environments, stuck draining)
+are applied by each environment's [expiry timer](#expiry-timer), not by the
+cycle.
+
 A task is a candidate for failure when its VM is `running`, it still has a task
 attached, and it has exceeded its ceiling. The ceiling is the environment's own
 `max_runtime` when set, and otherwise the fleet default of two hours.
@@ -83,16 +88,17 @@ workload legitimately outliving the default must set `max_runtime` explicitly,
 or it will be destroyed mid-flight at the two-hour mark.
 
 **Detection is not a health check.** Nothing pings the guest and nothing reads a
-heartbeat. The loop knows only two things: how old a VM is, and whether the
+heartbeat. The timer knows only two things: how old a VM is, and whether the
 provider still lists it. The consequences run both ways, a wedged task that is
-young is completely invisible to this loop, and a healthy task that is old is a
+young is completely invisible to this check, and a healthy task that is old is a
 false positive unless it raised its own ceiling.
 
-A VM must exceed its ceiling on **two consecutive cycles** before it is failed,
-which guards against a single cycle skewed by a clock jump or a scheduling pause.
-The practical effect is that the real time-to-failure is the ceiling plus one
-interval, and a `task.stuck_suspected` event fires on the first strike, giving
-you roughly 30 seconds of warning in the event stream.
+A VM must exceed its ceiling on **two consecutive checks**, one reconcile
+interval apart, before it is failed, which guards against a single check skewed
+by a clock jump or a scheduling pause. The practical effect is that the real
+time-to-failure is the ceiling plus one interval, and a `task.stuck_suspected`
+event fires on the first strike, giving you roughly 30 seconds of warning in the
+event stream.
 
 ## Idle environments
 
@@ -106,7 +112,7 @@ is unset: an environment that does not ask for idle expiry never gets it.
 activity means exactly two things: an `exec` call, and an open attach session. An
 attach session counts for as long as it stays open, however quiet, and the window
 restarts when it closes. In-guest CPU use and traffic on exposed ports are not
-observed, because the loop has no channel for either. A VM busy computing with
+observed, because the orchestrator has no channel for either. A VM busy computing with
 nobody attached is idle as far as this predicate is concerned.
 
 Detection is two-strike like stuck-task detection, with a `vm.idle_suspected`
@@ -123,7 +129,7 @@ every environment's idle window rather than inheriting a stale one.
 [Drain](/reference/cli/environment/drain) is phase one of a two-phase teardown
 and never destroys the VM itself. An environment that is drained and then never
 destroyed (the caller crashed, or forgot the `DELETE`) would otherwise hold its
-host capacity forever, so the loop destroys any environment that has been
+host capacity forever, so its timer destroys any environment that has been
 `draining` longer than the draining timeout.
 
 The timeout defaults to 5m30s, the 30-second drain command ceiling plus five
@@ -137,8 +143,7 @@ There is one strike, not two: nothing legitimate keeps an environment in
 `draining`, and exec is already refused there. The environment goes down the
 same path a stuck task takes: a `vm.drain_expired` event, the VM moves to
 `destroying`, its task (if any) is failed, and a `drain_timeout` dead letter is
-recorded. The destroy itself runs in the background, so a host call that hangs
-does not hold up the cycle. The host agent removes the VM's port forwards and
+recorded. The host agent removes the VM's port forwards and
 tap as it does for any destroy. Unlike an explicit destroy, this teardown does
 not remove a fuse-proxy ingress route, so a
 VM published through fuse-proxy keeps its route (the same is true of stuck-task
@@ -151,27 +156,20 @@ alone until that clears. An environment whose `hitl.gates` hold or deny
 that destroy, and one they rejected stays rejected. A `notify` gate holds
 nothing.
 
-If a teardown fails (the host returned an error or was unreachable), the VM stays
-`destroying` while the host still lists it. Every cycle retries the destroy of
-such a VM once it has been `destroying` for more than two minutes, so it goes away
-once the host recovers. This applies to every background teardown, not only
-draining ones.
-
-With restate on, every destroy runs as the `Environment/{vm_id}/Destroy`
-handler instead, and retries the host call itself under the `Environment`
-retry policy (`FUSE_RESTATE_RETRY_ENVIRONMENT_*`). It survives an orchestrator
-restart: the handler resumes at the first unfinished step. Reconcile then only
-re-sends `Destroy` for a VM that has sat in `destroying` for two minutes with
-no attempt in flight, such as one left over from before the upgrade. A destroy
+Every destroy runs as the `Environment/{vm_id}/Destroy` handler, and retries
+the host call itself under the `Environment` retry policy
+(`FUSE_RESTATE_RETRY_ENVIRONMENT_*`). It survives an orchestrator restart: the
+handler resumes at the first unfinished step. Reconcile only re-sends `Destroy`
+for a VM that has sat in `destroying` for two minutes with no attempt in
+flight, such as one left over from before an upgrade. A destroy
 that runs out of retries moves the VM to `destroy_failed` and writes a
 `destroy` dead letter, counted by `orchestrator_destroy_dead_letters_total`.
 
-## Expiry on restate
+## Expiry timer
 
-With restate on (`FUSE_RESTATE_MODE=self` or `cloud`), the stuck-task, idle
-and stuck-draining passes above do not run in the loop. Each environment has
-one durable timer on its `Environment/{vm_id}` object instead, and its
-`Expire` handler applies the same rules, holds included:
+Each environment has one durable timer on its `Environment/{vm_id}` object,
+and its `Expire` handler applies the stuck-task, idle and stuck-draining rules
+above, holds included:
 
 - A create that reaches `running` arms the timer. Reconcile arms any `running`
   or `draining` environment this orchestrator process has not armed yet: one
@@ -200,7 +198,7 @@ one durable timer on its `Environment/{vm_id}` object instead, and its
   timer at its new end.
 - A reaped environment goes to `destroying` with the same events and dead
   letters as above, and the timer sends `Destroy` on the same object. The
-  `orchestrator_reconcile_*` strike and teardown counters count these too.
+  `orchestrator_reconcile_*` strike and teardown counters count these.
 
 Pending timers are scheduled invocations restate keeps; see
 [the restate runbook](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx)

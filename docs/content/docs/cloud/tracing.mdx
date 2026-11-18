@@ -61,7 +61,7 @@ The other standard `OTEL_EXPORTER_OTLP_*` variables (headers, timeout,
 both endpoints in one go:
 
 ```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... \
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 DATABASE_URL=postgres://... \
   sudo -E ./ops/install-orchestrator.sh
 ```
 
@@ -77,7 +77,7 @@ POST /v1/environments                       orchestrator, server span (route pat
    └─ host-agent POST /v1/vm
 ```
 
-Operations that run on restate add restate's own spans under the call that
+Every operation runs on restate and adds restate's own spans under the call that
 started them, and a span per durable step:
 
 ```text
@@ -91,9 +91,7 @@ restate POST                                orchestrator calling ingress
 ```
 
 A step replayed from the journal after a restart is not executed again, so it
-has restate's `run` span but no orchestrator span under it. Lifecycle
-operations move onto restate one at a time (epic #334); until an operation is
-ported, its trace has no restate spans.
+has restate's `run` span but no orchestrator span under it.
 
 Spans covered: every API route, the `fleet.*` operations (`create`, `destroy`,
 `fork`, `migrate`, `migrate_live`, `snapshot`, `restore`), every host-agent

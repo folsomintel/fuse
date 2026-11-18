@@ -14,8 +14,8 @@ No flags beyond the globals. Prints the operation at once, without waiting:
 its id, kind (`create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
 `drain`), state (`running`, `succeeded` or `failed`), the step it last reported
 starting, when it started and finished, and the http status the call answered
-with. Only migrate reports steps (`snapshot`, `transfer`, `delta`, `boot`,
-`cutover`); every other kind shows `-`.
+with. No operation reports a step now (each runs on restate, whose steps show
+in the restate ui), so the step shows `-`.
 
 ```bash
 $ fuse operation show op_3f9a1c2b7d4e5f60718293a4

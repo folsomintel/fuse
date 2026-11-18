@@ -49,15 +49,15 @@ is what keeps the state store and the real provider fleet in sync:
   are being given up on after repeated cleanup failures, worth a look at
   orchestrator logs for the specific VM IDs.
 - `orchestrator_reconcile_stuck_tasks_failed_total` increasing means a running
-  VM exceeded its runtime ceiling on two consecutive reconcile cycles and was
+  VM exceeded its runtime ceiling on two consecutive expiry checks and was
   forcibly torn down, its task failed and dead-lettered. The ceiling is the
   environment's `max_runtime_seconds`, falling back to the fleet-wide
   `TaskStuckTimeout` (2 hours) when it isn't set.
   `orchestrator_reconcile_stuck_tasks_suspected_total` is the first-strike
-  leading indicator, it fires one cycle earlier on the same condition.
+  leading indicator, it fires one check earlier on the same condition.
 - `orchestrator_reconcile_idle_vms_failed_total` increasing means a running VM
   went longer than its idle timeout with no exec and no attach session on two
-  consecutive cycles and was torn down. The window is the environment's
+  consecutive expiry checks and was torn down. The window is the environment's
   `idle_timeout_seconds`, falling back to the fleet-wide `DefaultIdleTimeout`,
   which is unset by default: environments that don't ask for idle expiry never
   get it. `orchestrator_reconcile_idle_vms_suspected_total` is the first-strike
@@ -105,11 +105,11 @@ reported rather than freezing at its last value:
 `orchestrator_operations_duration_seconds{op}` cover `create`, `destroy`,
 `fork`, `migrate`, `migrate_live`, `snapshot`, `restore` and `rotate_token`. `destroy` counts
 explicit destroys, from the API or a migrate removing its source. Teardowns the
-reconcile loop does on its own (stuck, idle, orphaned) and the teardown after a
+fleet does on its own (stuck, idle, orphaned) and the teardown after a
 task completes aren't included; the reconcile counters above cover the first
 group. `snapshot` includes the snapshots fork, migrate and checkpoint chains
 take internally, because each is a real checkpoint the host had
-to write; with restate on, a migrate's seed and delta snapshots are its own
+to write; a migrate's seed and delta snapshots are its own
 steps (`op="migrate_seed"` and `op="migrate_delta"` below) instead, and a
 fork's seed is the source's own snapshot steps (`op="snapshot"`). Watch `rate(orchestrator_operations_total{result="error"}[5m])` by
 `op`, and the p99 of the duration histogram per `op`: a cold migrate taking
@@ -117,9 +117,7 @@ minutes is normal, a fork taking minutes is not.
 
 **Durable steps**: `orchestrator_step_duration_seconds{op,step}` and
 `orchestrator_step_retries_total{op,step}` cover operations that run on
-restate, one sample per executed step. A create reports its `artifact`, `boot`,
-`egress`, `upload`, `startup` and `agent` steps under `op="create"` with restate
-off as well, so the two modes compare step by step. A rising retry rate on one step is a
+restate, one sample per executed step. A rising retry rate on one step is a
 host agent or dependency failing while restate keeps retrying it. See
 [Tracing](/docs/cloud/tracing) for following one request through its steps.
 
@@ -127,14 +125,14 @@ host agent or dependency failing while restate keeps retrying it. See
 delta migrate kept its source paused: from the diff snapshot until the target
 was recorded running (`outcome="cutover"`), or until the source was resumed
 after a failed migrate (`outcome="rolled_back"`). It is the guest's downtime
-for a live migrate, with restate on or off. A rising p99 points at the delta
+for a live migrate. A rising p99 points at the delta
 copy between the two hosts.
 
 **Artifact moves**: `orchestrator_artifact_move_duration_seconds{source_host,target_host,result}`,
 `orchestrator_artifact_move_bytes_total{source_host,target_host}` and
 `orchestrator_artifact_move_failures_total{source_host,target_host}` record each
 attempt at a host-to-host artifact copy (create seeding, off-host fork,
-migrate, checkpoint deltas), with restate on or off. Failures concentrated on
+migrate, checkpoint deltas). Failures concentrated on
 one host pair point at the network between them or one agent.
 
 **HITL gates**: `orchestrator_hitl_decision_seconds{kind,outcome}` is the time
@@ -143,13 +141,13 @@ from a gate holding an action to a human (or the deadline) deciding it,
 its answer (`allow`, `deny`, `ask`, or `error` when the call failed and the
 action fell through to a human), and
 `orchestrator_hitl_run_duration_seconds{action,result}` the time from an
-approval to the held action's result, with restate on or off.
+approval to the held action's result.
 
 **HITL webhooks**: `orchestrator_hitl_webhook_attempts_total{endpoint}`,
 `orchestrator_hitl_webhook_failures_total{endpoint}` and
 `orchestrator_hitl_webhook_last_status{endpoint}` (the http status of the last
-try, `0` when no receiver answered) cover every delivery attempt, with restate
-on or off. With restate on, `orchestrator_hitl_webhook_backlog{endpoint}` is
+try, `0` when no receiver answered) cover every delivery attempt.
+`orchestrator_hitl_webhook_backlog{endpoint}` is
 the deliveries not yet delivered or dead-lettered and
 `orchestrator_hitl_webhook_dead_letters_total{endpoint}` the ones still failing
 after 24 hours. `endpoint` is the webhook url's host and port only: the path

@@ -80,8 +80,8 @@ export ORCH_REQUIRE_AUTH=true
 Without this, the orchestrator boots happily with no auth configured at all,
 convenient for local dev, dangerous to leave on by accident in production.
 Setting `ORCH_REQUIRE_AUTH=true` makes the orchestrator refuse to start unless
-`ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are **all**
-set, a missing one fails fast at boot with the specific missing variable
+`ORCH_AUTH_TOKEN` and `DATABASE_URL` are **both** set
+(`TOKEN_ENCRYPTION_KEY` is required with or without it), a missing one fails fast at boot with the specific missing variable
 named, rather than silently running in a weaker mode than intended. Set this
 in every production deployment.
 
@@ -91,7 +91,9 @@ in every production deployment.
 export TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
 ```
 
-Must be exactly 64 hex characters (32 bytes); anything else fails at boot with
+Required in every configuration: the orchestrator refuses to start without it,
+since restate journals create, fork and webhook inputs sealed with it. Must be
+exactly 64 hex characters (32 bytes); anything else fails at boot with
 a specific error rather than silently truncating or padding. Used to encrypt
 three things at rest with AES-256-GCM before they're written to the state store:
 per-VM guest-agent tokens, per-host agent bearer tokens, and per-VM secrets.

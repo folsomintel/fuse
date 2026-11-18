@@ -57,19 +57,20 @@ range covers the fleet.
 | `FIRECRACKER_BASE_URL` | `--firecracker-url` | empty → stub | Firecracker host agent URL. |
 | `FIRECRACKER_TOKEN` | `--firecracker-token` | | Bearer token for the host agent. |
 | `DATABASE_URL` | `--database-url` | empty → in-memory | Postgres state store connection string. |
-| `TOKEN_ENCRYPTION_KEY` | | | Hex-encoded 32-byte AES key for per-VM token encryption at rest. |
+| `TOKEN_ENCRYPTION_KEY` | | | Required. Hex-encoded 32-byte AES key (`openssl rand -hex 32`) for per-VM token encryption at rest; it also seals the create, fork and webhook inputs restate journals. The orchestrator refuses to start without it. |
 | `AGENT_DOWNLOAD_URL` | | | URL to fetch the guest agent binary at boot (alternative to baking it in). |
 | `ORCH_TLS_CERT` / `ORCH_TLS_KEY` | `--tls-cert` / `--tls-key` | | Serve the API over TLS. Setting only one fails at startup. |
 | `ORCH_SECURE_COOKIES` | `--secure-cookies` | empty → derived from TLS | Force the `Secure` flag on session cookies. Set to `true` when a proxy terminates TLS. See [Security hardening](/docs/cloud/security). |
-| `ORCH_REQUIRE_AUTH` | | `false` | Fail-closed strict mode: refuses to boot unless `ORCH_AUTH_TOKEN`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_URL` are all set. |
+| `ORCH_REQUIRE_AUTH` | | `false` | Fail-closed strict mode: refuses to boot unless `ORCH_AUTH_TOKEN` and `DATABASE_URL` are both set (`TOKEN_ENCRYPTION_KEY` is required either way). |
 | `ORCH_AUTH_TOKEN` | `--auth-token` | empty → no auth | Static bearer/master token. See [Authentication](/reference/auth). |
 | `ORCH_ALLOWED_CIDRS` | `--allowed-cidrs` | empty → open | Comma-separated CIDR allowlist. |
 | `ORCH_SHUTDOWN_TIMEOUT_SECONDS` | `--shutdown-timeout` | `30` | Graceful shutdown ceiling. |
 | `ORCH_DRAINING_TIMEOUT_SECONDS` | `--draining-timeout` | `330` (5m30s) | Destroy an environment left `draining` this long with no `DELETE`. See [The reconcile loop](/docs/concepts/reconcile#stuck-draining). |
-| `ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS` | `--artifact-pull-timeout` | `0` | Bound on one attempt at a host-to-host artifact copy. With restate off it bounds the copy inside the request; with restate on it is the timeout of the `Artifacts` move's pull step, which no longer ends with the request. `0` leaves only the request (restate off) or the host agent client's own timeout (restate on). |
+| `ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS` | `--artifact-pull-timeout` | `0` | Bound on one attempt at a host-to-host artifact copy: the timeout of the `Artifacts` move's pull step, not the request's. `0` leaves only the host agent client's own timeout. |
 | `ORCH_VM_PREFIX` | `--vm-prefix` | `fuse-` | Prefix applied to generated VM names. |
-| `FUSE_RESTATE_MODE` | | `off` | `off`, `self` or `cloud`. `self` serves restate handlers and checks restate in `/ready`; `cloud` uses a Restate Cloud environment, see [Restate Cloud](/docs/cloud/restate-cloud). |
-| `FUSE_RESTATE_INGRESS_URL` | | | Restate ingress URL, required unless the mode is `off`. `http://127.0.0.1:18080` with `ops/restate/compose.yaml`. |
+| `FUSE_RESTATE_MODE` | | `self` | `self` or `cloud` (empty means `self`). `self` uses a restate-server you run next to the orchestrator; `cloud` uses a Restate Cloud environment, see [Restate Cloud](/docs/cloud/restate-cloud). `off` was removed: the orchestrator refuses to start with it. |
+| `FUSE_RESTATE_INGRESS_URL` | | | Restate ingress URL, always required. `http://127.0.0.1:18080` with `ops/restate/compose.yaml`. |
+| `ORCH_RESTATE_STARTUP_TIMEOUT_SECONDS` | `--restate-startup-timeout` | `120` | How long startup waits for restate ingress to answer and for this orchestrator's deployment to be registered before it exits. The API does not open until both hold. |
 | `FUSE_RESTATE_API_KEY` / `FUSE_RESTATE_IDENTITY_KEY` | | | Mode `cloud` only: the Cloud API key and the `publickeyv1_...` signing key. Other cloud settings are on [Restate Cloud](/docs/cloud/restate-cloud#settings). |
 | `ORCH_RESTATE_LISTEN` | | `127.0.0.1:9080` | Restate handler endpoint (h2c). Only restate-server, or the TLS proxy in front of it in cloud public mode, should reach it. |
 | `FUSE_RESTATE_RETRY_<SERVICE>_INITIAL_INTERVAL` / `_MAX_INTERVAL` / `_MAX_ATTEMPTS` | | `500ms` / `30s` / `10` | Invocation retry policy per restate service; `<SERVICE>` is `ENVIRONMENT`, `HOST`, `ARTIFACTS`, `ARTIFACTPIN`, `WEBHOOKS`, `INTERVENTION` or `IMAGES`. The `ARTIFACTS` policy also bounds the retries of an artifact move's pull; the `ENVIRONMENT` policy bounds the host steps of a destroy, snapshot, restore or token rotation upload (a rotation's state store write retries without bound), and the retries of a snapshot gc deletion. The `WEBHOOKS` policy only covers restate failing to run one delivery attempt; a receiver that is down is retried on its own 24-hour schedule (see [webhooks](/docs/guides/human-in-the-loop)). The `INTERVENTION` policy covers restate failing to deliver an approved hitl action's run or a deadline timer; the run's own state store writes retry without bound. The `IMAGES` policy bounds the retries of an image convert's status polls; the convert call itself is not retried, so a refusal is the API's answer at once. |
@@ -80,19 +81,19 @@ in-memory and does not survive a restart.
 
 ## Restate
 
-Restate is optional and off by default. With it on, creates, destroys, artifact moves, snapshots, restores, the checkpoint chain, snapshot gc, token rotation and hitl webhook deliveries run on it. To run it next to the orchestrator:
+Restate is required. Every operation runs on it: creates, destroys, forks, migrates, artifact moves, snapshots, restores, the checkpoint chain, snapshot gc, token rotation, drain and expiry, hitl approved runs, deadlines and webhook deliveries, image converts and builds. To run it next to the orchestrator:
 
 ```bash
 docker compose -f ops/restate/compose.yaml up -d
-FUSE_RESTATE_MODE=self FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080 orchestrator
-ops/restate/register.sh   # again after every orchestrator upgrade
+FUSE_RESTATE_MODE=self FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080 orchestrator &
+ops/restate/register.sh   # after the handler endpoint is up, and again after every orchestrator upgrade
 ```
 
-The compose file uses host networking and binds every restate port to loopback: ingress `18080` (restate's default `8080` is the orchestrator), admin `9070`, node `5122`. The admin port has no auth, so keep it off the network. To use Restate Cloud instead, see [Restate Cloud](/docs/cloud/restate-cloud). With restate down, `/ready` stays `200` with `status: degraded` and the `restate` check set to the error.
+The compose file uses host networking and binds every restate port to loopback: ingress `18080` (restate's default `8080` is the orchestrator), admin `9070`, node `5122`. The admin port has no auth, so keep it off the network. To use Restate Cloud instead, see [Restate Cloud](/docs/cloud/restate-cloud). At startup the orchestrator serves its handler endpoint, then waits up to `--restate-startup-timeout` for ingress to answer and for a ping to reach the `Environment` object (its deployment registered) before the API opens; on timeout it exits saying whether restate was unreachable or reachable with no deployment registered. Once running, with restate down, `/ready` stays `200` with `status: degraded` and the `restate` check set to the error: reads, exec, files and streams do not need restate.
 
-A create on restate runs as `Environment/{vm_id}/Create`, one journaled step each for begin, place, artifact, ingress, boot, egress, upload, startup, agent and running. An orchestrator restart mid-create resumes at the first unfinished step. A step that fails for good (an unschedulable spec, a startup script that exits non-zero, a step out of retries) rolls the create back: proxy egress released, ingress unpublished, the task failed, and the VM destroyed through `Environment/{vm_id}/Destroy`. The create's inputs (spec, manifest, secrets, startup script, gateway token, files) are sealed under `TOKEN_ENCRYPTION_KEY` before they reach the journal, so without that key creates stay in process.
+A create runs as `Environment/{vm_id}/Create`, one journaled step each for begin, place, artifact, ingress, boot, egress, upload, startup, agent and running. An orchestrator restart mid-create resumes at the first unfinished step. A step that fails for good (an unschedulable spec, a startup script that exits non-zero, a step out of retries) rolls the create back: proxy egress released, ingress unpublished, the task failed, and the VM destroyed through `Environment/{vm_id}/Destroy`. The create's inputs (spec, manifest, secrets, startup script, gateway token, files) are sealed under `TOKEN_ENCRYPTION_KEY` before they reach the journal.
 
-A fork on restate runs as `Environment/{new_vm_id}/Fork`, keyed by the fork's own VM id: begin, a provisioning placeholder row, the seed snapshot (a call to the source's `Environment/{vm_id}/Snapshot`, so only the snapshot waits behind the source's other operations), place, artifact (for an off-host fork), create, ingress, credentials, upload, start agent, running, task and lineage. An orchestrator restart mid-fork resumes at the first unfinished step. A step that fails for good before running rolls the fork back: ingress unpublished, the placeholder dropped, the new VM destroyed through `Environment/{new_vm_id}/Destroy` (reason `fork_rollback`) and a seed snapshot the fork took deleted. Like creates, forks stay in process without `TOKEN_ENCRYPTION_KEY`.
+A fork runs as `Environment/{new_vm_id}/Fork`, keyed by the fork's own VM id: begin, a provisioning placeholder row, the seed snapshot (a call to the source's `Environment/{vm_id}/Snapshot`, so only the snapshot waits behind the source's other operations), place, artifact (for an off-host fork), create, ingress, credentials, upload, start agent, running, task and lineage. An orchestrator restart mid-fork resumes at the first unfinished step. A step that fails for good before running rolls the fork back: ingress unpublished, the placeholder dropped, the new VM destroyed through `Environment/{new_vm_id}/Destroy` (reason `fork_rollback`) and a seed snapshot the fork took deleted. Its inputs are sealed like a create's.
 
 ## Postgres is the source of truth
 
@@ -132,7 +133,9 @@ GitHub release), writes `/etc/default/orchestrator` prefilled with
 `FIRECRACKER_BASE_URL=http://127.0.0.1:8090`, this host's `FIRECRACKER_TOKEN`, and
 freshly generated `ORCH_AUTH_TOKEN` + `TOKEN_ENCRYPTION_KEY` (never overwriting an
 existing file), then installs `orchestrator.service` ordered after
-`fc-agent.service`.
+`fc-agent.service`. That env file has no restate settings: run restate-server and
+add `FUSE_RESTATE_MODE=self` and `FUSE_RESTATE_INGRESS_URL` as in [Restate](#restate)
+before starting, or the orchestrator exits at startup.
 
 Auth is on by default: the orchestrator refuses to boot until you supply a Postgres
 `DATABASE_URL`. The installer leaves that as a placeholder and does not start the
@@ -155,7 +158,9 @@ sudo ./ops/install-orchestrator.sh
 It installs the `orchestrator` binary (from `ORCH_BIN_SRC=/path`, a local
 `./orchestrator`, or the latest GitHub release), writes `/etc/fuse/orchestrator.env`
 with a freshly generated `ORCH_AUTH_TOKEN` and `TOKEN_ENCRYPTION_KEY` (never
-overwriting an existing file), installs and starts `fuse-orchestrator.service`,
+overwriting an existing file), runs restate-server beside it (mode `self`, the
+default, needs docker; see [the restate runbook](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx)), installs and
+starts `fuse-orchestrator.service`, registers its restate endpoint,
 and prints the exact `fuse connect` line to run from your laptop:
 
 ```
@@ -172,7 +177,8 @@ missing `checksums.txt`, a missing entry for the asset, or a mismatch aborts
 the install, leaving the existing binary in place and the service unrestarted.
 
 The default posture is a single-node, in-memory store with auth on, so it starts
-immediately. For a durable deploy, set `DATABASE_URL` in
+immediately (with a warning that the in-memory store forgets VMs on restart while
+restate keeps running what it held for them). For a durable deploy, set `DATABASE_URL` in
 `/etc/fuse/orchestrator.env`, uncomment `ORCH_REQUIRE_AUTH=true`, and restart. This
 is a different unit (`fuse-orchestrator.service`, config in `/etc/fuse/`) from the
 co-located `install-orchestrator` path above (`orchestrator.service`, config in
@@ -193,6 +199,7 @@ go build -o bin/orchestrator ./orchestrator
 export FIRECRACKER_BASE_URL=http://<host>:<port>
 export FIRECRACKER_TOKEN=<token>
 export TOKEN_ENCRYPTION_KEY=<hex-encoded 32-byte AES key>
+export FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080   # restate-server, see Restate above
 export ORCH_AUTH_TOKEN=<token>
 export DATABASE_URL=postgres://...
 ./bin/orchestrator

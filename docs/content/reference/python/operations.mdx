@@ -53,8 +53,7 @@ method, path, action or body) is a `409` `conflict` whose
 `details["operation_id"]`. A finished operation is kept for 24 hours; one
 that finished with a 5xx is not kept at all, so its retry runs again. Keys
 live in the orchestrator's memory and an orchestrator restart forgets them,
-except that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the
-key of a destroy, snapshot or restore is also the restate invocation's
+except that the key of a destroy, snapshot or restore is also the restate invocation's
 idempotency key, so a retry after a restart attaches to the same invocation.
 A destroy that already finished is the exception: its vm is gone, so that
 retry answers 404.
@@ -134,8 +133,9 @@ OPERATION_FAILED = "failed"
   `drain`.
 - `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
   `done` reports whether it is anything but `running`.
-- `step` is the step the operation last reported starting. Only migrate
-  reports steps: `snapshot`, `transfer`, `delta`, `boot` and `cutover`.
+- `step` is the step the operation last reported starting. No operation
+  reports one now (every operation runs on restate, whose steps show in the
+  restate ui), so it is empty.
 - `status_code`, with `result` on success or `error` on failure, is what the
   call itself would have answered. `result` is the decoded response body: an
   environment for create, fork, migrate and drain, a snapshot for snapshot,
