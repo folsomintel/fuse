@@ -111,10 +111,11 @@ type persistedEgress struct {
 	Provider string          `json:"provider,omitempty"`
 	Protocol egress.Protocol `json:"protocol,omitempty"`
 	Endpoint string          `json:"endpoint,omitempty"`
+	Lease    string          `json:"lease,omitempty"`
 }
 
 func marshalEgress(s egress.Status) ([]byte, error) {
-	return json.Marshal(persistedEgress{Mode: s.Mode, Provider: s.Provider, Protocol: s.Protocol, Endpoint: s.Endpoint})
+	return json.Marshal(persistedEgress{Mode: s.Mode, Provider: s.Provider, Protocol: s.Protocol, Endpoint: s.Endpoint, Lease: s.Lease})
 }
 
 func unmarshalEgress(raw []byte) (egress.Status, error) {
@@ -129,7 +130,7 @@ func unmarshalEgress(raw []byte) (egress.Status, error) {
 	if p.Mode == "" {
 		p.Mode = egress.ModeDirect
 	}
-	return egress.Status{Mode: p.Mode, Provider: p.Provider, Protocol: p.Protocol, Endpoint: p.Endpoint}, nil
+	return egress.Status{Mode: p.Mode, Provider: p.Provider, Protocol: p.Protocol, Endpoint: p.Endpoint, Lease: p.Lease}, nil
 }
 
 // TaskRecord tracks durable task assignment/run metadata.

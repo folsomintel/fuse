@@ -29,8 +29,8 @@ const wireGuardConfigKey = "WG_CONF"
 // one key make the server flap between their endpoints. the host shares one
 // bridge between every vm on it that uses the same config, so the only way
 // to break that is the same config on two hosts, which this refuses. the
-// record is in memory, so it starts empty after an orchestrator restart;
-// it is a guardrail, not a lock.
+// record is in memory; each vm's lease is the config fingerprint, persisted
+// with the vm, and Restore rebuilds the record from them after a restart.
 type WireGuard struct {
 	mu sync.Mutex
 	// live maps a config fingerprint to the host holding it and the vms on
@@ -114,6 +114,7 @@ func (w *WireGuard) Provision(ctx context.Context, ec Context) (Endpoint, error)
 		return Endpoint{}, redactWireGuard(err, ec.Credential, conf)
 	}
 	ep.Provider = WireGuardName
+	ep.Lease = fp
 	if ep.Protocol == "" {
 		ep.Protocol = ec.Protocol
 	}
@@ -141,6 +142,13 @@ func (w *WireGuard) reserve(fp, hostID, vmID string) error {
 	}
 	b.vms[vmID] = struct{}{}
 	return nil
+}
+
+// Restore implements Restorer: a recovered vm takes back its place on the
+// config its lease names. a lease that conflicts with one already restored
+// is refused, as Provision would refuse it.
+func (w *WireGuard) Restore(hostID, vmID, lease string) error {
+	return w.reserve(lease, hostID, vmID)
 }
 
 // forget drops vmID from whichever config it was using.

@@ -2105,6 +2105,8 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	}
 	fm.mu.Unlock()
 
+	fm.restoreEgressLeases(recovered)
+
 	// Heal any drift in the persisted host Allocated counters by re-deriving
 	// them from the live VM bindings. This must run after the Destroying
 	// demotions above and after fm.vms is populated, so demoted VMs are
@@ -2493,6 +2495,24 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 		fm.logger.Warn("egress release failed", "vm", v.id, "provider", v.egress.Provider, "err", err)
 		if em, ok := fm.metrics.(EgressMetrics); ok {
 			em.EgressTeardownFailed(v.egress.Provider)
+		}
+	}
+}
+
+// restoreEgressLeases hands each recovered vm's egress lease back to its
+// backend, so state a backend keeps in memory (the wireguard one-host-per-key
+// reservation) holds across the restart. a vm still tearing down keeps its
+// lease until its destroy releases it.
+func (fm *FleetManager) restoreEgressLeases(recovered map[string]*vm) {
+	if fm.egressRegistry == nil {
+		return
+	}
+	for id, v := range recovered {
+		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" {
+			continue
+		}
+		if err := fm.egressRegistry.Restore(v.egress.Provider, v.hostID, id, v.egress.Lease); err != nil {
+			fm.logger.Warn("restore egress lease failed", "vm", id, "provider", v.egress.Provider, "err", err)
 		}
 	}
 }
