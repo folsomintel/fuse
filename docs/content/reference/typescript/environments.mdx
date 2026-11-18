@@ -30,6 +30,8 @@ await client.environments.destroy(env.id);
   names are snake_case throughout, `task_id`/`ram_mb`, not
   `taskId`/`ramMb`. `Spec` carries `gpus`, `gpu_kind`, and `gpu_profile`, so
   fractional MIG environments can be requested type-safely from this SDK.
+  Any of `cpus`, `ram_mb` or `storage_gb` left unset (or `0`) defaults to
+  1 vCPU, 1024 MB or 4 GB; a negative value is a 400.
 - `exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `exit_code` is a resolved call**,
   not a thrown error, the command ran and failed, which is the answer you

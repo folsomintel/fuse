@@ -41,6 +41,8 @@ if err := client.Environments.Destroy(ctx, env.ID); err != nil {
   such as `1g.10gb` to request MIG instances instead of whole devices. The
   TypeScript and Python SDKs carry the same GPU surface, including
   `HostCapacity.GPUDevices` and the `GPUDevice` type.
+  Any of `CPUs`, `RamMB` or `StorageGB` left at `0` defaults to 1 vCPU,
+  1024 MB or 4 GB; a negative value is a 400.
 - `Exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `ExitCode` is a successful call**,
   not an `error`, the command ran and failed, which is the answer you asked

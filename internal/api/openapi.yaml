@@ -2831,25 +2831,27 @@ components:
       description: |
         Hardware requirements for a VM.
 
-        No lower bound is declared on cpus/ram_mb because the server
-        does not enforce one: createEnvironment validates only task_id
-        and the GPU fields, so a spec with `cpus: 0` / `ram_mb: 0` is
-        accepted and scheduled. Callers should still send positive
-        values; a strict request validator must not reject zero, or it
-        will refuse payloads the API accepts.
+        cpus, ram_mb and storage_gb left at 0 (or omitted) get a default
+        before scheduling: 1 vCPU, 1024 MB and 4 GB, and the VM is
+        scheduled and booted at that size. A negative value is a 400.
       properties:
         cpus:
           type: integer
           format: int32
           minimum: 0
+          description: vCPU count. 0 or omitted means the default, 1.
         ram_mb:
           type: integer
           format: int32
           minimum: 0
+          description: Memory in MB. 0 or omitted means the default, 1024.
         storage_gb:
           type: integer
           format: int32
           minimum: 0
+          description: |
+            Storage in GB. 0 or omitted means the default, 4, the size
+            of the baked base rootfs.
         gpus:
           type: integer
           format: int32
@@ -3283,10 +3285,9 @@ components:
           allOf:
             - $ref: "#/components/schemas/ResourceSpec"
           description: |
-            Hardware requirements. Nominally required, but the server
-            does not currently reject a missing/zero spec; scheduling
-            against registered hosts is what fails a zero-resource
-            request.
+            Hardware requirements. Nominally required, but a missing
+            spec, or cpus/ram_mb/storage_gb left at 0, gets the
+            defaults documented on ResourceSpec.
         manifest_inline:
           type: string
           description: |

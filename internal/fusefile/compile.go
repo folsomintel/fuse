@@ -546,8 +546,8 @@ func Compile(f *Fusefile) (*Compiled, error) {
 		}
 	}
 
-	// zero keeps its meaning: the field was omitted and the host agent picks
-	// its default vCPU count. only a negative count is rejected.
+	// zero keeps its meaning: the field was omitted and the orchestrator
+	// fills in its default vCPU count. only a negative count is rejected.
 	if f.Resources.CPUs < 0 {
 		errs = append(errs, fmt.Errorf("resources.cpus: must not be negative"))
 	}

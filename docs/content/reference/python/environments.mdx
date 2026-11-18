@@ -28,6 +28,8 @@ client.environments.destroy(env.id)
   `gpus`, `gpu_kind`, and `gpu_profile`, so fractional MIG environments can be
   requested from this SDK. `HostCapacity` exposes `mig_profiles` and the
   probed per-device `gpu_devices` inventory.
+  Any of `cpus`, `ram_mb` or `storage_gb` left unset (or `0`) defaults to
+  1 vCPU, 1024 MB or 4 GB; a negative value is a 400.
 - `exec` runs one command inside the guest and returns its exit code with
   stdout/stderr kept apart. A **non-zero `exit_code` is a successful call**,
   not a raised exception, the command ran and failed, which is the answer you

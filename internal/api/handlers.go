@@ -321,6 +321,10 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, "task_id is required", nil)
 		return
 	}
+	if err := validateResourceSpec(req.Spec); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+		return
+	}
 	if err := validateGPUSpec(req.Spec); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
@@ -540,6 +544,20 @@ func decodeCreateFiles(files map[string]string) (map[string][]byte, error) {
 		out[p] = data
 	}
 	return out, nil
+}
+
+// validateResourceSpec refuses a negative cpus/ram_mb/storage_gb. zero is
+// valid and means "use the default": the fleet fills it before scheduling.
+func validateResourceSpec(s ResourceSpec) error {
+	switch {
+	case s.CPUs < 0:
+		return errors.New("spec.cpus must not be negative")
+	case s.RamMB < 0:
+		return errors.New("spec.ram_mb must not be negative")
+	case s.StorageGB < 0:
+		return errors.New("spec.storage_gb must not be negative")
+	}
+	return nil
 }
 
 // validateGPUSpec enforces GPU request invariants at the API boundary so

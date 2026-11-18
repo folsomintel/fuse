@@ -204,6 +204,51 @@ func TestProvisionAndAssign(t *testing.T) {
 	}
 }
 
+// a spec that leaves cpus/ram_mb/storage_gb at 0 (a Fusefile with no
+// resources block) must reach the provider with the defaults, and the host
+// must be charged for them, since firecracker refuses a 0 vcpu machine.
+func TestProvisionAndAssign_zeroResourcesGetDefaults(t *testing.T) {
+	p := newMockProvider()
+	var got Spec
+	p.createFn = func(_ context.Context, spec Spec) (Environment, error) {
+		got = spec
+		e := &mockEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+		p.envs[spec.Name] = e
+		return e, nil
+	}
+	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	if err := fm.RegisterHost(context.Background(), cpuFleetHost("h1"), p); err != nil {
+		t.Fatalf("register h1: %v", err)
+	}
+
+	info, err := fm.ProvisionAndAssign(context.Background(), "task-1",
+		Spec{RamMB: 2048}, []byte(`{}`), nil, BootOptions{})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	want := [3]int{DefaultCPUs, 2048, DefaultStorageGB}
+	if have := [3]int{got.CPUs, got.RamMB, got.StorageGB}; have != want {
+		t.Errorf("provider got cpus/ram_mb/storage_gb %v, want %v", have, want)
+	}
+	if have := [3]int{info.Spec.CPUs, info.Spec.RamMB, info.Spec.StorageGB}; have != want {
+		t.Errorf("vm spec cpus/ram_mb/storage_gb %v, want %v", have, want)
+	}
+	h, _ := fm.GetHost("h1")
+	if have := [3]int{h.Allocated.CPUs, h.Allocated.RamMB, h.Allocated.StorageGB}; have != want {
+		t.Errorf("host allocated %v, want %v", have, want)
+	}
+
+	// an all-zero spec gets every default, and the 4096 MB host still fits
+	// a second default-sized vm next to the first.
+	if _, err := fm.ProvisionAndAssign(context.Background(), "task-2",
+		Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatalf("provision default-sized vm: %v", err)
+	}
+	if want := [3]int{DefaultCPUs, DefaultRamMB, DefaultStorageGB}; [3]int{got.CPUs, got.RamMB, got.StorageGB} != want {
+		t.Errorf("provider got cpus/ram_mb/storage_gb %v, want %v", [3]int{got.CPUs, got.RamMB, got.StorageGB}, want)
+	}
+}
+
 func TestDuplicateTaskRejected(t *testing.T) {
 	p := newMockProvider()
 	fm := NewFleetManager(FleetConfig{
