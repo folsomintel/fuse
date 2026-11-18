@@ -160,7 +160,7 @@ func (fm *FleetManager) ChainBegin(ctx context.Context, vmID string, chain Chain
 	if keep {
 		if reason := fm.standbyRejectionFor(vmID, chain.Standby); reason != "" {
 			fm.logger.InfoContext(ctx, "checkpoint standby no longer fits; re-picking", "vm", vmID, "host", chain.Standby, "reason", reason)
-			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{
+			fm.appendEvent(ctx, "vm", vmID, "vm.checkpoint_chain_reset", map[string]any{
 				"error": "standby host " + chain.Standby + " " + reason, "standby_host_id": chain.Standby,
 			})
 			keep = false

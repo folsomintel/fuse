@@ -185,15 +185,15 @@ func (fm *FleetManager) drainBegin(ctx context.Context, vmID string, replay bool
 			v.updatedAt = time.Now()
 		}
 		fm.mu.Unlock()
-		fm.persistVMBackground(vmID)
-		fm.appendEventBackground("vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_environment"})
+		fm.persistDrainVM(ctx, vmID)
+		fm.appendEvent(ctx, "vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_environment"})
 		return plan, nil
 	}
 
 	if !plan.Command {
 		// No drain command configured for this agent: leave the VM Draining
 		// for the caller to DELETE (back-compat). No graceful command runs.
-		fm.appendEventBackground("vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_drain_command"})
+		fm.appendEvent(ctx, "vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_drain_command"})
 	}
 	return plan, nil
 }
@@ -222,7 +222,7 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 		// restart attaches its own handle.
 		if err := fm.reattachVMFromProvider(ctx, attach); err != nil {
 			msg := fmt.Sprintf("drain command: attach environment: %v", err)
-			fm.recordDrainError(vmID, msg)
+			fm.recordDrainError(ctx, vmID, msg)
 			return msg
 		}
 		env = attach.env
@@ -240,8 +240,8 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 
 	if err := env.ExecStream(rpcCtx, io.Discard, io.Discard, "sh", "-lc", drainCmd); err != nil {
 		msg := fmt.Sprintf("drain command: %v", err)
-		fm.recordDrainError(vmID, msg)
-		fm.appendEventBackground("vm", vmID, "vm.drain_failed", map[string]any{"reason": "exec", "error": err.Error()})
+		fm.recordDrainError(ctx, vmID, msg)
+		fm.appendEvent(ctx, "vm", vmID, "vm.drain_failed", map[string]any{"reason": "exec", "error": err.Error()})
 		fm.logger.Warn("drain command failed", "vm", vmID, "err", err)
 		// Stay in Draining: caller decides whether to retry or DELETE.
 		return msg
@@ -253,8 +253,8 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 		v.updatedAt = time.Now()
 	}
 	fm.mu.Unlock()
-	fm.persistVMBackground(vmID)
-	fm.appendEventBackground("vm", vmID, "vm.drained", nil)
+	fm.persistDrainVM(ctx, vmID)
+	fm.appendEvent(ctx, "vm", vmID, "vm.drained", nil)
 	fm.logger.Info("vm drained", "vm", vmID)
 	return ""
 }
@@ -264,7 +264,7 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 // failed drain command does not auto-destroy and does not roll back to
 // Running (the harness has likely already received the graceful-stop
 // signal from the partial drain).
-func (fm *FleetManager) recordDrainError(vmID, msg string) {
+func (fm *FleetManager) recordDrainError(ctx context.Context, vmID, msg string) {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if ok {
@@ -273,6 +273,16 @@ func (fm *FleetManager) recordDrainError(vmID, msg string) {
 	}
 	fm.mu.Unlock()
 	if ok {
-		fm.persistVMBackground(vmID)
+		fm.persistDrainVM(ctx, vmID)
+	}
+}
+
+// persistDrainVM writes the vm after a drain step changed its error or clock.
+// it runs before the step returns, so the durable journal never records a
+// drain whose result has not been written; a failure is only logged, since
+// the drain command must not run again for it.
+func (fm *FleetManager) persistDrainVM(ctx context.Context, vmID string) {
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		fm.logger.Warn("persist drained vm failed", "vm", vmID, "err", err)
 	}
 }

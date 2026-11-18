@@ -538,20 +538,30 @@ func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, 
 	return true
 }
 
-// markExpiredVM is failExpiredVM without the destroy: the durable expiry
-// timer sends that itself, as a journaled step.
-func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
+// expiredMark is what claimExpired changed on a vm, so a durable check whose
+// writes fail can put it back.
+type expiredMark struct {
+	state      VMState
+	taskID     string
+	err        string
+	updatedAt  time.Time
+	assignedAt time.Time
+}
+
+// claimExpired moves a VM still in e.from with taskID to destroying, in
+// memory only. It reports false when the VM had already moved on.
+func (fm *FleetManager) claimExpired(vmID, taskID string, e expiry) (expiredMark, bool) {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok || v.state != e.from || v.taskID != taskID {
 		fm.mu.Unlock()
-		return false
+		return expiredMark{}, false
 	}
+	m := expiredMark{state: v.state, taskID: v.taskID, err: v.err, updatedAt: v.updatedAt, assignedAt: v.createdAt}
 	v.state = VMStateDestroying
 	v.taskID = ""
 	v.err = e.reason
 	v.updatedAt = time.Now()
-	assignedAt := v.createdAt
 	delete(fm.stuckStrikes, vmID)
 	delete(fm.idleStrikes, vmID)
 	fm.mu.Unlock()
@@ -563,27 +573,38 @@ func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, 
 		"age", e.age,
 		"ceiling", e.ceiling,
 	)
+	return m, true
+}
 
-	fm.persistVMBackground(vmID)
-	fm.appendEventBackground("vm", vmID, "vm.destroying", map[string]any{"reason": e.reasonCode})
-	fm.publishStateChange(vmID, "")
-	if taskID != "" {
-		fm.upsertTaskBackground(TaskRecord{
-			TaskID:     taskID,
-			VMID:       vmID,
-			RunStatus:  TaskRunFailed,
-			RetryCount: 0,
-			LastError:  e.reason,
-			AssignedAt: assignedAt,
-			UpdatedAt:  time.Now(),
-		})
-		fm.appendEventBackground("task", taskID, "task.failed", map[string]any{
-			"vm_id":  vmID,
-			"error":  e.reason,
-			"reason": e.reasonCode,
-		})
+// unclaimExpired puts back what claimExpired changed, if nothing has moved
+// the vm on since.
+func (fm *FleetManager) unclaimExpired(vmID string, m expiredMark) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	v, ok := fm.vms[vmID]
+	if !ok || v.state != VMStateDestroying {
+		return
 	}
-	fm.recordDeadLetter(ctx, DeadLetterRecord{
+	v.state = m.state
+	v.taskID = m.taskID
+	v.err = m.err
+	v.updatedAt = m.updatedAt
+}
+
+func expiredTask(vmID, taskID string, e expiry, assignedAt time.Time) TaskRecord {
+	return TaskRecord{
+		TaskID:     taskID,
+		VMID:       vmID,
+		RunStatus:  TaskRunFailed,
+		RetryCount: 0,
+		LastError:  e.reason,
+		AssignedAt: assignedAt,
+		UpdatedAt:  time.Now(),
+	}
+}
+
+func expiredDeadLetter(vmID, taskID string, e expiry) DeadLetterRecord {
+	return DeadLetterRecord{
 		Kind:     e.kind,
 		EntityID: vmID,
 		TaskID:   taskID,
@@ -592,8 +613,76 @@ func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, 
 			"age_s", fmt.Sprintf("%d", int(e.age.Seconds())),
 			"ceiling_s", fmt.Sprintf("%d", int(e.ceiling.Seconds())),
 		),
-	})
+	}
+}
+
+// markExpiredVM is failExpiredVM without the destroy. its store writes run in
+// the background, as reconcile's always have.
+func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
+	m, ok := fm.claimExpired(vmID, taskID, e)
+	if !ok {
+		return false
+	}
+	fm.persistVMBackground(vmID)
+	fm.appendEventBackground("vm", vmID, "vm.destroying", map[string]any{"reason": e.reasonCode})
+	fm.publishStateChange(vmID, "")
+	if taskID != "" {
+		fm.upsertTaskBackground(expiredTask(vmID, taskID, e, m.assignedAt))
+		fm.appendEventBackground("task", taskID, "task.failed", map[string]any{
+			"vm_id":  vmID,
+			"error":  e.reason,
+			"reason": e.reasonCode,
+		})
+	}
+	fm.recordDeadLetter(ctx, expiredDeadLetter(vmID, taskID, e))
 	return true
+}
+
+// markExpiredVMDurable is markExpiredVM for the durable expiry check: the vm,
+// its task and the dead letter are written before it returns, and a write
+// that fails puts the vm back and fails the step, so restate retries the
+// check instead of journaling a teardown that never reached the store. the
+// timer sends the destroy itself, as a journaled step.
+func (fm *FleetManager) markExpiredVMDurable(ctx context.Context, vmID, taskID string, e expiry) (bool, error) {
+	m, ok := fm.claimExpired(vmID, taskID, e)
+	if !ok {
+		return false, nil
+	}
+	if err := fm.writeExpired(ctx, vmID, taskID, e, m); err != nil {
+		fm.unclaimExpired(vmID, m)
+		return false, err
+	}
+	fm.appendEvent(ctx, "vm", vmID, "vm.destroying", map[string]any{"reason": e.reasonCode})
+	fm.publishStateChange(vmID, "")
+	if taskID != "" {
+		fm.appendEvent(ctx, "task", taskID, "task.failed", map[string]any{
+			"vm_id":  vmID,
+			"error":  e.reason,
+			"reason": e.reasonCode,
+		})
+	}
+	return true, nil
+}
+
+func (fm *FleetManager) writeExpired(ctx context.Context, vmID, taskID string, e expiry, m expiredMark) error {
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		return fmt.Errorf("persist expired vm %s: %w", vmID, err)
+	}
+	if fm.store == nil {
+		return nil
+	}
+	if taskID != "" {
+		if err := fm.store.UpsertTask(ctx, expiredTask(vmID, taskID, e, m.assignedAt)); err != nil {
+			return fmt.Errorf("persist expired task %s: %w", taskID, err)
+		}
+	}
+	dl := expiredDeadLetter(vmID, taskID, e)
+	dl.FirstSeenAt = time.Now()
+	dl.LastSeenAt = dl.FirstSeenAt
+	if err := fm.store.UpsertDeadLetter(ctx, dl); err != nil {
+		return fmt.Errorf("record expiry dead letter %s: %w", vmID, err)
+	}
+	return nil
 }
 
 // recordDeadLetter upserts a dead-letter entry through the state store.

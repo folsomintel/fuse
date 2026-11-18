@@ -57,10 +57,8 @@ func (fm *FleetManager) registerHost(ctx context.Context, h Host, p Provider) er
 	fm.hostProviders[h.ID] = p
 	fm.mu.Unlock()
 
-	if fm.store != nil {
-		if err := fm.store.UpsertHost(ctx, fm.hostToRecord(h)); err != nil {
-			return fmt.Errorf("persist host %s: %w", h.ID, err)
-		}
+	if err := fm.writeHostRecord(ctx, h.ID); err != nil {
+		return fmt.Errorf("persist host %s: %w", h.ID, err)
 	}
 	fm.appendEvent(ctx, "host", h.ID, "host.registered", map[string]any{
 		"url":    h.URL,
@@ -104,10 +102,8 @@ func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state H
 	h.UpdatedAt = time.Now()
 	fm.mu.Unlock()
 
-	if fm.store != nil {
-		if err := fm.store.UpsertHost(ctx, fm.hostToRecord(*h)); err != nil {
-			return fmt.Errorf("persist host state %s: %w", hostID, err)
-		}
+	if err := fm.writeHostRecord(ctx, hostID); err != nil {
+		return fmt.Errorf("persist host state %s: %w", hostID, err)
 	}
 	fm.appendEvent(ctx, "host", hostID, event, map[string]any{"state": string(state)})
 	return nil
@@ -157,7 +153,10 @@ func (fm *FleetManager) unregisterHost(hostID string) error {
 // deleting a row that is already gone is not an error, so it can be retried.
 func (fm *FleetManager) deleteHostRecord(ctx context.Context, hostID string) error {
 	if fm.store != nil {
-		if err := fm.store.DeleteHost(ctx, hostID); err != nil {
+		fm.hostWriteMu.Lock()
+		err := fm.store.DeleteHost(ctx, hostID)
+		fm.hostWriteMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("delete host %s: %w", hostID, err)
 		}
 	}
@@ -354,7 +353,7 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 		h.Allocated.GPUs += int(spec.GPUs)
 	}
 	h.UpdatedAt = time.Now()
-	fm.persistHostRecordBackground(fm.hostToRecord(*h))
+	fm.persistHostBackground(h.ID)
 }
 
 // deallocateOnHost decrements the allocated counters when a VM is
@@ -432,7 +431,7 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 		h.Allocated.VMCount = 0
 	}
 	h.UpdatedAt = time.Now()
-	fm.persistHostRecordBackground(fm.hostToRecord(*h))
+	fm.persistHostBackground(h.ID)
 }
 
 // providerForHost returns the cached provider for the given host ID.

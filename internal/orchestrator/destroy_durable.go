@@ -83,7 +83,7 @@ func (fm *FleetManager) durableDestroyer() DurableDestroyer {
 func (fm *FleetManager) destroyAsync(vmID, reason string) {
 	d := fm.durableDestroyer()
 	if d == nil {
-		go fm.destroyAndRemove(vmID)
+		fm.goBackground(func() { fm.destroyAndRemove(vmID) })
 		return
 	}
 	fm.destroySends.Add(1)
@@ -110,16 +110,14 @@ func (fm *FleetManager) cleanupFailedCreate(provider Provider, v *vm, vmID, host
 		}
 		return
 	}
-	// TODO: Track this goroutine so Stop() can wait for it to finish
-	// instead of leaking on shutdown.
-	go func() {
+	fm.goBackground(func() {
 		if v != nil {
 			fm.releaseEgress(context.Background(), v)
 		}
 		if err := provider.Destroy(context.Background(), vmID); err != nil {
 			fm.logger.Error("cleanup destroy failed", "vm", vmID, "err", err)
 		}
-	}()
+	})
 }
 
 // durableDestroyVM is DestroyVM in mode self or cloud. it checks what the
