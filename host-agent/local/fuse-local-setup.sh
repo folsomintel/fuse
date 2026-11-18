@@ -382,7 +382,13 @@ start_stack() {
     log "restate-server started, ingress on 127.0.0.1:$RESTATE_INGRESS_PORT (pid $!)"
   fi
 
-  if running_current orchestrator "bin/orchestrator" "$DIR/bin/orchestrator"; then
+  # the local orchestrator keeps environments in memory, so restarting it
+  # forgets them and its next reconcile destroys their vms as orphans. while
+  # fc-agent holds any vm, keep the running orchestrator even on old code.
+  if pid_running "$DIR/orchestrator.pid" "bin/orchestrator" \
+      && [ -n "$(ls -A "$DIR/fc/agent-state/vms" 2>/dev/null)" ]; then
+    log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid")); not restarting it while environments exist, destroy them and run up again to load new code"
+  elif running_current orchestrator "bin/orchestrator" "$DIR/bin/orchestrator"; then
     log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid"))"
   else
     # the mock egress backend runs inside the orchestrator and binds the
