@@ -15,14 +15,16 @@ convert.
 ## client.Images
 
 ```go
-func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest) (*Image, error)
+func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest, opts ...CallOption) (*Image, error)
 func (s *ImagesService) Get(ctx context.Context, digest string) (*Image, error)
 ```
 
 `Convert` sends `POST /v1/images` and returns the image at once (a `202`),
 usually still `ImageConverting`. The bake keeps running on the host if your
 process goes away. Converting a ref that is already converting or ready returns
-that image; one that failed is converted again. A malformed ref, a registry that
+that image; one that failed is converted again. Each call sends an
+`Idempotency-Key`, a fresh one unless you pass `WithIdempotencyKey`; with restate
+on, a retry under the same key attaches to the first convert. A malformed ref, a registry that
 needs credentials, or a `HostID` that runs the QEMU backend is an error
 `IsInvalidArgument` reports; a ref the registry does not have is one
 `IsNotFound` reports. A host whose image cache is full evicts its least recently

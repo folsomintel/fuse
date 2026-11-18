@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -169,5 +170,46 @@ func TestImageSentinels(t *testing.T) {
 		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
 			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)
 		}
+	}
+}
+
+// keyCapturingImages records the idempotency key each durable convert saw.
+type keyCapturingImages struct{ keys []string }
+
+func (d *keyCapturingImages) ConvertImage(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+	d.keys = append(d.keys, orchestrator.IdempotencyKey(ctx))
+	return orchestrator.Image{Digest: strings.Repeat("c", 64), Ref: req.Ref, HostID: "fc-1", State: orchestrator.ImageConverting}, nil
+}
+
+// TestConvertImageForwardsTheIdempotencyKey: the caller's key reaches the
+// durable client, so restate attaches a retry to the first convert.
+func TestConvertImageForwardsTheIdempotencyKey(t *testing.T) {
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-"})
+	d := &keyCapturingImages{}
+	fm.SetDurableImages(d)
+	h := mustRouter(t, &Handler{Fleet: fm})
+
+	for _, key := range []string{"k-1", ""} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/images", strings.NewReader(`{"ref":"ubuntu:24.04"}`))
+		req.Header.Set("Content-Type", "application/json")
+		if key != "" {
+			req.Header.Set(HeaderIdempotencyKey, key)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusAccepted {
+			t.Fatalf("key %q: status = %d, body %s", key, rr.Code, rr.Body.String())
+		}
+	}
+	if len(d.keys) != 2 || d.keys[0] != "master:image.convert:k-1" || d.keys[1] != "" {
+		t.Fatalf("keys = %q, want [master:image.convert:k-1, \"\"]", d.keys)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/images", strings.NewReader(`{"ref":"ubuntu:24.04"}`))
+	req.Header.Set(HeaderIdempotencyKey, "bad key\n")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest || len(d.keys) != 2 {
+		t.Fatalf("invalid key: status = %d, converts %d", rr.Code, len(d.keys))
 	}
 }

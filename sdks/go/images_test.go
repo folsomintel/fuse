@@ -35,6 +35,26 @@ func TestImagesConvert_sendsRefAndDecodes(t *testing.T) {
 	}
 }
 
+func TestImagesConvert_sendsAnIdempotencyKey(t *testing.T) {
+	var keys []string
+	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"digest":"` + strings.Repeat("a", 64) + `","ref":"ubuntu","state":"converting"}`))
+	})
+	defer done()
+
+	if _, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu"}, WithIdempotencyKey("my-key")); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[1] != "my-key" {
+		t.Fatalf("keys = %q, want a generated one then my-key", keys)
+	}
+}
+
 func TestImagesGet_decodesFailureAndNotFound(t *testing.T) {
 	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/images/missing" {
