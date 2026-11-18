@@ -1125,8 +1125,8 @@ func TestCompileStartupTimeoutErrors(t *testing.T) {
 	}
 }
 
-// zero is the "omitted" value and keeps meaning "let the host agent pick its
-// default vCPU count"; only a negative count is a compile error.
+// zero is the "omitted" value and keeps meaning "let the orchestrator fill in
+// its default vCPU count"; only a negative count is a compile error.
 func TestCompileCPUsZeroIsHostDefault(t *testing.T) {
 	c, err := Compile(&Fusefile{Version: 1})
 	if err != nil {

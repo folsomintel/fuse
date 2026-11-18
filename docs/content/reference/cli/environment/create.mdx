@@ -22,9 +22,9 @@ on disk at all.
 | Flag | Purpose |
 | --- | --- |
 | `--task-id` | Task ID. Required. |
-| `--cpus` | CPU count. |
-| `--ram-mb` | RAM in MB. |
-| `--storage-gb` | Storage in GB. |
+| `--cpus` | CPU count. `0` (default) means 1. |
+| `--ram-mb` | RAM in MB. `0` (default) means 1024. |
+| `--storage-gb` | Storage in GB. `0` (default) means 4. |
 | `--gpus` | GPU device count, or MIG instance count when `--gpu-profile` is set. See below. |
 | `--gpu-kind` | GPU model label, e.g. `a100`. Influences scheduling. |
 | `--gpu-profile` | MIG profile for fractional GPUs, e.g. `1g.10gb`. Requires `--gpus` >= 1. |

@@ -152,6 +152,31 @@ type Spec struct {
 	Ancestors []string
 }
 
+// default sizing for a create that leaves cpus/ram_mb/storage_gb at 0. the
+// host agents pass these straight to firecracker and qemu, which refuse a
+// 0 vcpu or 0 MiB machine, so a zero must never reach the host. storage
+// matches the 4G base rootfs fc-bake-rootfs.sh bakes.
+const (
+	DefaultCPUs      = 1
+	DefaultRamMB     = 1024
+	DefaultStorageGB = 4
+)
+
+// withDefaultResources fills each of cpus/ram_mb/storage_gb left at 0 with
+// its default, before the scheduler accounts the spec against a host.
+func withDefaultResources(spec Spec) Spec {
+	if spec.CPUs == 0 {
+		spec.CPUs = DefaultCPUs
+	}
+	if spec.RamMB == 0 {
+		spec.RamMB = DefaultRamMB
+	}
+	if spec.StorageGB == 0 {
+		spec.StorageGB = DefaultStorageGB
+	}
+	return spec
+}
+
 // Protocol is the transport an exposed port is published on.
 //
 // It is a named type for the same reason SnapshotKind is, but it is open in
