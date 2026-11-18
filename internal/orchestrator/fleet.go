@@ -644,6 +644,15 @@ type FleetManager struct {
 	destroySendSlots chan struct{}
 	destroySends     sync.WaitGroup
 
+	// durableOrphan runs reconcile's orphan destroys on restate; nil in mode
+	// off. see orphan_durable.go. orphanInFlight is the orphans with an
+	// invocation outstanding, orphanSlots bounds them, and orphanResults
+	// carries their outcomes into the next cycle's summary.
+	durableOrphan  DurableOrphans
+	orphanInFlight map[string]bool
+	orphanSlots    chan struct{}
+	orphanResults  orphanOutcomes
+
 	// durableArtifacts runs artifact moves and holds pull pins on restate;
 	// nil in mode off. see artifacts_durable.go.
 	durableArtifacts DurableArtifacts
@@ -795,6 +804,8 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		checkpointInterval:       cfg.CheckpointInterval,
 		chains:                   make(map[string]*checkpointChain),
 		orphanRetries:            make(map[string]int),
+		orphanInFlight:           make(map[string]bool),
+		orphanSlots:              make(chan struct{}, maxOrphanDestroys),
 		stuckStrikes:             make(map[string]int),
 		idleStrikes:              make(map[string]int),
 		hosts:                    make(map[string]*Host),
@@ -1750,7 +1761,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 
 	// Handle orphans and stuck tasks in their own pass. These helpers live
 	// in reconcile.go so that fleet.go stays focused on the lifecycle API.
-	fm.reconcileOrphans(ctx, envs, listing.hostOf, tracked, &summary)
+	fm.reconcileOrphans(ctx, listing, tracked, &summary)
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)

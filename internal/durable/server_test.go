@@ -38,7 +38,13 @@ func (fakeFleet) GetHost(id string) (orchestrator.Host, bool) {
 func (fakeFleet) DestroyBegin(context.Context, string, string) (orchestrator.DestroyTarget, error) {
 	return orchestrator.DestroyTarget{}, nil
 }
-func (fakeFleet) DestroyReleaseEgress(context.Context, string) error          { return nil }
+func (fakeFleet) DestroyReleaseEgress(context.Context, string) error        { return nil }
+func (fakeFleet) OrphanCheck(context.Context, string) (bool, error)         { return true, nil }
+func (fakeFleet) OrphanDestroyOnHost(context.Context, string, string) error { return nil }
+func (fakeFleet) OrphanDestroyed(context.Context, string) error             { return nil }
+func (fakeFleet) OrphanFailed(context.Context, string, int, string, bool) error {
+	return nil
+}
 func (fakeFleet) DestroyOnHost(context.Context, string, string) error         { return nil }
 func (fakeFleet) DestroyUnpublishIngress(context.Context, string) error       { return nil }
 func (fakeFleet) DestroyFinish(context.Context, string, string) error         { return nil }

@@ -19,7 +19,17 @@ const orphanDestroyTimeout = 60 * time.Second
 // Repeated destroy failures are counted per-VM in fm.orphanRetries; once
 // the count exceeds orphanDestroyMaxRetries the entry is dead-lettered and
 // skipped on subsequent cycles until it disappears from the provider.
-func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment, hostOf map[string]string, tracked map[string]bool, summary *ReconcileSummary) {
+//
+// on restate each orphan is a send to Environment/{vm}.DestroyOrphan
+// instead, which holds the count in object state; fm.orphanRetries is then
+// only the record of which orphans the handler has dead-lettered.
+func (fm *FleetManager) reconcileOrphans(ctx context.Context, listing vmListing, tracked map[string]bool, summary *ReconcileSummary) {
+	envs, hostOf := listing.envs, listing.hostOf
+	durable := fm.durableOrphans()
+	if durable != nil {
+		fm.takeOrphanOutcomes(summary)
+	}
+
 	// Collect the current orphan set so we can clear stale retry counters.
 	currentOrphans := make(map[string]bool, len(envs))
 
@@ -37,6 +47,10 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 		if retries >= fm.orphanDestroyMaxRetries {
 			// Already dead-lettered — log at debug volume and skip.
 			fm.logger.Debug("orphan dead-lettered, skipping", "vm", name, "retries", retries)
+			continue
+		}
+		if durable != nil {
+			fm.sendOrphanDestroy(durable, name, hostOf[name])
 			continue
 		}
 
@@ -94,7 +108,12 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, envs []Environment
 	}
 
 	// Clear retry counters for orphans that no longer exist in the provider
-	// (either because they were destroyed or disappeared on their own).
+	// (either because they were destroyed or disappeared on their own). an
+	// orphan on a host that did not answer is not listed either, so nothing
+	// is cleared while one is down.
+	if len(listing.unreachable) > 0 {
+		return
+	}
 	fm.mu.Lock()
 	for name := range fm.orphanRetries {
 		if !currentOrphans[name] {

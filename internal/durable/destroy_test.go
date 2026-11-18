@@ -101,6 +101,15 @@ func (f *scriptedFleet) DestroyFailed(_ context.Context, vm, _, lastErr string) 
 // registers it, and returns a client. skips without restate-server.
 func serveFleet(t *testing.T, fleet Fleet, policy RetryPolicy) *Client {
 	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	return serveFleetUntil(t, ctx, fleet, policy)
+}
+
+// serveFleetUntil is serveFleet with the endpoint stopped when ctx ends, so
+// a test can stand in for an orchestrator restart by serving a second one.
+func serveFleetUntil(t *testing.T, ctx context.Context, fleet Fleet, policy RetryPolicy) *Client {
+	t.Helper()
 	admin, ingressURL := restateTestURLs(t)
 	host := os.Getenv("FUSE_RESTATE_TEST_HANDLER_HOST")
 	if host == "" {
@@ -115,8 +124,6 @@ func serveFleet(t *testing.T, fleet Fleet, policy RetryPolicy) *Client {
 
 	cfg := Config{Mode: ModeSelf, Listen: addr, IngressURL: ingressURL, AdminURL: admin,
 		Retry: map[string]RetryPolicy{EnvironmentObject: policy, HostObject: DefaultRetryPolicy, ArtifactsObject: policy}}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	go func() { _ = NewEndpoint(cfg, fleet, testLogger).Start(ctx, addr) }()
 	waitListening(t, addr)
 
