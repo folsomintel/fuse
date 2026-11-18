@@ -154,6 +154,38 @@ func TestRecover_keepsADurableMigratePlaceholder(t *testing.T) {
 	}
 }
 
+// TestStaleMigratePlaceholderIsAbandoned: a recovered migrate target is
+// kept while its migrate may still run, and failed once it has been
+// provisioning past staleMigrateAfter: nothing will finish it.
+func TestStaleMigratePlaceholderIsAbandoned(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	now := time.Now()
+	for id, created := range map[string]time.Time{
+		"fuse-migrate-young": now.Add(-time.Hour),
+		"fuse-migrate-old":   now.Add(-staleMigrateAfter - time.Hour),
+	} {
+		if err := store.UpsertVM(ctx, VMRecord{
+			ID: id, TaskID: "migrate-" + id, State: VMStateProvisioning, Spec: Spec{Name: id},
+			CreatedAt: created, UpdatedAt: created,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fm := recoverFleet(store, newStubProvider())
+	if err := fm.recoverState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fm.reconcileStaleCreates(ctx)
+
+	if info, ok := fm.GetVM("fuse-migrate-young"); !ok || info.State != VMStateProvisioning {
+		t.Fatalf("young placeholder %+v (tracked %v), want it kept provisioning", info.State, ok)
+	}
+	if _, ok := fm.GetVM("fuse-migrate-old"); ok {
+		t.Fatal("a migrate target provisioning past staleMigrateAfter was kept")
+	}
+}
+
 // TestSealIngress: the ingress publish a migrate journals is ciphertext under
 // the token encryption key, and opens back to the same publish.
 func TestSealIngress(t *testing.T) {

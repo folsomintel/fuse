@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -46,15 +48,17 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// unavailable marks a request that never got an answer from restate with
-// orchestrator.ErrRestateUnavailable, unless the caller's own context ended
-// it. ingress keeps the error chain, so callers can tell a restate outage
-// from an operation that failed.
+// unavailable marks a request that could not connect to restate with
+// orchestrator.ErrRestateUnavailable, so the api answers 503 and the caller
+// knows nothing started. a failure after the connection was made is left as
+// it is: restate may have accepted the invocation and still be running it.
+// ingress keeps the error chain.
 type unavailable struct{ next http.RoundTripper }
 
 func (u unavailable) RoundTrip(req *http.Request) (*http.Response, error) {
 	res, err := u.next.RoundTrip(req)
-	if err != nil && req.Context().Err() == nil {
+	var op *net.OpError
+	if err != nil && req.Context().Err() == nil && errors.As(err, &op) && op.Op == "dial" {
 		return nil, fmt.Errorf("%w: %w", orchestrator.ErrRestateUnavailable, err)
 	}
 	return res, err

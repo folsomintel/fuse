@@ -66,6 +66,13 @@ RESTATE_ADMIN__BIND_ADDRESS="127.0.0.1:${RS_ADMIN}" \
 RESTATE_BIND_ADDRESS="127.0.0.1:$((RS_ADMIN + 1))" \
   restate-server --no-logo >/tmp/fuse-e2e-restate.log 2>&1 &
 RS_PID=$!
+SRV_PID=""
+cleanup() {
+  kill $SRV_PID "$RS_PID" 2>/dev/null || true
+  wait $SRV_PID "$RS_PID" 2>/dev/null || true
+  rm -rf "$RS_DIR"
+}
+trap cleanup EXIT
 for i in $(seq 1 60); do
   curl -fsS -m 2 -o /dev/null "http://127.0.0.1:${RS_ADMIN}/health" 2>/dev/null && break
   kill -0 "$RS_PID" 2>/dev/null || { cat /tmp/fuse-e2e-restate.log; die "restate-server exited during boot"; }
@@ -91,12 +98,6 @@ fi
 step "boot fuse — ${MODE}"
 env "${ENVV[@]}" "$BIN" >/tmp/fuse-e2e.log 2>&1 &
 SRV_PID=$!
-cleanup() {
-  kill "$SRV_PID" "$RS_PID" 2>/dev/null || true
-  wait "$SRV_PID" "$RS_PID" 2>/dev/null || true
-  rm -rf "$RS_DIR"
-}
-trap cleanup EXIT
 
 # register the handler endpoint; the orchestrator opens its api once it is.
 for i in $(seq 1 60); do

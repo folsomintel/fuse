@@ -373,8 +373,10 @@ what operators see when a step is missing:
   invocations already in restate resume once it is back; nothing in flight
   is lost, it is in `/var/lib/restate`.
 - a new mutating call (create, destroy, fork, snapshot, ...) that cannot
-  reach restate fails with a 503 `unavailable`; retry it once restate is
-  back.
+  connect to restate fails with a 503 `unavailable`: nothing started, so
+  retry it once restate is back. a connection that drops after the call
+  reached restate is a 500, and the operation may still finish; retry those
+  with the same `Idempotency-Key`, which attaches to the first run.
   background teardowns (task completion, reconcile) stay `destroying` and
   are re-sent by reconcile once it answers.
 - `systemctl status restate-server`, `journalctl -u restate-server -n 200`.

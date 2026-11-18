@@ -1508,7 +1508,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	fm.mu.Lock()
 	for id, recoveredVM := range recovered {
 		fm.vms[id] = recoveredVM
-		if recoveredVM.state == VMStateProvisioning && !fm.isMigratePlaceholder(recoveredVM) {
+		if recoveredVM.state == VMStateProvisioning {
 			fm.recoveredCreates[id] = true
 		}
 	}

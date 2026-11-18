@@ -937,12 +937,21 @@ func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req Crea
 // provisioning vms. only vms recovered provisioning at startup are asked
 // about, never a create, fork or migrate this process is running. a vm
 // restate cannot answer for is asked again next cycle.
+//
+// a migrate's target is not a create restate can be asked about: the migrate
+// runs on its source's object. one still provisioning staleMigrateAfter after
+// the migrate began has lost its migrate (an invocation killed, restate data
+// lost); were the migrate still running, its next step would find the target
+// gone and roll back with the source resumed.
 func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 	d := fm.durableCreator()
 	if d == nil {
 		return
 	}
-	type stale struct{ id, taskID, hostID string }
+	type stale struct {
+		id, taskID, hostID string
+		migrate            bool
+	}
 	var candidates []stale
 	fm.mu.Lock()
 	for id := range fm.recoveredCreates {
@@ -956,10 +965,17 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 			delete(fm.recoveredCreates, id)
 			continue
 		}
-		candidates = append(candidates, stale{id, v.taskID, v.hostID})
+		if fm.isMigratePlaceholder(v) && time.Since(v.createdAt) < staleMigrateAfter {
+			continue
+		}
+		candidates = append(candidates, stale{id, v.taskID, v.hostID, fm.isMigratePlaceholder(v)})
 	}
 	fm.mu.Unlock()
 	for _, c := range candidates {
+		if c.migrate {
+			fm.abandonStaleCreate(ctx, c.id, c.taskID, c.hostID, "migrate target left provisioning with no migrate to finish it")
+			continue
+		}
 		askCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		inFlight, err := d.CreateInFlight(askCtx, c.id)
 		cancel()
@@ -973,19 +989,29 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 			fm.mu.Unlock()
 			continue
 		}
-		cause := "provisioning interrupted with no create to finish it"
-		if err := fm.CreateAbandon(ctx, c.id, CreateRequest{TaskID: c.taskID}, cause); err != nil {
-			fm.logger.Warn("abandon stale create failed, retrying next cycle", "vm", c.id, "err", err)
-			continue
-		}
-		fm.mu.Lock()
-		delete(fm.recoveredCreates, c.id)
-		fm.mu.Unlock()
-		fm.mu.RLock()
-		hostless := len(fm.hosts) == 0
-		fm.mu.RUnlock()
-		if c.hostID != "" || hostless {
-			fm.cleanupFailedCreate(c.id, c.hostID)
-		}
+		fm.abandonStaleCreate(ctx, c.id, c.taskID, c.hostID, "provisioning interrupted with no create to finish it")
+	}
+}
+
+// staleMigrateAfter is how long after its migrate began a recovered migrate
+// target may stay provisioning: far past the longest a migrate's steps take
+// (the lazy memory watch is LazyMemoryWatchTimeout).
+const staleMigrateAfter = 24 * time.Hour
+
+// abandonStaleCreate fails a recovered provisioning vm nothing will finish
+// and destroys what it may have on its host. a vm never placed on a fleet
+// with hosts has nothing to destroy; only a hostless fleet's default
+// provider can hold it.
+func (fm *FleetManager) abandonStaleCreate(ctx context.Context, vmID, taskID, hostID, cause string) {
+	if err := fm.CreateAbandon(ctx, vmID, CreateRequest{TaskID: taskID}, cause); err != nil {
+		fm.logger.Warn("abandon stale create failed, retrying next cycle", "vm", vmID, "err", err)
+		return
+	}
+	fm.mu.Lock()
+	delete(fm.recoveredCreates, vmID)
+	hostless := len(fm.hosts) == 0
+	fm.mu.Unlock()
+	if hostID != "" || hostless {
+		fm.cleanupFailedCreate(vmID, hostID)
 	}
 }

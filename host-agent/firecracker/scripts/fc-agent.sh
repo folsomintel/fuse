@@ -341,6 +341,7 @@ EOF
       echo "[orch] added a generated TOKEN_ENCRYPTION_KEY to $ORCH_DEFAULTS (now required)"
     fi
     register_line=""
+    restate_unit=""
     if [ "$(orch_mode)" = self ]; then
       command -v docker >/dev/null 2>&1 || { echo "[orch] FUSE_RESTATE_MODE=self runs restate-server in docker; install docker first" >&2; exit 1; }
       [ -f "$RESTATE_UNIT_SRC" ] || { echo "[orch] $RESTATE_UNIT_SRC not found; run this from a fuse checkout" >&2; exit 1; }
@@ -385,11 +386,11 @@ RENV
 # register-restate.sh: register the co-located orchestrator's restate handler
 # endpoint (ORCH_RESTATE_LISTEN, from the unit's environment) with
 # restate-server. written by fc-agent.sh install-orchestrator, run as the
-# orchestrator unit's ExecStartPost. it gives up before systemd's start
-# timeout; Restart= runs it again.
+# orchestrator unit's ExecStartPost. it gives up (about 80s) before
+# systemd's 90s start timeout; Restart= runs it again.
 uri="http://${ORCH_RESTATE_LISTEN:-127.0.0.1:9080}"
-for i in $(seq 60); do
-  curl -fsS -o /dev/null --max-time 5 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
+for i in $(seq 40); do
+  curl -fsS -o /dev/null --max-time 1 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
     -H 'content-type: application/json' -d "{\"uri\":\"$uri\",\"force\":true}" && exit 0
   sleep 1
 done
@@ -399,6 +400,7 @@ REG
       sudo -n chmod 0755 "$RESTATE_REGISTER"
       sudo -n systemctl daemon-reload
       if [ "$own_unit" = 1 ]; then
+        restate_unit=" restate-server.service"
         sudo -n systemctl enable --now restate-server.service
         echo "[orch] restate-server running (ingress 127.0.0.1:18080, admin 127.0.0.1:9070)"
       fi
@@ -409,8 +411,8 @@ REG
     sudo -n tee "$ORCH_UNIT" >/dev/null <<EOF
 [Unit]
 Description=Fuse orchestrator (control plane)
-After=network-online.target fc-agent.service restate-server.service
-Wants=network-online.target restate-server.service
+After=network-online.target fc-agent.service${restate_unit}
+Wants=network-online.target${restate_unit}
 
 [Service]
 Type=simple

@@ -259,14 +259,25 @@ orch_pinned() {
   out=$(curl -fsS --max-time 10 -X POST http://127.0.0.1:9070/query \
     -H 'content-type: application/json' -H 'accept: application/json' \
     -d "{\"query\":\"SELECT count(*) AS n FROM sys_invocation i JOIN sys_deployment d ON i.pinned_deployment_id = d.id WHERE d.endpoint = 'http://${listen:-127.0.0.1:9080}/' AND i.status != 'completed'\"}" 2>/dev/null) || return 0
-  echo "$out" | grep -oE '"n":[0-9]+' | cut -d: -f2
+  echo "$out" | grep -oE '"n":[0-9]+' | cut -d: -f2 || true
 }
-ORCH_PINNED=""
-[ -z "${FUSE_ORCH_SERVICE:-}" ] || ORCH_PINNED=$(orch_pinned)
+# orch_swap <new-binary>: stop the orchestrator so nothing new is pinned,
+# count what still is, and swap only when nothing is (or the swap is
+# forced). the old binary starts again when the swap waits.
+orch_swap() {
+  local pinned
+  sudo -n systemctl stop "$FUSE_ORCH_SERVICE"
+  pinned=$(orch_pinned)
+  if [ -n "$pinned" ] && [ "$pinned" != 0 ] && [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ]; then
+    sudo -n systemctl start "$FUSE_ORCH_SERVICE"
+    warn "skipping orchestrator update: $pinned restate invocations are still pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
+    return 1
+  fi
+  sudo -n install -m 0755 "$1" "$FUSE_ORCH_BIN"
+  sudo -n systemctl start "$FUSE_ORCH_SERVICE"
+}
 if [ -n "${FUSE_ORCH_SERVICE:-}" ] && ! orch_env_ready; then
   warn "skipping orchestrator update: its env has no FUSE_RESTATE_MODE or TOKEN_ENCRYPTION_KEY, which the new orchestrator requires; run fc-agent.sh install-orchestrator to add restate"
-elif [ -n "${FUSE_ORCH_SERVICE:-}" ] && [ -n "$ORCH_PINNED" ] && [ "$ORCH_PINNED" != 0 ] && [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ]; then
-  warn "skipping orchestrator update: $ORCH_PINNED restate invocations are still pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
 elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
   [ -n "${FUSE_ORCH_BIN:-}" ] || die "FUSE_ORCH_SERVICE set but FUSE_ORCH_BIN is not"
   if [ -n "$LATEST" ]; then
@@ -280,15 +291,16 @@ elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
     verify_asset "$TGZ" "$TARBALL" "$CHECKSUMS" || die "checksum verification failed for $TARBALL ($LATEST)"
     ok "sha256 verified: $TARBALL"
     tar -xzf "$TGZ" -C "$EXDIR" orchestrator
-    sudo -n install -m 0755 "$EXDIR/orchestrator" "$FUSE_ORCH_BIN"
-    sudo -n systemctl restart "$FUSE_ORCH_SERVICE"
-    ok "orchestrator updated + restarted ($("$FUSE_ORCH_BIN" --version 2>/dev/null || echo '?'))"
+    if orch_swap "$EXDIR/orchestrator"; then
+      ok "orchestrator updated + restarted ($("$FUSE_ORCH_BIN" --version 2>/dev/null || echo '?'))"
+    fi
   elif command -v go >/dev/null 2>&1; then
     log "building orchestrator from source -> $FUSE_ORCH_BIN"
     CGO_ENABLED=0 go -C "$REPO_ROOT" build -ldflags='-s -w' -o "$FC_DIR/.orchestrator.new" ./orchestrator
-    sudo -n install -m 0755 "$FC_DIR/.orchestrator.new" "$FUSE_ORCH_BIN"; rm -f "$FC_DIR/.orchestrator.new"
-    sudo -n systemctl restart "$FUSE_ORCH_SERVICE"
-    ok "orchestrator (source) updated + restarted"
+    if orch_swap "$FC_DIR/.orchestrator.new"; then
+      ok "orchestrator (source) updated + restarted"
+    fi
+    rm -f "$FC_DIR/.orchestrator.new"
   else
     warn "skipping orchestrator update (no release and no Go)"
   fi
