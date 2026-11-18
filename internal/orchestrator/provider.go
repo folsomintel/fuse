@@ -669,6 +669,7 @@ func provisionEgress(ctx context.Context, p Provider, env Environment, in bootIn
 		Provider: ep.Provider,
 		Protocol: ep.Protocol,
 		Endpoint: ep.URL,
+		Lease:    ep.Lease,
 		Health:   egress.Health{State: egress.HealthUnknown},
 	}, nil
 }
