@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.46.0](https://github.com/folsomintel/fuse/compare/v0.45.0...v0.46.0) (2026-11-18)
+
+
+### Features
+
+* bake debian, ubuntu and fedora base images from an oci ref ([#398](https://github.com/folsomintel/fuse/issues/398)) ([9ed72e2](https://github.com/folsomintel/fuse/commit/9ed72e28a911cddcb09fa003345717b2d8d78dfc))
+* boot a user's oci image with from: in the fusefile ([#401](https://github.com/folsomintel/fuse/issues/401)) ([4daf265](https://github.com/folsomintel/fuse/commit/4daf265edaa98afdfbec8d4438c3a99a27b7ad6b))
+* fork as a durable restate workflow with compensation ([#394](https://github.com/folsomintel/fuse/issues/394)) ([fdda62e](https://github.com/folsomintel/fuse/commit/fdda62edea1c6f4a0ad9731c25c00167f541dc9b))
+* lru-evict converted oci images under a per-host size cap ([#402](https://github.com/folsomintel/fuse/issues/402)) ([5f8e538](https://github.com/folsomintel/fuse/commit/5f8e53804d392aef9270bf1c0174e4730df711e2))
+
 ## [0.45.0](https://github.com/folsomintel/fuse/compare/v0.44.0...v0.45.0) (2026-11-15)
 
 
