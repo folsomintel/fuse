@@ -84,7 +84,7 @@ func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string)
 
 		// the handler's one host attempt is bounded by orphanDestroyTimeout;
 		// the rest is room for its other steps and the round trip.
-		ctx, cancel := context.WithTimeout(context.Background(), 2*fm.orphanDestroyTimeout)
+		ctx, cancel := context.WithTimeout(fm.lifetime(), 2*fm.orphanDestroyTimeout)
 		defer cancel()
 		res, err := d.DestroyOrphan(ctx, vmID, req)
 		if err != nil {

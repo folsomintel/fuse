@@ -657,6 +657,13 @@ type FleetManager struct {
 	// mode off. see host_durable.go.
 	durableHost DurableHosts
 
+	// bg tracks the fire-and-forget store writes and teardowns, so Stop
+	// can wait for them. hostWriteMu serializes host record writes.
+	bg          sync.WaitGroup
+	hostWriteMu sync.Mutex
+	// runCtx is Start's context, see lifetime.
+	runCtx context.Context
+
 	// durableArtifacts runs artifact moves and holds pull pins on restate;
 	// nil in mode off. see artifacts_durable.go.
 	durableArtifacts DurableArtifacts
@@ -919,6 +926,9 @@ func (fm *FleetManager) publishTerminalEvent(vmID string, state VMState, errMsg 
 func (fm *FleetManager) Start(ctx context.Context) {
 	ctx, fm.cancel = context.WithCancel(ctx)
 	fm.done = make(chan struct{})
+	fm.mu.Lock()
+	fm.runCtx = ctx
+	fm.mu.Unlock()
 
 	if err := fm.recoverState(ctx); err != nil {
 		fm.logger.Error("state recovery failed", "err", err)
@@ -933,7 +943,13 @@ func (fm *FleetManager) Start(ctx context.Context) {
 	}
 }
 
-// Stop cancels the reconciliation loop and waits for it to finish.
+// stopWait bounds how long Stop waits for background work after the
+// reconcile loop has ended, so a store that never answers cannot hold up a
+// shutdown forever.
+const stopWait = 30 * time.Second
+
+// Stop cancels the reconciliation loop and waits for it to finish, then for
+// the background store writes, teardowns and restate sends still in flight.
 func (fm *FleetManager) Stop() {
 	if fm.cancel != nil {
 		fm.cancel()
@@ -941,6 +957,30 @@ func (fm *FleetManager) Stop() {
 	if fm.done != nil {
 		<-fm.done
 	}
+	idle := make(chan struct{})
+	go func() {
+		fm.destroySends.Wait()
+		fm.expirySends.Wait()
+		fm.bg.Wait()
+		close(idle)
+	}()
+	select {
+	case <-idle:
+	case <-time.After(stopWait):
+		fm.logger.Warn("stop: background work still running", "waited", stopWait)
+	}
+}
+
+// lifetime is the context Start ran the fleet under, cancelled by Stop. work
+// that would otherwise outlive the fleet waits on it; before Start it is
+// context.Background.
+func (fm *FleetManager) lifetime() context.Context {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	if fm.runCtx == nil {
+		return context.Background()
+	}
+	return fm.runCtx
 }
 
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
@@ -1797,7 +1837,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// reapDestroyedVMs above.
 	if summary.OrphansDestroyed > 0 && !fm.hasTrackedDestroyingVM() {
 		for _, h := range fm.recomputeHostAllocations() {
-			fm.persistHostRecordBackground(fm.hostToRecord(h))
+			fm.persistHostBackground(h.ID)
 		}
 	}
 
@@ -2073,7 +2113,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 
 	// Persist the healed host counters so the durable view matches memory.
 	for _, h := range recomputedHosts {
-		fm.persistHostRecordBackground(fm.hostToRecord(h))
+		fm.persistHostBackground(h.ID)
 	}
 
 	for id, recoveredVM := range recovered {
@@ -2265,58 +2305,80 @@ func (fm *FleetManager) persistVMByID(ctx context.Context, vmID string) error {
 	return fm.store.UpsertVM(ctx, record)
 }
 
-// TODO: Track background goroutines with a sync.WaitGroup so Stop() can
-// wait for in-flight persists to complete before returning. Currently
-// background writes can race with shutdown and lose data.
-func (fm *FleetManager) persistVMBackground(vmID string) {
+// goBackground runs fn on a goroutine Stop waits for.
+func (fm *FleetManager) goBackground(fn func()) {
+	fm.bg.Add(1)
 	go func() {
+		defer fm.bg.Done()
+		fn()
+	}()
+}
+
+func (fm *FleetManager) persistVMBackground(vmID string) {
+	fm.goBackground(func() {
 		if err := fm.persistVMByID(context.Background(), vmID); err != nil {
 			fm.logger.Warn("persist vm failed", "vm", vmID, "err", err)
 		}
-	}()
+	})
 }
 
 func (fm *FleetManager) deleteVMBackground(vmID string) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
+	fm.goBackground(func() {
 		if err := fm.store.DeleteVM(context.Background(), vmID); err != nil {
 			fm.logger.Warn("delete persisted vm failed", "vm", vmID, "err", err)
 		}
-	}()
+	})
 }
 
 func (fm *FleetManager) upsertTaskBackground(task TaskRecord) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
+	fm.goBackground(func() {
 		if err := fm.store.UpsertTask(context.Background(), task); err != nil {
 			fm.logger.Warn("persist task failed", "task", task.TaskID, "err", err)
 		}
-	}()
+	})
 }
 
-// persistHostRecordBackground writes a host record snapshot to the
-// state store from a goroutine. The caller is expected to have already
-// snapshotted the record under fm.mu (so the persisted view is
-// consistent with the in-memory state at the moment of the snapshot).
-//
-// Used by allocateOnHost / deallocateOnHost so capacity counters
-// survive an orchestrator restart. Without it, a restart would reset
-// all hosts' allocated capacity to whatever was last persisted by an
-// explicit UpsertHost call (registration / cordon / uncordon), losing
-// every accumulated VM placement.
-func (fm *FleetManager) persistHostRecordBackground(rec HostRecord) {
+// persistHostBackground writes a host's record to the state store from a
+// goroutine. Used by allocateOnHost / deallocateOnHost, which run under
+// fm.mu, so capacity counters survive an orchestrator restart.
+func (fm *FleetManager) persistHostBackground(hostID string) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
-		if err := fm.store.UpsertHost(context.Background(), rec); err != nil {
-			fm.logger.Warn("persist host failed", "host", rec.ID, "err", err)
+	fm.goBackground(func() {
+		if err := fm.writeHostRecord(context.Background(), hostID); err != nil {
+			fm.logger.Warn("persist host failed", "host", hostID, "err", err)
 		}
-	}()
+	})
+}
+
+// writeHostRecord upserts hostID's record as it is now. host writes are
+// serialized and each takes its snapshot once it holds the turn, so writes
+// that finish out of order still leave the latest counters stored, and a
+// host removed in the meantime is not written back.
+func (fm *FleetManager) writeHostRecord(ctx context.Context, hostID string) error {
+	if fm.store == nil {
+		return nil
+	}
+	fm.hostWriteMu.Lock()
+	defer fm.hostWriteMu.Unlock()
+	fm.mu.RLock()
+	h, ok := fm.hosts[hostID]
+	var snap Host
+	if ok {
+		snap = *h
+	}
+	fm.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return fm.store.UpsertHost(ctx, fm.hostToRecord(snap))
 }
 
 // AuditEvent records a security or operational event in the state
@@ -2369,7 +2431,9 @@ func (fm *FleetManager) writeEvent(ctx context.Context, entityType, entityID, ev
 }
 
 func (fm *FleetManager) appendEventBackground(entityType, entityID, eventType string, payload map[string]any) {
-	go fm.appendEvent(context.Background(), entityType, entityID, eventType, payload)
+	fm.goBackground(func() {
+		fm.appendEvent(context.Background(), entityType, entityID, eventType, payload)
+	})
 }
 
 func (fm *FleetManager) snapshotVMRecord(vmID string) (VMRecord, bool) {

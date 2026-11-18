@@ -223,7 +223,7 @@ func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID, strike string) (E
 	}
 	fm.hitlMu.Unlock()
 	if e.state == VMStateDraining {
-		return fm.checkDraining(ctx, vmID, e, now, pendingAny, extendedUntil), nil
+		return fm.checkDraining(ctx, vmID, e, now, pendingAny, extendedUntil)
 	}
 	if now.Before(extendedUntil) {
 		return ExpiryVerdict{In: extendedUntil.Sub(now)}, nil
@@ -291,7 +291,11 @@ func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID, strike string) (E
 		fm.noteExpiryMetric(ex.reasonCode, false)
 		return ExpiryVerdict{Strike: ex.reasonCode, In: fm.reconcileInterval}, nil
 	}
-	if !fm.markExpiredVM(ctx, vmID, e.taskID, ex) {
+	marked, err := fm.markExpiredVMDurable(ctx, vmID, e.taskID, ex)
+	if err != nil {
+		return ExpiryVerdict{}, err
+	}
+	if !marked {
 		// the vm moved on between the read and the teardown.
 		return ExpiryVerdict{In: expiryRecheck}, nil
 	}
@@ -300,27 +304,31 @@ func (fm *FleetManager) ExpiryCheck(ctx context.Context, vmID, strike string) (E
 }
 
 // checkDraining is ExpiryCheck for a draining vm.
-func (fm *FleetManager) checkDraining(ctx context.Context, vmID string, e expiryView, now time.Time, pendingAny bool, extendedUntil time.Time) ExpiryVerdict {
+func (fm *FleetManager) checkDraining(ctx context.Context, vmID string, e expiryView, now time.Time, pendingAny bool, extendedUntil time.Time) (ExpiryVerdict, error) {
 	if destroyGated(e.hitl) {
 		// a human owns this destroy, and a rejected one stays rejected.
-		return ExpiryVerdict{}
+		return ExpiryVerdict{}, nil
 	}
 	if now.Before(extendedUntil) {
-		return ExpiryVerdict{In: extendedUntil.Sub(now)}
+		return ExpiryVerdict{In: extendedUntil.Sub(now)}, nil
 	}
 	if pendingAny {
-		return ExpiryVerdict{In: expiryRecheck}
+		return ExpiryVerdict{In: expiryRecheck}, nil
 	}
 	age := now.Sub(e.updatedAt)
 	if age < fm.drainingTimeout {
-		return ExpiryVerdict{In: fm.drainingTimeout - age}
+		return ExpiryVerdict{In: fm.drainingTimeout - age}, nil
 	}
-	if !fm.markExpiredVM(ctx, vmID, e.taskID, fm.drainExpiry(age)) {
-		return ExpiryVerdict{In: expiryRecheck}
+	marked, err := fm.markExpiredVMDurable(ctx, vmID, e.taskID, fm.drainExpiry(age))
+	if err != nil {
+		return ExpiryVerdict{}, err
+	}
+	if !marked {
+		return ExpiryVerdict{In: expiryRecheck}, nil
 	}
 	fm.noteDrainExpired(vmID, e.taskID, age)
 	fm.noteExpiryMetric("drain_timeout", true)
-	return ExpiryVerdict{Reap: true}
+	return ExpiryVerdict{Reap: true}, nil
 }
 
 // pendingFor reports whether vmID has a pending intervention, and whether
