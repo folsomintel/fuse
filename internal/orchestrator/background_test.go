@@ -243,3 +243,22 @@ func TestHostDeleteRecordAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestRegisterAgainKeepsAllocations: registering a host that is already
+// registered, as a retried durable register does, keeps what its vms hold.
+func TestRegisterAgainKeepsAllocations(t *testing.T) {
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", StateStore: NewMemoryStateStore()})
+	ctx := context.Background()
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), newMockProvider()); err != nil {
+		t.Fatal(err)
+	}
+	fm.mu.Lock()
+	fm.allocateOnHost("h1", &vm{spec: Spec{Name: "fuse-a", CPUs: 1, RamMB: 256, StorageGB: 10}})
+	fm.mu.Unlock()
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), newMockProvider()); err != nil {
+		t.Fatal(err)
+	}
+	if got := findHost(t, fm, "h1").Allocated.VMCount; got != 1 {
+		t.Fatalf("VMCount after re-register = %d, want 1", got)
+	}
+}

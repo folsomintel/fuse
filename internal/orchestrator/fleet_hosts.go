@@ -60,6 +60,12 @@ func (fm *FleetManager) registerHost(ctx context.Context, h Host, p Provider) er
 	}
 
 	fm.mu.Lock()
+	// a host registered again (a durable register retrying after its row
+	// write failed, or an operator re-registering) keeps the allocations of
+	// the vms placed on it meanwhile: the request carries none.
+	if prev, ok := fm.hosts[h.ID]; ok {
+		h.Allocated = prev.Allocated.clone()
+	}
 	fm.hosts[h.ID] = &h
 	if existing, ok := fm.hostProviders[h.ID]; ok {
 		_ = existing.Close()
