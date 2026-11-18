@@ -492,17 +492,6 @@ func (d *Inline) forkLocked(ctx context.Context, vmID string, req orchestrator.F
 	return cleanup, err
 }
 
-// forkPermanent is forkPermanent's test: a fork refusal, or a snapshot
-// sentinel or agent 4xx.
-func forkPermanent(err error) bool {
-	for _, s := range orchestrator.ForkRefusals {
-		if errors.Is(err, s) {
-			return true
-		}
-	}
-	return orchestrator.PermanentSnapshotError(err)
-}
-
 // fork mirrors fork in internal/durable/fork.go. begin's every failure is a
 // refusal, so terminal.
 func (d *Inline) fork(ctx context.Context, vmID string, req orchestrator.ForkRequest) (*orchestrator.DestroyRequest, error) {

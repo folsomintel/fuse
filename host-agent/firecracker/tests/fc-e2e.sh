@@ -9,6 +9,12 @@
 #                       (FIRECRACKER_BASE_URL / FIRECRACKER_TOKEN). Network +
 #                       a Fuse-compatible host required.
 #
+# Every operation runs on restate, so the test starts its own restate-server
+# (the binary on PATH) on private ports and registers the orchestrator with it:
+#   FUSE_E2E_RESTATE_INGRESS  restate ingress port (default 28180)
+#   FUSE_E2E_RESTATE_ADMIN    restate admin port (default 29170)
+#   FUSE_E2E_RESTATE_HANDLER  orchestrator handler endpoint port (default 29180)
+#
 # Exit 0 = everything works. Any failed assertion exits non-zero.
 set -euo pipefail
 
@@ -48,9 +54,30 @@ else
   die "Go not installed and no prebuilt binary at $BIN — cross-build ./orchestrator elsewhere (GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/fuse ./orchestrator) and copy it here"
 fi
 
-# Environment for the server process. A token-encryption key makes Boot generate
-# per-VM TLS creds + auth token (the full secure deploy path).
-ENVV=(ORCH_LISTEN=":${PORT}" "TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)")
+step "restate-server"
+command -v restate-server >/dev/null 2>&1 || die "restate-server not on PATH (https://docs.restate.dev/installation); the orchestrator needs it"
+RS_INGRESS="${FUSE_E2E_RESTATE_INGRESS:-28180}"
+RS_ADMIN="${FUSE_E2E_RESTATE_ADMIN:-29170}"
+RS_HANDLER="127.0.0.1:${FUSE_E2E_RESTATE_HANDLER:-29180}"
+RS_DIR=$(mktemp -d)
+RESTATE_BASE_DIR="$RS_DIR" RESTATE_NODE_NAME=fuse-e2e \
+RESTATE_INGRESS__BIND_ADDRESS="127.0.0.1:${RS_INGRESS}" \
+RESTATE_ADMIN__BIND_ADDRESS="127.0.0.1:${RS_ADMIN}" \
+RESTATE_BIND_ADDRESS="127.0.0.1:$((RS_ADMIN + 1))" \
+  restate-server --no-logo >/tmp/fuse-e2e-restate.log 2>&1 &
+RS_PID=$!
+for i in $(seq 1 60); do
+  curl -fsS -m 2 -o /dev/null "http://127.0.0.1:${RS_ADMIN}/health" 2>/dev/null && break
+  kill -0 "$RS_PID" 2>/dev/null || { cat /tmp/fuse-e2e-restate.log; die "restate-server exited during boot"; }
+  sleep 0.5
+  [ "$i" = 60 ] && die "restate-server never answered on :${RS_ADMIN}"
+done
+pass "restate-server up (ingress :${RS_INGRESS}, admin :${RS_ADMIN})"
+
+# Environment for the server process. A token-encryption key makes the create
+# generate per-VM TLS creds + auth token (the full secure deploy path).
+ENVV=(ORCH_LISTEN=":${PORT}" "TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)"
+  FUSE_RESTATE_MODE=self "FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:${RS_INGRESS}" "ORCH_RESTATE_LISTEN=${RS_HANDLER}")
 MODE="stub (in-memory provider)"
 if [ "${FUSE_E2E_REMOTE:-0}" = "1" ]; then
   [ -f "$REPO_ROOT/.env" ] || die ".env not found for remote mode"
@@ -64,8 +91,22 @@ fi
 step "boot fuse — ${MODE}"
 env "${ENVV[@]}" "$BIN" >/tmp/fuse-e2e.log 2>&1 &
 SRV_PID=$!
-cleanup() { kill "$SRV_PID" 2>/dev/null || true; wait "$SRV_PID" 2>/dev/null || true; }
+cleanup() {
+  kill "$SRV_PID" "$RS_PID" 2>/dev/null || true
+  wait "$SRV_PID" "$RS_PID" 2>/dev/null || true
+  rm -rf "$RS_DIR"
+}
 trap cleanup EXIT
+
+# register the handler endpoint; the orchestrator opens its api once it is.
+for i in $(seq 1 60); do
+  curl -fsS -m 10 -o /dev/null -X POST "http://127.0.0.1:${RS_ADMIN}/deployments" \
+    -H 'content-type: application/json' -d "{\"uri\":\"http://${RS_HANDLER}\",\"force\":true}" 2>/dev/null && break
+  kill -0 "$SRV_PID" 2>/dev/null || { echo "--- server log ---"; cat /tmp/fuse-e2e.log; die "server exited during boot"; }
+  sleep 0.5
+  [ "$i" = 60 ] && { cat /tmp/fuse-e2e.log; die "could not register http://${RS_HANDLER} with restate"; }
+done
+pass "registered http://${RS_HANDLER} with restate"
 
 # Wait for readiness.
 for i in $(seq 1 50); do

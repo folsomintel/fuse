@@ -307,8 +307,9 @@ one of:
 
 - `restate not ready after 2m0s: ...` with a connection error: restate-server
   is not running or `FUSE_RESTATE_INGRESS_URL` is wrong.
-- `restate not ready after 2m0s: restate is up but no deployment serves
-  Environment (register the handler endpoint; ...)`: register it with
+- `restate not ready after 2m0s: restate is up but Environment does not
+  answer: is this orchestrator's handler endpoint registered and reachable
+  from restate? ...`: register it with
   `/usr/local/lib/fuse/restate-deploy register http://127.0.0.1:<handler port>`
   (or `ops/restate/register.sh` on a hand-rolled install) while the
   orchestrator is up.

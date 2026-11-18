@@ -1059,8 +1059,7 @@ func (fm *FleetManager) CompleteTask(taskID string) error {
 // DestroyVM forcefully tears down a VM by ID.
 func (fm *FleetManager) DestroyVM(ctx context.Context, vmID string) error {
 	ctx, end := fm.startOperation(ctx, "destroy", vmID)
-	var err error
-	err = fm.durableDestroyVM(ctx, fm.durableDestroyer(), vmID)
+	err := fm.durableDestroyVM(ctx, fm.durableDestroyer(), vmID)
 	end(err)
 	return err
 }

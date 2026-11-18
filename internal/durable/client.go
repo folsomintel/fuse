@@ -93,7 +93,7 @@ func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
 		if err := c.Check(attempt); err != nil {
 			last = err
 		} else if _, err := c.Ping(attempt, EnvironmentObject, "startup"); err != nil {
-			last = fmt.Errorf("restate is up but no deployment serves %s (register the handler endpoint; see docs/runbooks/restate.mdx): %w", EnvironmentObject, err)
+			last = fmt.Errorf("restate is up but %s does not answer: is this orchestrator's handler endpoint registered and reachable from restate? (see docs/runbooks/restate.mdx): %w", EnvironmentObject, err)
 		} else {
 			stop()
 			return nil
