@@ -61,12 +61,13 @@ to dispatch correctly, then walks the persisted VMs and triages them:
 - Still-running VMs have their secrets re-uploaded, which is cheap, idempotent,
   and covers the case where the guest rebooted on its own.
 
-Some state is deliberately never persisted and resets on every restart: orphan
-retry budgets, live provider handles, SSE subscriptions, and
+Some state is deliberately never persisted and resets on every restart:
+live provider handles, SSE subscriptions, and
 [operations](/docs/concepts/environments#long-operations-and-retries) with their
-idempotency keys. Stuck-task and idle strikes are not in that list: they live in
-each environment's restate [expiry timer](/docs/concepts/reconcile#expiry-timer)
-state, so a restart neither resets nor skips one.
+idempotency keys. Orphan retry budgets and stuck-task and idle strikes are not in
+that list: they live in each environment's restate `Environment` object state
+(orphan destroys and the [expiry timer](/docs/concepts/reconcile#expiry-timer)),
+so a restart neither resets nor skips one.
 
 Per-device GPU bindings are a good illustration of the pattern. The set of GPU
 UUIDs a host has handed out is **not** stored as its own column; it is recomputed

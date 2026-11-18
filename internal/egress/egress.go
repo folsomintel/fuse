@@ -105,6 +105,10 @@ type Endpoint struct {
 	URL      string   `json:"url"`
 	Protocol Protocol `json:"protocol"`
 	Provider string   `json:"provider"`
+	// Lease is what a backend that keeps per-vm state in memory needs to
+	// take it back after a restart (wireguard: the config's fingerprint).
+	// never a credential.
+	Lease string `json:"lease,omitempty"`
 }
 
 type HealthState string
@@ -130,7 +134,10 @@ type Status struct {
 	Provider string   `json:"provider,omitempty"`
 	Protocol Protocol `json:"protocol,omitempty"`
 	Endpoint string   `json:"endpoint,omitempty"`
-	Health   Health   `json:"health"`
+	// Lease is the endpoint's, persisted with the vm so a restarted
+	// orchestrator can hand it back to the backend through Restorer.
+	Lease  string `json:"lease,omitempty"`
+	Health Health `json:"health"`
 }
 
 // Provider is the whole backend contract. cloudflare warp is one registered
@@ -143,4 +150,12 @@ type Provider interface {
 	Provision(ctx context.Context, ec Context) (Endpoint, error)
 	Healthcheck(ctx context.Context, ep Endpoint) error
 	Destroy(ctx context.Context, ec Context) error
+}
+
+// Restorer is a Provider that keeps per-vm state in memory and takes it back
+// from a vm's persisted lease when the orchestrator restarts. Forget drops
+// that state for a vm that is gone, with no host call.
+type Restorer interface {
+	Restore(hostID, vmID, lease string) error
+	Forget(vmID string)
 }

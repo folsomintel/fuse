@@ -132,3 +132,31 @@ func (r *Registry) Release(ctx context.Context, ec Context) error {
 	}
 	return first
 }
+
+// Restore hands a recovered vm's lease back to its provider, when that
+// provider keeps per-vm state in memory. any other provider, or an
+// unregistered one, has nothing to restore.
+func (r *Registry) Restore(provider, hostID, vmID, lease string) error {
+	p, ok := r.Lookup(provider)
+	if !ok || lease == "" {
+		return nil
+	}
+	rs, ok := p.(Restorer)
+	if !ok {
+		return nil
+	}
+	return rs.Restore(hostID, vmID, lease)
+}
+
+// Forget drops what provider keeps in memory for a vm that is gone, without
+// asking its host: a vm reaped because its host no longer lists it has no
+// host-side backend left to release.
+func (r *Registry) Forget(provider, vmID string) {
+	p, ok := r.Lookup(provider)
+	if !ok {
+		return
+	}
+	if rs, ok := p.(Restorer); ok {
+		rs.Forget(vmID)
+	}
+}

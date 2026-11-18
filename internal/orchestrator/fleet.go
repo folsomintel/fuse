@@ -119,6 +119,10 @@ var (
 	// to the host. Callers should cordon/drain and wait for the VMs to
 	// leave before retrying.
 	ErrHostHasVMs = errors.New("host still has vms assigned")
+	// ErrHostRecordInvalid is a durable host op given a record or state it
+	// cannot act on, such as a token the key cannot decrypt. a retry cannot
+	// change it.
+	ErrHostRecordInvalid = errors.New("host record invalid")
 
 	// ErrStartupScriptTimeout is returned during boot when the caller's
 	// startup script did not finish within StartupScriptTimeout. The boot
@@ -287,8 +291,12 @@ type ReconcileMetrics interface {
 
 // ReconcileSummary captures counts from a single reconcile cycle.
 type ReconcileSummary struct {
-	TrackedVMs          int
-	ProviderVMs         int
+	TrackedVMs  int
+	ProviderVMs int
+	// HostsUnreachable counts hosts whose vm list failed this cycle. their
+	// vms are skipped by the passes that read the list; every other host,
+	// and every pass that does not, runs as usual.
+	HostsUnreachable    int
 	OrphansDestroyed    int
 	OrphansFailed       int
 	OrphansDeadLettered int
@@ -600,7 +608,31 @@ type FleetManager struct {
 	// flight and destroySends tracks them.
 	durableDestroy   DurableDestroyer
 	destroySendSlots chan struct{}
-	destroySends     sync.WaitGroup
+	destroySends     tracker
+
+	// durableOrphan runs reconcile's orphan destroys on restate. see
+	// orphan_durable.go. orphanInFlight is the orphans with an invocation
+	// outstanding, orphanSlots bounds them, and orphanResults carries their
+	// outcomes into the next cycle's summary.
+	durableOrphan  DurableOrphans
+	orphanInFlight map[string]bool
+	orphanSlots    chan struct{}
+	orphanResults  orphanOutcomes
+
+	// durableHost runs host register, cordon and remove on restate. see
+	// host_durable.go.
+	durableHost DurableHosts
+
+	// bg tracks the fire-and-forget store writes and teardowns, so Stop
+	// can wait for them. hostWriteMu serializes host record writes.
+	bg          tracker
+	hostWriteMu sync.Mutex
+	// hostPending is the hosts with a background write queued, see
+	// persistHostBackground.
+	hostPendingMu sync.Mutex
+	hostPending   map[string]bool
+	// runCtx is Start's context, see lifetime.
+	runCtx context.Context
 
 	// durableArtifacts runs artifact moves and holds pull pins on restate.
 	// see artifacts_durable.go.
@@ -679,7 +711,7 @@ type FleetManager struct {
 	// vm this process has armed, guarded by mu.
 	durableExpiries DurableExpiry
 	expirySendSlots chan struct{}
-	expirySends     sync.WaitGroup
+	expirySends     tracker
 	expiryArmed     map[string]time.Time
 
 	cancel context.CancelFunc
@@ -755,6 +787,9 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		checkpointInterval:       cfg.CheckpointInterval,
 		chains:                   make(map[string]*checkpointChain),
 		orphanRetries:            make(map[string]int),
+		orphanInFlight:           make(map[string]bool),
+		hostPending:              make(map[string]bool),
+		orphanSlots:              make(chan struct{}, maxOrphanDestroys),
 		hosts:                    make(map[string]*Host),
 		hostProviders:            make(map[string]Provider),
 		createRuns:               make(map[string]*createRun),
@@ -861,6 +896,9 @@ func (fm *FleetManager) publishTerminalEvent(vmID string, state VMState, errMsg 
 func (fm *FleetManager) Start(ctx context.Context) {
 	ctx, fm.cancel = context.WithCancel(ctx)
 	fm.done = make(chan struct{})
+	fm.mu.Lock()
+	fm.runCtx = ctx
+	fm.mu.Unlock()
 
 	if err := fm.recoverState(ctx); err != nil {
 		fm.logger.Error("state recovery failed", "err", err)
@@ -875,7 +913,13 @@ func (fm *FleetManager) Start(ctx context.Context) {
 	}
 }
 
-// Stop cancels the reconciliation loop and waits for it to finish.
+// stopWait bounds how long Stop waits for background work after the
+// reconcile loop has ended, so a store that never answers cannot hold up a
+// shutdown forever.
+const stopWait = 30 * time.Second
+
+// Stop cancels the reconciliation loop and waits for it to finish, then for
+// the background store writes, teardowns and restate sends still in flight.
 func (fm *FleetManager) Stop() {
 	if fm.cancel != nil {
 		fm.cancel()
@@ -883,6 +927,30 @@ func (fm *FleetManager) Stop() {
 	if fm.done != nil {
 		<-fm.done
 	}
+	idle := make(chan struct{})
+	go func() {
+		fm.destroySends.Wait()
+		fm.expirySends.Wait()
+		fm.bg.Wait()
+		close(idle)
+	}()
+	select {
+	case <-idle:
+	case <-time.After(stopWait):
+		fm.logger.Warn("stop: background work still running", "waited", stopWait)
+	}
+}
+
+// lifetime is the context Start ran the fleet under, cancelled by Stop. work
+// that would otherwise outlive the fleet waits on it; before Start it is
+// context.Background.
+func (fm *FleetManager) lifetime() context.Context {
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	if fm.runCtx == nil {
+		return context.Background()
+	}
+	return fm.runCtx
 }
 
 // ProvisionAndAssign provisions a new VM, boots fused, and assigns the given task.
@@ -905,6 +973,8 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 		return nil, fmt.Errorf("%w: requested %s, maximum is %s",
 			ErrStartupScriptTimeoutTooLarge, opts.StartupScriptTimeout, fm.maxStartupScriptTimeout)
 	}
+
+	spec = withDefaultResources(spec)
 
 	// a converted oci image names a rootfs on the hosts where it is ready,
 	// so it is resolved to one of them before either create path places it.
@@ -1218,28 +1288,12 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 
 	// Multi-host mode: list VMs from all registered host providers.
 	// Single-provider fallback: list from fm.provider (legacy path).
-	var envs []Environment
-	envProviders := make(map[string]Provider)
-	var listErr error
-	fm.mu.RLock()
-	multiHost := len(fm.hosts) > 0
-	fm.mu.RUnlock()
-	if multiHost {
-		envs, envProviders, listErr = fm.listAllHostVMs(ctx)
-	} else {
-		envs, listErr = fm.provider.List(ctx, fm.prefix)
-		for _, env := range envs {
-			envProviders[env.Name()] = fm.provider
-		}
+	listing := fm.listProviderVMs(ctx)
+	for hostID, err := range listing.unreachable {
+		fm.logger.Error("reconcile list failed, host unreachable this cycle", "host", hostID, "err", err)
 	}
-	if listErr != nil {
-		fm.logger.Error("reconcile list failed", "err", listErr)
-		if fm.metrics != nil {
-			summary.Duration = time.Since(start)
-			fm.metrics.ReconcileCompleted(summary)
-		}
-		return
-	}
+	summary.HostsUnreachable = len(listing.unreachable)
+	envs := listing.envs
 
 	providerVMs := make(map[string]bool, len(envs))
 	for _, e := range envs {
@@ -1256,7 +1310,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 		if v.state == VMStateProvisioning || v.state.tearingDown() {
 			continue
 		}
-		if !providerVMs[id] {
+		if !providerVMs[id] && listing.reachable(v.hostID) {
 			fm.logger.Warn("vm missing from provider, marking destroying", "vm", id)
 			oldTaskID := v.taskID
 			v.state = VMStateDestroying
@@ -1299,7 +1353,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// so that fleet.go stays focused on the lifecycle API. stuck, idle and
 	// draining expiry run on the Environment/{vm_id}.Expire timer armed
 	// here.
-	fm.reconcileOrphans(ctx, envs, envProviders, tracked, &summary)
+	fm.reconcileOrphans(ctx, listing, tracked, &summary)
 	fm.reconcileInterventions(ctx)
 	fm.armExpiries()
 	// not on the boot-time pass: restate answers through the handler
@@ -1316,7 +1370,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
 	fm.retryFailedTeardowns(providerVMs)
-	fm.reapDestroyedVMs(ctx, providerVMs)
+	fm.reapDestroyedVMs(ctx, providerVMs, listing)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan
 	// is untracked by definition, so it has no persisted Spec for
@@ -1328,7 +1382,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// reapDestroyedVMs above.
 	if summary.OrphansDestroyed > 0 && !fm.hasTrackedDestroyingVM() {
 		for _, h := range fm.recomputeHostAllocations() {
-			fm.persistHostRecordBackground(fm.hostToRecord(h))
+			fm.persistHostBackground(h.ID)
 		}
 	}
 
@@ -1338,13 +1392,36 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	}
 }
 
+// listProviderVMs lists every vm the fleet's providers hold: each registered
+// host's, or the single provider's when there are none. a provider whose list
+// fails is unreachable for the cycle; the single one is keyed "".
+func (fm *FleetManager) listProviderVMs(ctx context.Context) vmListing {
+	fm.mu.RLock()
+	multiHost := len(fm.hosts) > 0
+	fm.mu.RUnlock()
+	if multiHost {
+		return fm.listAllHostVMs(ctx)
+	}
+	out := vmListing{hostOf: make(map[string]string), unreachable: make(map[string]error)}
+	envs, err := fm.provider.List(ctx, fm.prefix)
+	if err != nil {
+		out.unreachable[""] = err
+		return out
+	}
+	out.envs = envs
+	for _, env := range envs {
+		out.hostOf[env.Name()] = ""
+	}
+	return out
+}
+
 // reapDestroyedVMs removes tracked VMs that are in the Destroying state
 // and are no longer present in the provider (set provided by reconcile).
 // VM resources are returned to their host, the VM is removed from the
 // in-memory fleet, and the persisted record is deleted. what belonged to the
 // vm is closed out as a finished destroy would: a destroy_failed vm has no
 // destroy left running to do it.
-func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool) {
+func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool, listing vmListing) {
 	fm.mu.Lock()
 	toRemove := make([]string, 0)
 	removed := make([]*vm, 0)
@@ -1352,11 +1429,18 @@ func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[st
 		if !v.state.tearingDown() {
 			continue
 		}
-		if providerVMs[id] {
+		// absent from an unreachable host's list says nothing about it.
+		if providerVMs[id] || !listing.reachable(v.hostID) {
 			continue
 		}
 		if v.hostID != "" {
 			fm.deallocateOnHost(v.hostID, v.spec)
+		}
+		// a vm that vanished from its host had no destroy release its egress
+		// reservation. dropped here, before the id is free, so a replacement
+		// that reuses the name never loses its own.
+		if v.egress.Mode == egress.ModeProxy && fm.egressRegistry != nil {
+			fm.egressRegistry.Forget(v.egress.Provider, id)
 		}
 		delete(fm.vms, id)
 		toRemove = append(toRemove, id)
@@ -1434,11 +1518,6 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	}
 	for _, hr := range hostRecords {
 		host, plaintext := fm.hostFromRecord(hr)
-		if plaintext {
-			// a token stored before the key was required: encrypt it now.
-			fm.logger.Info("encrypting a host token stored in plaintext before TOKEN_ENCRYPTION_KEY was required", "host", host.ID)
-			fm.persistHostRecordBackground(fm.hostToRecord(host))
-		}
 		var p Provider
 		if fm.hostProviderFactory != nil {
 			p = fm.hostProviderFactory(host.URL, host.Token, host.Backend)
@@ -1449,6 +1528,11 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 			fm.hostProviders[host.ID] = p
 		}
 		fm.mu.Unlock()
+		if plaintext {
+			// a token stored before the key was required: encrypt it now.
+			fm.logger.Info("encrypting a host token stored in plaintext before TOKEN_ENCRYPTION_KEY was required", "host", host.ID)
+			fm.persistHostBackground(host.ID)
+		}
 	}
 
 	records, err := fm.store.ListVMs(ctx)
@@ -1514,6 +1598,8 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	}
 	fm.mu.Unlock()
 
+	fm.restoreEgressLeases(recovered)
+
 	// Heal any drift in the persisted host Allocated counters by re-deriving
 	// them from the live VM bindings. This must run after the Destroying
 	// demotions above and after fm.vms is populated, so demoted VMs are
@@ -1522,7 +1608,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 
 	// Persist the healed host counters so the durable view matches memory.
 	for _, h := range recomputedHosts {
-		fm.persistHostRecordBackground(fm.hostToRecord(h))
+		fm.persistHostBackground(h.ID)
 	}
 
 	for id, recoveredVM := range recovered {
@@ -1714,58 +1800,96 @@ func (fm *FleetManager) persistVMByID(ctx context.Context, vmID string) error {
 	return fm.store.UpsertVM(ctx, record)
 }
 
-// TODO: Track background goroutines with a sync.WaitGroup so Stop() can
-// wait for in-flight persists to complete before returning. Currently
-// background writes can race with shutdown and lose data.
-func (fm *FleetManager) persistVMBackground(vmID string) {
+// goBackground runs fn on a goroutine Stop waits for.
+func (fm *FleetManager) goBackground(fn func()) {
+	fm.bg.Add(1)
 	go func() {
+		defer fm.bg.Done()
+		fn()
+	}()
+}
+
+func (fm *FleetManager) persistVMBackground(vmID string) {
+	fm.goBackground(func() {
 		if err := fm.persistVMByID(context.Background(), vmID); err != nil {
 			fm.logger.Warn("persist vm failed", "vm", vmID, "err", err)
 		}
-	}()
+	})
 }
 
 func (fm *FleetManager) deleteVMBackground(vmID string) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
+	fm.goBackground(func() {
 		if err := fm.store.DeleteVM(context.Background(), vmID); err != nil {
 			fm.logger.Warn("delete persisted vm failed", "vm", vmID, "err", err)
 		}
-	}()
+	})
 }
 
 func (fm *FleetManager) upsertTaskBackground(task TaskRecord) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
+	fm.goBackground(func() {
 		if err := fm.store.UpsertTask(context.Background(), task); err != nil {
 			fm.logger.Warn("persist task failed", "task", task.TaskID, "err", err)
 		}
-	}()
+	})
 }
 
-// persistHostRecordBackground writes a host record snapshot to the
-// state store from a goroutine. The caller is expected to have already
-// snapshotted the record under fm.mu (so the persisted view is
-// consistent with the in-memory state at the moment of the snapshot).
+// persistHostBackground writes a host's record to the state store from a
+// goroutine. Used by allocateOnHost / deallocateOnHost, which run under
+// fm.mu, so capacity counters survive an orchestrator restart.
 //
-// Used by allocateOnHost / deallocateOnHost so capacity counters
-// survive an orchestrator restart. Without it, a restart would reset
-// all hosts' allocated capacity to whatever was last persisted by an
-// explicit UpsertHost call (registration / cordon / uncordon), losing
-// every accumulated VM placement.
-func (fm *FleetManager) persistHostRecordBackground(rec HostRecord) {
+// a write already pending for the host takes the change with it, since it
+// snapshots the host when it runs, so a burst of placements on one host costs
+// one queued write rather than one each.
+func (fm *FleetManager) persistHostBackground(hostID string) {
 	if fm.store == nil {
 		return
 	}
-	go func() {
-		if err := fm.store.UpsertHost(context.Background(), rec); err != nil {
-			fm.logger.Warn("persist host failed", "host", rec.ID, "err", err)
+	fm.hostPendingMu.Lock()
+	if fm.hostPending[hostID] {
+		fm.hostPendingMu.Unlock()
+		return
+	}
+	fm.hostPending[hostID] = true
+	fm.hostPendingMu.Unlock()
+	fm.goBackground(func() {
+		if err := fm.writeHostRecord(context.Background(), hostID); err != nil {
+			fm.logger.Warn("persist host failed", "host", hostID, "err", err)
 		}
-	}()
+	})
+}
+
+// writeHostRecord upserts hostID's record as it is now. host writes are
+// serialized and each takes its snapshot once it holds the turn, so writes
+// that finish out of order still leave the latest counters stored, and a
+// host removed in the meantime is not written back.
+func (fm *FleetManager) writeHostRecord(ctx context.Context, hostID string) error {
+	if fm.store == nil {
+		return nil
+	}
+	fm.hostWriteMu.Lock()
+	defer fm.hostWriteMu.Unlock()
+	// this write snapshots the host below, so it covers every change so far;
+	// one after this point queues a background write of its own.
+	fm.hostPendingMu.Lock()
+	delete(fm.hostPending, hostID)
+	fm.hostPendingMu.Unlock()
+	fm.mu.RLock()
+	h, ok := fm.hosts[hostID]
+	var snap Host
+	if ok {
+		snap = h.clone()
+	}
+	fm.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return fm.store.UpsertHost(ctx, fm.hostToRecord(snap))
 }
 
 // AuditEvent records a security or operational event in the state
@@ -1818,7 +1942,9 @@ func (fm *FleetManager) writeEvent(ctx context.Context, entityType, entityID, ev
 }
 
 func (fm *FleetManager) appendEventBackground(entityType, entityID, eventType string, payload map[string]any) {
-	go fm.appendEvent(context.Background(), entityType, entityID, eventType, payload)
+	fm.goBackground(func() {
+		fm.appendEvent(context.Background(), entityType, entityID, eventType, payload)
+	})
 }
 
 func (fm *FleetManager) snapshotVMRecord(vmID string) (VMRecord, bool) {
@@ -1878,6 +2004,25 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 		fm.logger.Warn("egress release failed", "vm", v.id, "provider", v.egress.Provider, "err", err)
 		if em, ok := fm.metrics.(EgressMetrics); ok {
 			em.EgressTeardownFailed(v.egress.Provider)
+		}
+	}
+}
+
+// restoreEgressLeases hands each recovered vm's egress lease back to its
+// backend, so state a backend keeps in memory (the wireguard one-host-per-key
+// reservation) holds across the restart. a vm tearing down is not restored:
+// its destroy may have released the lease already, and a resumed destroy does
+// not release it again.
+func (fm *FleetManager) restoreEgressLeases(recovered map[string]*vm) {
+	if fm.egressRegistry == nil {
+		return
+	}
+	for id, v := range recovered {
+		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" || v.state.tearingDown() {
+			continue
+		}
+		if err := fm.egressRegistry.Restore(v.egress.Provider, v.hostID, id, v.egress.Lease); err != nil {
+			fm.logger.Warn("restore egress lease failed", "vm", id, "provider", v.egress.Provider, "err", err)
 		}
 	}
 }

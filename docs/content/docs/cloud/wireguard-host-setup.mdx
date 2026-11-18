@@ -136,8 +136,10 @@ traffic. Fuse handles this in two places:
 - **Across hosts**, the orchestrator refuses to provision a config that is
   already connected from a different host, naming that host and the
   environments using it. Pin the environment there, or use a different key.
-  This record is held in memory, so it starts empty after an orchestrator
-  restart.
+  Each environment's record (a fingerprint of the config, never the key) is
+  stored with it, so the refusal still holds after an orchestrator restart.
+  Environments created before this record existed have none stored, and are
+  not counted after a restart.
 
 Forking a proxy-mode environment does not re-provision its egress, for any
 provider: the fork boots with the source's tap DROP and no backend, so it

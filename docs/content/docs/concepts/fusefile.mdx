@@ -232,9 +232,9 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `copy` | list of `{from, to}` | Local files **and directories** copied into the guest before the `build` steps run. See [Copy](#copy). |
 | `copy[].from` | string | A file or directory on your machine, resolved relative to the Fusefile, not your working directory. A directory is walked into one upload per regular file. A symlink is an error, never followed. |
 | `copy[].to` | string | Where it lands in the guest. Absolute, or relative to `workspace`. `..` segments are rejected, as is anything under `/fuse`, which holds the guest agent's own manifest, secrets and credentials. Two entries may not write the same path. |
-| `resources.cpus` | int | Whole vCPU count. A whole-valued float (`2.0`) is accepted; a fraction (`0.5`) is rejected, because Firecracker takes an integer `vcpu_count` and QEMU an integer `-smp`. A negative count is rejected. Omitting it (or `0`) means "host default": the host agent boots the VM with 1 vCPU. |
-| `resources.memory` | string | A size, e.g. `2GB`. Compiles to `ram_mb`. See [Size units](#size-units). |
-| `resources.disk` | string | Size of the guest root disk, e.g. `10GB`. Compiles to `storage_gb`, rounded **up** to a whole GB, so `512MB` provisions 1GB. See [Size units](#size-units). |
+| `resources.cpus` | int | Whole vCPU count. A whole-valued float (`2.0`) is accepted; a fraction (`0.5`) is rejected, because Firecracker takes an integer `vcpu_count` and QEMU an integer `-smp`. A negative count is rejected. Omitting it (or `0`) means the default: the orchestrator schedules and boots the VM with 1 vCPU. |
+| `resources.memory` | string | A size, e.g. `2GB`. Compiles to `ram_mb`. Omitting it means the default, 1024 MB. See [Size units](#size-units). |
+| `resources.disk` | string | Size of the guest root disk, e.g. `10GB`. Compiles to `storage_gb`, rounded **up** to a whole GB, so `512MB` provisions 1GB. Omitting it means the default, 4GB, the size of the baked base rootfs. See [Size units](#size-units). |
 | `resources.storage` | string | A permanent alias for `resources.disk`; `disk` is the preferred spelling. Setting both is only valid if they name the same size. |
 | `resources.region` | string | Schedules only onto a host registered in this region (`fuse host register --region`). Empty matches any region. |
 | `resources.max_runtime` | string | Go duration (`1h`, `30m`); compiles to `max_runtime_seconds`. A leak-detection ceiling measured from create, *not* a task budget. See [Reconciliation](/docs/concepts/reconcile). |

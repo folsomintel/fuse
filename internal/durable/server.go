@@ -56,6 +56,8 @@ type Fleet interface {
 	GetVM(vmID string) (orchestrator.VMInfo, bool)
 	GetHost(hostID string) (orchestrator.Host, bool)
 	Destroyer
+	Orphans
+	Hosts
 	Artifacts
 	Snapshots
 	Checkpoints
@@ -97,6 +99,10 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("Destroy", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req orchestrator.DestroyRequest) (restate.Void, error) {
 				return restate.Void{}, destroy(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			})).
+		Handler("DestroyOrphan", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.OrphanDestroyRequest) (orchestrator.OrphanDestroyResult, error) {
+				return destroyOrphan(ctx, fleet, req)
 			})).
 		Handler("Snapshot", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
@@ -160,6 +166,18 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 					_, ok := fleet.GetHost(key)
 					return ok
 				})
+			})).
+		Handler("Register", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, rec orchestrator.HostRecord) (restate.Void, error) {
+				return restate.Void{}, hostRegister(ctx, fleet, rec)
+			})).
+		Handler("SetState", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, state orchestrator.HostState) (restate.Void, error) {
+				return restate.Void{}, hostSetState(ctx, fleet, state)
+			})).
+		Handler("Remove", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, hostRemove(ctx, fleet)
 			}))
 
 	artifacts := restate.NewObject(ArtifactsObject, retryOption(cfg, ArtifactsObject)).

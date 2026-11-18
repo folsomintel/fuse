@@ -356,7 +356,7 @@ func (fm *FleetManager) ArtifactRecord(ctx context.Context, job ArtifactMoveJob,
 		return "", fmt.Errorf("persist pulled artifact %s on host %s: %w", committedID, job.HostID, err)
 	}
 
-	fm.appendEventBackground("host", job.HostID, "artifact.pulled", map[string]any{
+	fm.appendEvent(ctx, "host", job.HostID, "artifact.pulled", map[string]any{
 		"digest":             job.Digest,
 		"snapshot_id":        committedID,
 		"source_host_id":     job.SourceHostID,

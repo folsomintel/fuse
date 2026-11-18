@@ -3,6 +3,8 @@ package orchestrator
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -426,6 +428,25 @@ type Host struct {
 // schedulable returns true if the host is healthy and eligible for
 // new VM placements. A host must be Active and have been seen
 // recently to schedule work to it.
+// clone copies h with its own maps and slices, so a copy taken under fm.mu
+// can be read after it is released while allocation keeps changing h.
+func (h *Host) clone() Host {
+	c := *h
+	c.Labels = maps.Clone(h.Labels)
+	c.Capacity = h.Capacity.clone()
+	c.Allocated = h.Allocated.clone()
+	return c
+}
+
+func (c HostCapacity) clone() HostCapacity {
+	c.MIGProfiles = maps.Clone(c.MIGProfiles)
+	c.MIGInstances = slices.Clone(c.MIGInstances)
+	c.GPUDevices = slices.Clone(c.GPUDevices)
+	c.GPUDeviceUUIDs = slices.Clone(c.GPUDeviceUUIDs)
+	c.MIGInstanceUUIDs = slices.Clone(c.MIGInstanceUUIDs)
+	return c
+}
+
 func (h *Host) schedulable() bool {
 	return h.State == HostActive
 }

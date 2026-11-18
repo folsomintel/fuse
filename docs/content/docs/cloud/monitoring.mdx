@@ -42,6 +42,9 @@ is what keeps the state store and the real provider fleet in sync:
   with it rather than leaving the counter flat. A provider list that merely
   fails still completes the cycle and increments the counter, so flat means
   blocked, not erroring.
+- `orchestrator_reconcile_hosts_unreachable` above zero means a host agent's
+  VM list is failing. Reconcile skips that host's VMs and carries on with the
+  rest; the orchestrator log names the host and the error.
 - `orchestrator_reconcile_duration_seconds` climbing over time suggests the
   fleet has grown past what a single reconcile pass handles comfortably, or a
   provider call is slow.

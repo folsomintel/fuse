@@ -572,6 +572,8 @@ func run() error {
 	// first teardown already goes through restate.
 	restateClient := durable.NewClient(durableCfg)
 	fm.SetDurable(restateClient)
+	fm.SetDurableOrphans(restateClient)
+	fm.SetDurableHosts(restateClient)
 	fm.Start(rootCtx)
 	defer fm.Stop()
 

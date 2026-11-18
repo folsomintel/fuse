@@ -24,6 +24,28 @@ var ErrHostNotFound = fmt.Errorf("host not found")
 // FleetManager holds only the Provider interface to avoid import
 // cycles with concrete provider packages.
 func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) error {
+	if d := fm.durableHostsFor(); d != nil && fm.registersDurably() {
+		// the token is encrypted here rather than through hostToRecord, whose
+		// fallback stores it in the clear: a record that cannot be sealed is
+		// registered in process instead, so the token never reaches the journal.
+		if sealed, err := secrets.EncryptToken(h.Token, fm.tokenEncryptionKey); err == nil {
+			tokenless := h
+			tokenless.Token = ""
+			rec := fm.hostToRecord(tokenless)
+			rec.TokenEncrypted = sealed
+			// the handler builds its own provider from the record; this one
+			// only served the api's capacity probe.
+			_ = p.Close()
+			return d.RegisterHost(ctx, rec)
+		}
+		fm.logger.Warn("encrypt host token failed; registering in process", "host", h.ID)
+	}
+	return fm.registerHost(ctx, h, p)
+}
+
+// registerHost is RegisterHost in process: the host and its provider go into
+// the registry, then the store.
+func (fm *FleetManager) registerHost(ctx context.Context, h Host, p Provider) error {
 	now := time.Now()
 	if h.CreatedAt.IsZero() {
 		h.CreatedAt = now
@@ -38,6 +60,12 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 	}
 
 	fm.mu.Lock()
+	// a host registered again (a durable register retrying after its row
+	// write failed, or an operator re-registering) keeps the allocations of
+	// the vms placed on it meanwhile: the request carries none.
+	if prev, ok := fm.hosts[h.ID]; ok {
+		h.Allocated = prev.Allocated.clone()
+	}
 	fm.hosts[h.ID] = &h
 	if existing, ok := fm.hostProviders[h.ID]; ok {
 		_ = existing.Close()
@@ -45,10 +73,8 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 	fm.hostProviders[h.ID] = p
 	fm.mu.Unlock()
 
-	if fm.store != nil {
-		if err := fm.store.UpsertHost(ctx, fm.hostToRecord(h)); err != nil {
-			return fmt.Errorf("persist host %s: %w", h.ID, err)
-		}
+	if err := fm.writeHostRecord(ctx, h.ID); err != nil {
+		return fmt.Errorf("persist host %s: %w", h.ID, err)
 	}
 	fm.appendEvent(ctx, "host", h.ID, "host.registered", map[string]any{
 		"url":    h.URL,
@@ -62,16 +88,26 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 // CordonHost marks a host as cordoned (no new VMs). Existing VMs
 // are left running.
 func (fm *FleetManager) CordonHost(ctx context.Context, hostID string) error {
-	return fm.setHostState(ctx, hostID, HostCordoned, "host.cordoned")
+	if d := fm.durableHostsFor(); d != nil {
+		return d.SetHostState(ctx, hostID, HostCordoned)
+	}
+	return fm.setHostState(ctx, hostID, HostCordoned)
 }
 
 // UncordonHost returns a cordoned or draining host to active
 // scheduling.
 func (fm *FleetManager) UncordonHost(ctx context.Context, hostID string) error {
-	return fm.setHostState(ctx, hostID, HostActive, "host.uncordoned")
+	if d := fm.durableHostsFor(); d != nil {
+		return d.SetHostState(ctx, hostID, HostActive)
+	}
+	return fm.setHostState(ctx, hostID, HostActive)
 }
 
-func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state HostState, event string) error {
+func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state HostState) error {
+	event := "host.cordoned"
+	if state == HostActive {
+		event = "host.uncordoned"
+	}
 	fm.mu.Lock()
 	h, ok := fm.hosts[hostID]
 	if !ok {
@@ -82,10 +118,8 @@ func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state H
 	h.UpdatedAt = time.Now()
 	fm.mu.Unlock()
 
-	if fm.store != nil {
-		if err := fm.store.UpsertHost(ctx, fm.hostToRecord(*h)); err != nil {
-			return fmt.Errorf("persist host state %s: %w", hostID, err)
-		}
+	if err := fm.writeHostRecord(ctx, hostID); err != nil {
+		return fmt.Errorf("persist host state %s: %w", hostID, err)
 	}
 	fm.appendEvent(ctx, "host", hostID, event, map[string]any{"state": string(state)})
 	return nil
@@ -95,6 +129,18 @@ func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state H
 // assigned to it; callers should cordon/drain and wait for VMs to
 // leave before removing.
 func (fm *FleetManager) RemoveHost(ctx context.Context, hostID string) error {
+	if d := fm.durableHostsFor(); d != nil {
+		return d.RemoveHost(ctx, hostID)
+	}
+	if err := fm.unregisterHost(hostID); err != nil {
+		return err
+	}
+	return fm.deleteHostRecord(ctx, hostID)
+}
+
+// unregisterHost drops a host with no vms from the registry and closes its
+// provider.
+func (fm *FleetManager) unregisterHost(hostID string) error {
 	fm.mu.Lock()
 	_, ok := fm.hosts[hostID]
 	if !ok {
@@ -116,9 +162,17 @@ func (fm *FleetManager) RemoveHost(ctx context.Context, hostID string) error {
 	}
 	delete(fm.hosts, hostID)
 	fm.mu.Unlock()
+	return nil
+}
 
+// deleteHostRecord deletes a removed host's row and records the removal.
+// deleting a row that is already gone is not an error, so it can be retried.
+func (fm *FleetManager) deleteHostRecord(ctx context.Context, hostID string) error {
 	if fm.store != nil {
-		if err := fm.store.DeleteHost(ctx, hostID); err != nil {
+		fm.hostWriteMu.Lock()
+		err := fm.store.DeleteHost(ctx, hostID)
+		fm.hostWriteMu.Unlock()
+		if err != nil {
 			return fmt.Errorf("delete host %s: %w", hostID, err)
 		}
 	}
@@ -301,7 +355,7 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 		h.Allocated.GPUs += int(spec.GPUs)
 	}
 	h.UpdatedAt = time.Now()
-	fm.persistHostRecordBackground(fm.hostToRecord(*h))
+	fm.persistHostBackground(h.ID)
 }
 
 // deallocateOnHost decrements the allocated counters when a VM is
@@ -379,7 +433,7 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 		h.Allocated.VMCount = 0
 	}
 	h.UpdatedAt = time.Now()
-	fm.persistHostRecordBackground(fm.hostToRecord(*h))
+	fm.persistHostBackground(h.ID)
 }
 
 // providerForHost returns the cached provider for the given host ID.
@@ -404,9 +458,29 @@ func (fm *FleetManager) providerForVM(hostID string) (Provider, error) {
 	return p, nil
 }
 
-// listAllHostVMs collects VMs from all registered host providers.
-// Used by reconcile when the fleet is in multi-host mode.
-func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, map[string]Provider, error) {
+// vmListing is what one reconcile cycle saw on the hosts.
+type vmListing struct {
+	envs []Environment
+	// hostOf maps a listed vm to the host that listed it; "" is the
+	// single provider of a fleet with no registered hosts.
+	hostOf map[string]string
+	// unreachable holds the hosts whose list failed this cycle, by the
+	// same ids. a vm on one is neither missing nor gone: nothing is known
+	// about it until its host answers again.
+	unreachable map[string]error
+}
+
+// reachable reports whether hostID answered this cycle's list.
+func (l vmListing) reachable(hostID string) bool {
+	_, down := l.unreachable[hostID]
+	return !down
+}
+
+// listAllHostVMs collects VMs from all registered host providers, in
+// parallel. a host whose list fails is recorded as unreachable rather than
+// failing the whole listing, so one bad host cannot stall reconcile for the
+// rest. Used by reconcile when the fleet is in multi-host mode.
+func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 	fm.mu.RLock()
 	providers := make(map[string]Provider, len(fm.hostProviders))
 	for id, p := range fm.hostProviders {
@@ -414,37 +488,29 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) ([]Environment, map[
 	}
 	fm.mu.RUnlock()
 
-	var (
-		mu     sync.Mutex
-		all    []Environment
-		owners = make(map[string]Provider)
-		errs   []error
-	)
+	var mu sync.Mutex
+	out := vmListing{hostOf: make(map[string]string), unreachable: make(map[string]error)}
 
 	var wg sync.WaitGroup
-	for _, p := range providers {
+	for hostID, p := range providers {
 		wg.Add(1)
-		go func(p Provider) {
+		go func(hostID string, p Provider) {
 			defer wg.Done()
 			envs, err := p.List(ctx, fm.prefix)
 			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
-				errs = append(errs, err)
-			} else {
-				all = append(all, envs...)
-				for _, env := range envs {
-					owners[env.Name()] = p
-				}
+				out.unreachable[hostID] = err
+				return
 			}
-			mu.Unlock()
-		}(p)
+			out.envs = append(out.envs, envs...)
+			for _, env := range envs {
+				out.hostOf[env.Name()] = hostID
+			}
+		}(hostID, p)
 	}
 	wg.Wait()
-
-	if len(errs) > 0 {
-		return all, owners, fmt.Errorf("list vms from %d hosts: %d errors (first: %w)", len(providers), len(errs), errs[0])
-	}
-	return all, owners, nil
+	return out
 }
 
 // ── Conversion helpers ────────────────────────────────────────────

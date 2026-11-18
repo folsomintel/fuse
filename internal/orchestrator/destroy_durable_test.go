@@ -410,7 +410,7 @@ func TestReapDestroyFailedRevokesKeys(t *testing.T) {
 		t.Fatalf("keys revoked before the vm is gone: %v", keys.revoked)
 	}
 
-	fm.reapDestroyedVMs(ctx, map[string]bool{})
+	fm.reapDestroyedVMs(ctx, map[string]bool{}, vmListing{})
 	if _, ok := fm.GetVM("fuse-task-1"); ok {
 		t.Fatal("destroy_failed vm not reaped")
 	}

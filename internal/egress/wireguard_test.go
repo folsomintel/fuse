@@ -163,3 +163,30 @@ func TestSpecRejectsASecretOnDirect(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestWireGuardLeaseRestoresTheReservation: the endpoint's lease is the
+// config fingerprint, never key material, and a fresh provider (a restarted
+// orchestrator) that restores it refuses the same config on another host.
+func TestWireGuardLeaseRestoresTheReservation(t *testing.T) {
+	host := &fakeHostAgent{endpoint: Endpoint{URL: "socks5h://10.200.3.1:1080", Protocol: ProtocolSOCKS5}}
+	ep, err := NewWireGuard().Provision(context.Background(), wgContext(host, "vm-1", "h-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Lease == "" || strings.Contains(wgConf, ep.Lease) || strings.Contains(wgSecret(wgConf), ep.Lease) {
+		t.Fatalf("lease %q: want a fingerprint that is not part of the config", ep.Lease)
+	}
+
+	restarted := NewWireGuard()
+	if err := NewRegistry(restarted).Restore(WireGuardName, "h-1", "vm-1", ep.Lease); err != nil {
+		t.Fatal(err)
+	}
+	_, err = restarted.Provision(context.Background(), wgContext(host, "vm-2", "h-2"))
+	if err == nil || !strings.Contains(err.Error(), "host h-1") {
+		t.Fatalf("second host after restore err = %v, want refused", err)
+	}
+	// a provider with no in-memory state has nothing to restore.
+	if err := NewRegistry(NewWarp(WarpConfig{})).Restore("warp", "h-1", "vm-1", "x"); err != nil {
+		t.Fatal(err)
+	}
+}
