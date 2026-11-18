@@ -541,11 +541,11 @@ func (fm *FleetManager) hostFromRecord(r HostRecord) (h Host, plaintext bool) {
 }
 
 // legacyPlainToken reports whether b is a bearer token stored in plaintext
-// by an orchestrator that had no TOKEN_ENCRYPTION_KEY: printable ascii, and
-// too long to be chance (random ciphertext is all printable about once in
-// 10^12 at this length).
+// by an orchestrator that had no TOKEN_ENCRYPTION_KEY: printable ascii, of any
+// length. a row shorter than 28 bytes (nonce and tag) cannot be ciphertext at
+// all, and a longer ciphertext is all printable about once in 10^12.
 func legacyPlainToken(b []byte) bool {
-	if len(b) < 16 {
+	if len(b) == 0 {
 		return false
 	}
 	for _, c := range b {

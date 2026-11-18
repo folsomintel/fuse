@@ -421,6 +421,10 @@ func TestRecoverHostTokenStoredBeforeTheKey(t *testing.T) {
 		TokenEncrypted: []byte("0123456789abcdef0123456789abcdef"), CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-short", URL: "http://h-short", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte("test-token"), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.UpsertHost(ctx, HostRecord{ID: "h-rekeyed", URL: "http://h-rekeyed", State: HostActive, Backend: BackendFirecracker,
 		TokenEncrypted: []byte{0x00, 0x9f, 0x10, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
 		CreatedAt:      now, UpdatedAt: now}); err != nil {
@@ -433,6 +437,9 @@ func TestRecoverHostTokenStoredBeforeTheKey(t *testing.T) {
 
 	if h, ok := fm.GetHost("h-old"); !ok || h.Token != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("legacy host token = %q (found %v), want the plaintext token", h.Token, ok)
+	}
+	if h, ok := fm.GetHost("h-short"); !ok || h.Token != "test-token" {
+		t.Fatalf("short legacy host token = %q (found %v), want the plaintext token", h.Token, ok)
 	}
 	if h, ok := fm.GetHost("h-rekeyed"); !ok || h.Token != "" {
 		t.Fatalf("undecryptable host token = %q (found %v), want empty", h.Token, ok)
