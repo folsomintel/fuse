@@ -78,3 +78,5 @@ Keep `$(git rev-parse --absolute-git-dir)/greptile-state.json` as `{ "pr": <n>, 
 ## Report
 
 End with: the PR, the commits pushed (sha plus subject), the skipped findings with their reasons, and any finding left for later. If nothing was approved, nothing gets pushed. Say so.
+
+For every valid finding, name the fuse-patterns class it falls under (`.claude/skills/fuse-patterns/SKILL.md`). If none fits, say so and propose a new row for that table, so the self-review catches it before the next PR opens.

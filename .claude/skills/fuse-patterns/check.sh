@@ -118,6 +118,21 @@ if changed '^internal/fusefile/(compile|parse)\.go$'; then
   changed '^schema/fusefile-v1\.json$' || warn "internal/fusefile changed but schema/fusefile-v1.json did not"
 fi
 
+# --- 16. a new vm state recoverState never looks at is lost on restart
+for st in $(added_lines 'internal/orchestrator/*.go' | grep -oE '\bVMState[A-Z][A-Za-z]* +VMState *=' | grep -oE '^VMState[A-Za-z]+'); do
+  awk '/^func \(fm \*FleetManager\) recoverState\(/,/^}/' internal/orchestrator/fleet.go | grep -q "$st" \
+    || warn "new $st has no case in recoverState (internal/orchestrator/fleet.go): what happens to a vm in it after a restart?"
+done
+
+# --- 19. log-only helpers or dropped store writes inside durable steps
+added_lines internal/durable 'internal/orchestrator/*_durable.go' ':!*_test.go' \
+  | grep -E '\b(recordDeadLetter|appendEvent(Background)?)\(|^\+\s*_ = .*\.(Save|Put|Update|Delete|Insert|Upsert)[A-Za-z]*\(' \
+  | while read -r l; do warn "durable step swallows a write (return the error so restate retries): ${l:1:140}"; done
+
+# --- 25. arch literals in scripts that also run on arm64 (skip case arms)
+added_lines '*.sh' ':!.claude/' | grep -E 'x86_64|amd64' | grep -Ev '^\+\s*[A-Za-z0-9_|*-]+\)' \
+  | while read -r l; do warn "arch literal in a script: pick it from uname -m, the local appliance is arm64 (#413): ${l:1:140}"; done
+
 # --- systemd unit placement
 grep -E '\.service$' <<<"$CHANGED" | grep -v '^ops/systemd/' | grep -v '^host-agent/firecracker/fused\.service$' \
   | while read -r f; do warn "$f: new/changed .service outside ops/systemd/ (CLAUDE.md)"; done
