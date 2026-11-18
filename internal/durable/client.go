@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	restate "github.com/restatedev/sdk-go"
@@ -48,17 +48,23 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// unavailable marks a request that could not connect to restate with
+// unavailable marks a request that never reached restate with
 // orchestrator.ErrRestateUnavailable, so the api answers 503 and the caller
-// knows nothing started. a failure after the connection was made is left as
-// it is: restate may have accepted the invocation and still be running it.
-// ingress keeps the error chain.
+// knows nothing started: one that failed before it was written (refused, no
+// route, a dial that timed out, a proxy that would not connect). a failure
+// after the request was written is left as it is: restate may have accepted
+// the invocation and still be running it. ingress keeps the error chain.
 type unavailable struct{ next http.RoundTripper }
 
 func (u unavailable) RoundTrip(req *http.Request) (*http.Response, error) {
-	res, err := u.next.RoundTrip(req)
-	var op *net.OpError
-	if err != nil && req.Context().Err() == nil && errors.As(err, &op) && op.Op == "dial" {
+	var written atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
+		if info.Err == nil {
+			written.Store(true)
+		}
+	}}
+	res, err := u.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	if err != nil && !written.Load() {
 		return nil, fmt.Errorf("%w: %w", orchestrator.ErrRestateUnavailable, err)
 	}
 	return res, err

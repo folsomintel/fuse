@@ -389,8 +389,8 @@ RENV
 # orchestrator unit's ExecStartPost. it gives up (about 80s) before
 # systemd's 90s start timeout; Restart= runs it again.
 uri="http://${ORCH_RESTATE_LISTEN:-127.0.0.1:9080}"
-for i in $(seq 40); do
-  curl -fsS -o /dev/null --max-time 1 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
+for i in $(seq 20); do
+  curl -fsS -o /dev/null --max-time 3 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
     -H 'content-type: application/json' -d "{\"uri\":\"$uri\",\"force\":true}" && exit 0
   sleep 1
 done

@@ -250,33 +250,50 @@ orch_env_ready() {
 # orch_pinned: invocations not yet done that are pinned to the co-located
 # deployment. a new binary behind the same address would replay them on
 # code they were not journaled with, so the swap waits for them (the same
-# rule ops/install-orchestrator.sh applies). prints nothing when restate is
-# unreachable or the mode is not self.
+# rule ops/install-orchestrator.sh applies). prints 0 when the mode is not
+# self, and nothing when restate cannot be asked.
 orch_pinned() {
   local listen out
-  [ "$(orch_env_value FUSE_RESTATE_MODE)" = self ] || return 0
+  [ "$(orch_env_value FUSE_RESTATE_MODE)" = self ] || { echo 0; return 0; }
   listen=$(orch_env_value ORCH_RESTATE_LISTEN)
-  out=$(curl -fsS --max-time 10 -X POST http://127.0.0.1:9070/query \
+  out=$(curl -fsS --max-time 10 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/query" \
     -H 'content-type: application/json' -H 'accept: application/json' \
     -d "{\"query\":\"SELECT count(*) AS n FROM sys_invocation i JOIN sys_deployment d ON i.pinned_deployment_id = d.id WHERE d.endpoint = 'http://${listen:-127.0.0.1:9080}/' AND i.status != 'completed'\"}" 2>/dev/null) || return 0
   echo "$out" | grep -oE '"n":[0-9]+' | cut -d: -f2 || true
 }
 # orch_swap <new-binary>: stop the orchestrator so nothing new is pinned,
 # count what still is, and swap only when nothing is (or the swap is
-# forced). the old binary starts again when the swap waits.
+# forced). a count restate cannot give refuses the swap too. whenever the
+# swap does not happen the old binary starts again and ORCH_DEFERRED is set,
+# so the version marker is not written and the next run tries again.
+ORCH_DEFERRED=""
 orch_swap() {
   local pinned
-  sudo -n systemctl stop "$FUSE_ORCH_SERVICE"
+  sudo -n systemctl stop "$FUSE_ORCH_SERVICE" || { ORCH_DEFERRED=1; warn "could not stop $FUSE_ORCH_SERVICE; orchestrator not updated"; return 1; }
   pinned=$(orch_pinned)
-  if [ -n "$pinned" ] && [ "$pinned" != 0 ] && [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ]; then
-    sudo -n systemctl start "$FUSE_ORCH_SERVICE"
-    warn "skipping orchestrator update: $pinned restate invocations are still pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
+  if [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ] && { [ -z "$pinned" ] || [ "$pinned" != 0 ]; }; then
+    sudo -n systemctl start "$FUSE_ORCH_SERVICE" || warn "could not start the old orchestrator again: systemctl status $FUSE_ORCH_SERVICE"
+    ORCH_DEFERRED=1
+    if [ -z "$pinned" ]; then
+      warn "skipping orchestrator update: restate admin could not say what is pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
+    else
+      warn "skipping orchestrator update: $pinned restate invocations are still pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
+    fi
     return 1
   fi
-  sudo -n install -m 0755 "$1" "$FUSE_ORCH_BIN"
-  sudo -n systemctl start "$FUSE_ORCH_SERVICE"
+  if ! sudo -n install -m 0755 "$1" "$FUSE_ORCH_BIN"; then
+    sudo -n systemctl start "$FUSE_ORCH_SERVICE" || true
+    ORCH_DEFERRED=1
+    warn "installing the new orchestrator failed; the old one runs on and the next run retries"
+    return 1
+  fi
+  if ! sudo -n systemctl start "$FUSE_ORCH_SERVICE"; then
+    warn "the new orchestrator did not start: journalctl -u $FUSE_ORCH_SERVICE"
+    return 1
+  fi
 }
 if [ -n "${FUSE_ORCH_SERVICE:-}" ] && ! orch_env_ready; then
+  ORCH_DEFERRED=1
   warn "skipping orchestrator update: its env has no FUSE_RESTATE_MODE or TOKEN_ENCRYPTION_KEY, which the new orchestrator requires; run fc-agent.sh install-orchestrator to add restate"
 elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
   [ -n "${FUSE_ORCH_BIN:-}" ] || die "FUSE_ORCH_SERVICE set but FUSE_ORCH_BIN is not"
@@ -307,5 +324,9 @@ elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
 fi
 
 # --- 8. record the applied version --------------------------------------------
-printf '%s\n' "$VERSION" > "$MARKER"
+if [ -n "$ORCH_DEFERRED" ]; then
+  warn "not recording $VERSION as installed: the orchestrator was not updated, so the next run tries again"
+else
+  printf '%s\n' "$VERSION" > "$MARKER"
+fi
 printf '\n\033[1;32m[update] applied %s -> %s\033[0m\n' "$INSTALLED" "$VERSION"
