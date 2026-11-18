@@ -107,14 +107,14 @@ paths:
         `/health` only reports that the process is up, not that it can
         serve a request end to end.
 
-        When restate is configured (`FUSE_RESTATE_MODE` is not `off`), a
-        `restate` check reports whether restate ingress answers. Restate
-        being down is `degraded` with a 200, not a 503: nothing runs on
-        restate yet, so it must not take the orchestrator out of rotation.
+        A `restate` check reports whether restate ingress answers. Restate
+        being down is `degraded` with a 200, not a 503: reads, exec, files
+        and streams do not need restate, so it must not take the
+        orchestrator out of rotation.
       security: []
       responses:
         "200":
-          description: The state store and fleet checks pass. `degraded` means restate is configured and unreachable.
+          description: The state store and fleet checks pass. `degraded` means restate is unreachable.
           content:
             application/json:
               schema:
@@ -1764,8 +1764,7 @@ paths:
         error message. The intervention is approved with
         `decision.answer` `"done"`, which is all the agent reads. 400
         when the intervention is not a secret request, the value is
-        empty or over 64 KiB, the target is no longer declared, or the
-        orchestrator has no `TOKEN_ENCRYPTION_KEY`. 409 when it is
+        empty or over 64 KiB, or the target is no longer declared. 409 when it is
         already resolved, or another answer to it is being written right
         now. Once the value is in the guest the request counts as
         answered, even if its deadline passed during the write.
@@ -1834,8 +1833,7 @@ paths:
         request, never typed into the shell. The guest's output and
         window resizes are kept as an asciinema v2 cast; what the human
         types is not. When the stream closes the cast is sealed with
-        `TOKEN_ENCRYPTION_KEY` (stored unencrypted, with a warning, when
-        the orchestrator has none) and linked from a `takeover_session`
+        `TOKEN_ENCRYPTION_KEY` and linked from a `takeover_session`
         audit row by `recording_id`. A cast stops growing at 8 MiB and is
         marked truncated; the shell keeps working.
       parameters:
@@ -1954,8 +1952,7 @@ paths:
         themselves, and the byte size of each clipboard paste but never
         its text) plus a screenshot at the start and every 10 seconds.
         When the stream closes the recording is sealed with
-        `TOKEN_ENCRYPTION_KEY` (stored unencrypted, with a warning, when
-        the orchestrator has none) and linked from a `takeover_session`
+        `TOKEN_ENCRYPTION_KEY` and linked from a `takeover_session`
         audit row by `recording_id`. Screenshots stop at 32 MiB and the
         log at 50,000 entries, and the recording is marked truncated;
         the view keeps working.
@@ -2346,13 +2343,10 @@ paths:
         `inputs` name. `fuse build` does this from a Fusefile.
 
         Answers 202 with the build at once and keeps running when the
-        caller goes away; follow it with GET /v1/builds/{buildId}. With
-        restate on (`FUSE_RESTATE_MODE`) and a postgres state store, the
-        build runs as the `Build/{build_id}` workflow and resumes at the
-        step it was on after an orchestrator restart; otherwise (mode off,
-        the memory store, or secrets with no `TOKEN_ENCRYPTION_KEY` to seal
-        them) it runs in the orchestrator's process and an orchestrator
-        restart fails it.
+        caller goes away; follow it with GET /v1/builds/{buildId}. The
+        build runs as the restate `Build/{build_id}` workflow (secrets
+        sealed with `TOKEN_ENCRYPTION_KEY`) and resumes at the step it was
+        on after an orchestrator restart.
 
         `setup.prelude` and `setup.files` are each ended with a newline if
         they lack one, so the next fragment starts a command of its own.
@@ -2463,7 +2457,7 @@ paths:
         404 again and a create naming it is a 409 until it is converted
         again. When nothing can be evicted the convert is a 507.
 
-        With restate on, a retry that carries the first call's
+        A retry that carries the first call's
         `Idempotency-Key` attaches to the first convert instead of
         starting another.
       parameters:
@@ -2581,7 +2575,7 @@ components:
         different request is 409 `conflict`, `details.reason`
         `idempotency_key_reused`. Keys are scoped to the credential and
         kept 24h after the operation finishes; a finished 5xx is not kept,
-        so its retry runs again. With restate on, the key is also the
+        so its retry runs again. The key is also the
         restate ingress idempotency key of a destroy, snapshot or restore,
         so a retry after an orchestrator restart attaches to the same
         invocation, except a destroy that already finished: its vm is gone,
@@ -4187,8 +4181,8 @@ components:
       description: |
         Where a secret a human types may land. The agent names one of
         these targets by its `env` name or `file` path; it can never pick
-        a destination of its own. Declaring secret requests needs
-        `TOKEN_ENCRYPTION_KEY` on the orchestrator, or the create is 400.
+        a destination of its own. The value is sealed with the
+        orchestrator's `TOKEN_ENCRYPTION_KEY`.
       properties:
         targets:
           type: array
@@ -4504,7 +4498,7 @@ components:
           description: succeeded is a 2xx answer, failed any other.
         step:
           type: string
-          description: The step the operation last reported starting. migrate reports snapshot, transfer, delta, boot and cutover.
+          description: The step the operation last reported starting. Empty today, since every operation runs on restate, whose steps show in the restate ui.
         started_at:
           type: string
           format: date-time
@@ -4626,9 +4620,7 @@ components:
           description: |
             Name of an entry in the create request's `secrets` whose value
             keys the HMAC-SHA256 signature. The value never appears in the
-            spec. It is sealed with `TOKEN_ENCRYPTION_KEY`; without that key
-            it is held in memory only and deliveries stop after an
-            orchestrator restart.
+            spec. It is sealed with `TOKEN_ENCRYPTION_KEY`.
       description: |
         One `hitl.notify` target. Each delivery is a POST with a JSON
         HitlNotification body and a `Fuse-Signature` header of the form

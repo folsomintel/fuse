@@ -19,7 +19,7 @@ import (
 // and a caller's own request_id is not overwritten.
 func TestAppendEventCarriesRequestID(t *testing.T) {
 	store := NewMemoryStateStore()
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", StateStore: store})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", StateStore: store})
 
 	ctx := telemetry.WithRequestID(context.Background(), "req_evt")
 	payload := map[string]any{"k": "v"}
@@ -57,7 +57,7 @@ func TestOperationFailureIsTracedAndLogged(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(telemetry.NewLogHandler(slog.NewTextHandler(&buf, nil)))
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", Logger: logger})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", Logger: logger})
 
 	ctx := telemetry.WithRequestID(context.Background(), "req_op")
 	if err := fm.DestroyVM(ctx, "fuse-missing"); err == nil {

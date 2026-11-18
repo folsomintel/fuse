@@ -45,8 +45,7 @@ type HitlMetrics interface {
 }
 
 // SetDurableHitl routes approved hitl actions and intervention deadlines
-// through restate. nil (mode off, the default) keeps the in-process run and
-// the orphan pass. set it before Start.
+// through restate. set it before Start.
 func (fm *FleetManager) SetDurableHitl(d DurableHitl) {
 	fm.mu.Lock()
 	fm.durableHitlRuns = d
@@ -118,7 +117,7 @@ func (fm *FleetManager) sendHitlRun(d DurableHitl, id string) {
 // that fails is covered by the reconcile expiry sweep.
 func (fm *FleetManager) scheduleExpiry(in hitl.Intervention) {
 	d := fm.durableHitl()
-	if d == nil || in.State != hitl.StatePending {
+	if in.State != hitl.StatePending {
 		return
 	}
 	// the delay is taken when the send goes out, so time spent waiting for

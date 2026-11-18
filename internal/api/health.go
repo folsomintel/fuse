@@ -50,8 +50,8 @@ type Healthcheck struct {
 	// value).
 	BuildVersion string
 
-	// Restate checks restate ingress. nil when FUSE_RESTATE_MODE is off,
-	// and then readiness reports no restate check at all.
+	// Restate checks restate ingress. the orchestrator always sets it; nil
+	// (tests) leaves the restate check out.
 	Restate RestateChecker
 }
 
@@ -91,13 +91,13 @@ func (h *Healthcheck) Version(w http.ResponseWriter, _ *http.Request) {
 //   - fleet: that the FleetManager is non-nil. (We can't easily check
 //     "Started" without poking at unexported state; a nil manager is
 //     the realistic failure mode at boot.)
-//   - restate: restate ingress health, only when restate is configured.
+//   - restate: restate ingress health.
 //
 // On a state_store or fleet failure the response is 503 with a per-check
 // breakdown so operators can see at a glance which dependency is unhappy.
-// restate being down is "degraded" with a 200: nothing runs on restate
-// yet, so pulling the orchestrator out of rotation would turn a restate
-// outage into a full outage.
+// restate being down is "degraded" with a 200: mutating operations wait on
+// restate, but reads, exec, files and streams do not, so pulling the
+// orchestrator out of rotation would turn a restate outage into a full one.
 func (h *Healthcheck) Readiness(w http.ResponseWriter, r *http.Request) {
 	timeout := h.CheckTimeout
 	if timeout <= 0 {

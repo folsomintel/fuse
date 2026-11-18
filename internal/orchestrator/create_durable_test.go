@@ -229,7 +229,7 @@ func newCreateFleet(t *testing.T, store StateStore, p *createProvider, cfg Fleet
 	cfg.Prefix = "fuse-"
 	cfg.TokenEncryptionKey = createTestKey
 	cfg.HostProviderFactory = func(string, string, HostBackend) Provider { return p }
-	fm := NewFleetManager(cfg)
+	fm := newInlineFleet(cfg)
 	d := &inlineDestroyer{fm: fm}
 	fm.SetDurableDestroyer(d)
 	c := &inlineCreator{fm: fm, destroys: d}
@@ -486,26 +486,11 @@ func TestDurableCreateUnplaceable(t *testing.T) {
 	}
 }
 
-// without an encryption key the inputs cannot be sealed, so a create stays in
-// process.
-func TestDurableCreateNeedsKey(t *testing.T) {
-	p := newCreateProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, StateStore: NewMemoryStateStore(), Prefix: "fuse-"})
-	c := &inlineCreator{fm: fm}
-	fm.SetDurableCreator(c)
-	if _, err := fm.ProvisionAndAssign(context.Background(), "t6", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(c.done) != 0 {
-		t.Fatalf("keyless create went through restate: %v", c.done)
-	}
-}
-
 // a restored vm whose files do not upload fails its boot instead of running
 // without them.
 func TestRestoredBootFailsOnUploadError(t *testing.T) {
 	p := &restoreProvider{env: &restoreEnv{mockEnv: &mockEnv{name: "fuse-r"}, uploadErr: errors.New("agent down")}}
-	_, err := Boot(context.Background(), p, Spec{Name: "fuse-r"}, []byte(`{}`), nil, BootOptions{}, nil)
+	_, err := testBoot(context.Background(), p, Spec{Name: "fuse-r"}, []byte(`{}`), nil, BootOptions{}, nil)
 	if err == nil || !strings.Contains(err.Error(), "agent down") {
 		t.Fatalf("boot: %v, want the upload failure", err)
 	}
@@ -514,7 +499,7 @@ func TestRestoredBootFailsOnUploadError(t *testing.T) {
 	}
 	p.env.uploadErr = nil
 	p.env.agentErr = errors.New("agent will not start")
-	if _, err := Boot(context.Background(), p, Spec{Name: "fuse-r"}, []byte(`{}`), nil, BootOptions{}, nil); err == nil {
+	if _, err := testBoot(context.Background(), p, Spec{Name: "fuse-r"}, []byte(`{}`), nil, BootOptions{}, nil); err == nil {
 		t.Fatal("boot of a restored vm whose agent does not start succeeded")
 	}
 }
@@ -543,32 +528,7 @@ type restoreProvider struct {
 
 func (p *restoreProvider) Get(context.Context, string) (Environment, error) { return p.env, nil }
 
-// stepRecorder records in-process step durations.
-type stepRecorder struct {
-	mu    sync.Mutex
-	steps []string
-}
-
-func (r *stepRecorder) ReconcileCompleted(ReconcileSummary) {}
-func (r *stepRecorder) StepCompleted(op, step string, _ time.Duration, _ error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.steps = append(r.steps, op+"."+step)
-}
-
-func TestInProcessCreateTimesItsSteps(t *testing.T) {
-	rec := &stepRecorder{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), StateStore: NewMemoryStateStore(), Prefix: "fuse-", Metrics: rec})
-	if _, err := fm.ProvisionAndAssign(context.Background(), "t7", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if got := strings.Join(rec.steps, ","); got != "create.boot,create.egress,create.upload,create.startup,create.agent" {
-		t.Fatalf("steps %s", got)
-	}
-}
-
-// a create on restate that reaches running arms its ttl timer, as the
-// in-process create does.
+// a create on restate that reaches running arms its ttl timer.
 func TestDurableCreateRunningArmsExpiry(t *testing.T) {
 	p := newCreateProvider()
 	fm, _ := newCreateFleet(t, NewMemoryStateStore(), p, FleetConfig{})
@@ -690,7 +650,7 @@ func TestStartDoesNotAskRestate(t *testing.T) {
 	if _, err := fm.ProvisionAndAssign(ctx, "t12", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); !errors.Is(err, errCrash) {
 		t.Fatalf("create: %v, want the crash", err)
 	}
-	fm2 := NewFleetManager(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: createTestKey,
+	fm2 := newInlineFleet(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: createTestKey,
 		HostProviderFactory: func(string, string, HostBackend) Provider { return p }, ReconcileInterval: time.Hour})
 	c2 := &inlineCreator{fm: fm2}
 	fm2.SetDurableCreator(c2)

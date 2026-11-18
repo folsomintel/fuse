@@ -15,7 +15,7 @@ func TestBootUploadsCallerFilesBeforeStartupScript(t *testing.T) {
 		Files:         map[string][]byte{"/workspace/src/main.go": []byte("package main\n")},
 	}
 
-	if _, err := Boot(context.Background(), p, Spec{Name: "vm-copy"}, []byte(`{"version":"1"}`), nil, opts, nil); err != nil {
+	if _, err := testBoot(context.Background(), p, Spec{Name: "vm-copy"}, []byte(`{"version":"1"}`), nil, opts, nil); err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
 
@@ -40,7 +40,7 @@ func TestBootRestoreReuploadsCallerFiles(t *testing.T) {
 	p.envs["vm-restore"] = env
 
 	opts := BootOptions{Files: map[string][]byte{"/workspace/app.py": []byte("print(1)\n")}}
-	result, err := Boot(context.Background(), p, Spec{Name: "vm-restore"}, []byte(`{"version":"1"}`), nil, opts, nil)
+	result, err := testBoot(context.Background(), p, Spec{Name: "vm-restore"}, []byte(`{"version":"1"}`), nil, opts, nil)
 	if err != nil {
 		t.Fatalf("Boot: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestFusedAgentSpecCallerFilesCannotOverwriteProfileFiles(t *testing.T) {
 // second time: ForkEnvironment uploads credentials and nothing else.
 func TestForkEnvironmentUploadsOnlyCredentials(t *testing.T) {
 	provider := newCredForkProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:           provider,
 		Prefix:             "fuse-",
 		TokenEncryptionKey: testEncryptionKey(),

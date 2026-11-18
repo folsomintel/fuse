@@ -16,8 +16,8 @@ func TestParseMode(t *testing.T) {
 		want    Mode
 		wantErr bool
 	}{
-		{"", ModeOff, false},
-		{"off", ModeOff, false},
+		{"", ModeSelf, false},
+		{"off", "", true},
 		{" Self ", ModeSelf, false},
 		{"cloud", ModeCloud, false},
 		{"on", "", true},
@@ -31,16 +31,17 @@ func TestParseMode(t *testing.T) {
 	}
 }
 
-func TestLoadConfigOffIgnoresEverythingElse(t *testing.T) {
-	cfg, err := LoadConfig(envMap(map[string]string{
-		"FUSE_RESTATE_INGRESS_URL":                    "not a url",
-		"FUSE_RESTATE_RETRY_ENVIRONMENT_MAX_ATTEMPTS": "zero",
-	}))
-	if err != nil {
-		t.Fatalf("mode off must not validate the other vars: %v", err)
+func TestLoadConfigOffRemoved(t *testing.T) {
+	_, err := LoadConfig(envMap(map[string]string{"FUSE_RESTATE_MODE": "off"}))
+	if err == nil || !strings.Contains(err.Error(), "off was removed") {
+		t.Fatalf("mode off: err = %v, want the removal error", err)
 	}
-	if cfg.Mode != ModeOff {
-		t.Fatalf("mode = %q, want off", cfg.Mode)
+}
+
+func TestLoadConfigEmptyIsSelf(t *testing.T) {
+	_, err := LoadConfig(envMap(map[string]string{}))
+	if err == nil || !strings.Contains(err.Error(), "FUSE_RESTATE_MODE=self needs FUSE_RESTATE_INGRESS_URL") {
+		t.Fatalf("empty mode: err = %v, want self's missing ingress error", err)
 	}
 }
 
@@ -75,7 +76,7 @@ func TestLoadConfigErrors(t *testing.T) {
 		set     map[string]string
 		wantErr string
 	}{
-		{"bad mode", map[string]string{"FUSE_RESTATE_MODE": "yes"}, "want off, self or cloud"},
+		{"bad mode", map[string]string{"FUSE_RESTATE_MODE": "yes"}, "want self or cloud"},
 		{"no ingress", map[string]string{"FUSE_RESTATE_INGRESS_URL": ""}, "needs FUSE_RESTATE_INGRESS_URL"},
 		{"ingress not http", map[string]string{"FUSE_RESTATE_INGRESS_URL": "127.0.0.1:18080"}, "want an http(s) url"},
 		{"bad interval", map[string]string{"FUSE_RESTATE_RETRY_HOST_INITIAL_INTERVAL": "5"}, "HOST_INITIAL_INTERVAL"},

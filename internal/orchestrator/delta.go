@@ -33,33 +33,6 @@ func (fm *FleetManager) forgetSnapshotRecord(ctx context.Context, snapshotID str
 	}
 }
 
-// moveDeltaToHost copies a diff snapshot's delta files to hostID and has its
-// agent merge them onto base, a complete copy of the diff's parent that host
-// already holds. the merged result is a complete live snapshot, recorded as a
-// free-standing copy and returned by id. dropBase has the agent delete base
-// once the merge has committed, and its record goes with it.
-//
-// the merged copy records the digests the agent reports for it. merged onto
-// a version 2 base, the agent works out a mem digest from the base's chunk
-// table and the chunks the delta touched (see pull_artifact_delta), so the
-// copy is a full live snapshot that can move on to a third host. merged onto
-// a version 1 base, or by an older agent, it gets no mem digest and records
-// none: it can be the base of the next delta or a seed on that host, and
-// ensureArtifactOnHost refuses it as a source for want of live_files.
-func (fm *FleetManager) moveDeltaToHost(ctx context.Context, child SnapshotRecord, base, hostID string, dropBase bool) (string, error) {
-	job, err := fm.planDeltaMove(child, base, hostID, dropBase)
-	if err != nil {
-		return "", err
-	}
-	return fm.runArtifactMove(ctx, job, func(err error) error {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("move delta %s to host %s: %w", child.SnapshotID, hostID, ctxErr)
-		}
-		return fmt.Errorf("%w: move delta %s from host %s onto %s on host %s: %w",
-			ErrArtifactTransferFailed, child.SnapshotID, job.SourceHostID, base, hostID, err)
-	})
-}
-
 // planDeltaMove is the move moveDeltaToHost runs.
 func (fm *FleetManager) planDeltaMove(child SnapshotRecord, base, hostID string, dropBase bool) (ArtifactMoveJob, error) {
 	if diffParent(child) == "" {

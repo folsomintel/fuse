@@ -290,7 +290,7 @@ func TestProvisionAndAssign_seedFallbackLadder(t *testing.T) {
 			ctx := context.Background()
 			stub := newStubProvider()
 			mover := &recordingMover{}
-			fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
+			fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
 
 			for _, h := range tc.hosts {
 				if err := fm.RegisterHost(ctx, artifactHost(h.id, h.cpus), stub); err != nil {
@@ -396,7 +396,7 @@ func TestProvisionAndAssign_immovableArtifactKeepsThePin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			stub := newStubProvider()
-			fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: tc.mover})
+			fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: tc.mover})
 			// h-a holds the artifact and cannot fit the workload; h-b could.
 			if err := fm.RegisterHost(ctx, artifactHost("h-a", 1), stub); err != nil {
 				t.Fatal(err)
@@ -428,7 +428,7 @@ func TestProvisionAndAssign_failedPullLeavesNoHalfState(t *testing.T) {
 	ctx := context.Background()
 	stub := newStubProvider()
 	mover := &recordingMover{err: errors.New("peer refused")}
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
 	if err := fm.RegisterHost(ctx, artifactHost("h-a", 1), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -464,8 +464,8 @@ func TestProvisionAndAssign_failedPullLeavesNoHalfState(t *testing.T) {
 	if _, claimed := holders["h-b"]; claimed {
 		t.Error("a failed pull recorded h-b as holding the artifact")
 	}
-	if fm.artifactPulls[replicaSnapshotID("d1", "h-b")] != 0 {
-		t.Error("a failed pull left an in-flight marker behind")
+	if pinned, _ := fm.durableArtifactsClient().ArtifactPinned(ctx, replicaSnapshotID("d1", "h-b")); pinned {
+		t.Error("a failed pull left a pin behind")
 	}
 }
 
@@ -476,7 +476,7 @@ func TestEnsureArtifactOnHost_isIdempotent(t *testing.T) {
 	ctx := context.Background()
 	stub := newStubProvider()
 	mover := &recordingMover{}
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(ctx, artifactHost(id, 8), stub); err != nil {
 			t.Fatal(err)
@@ -579,7 +579,7 @@ func TestForkEnvironment_fallsBackOffTheSourceHost(t *testing.T) {
 	ctx := context.Background()
 	provider := newDigestForkProvider()
 	mover := &recordingMover{}
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
 
 	// h-a has exactly enough room for the source and nothing more, so the fork
 	// cannot be born there.
@@ -632,7 +632,7 @@ func TestForkEnvironment_fallsBackOffTheSourceHost(t *testing.T) {
 func TestForkEnvironment_staysHomeWhenTheArtifactCannotMove(t *testing.T) {
 	ctx := context.Background()
 	provider := newForkTestProvider() // its checkpoints report no digest
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: &recordingMover{}})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: &recordingMover{}})
 	if err := fm.RegisterHost(ctx, artifactHost("h-a", 1), provider); err != nil {
 		t.Fatal(err)
 	}
@@ -692,8 +692,10 @@ func TestReconcileArtifacts_safety(t *testing.T) {
 		},
 		{
 			name: "an artifact at either end of an in-flight copy survives",
-			arrange: func(_ *testing.T, fm *FleetManager, record SnapshotRecord) {
-				fm.beginArtifactPull(record.SnapshotID)
+			arrange: func(t *testing.T, fm *FleetManager, record SnapshotRecord) {
+				if err := fm.durableArtifactsClient().PinArtifacts(context.Background(), "move:inv", 0, record.SnapshotID); err != nil {
+					t.Fatal(err)
+				}
 			},
 			wantAlive: true,
 		},
@@ -744,7 +746,7 @@ func TestReconcileArtifacts_safety(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			fm := NewFleetManager(FleetConfig{
+			fm := newInlineFleet(FleetConfig{
 				Provider:        newStubProvider(),
 				Prefix:          "fuse-",
 				ArtifactIdleTTL: time.Minute,
@@ -774,7 +776,7 @@ func TestReconcileArtifacts_safety(t *testing.T) {
 // window, so without a cap its artifacts grow without bound.
 func TestReconcileArtifacts_perTenantCap(t *testing.T) {
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:             newStubProvider(),
 		Prefix:               "fuse-",
 		ArtifactMaxPerTenant: 2,
@@ -830,7 +832,7 @@ func TestReconcileArtifacts_perTenantCap(t *testing.T) {
 // to boot.
 func TestReconcileArtifacts_capNeverEvictsAProtectedArtifact(t *testing.T) {
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:             newStubProvider(),
 		Prefix:               "fuse-",
 		ArtifactMaxPerTenant: 1,
@@ -866,7 +868,7 @@ func TestReconcileArtifacts_capNeverEvictsAProtectedArtifact(t *testing.T) {
 // artifacts the fleet was relying on.
 func TestReconcileArtifacts_offByDefault(t *testing.T) {
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-"})
 	record := seedArtifactRecord(t, fm, "art-1", "tenant-1", "h-a", "d1")
 	record.CreatedAt = time.Now().Add(-365 * 24 * time.Hour)
 	record.UpdatedAt = record.CreatedAt
@@ -980,7 +982,7 @@ func assertDigestIndex(t *testing.T, store StateStore) {
 // byte-identical bytes is not a source this tenant may pull from.
 func TestHostsHoldingArtifact_isTenantScoped(t *testing.T) {
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-"})
 	seedArtifactRecord(t, fm, "art-mine", "tenant-1", "h-a", "d1")
 	seedArtifactRecord(t, fm, "art-theirs", "tenant-2", "h-b", "d1")
 	// An agent that does not hash leaves the digest empty. Empty must never be

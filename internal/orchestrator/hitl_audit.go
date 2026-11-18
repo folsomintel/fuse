@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -183,8 +182,9 @@ func (fm *FleetManager) webhookTargets(v *vm) []webhookTarget {
 	return out
 }
 
-// webhookSender delivers notifications with retry. the zero value uses the
-// defaults; tests shorten the backoff.
+// webhookSender holds the webhook http client, and the backoff between
+// attempts to hand a delivery to restate. the zero value uses the defaults;
+// tests shorten the backoff.
 type webhookSender struct {
 	client  *http.Client
 	backoff []time.Duration
@@ -197,38 +197,6 @@ var defaultWebhookClient = &http.Client{
 	// a redirect would send the signed body somewhere the author did not
 	// name, so it counts as a failure.
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
-
-// deliver posts n to t, retrying on any non-2xx answer or transport error.
-// in-process deliveries (mode off) are best-effort and not persisted: the
-// audit row is the record, the webhook is a nudge. on restate the
-// Webhooks.Deliver handler retries for longer and dead-letters what it
-// cannot deliver; see hitl_webhooks_durable.go.
-func (s webhookSender) deliver(fm *FleetManager, t webhookTarget, n hitl.Notification) {
-	client, backoff := s.client, s.backoff
-	if client == nil {
-		client = defaultWebhookClient
-	}
-	if backoff == nil {
-		backoff = defaultWebhookBackoff
-	}
-	body, err := json.Marshal(n)
-	if err != nil {
-		fm.logger.Warn("encode hitl webhook failed", "err", err)
-		return
-	}
-	endpoint := webhookEndpoint(t.url)
-	var lastErr error
-	for _, wait := range backoff {
-		time.Sleep(wait)
-		var status int
-		status, lastErr = postWebhook(client, t, body)
-		fm.webhookAttempted(endpoint, status, lastErr)
-		if lastErr == nil {
-			return
-		}
-	}
-	fm.logger.Warn("hitl webhook delivery failed", "endpoint", endpoint, "event", n.Event, "intervention", n.InterventionID, "err", webhookError(lastErr))
 }
 
 // postWebhook signs body for t and posts it once. status is the receiver's

@@ -111,7 +111,7 @@ func guestTunnelConfig(t *testing.T, provider *forkTestProvider, vmID string) tu
 
 func TestProvision_publishesAndReportsTheStableURL(t *testing.T) {
 	provider, proxy := newForkTestProvider(), newFakeIngress()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	info, _ := fm.GetVM(vmID)
@@ -140,7 +140,7 @@ func TestProvision_publishesAndReportsTheStableURL(t *testing.T) {
 
 func TestProvision_withoutAProxyIsUnchanged(t *testing.T) {
 	provider := newForkTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	info, _ := fm.GetVM(vmID)
@@ -155,7 +155,7 @@ func TestProvision_withoutAProxyIsUnchanged(t *testing.T) {
 // its tap drops outbound traffic, so its sidecar could never dial out.
 func TestProvision_proxyEgressIsNotPublished(t *testing.T) {
 	provider, proxy := newForkTestProvider(), newFakeIngress()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	if fm.ingressSupported("", Spec{Egress: egress.Spec{Mode: egress.ModeProxy}}) {
 		t.Fatal("a proxy-egress environment would be published")
 	}
@@ -167,7 +167,7 @@ func TestProvision_proxyEgressIsNotPublished(t *testing.T) {
 func TestProvision_aPublishFailureFailsTheCreate(t *testing.T) {
 	provider, proxy := newForkTestProvider(), newFakeIngress()
 	proxy.publishErr = errors.New("proxy is down")
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 
 	_, err := fm.ProvisionAndAssign(context.Background(), "task-1", Spec{}, []byte(`{"version":"1","services":{}}`), nil, BootOptions{})
 	if err == nil || !strings.Contains(err.Error(), "proxy is down") {
@@ -184,7 +184,7 @@ func TestProvision_aPublishFailureFailsTheCreate(t *testing.T) {
 // a migrate keeps the url, and takes it from the source only at the very end.
 func TestMigrateVM_adoptsTheSourcesURLLast(t *testing.T) {
 	provider, proxy := newMigrateTestProvider(), newFakeIngress()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 	before, _ := fm.GetVM(srcID)
 
@@ -207,7 +207,7 @@ func TestMigrateVM_adoptsTheSourcesURLLast(t *testing.T) {
 
 func TestMigrateVM_aFailedMigrateLeavesTheSourcesURLAlone(t *testing.T) {
 	provider, proxy := newMigrateTestProvider(), newFakeIngress()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 	before, _ := fm.GetVM(srcID)
 
@@ -226,7 +226,7 @@ func TestMigrateVM_aFailedMigrateLeavesTheSourcesURLAlone(t *testing.T) {
 // a fork is a new environment: it gets a url of its own and leaves the source's.
 func TestForkEnvironment_getsItsOwnURL(t *testing.T) {
 	provider, proxy := newForkTestProvider(), newFakeIngress()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	forkID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})

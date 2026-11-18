@@ -21,13 +21,21 @@ type fakeWebhooks struct {
 	mu   sync.Mutex
 	sent []WebhookDelivery
 	err  error
+	// fails refuses that many sends first; tries counts every send.
+	fails int
+	tries int
 }
 
 func (f *fakeWebhooks) SendWebhook(_ context.Context, d WebhookDelivery) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.tries++
 	if f.err != nil {
 		return f.err
+	}
+	if f.fails > 0 {
+		f.fails--
+		return errors.New("restate busy")
 	}
 	f.sent = append(f.sent, d)
 	return nil
@@ -96,7 +104,7 @@ func durableNotifyFleet(t *testing.T, hookURL string, hooks DurableWebhooks) (*F
 	return fm, vmID, metrics
 }
 
-// TestHitlWebhookDurableSend: with restate on, a notification is enqueued
+// TestHitlWebhookDurableSend: a notification is enqueued
 // rather than posted, and what restate would journal carries neither the url
 // (whose path holds a token here) nor the signing secret. the post step
 // unseals both and delivers a signed, content-free body.
@@ -146,33 +154,41 @@ func TestHitlWebhookDurableSend(t *testing.T) {
 	}
 }
 
-// TestHitlWebhookDurableFallsBack: a send restate does not take, or a fleet
-// with no encryption key to seal the endpoint, delivers in process instead.
-func TestHitlWebhookDurableFallsBack(t *testing.T) {
+// TestHitlWebhookDurableSendRetries: a send restate does not take is tried
+// again on the webhook backoff, and one it never takes is dropped, never
+// posted from the orchestrator itself.
+func TestHitlWebhookDurableSendRetries(t *testing.T) {
 	rc := newReceiver(t)
-	hooks := &fakeWebhooks{err: errors.New("restate down")}
+	hooks := &fakeWebhooks{fails: 2}
 	fm, vmID, _ := durableNotifyFleet(t, rc.srv.URL, hooks)
 	if _, err := ask(fm, vmID); err != nil {
 		t.Fatal(err)
 	}
-	rc.wait(t, 1)
 	fm.webhookSends.Wait()
+	if len(hooks.sent) != 1 || hooks.tries != 3 {
+		t.Fatalf("sent %d after %d tries, want one on the third", len(hooks.sent), hooks.tries)
+	}
 
 	rc2 := newReceiver(t)
-	spec := askSpec()
-	spec.Notify = []hitl.Webhook{{URL: rc2.srv.URL, Secret: "HOOK"}}
-	nokey, vm2 := hitlFleet(t, FleetConfig{}, spec)
-	nokey.mu.Lock()
-	nokey.vms[vm2].hitlKeys = map[string]string{"HOOK": "whsec"}
-	nokey.mu.Unlock()
-	keyless := &fakeWebhooks{}
-	nokey.SetDurableWebhooks(keyless)
-	if _, err := ask(nokey, vm2); err != nil {
+	down := &fakeWebhooks{err: errors.New("restate down")}
+	fm2, vm2, metrics := durableNotifyFleet(t, rc2.srv.URL, down)
+	if _, err := ask(fm2, vm2); err != nil {
 		t.Fatal(err)
 	}
-	rc2.wait(t, 1)
-	if len(keyless.sent) != 0 {
-		t.Fatalf("a fleet with no encryption key sent %d deliveries to restate", len(keyless.sent))
+	fm2.webhookSends.Wait()
+	if down.tries != len(fm2.webhooks.backoff) {
+		t.Fatalf("%d sends, want one per backoff step (%d)", down.tries, len(fm2.webhooks.backoff))
+	}
+	rc2.mu.Lock()
+	posted := len(rc2.got)
+	rc2.mu.Unlock()
+	if posted != 0 {
+		t.Fatalf("a dropped send was posted %d times in process", posted)
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if n := len(metrics.backlog); n == 0 || metrics.backlog[n-1] != 0 {
+		t.Fatalf("backlog = %v, want the dropped delivery off it", metrics.backlog)
 	}
 }
 
@@ -255,8 +271,9 @@ func TestWebhookDeadLetter(t *testing.T) {
 	}
 }
 
-// TestHitlWebhookInProcessMetered: mode off reports every attempt too.
-func TestHitlWebhookInProcessMetered(t *testing.T) {
+// TestHitlWebhookDeliveryMetered: the durable delivery reports every attempt,
+// the failed one before the retry that lands.
+func TestHitlWebhookDeliveryMetered(t *testing.T) {
 	rc := newReceiver(t)
 	rc.fail = 1
 	fm, vmID, metrics := durableNotifyFleet(t, rc.srv.URL, nil)

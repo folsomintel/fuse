@@ -33,7 +33,7 @@ func egressHealthFleet(t *testing.T) (*FleetManager, *egress.Mock, VMInfo, *byte
 	t.Helper()
 	mock := newEgressMock()
 	var buf bytes.Buffer
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:       newMockProvider(),
 		Prefix:         "fuse-",
 		EgressRegistry: egress.NewRegistry(mock),
@@ -133,7 +133,7 @@ func TestReconcileEgressHealthDegradesAndNeverFallsBack(t *testing.T) {
 
 func TestReconcileEgressHealthSkipsDirectAndUnregistered(t *testing.T) {
 	rec := &recordingEgress{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
 	if _, err := fm.ProvisionAndAssign(context.Background(), "t-direct", Spec{CPUs: 1, RamMB: 256}, egressManifest, nil, BootOptions{}); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestReconcileEgressHealthSkipsDirectAndUnregistered(t *testing.T) {
 	}
 
 	// a fleet with no registry has nothing to probe and must not panic.
-	none := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	none := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 	none.reconcileEgressHealth(context.Background(), &summary)
 }
 
@@ -172,7 +172,7 @@ func TestEgressProvisionFailureCountsAndEmits(t *testing.T) {
 	mock := newEgressMock()
 	rec := &egressMetricsRecorder{}
 	store := NewMemoryStateStore()
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock), Metrics: rec, StateStore: store})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock), Metrics: rec, StateStore: store})
 	mock.FailNextProvision(errBackendRefused)
 
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: egress.MockName}}
@@ -201,7 +201,7 @@ func TestEgressProvisionFailureCountsAndEmits(t *testing.T) {
 func TestEgressProvisionedEventOnRunning(t *testing.T) {
 	mock := newEgressMock()
 	store := NewMemoryStateStore()
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock), StateStore: store})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock), StateStore: store})
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: egress.MockName}}
 	info, err := fm.ProvisionAndAssign(context.Background(), "t-ok", spec, egressManifest, nil, BootOptions{})
 	if err != nil {

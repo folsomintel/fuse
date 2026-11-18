@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // imageFakeProvider is a fakeProvider whose host can convert images.
@@ -39,7 +40,7 @@ func newImageHandler(t *testing.T, images ...orchestrator.Image) http.Handler {
 	for _, img := range images {
 		p.images[img.Digest] = img
 	}
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-"})
 	host := orchestrator.Host{ID: "fc-1", URL: "http://fc-1.test", Capacity: orchestrator.HostCapacity{CPUs: 8, RamMB: 8192, StorageGB: 100, VMCount: 10}}
 	if err := fm.RegisterHost(context.Background(), host, p); err != nil {
 		t.Fatal(err)
@@ -184,7 +185,7 @@ func (d *keyCapturingImages) ConvertImage(ctx context.Context, req orchestrator.
 // TestConvertImageForwardsTheIdempotencyKey: the caller's key reaches the
 // durable client, so restate attaches a retry to the first convert.
 func TestConvertImageForwardsTheIdempotencyKey(t *testing.T) {
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-"})
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-"})
 	d := &keyCapturingImages{}
 	fm.SetDurableImages(d)
 	h := mustRouter(t, &Handler{Fleet: fm})

@@ -12,6 +12,7 @@ import (
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
 
+	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
@@ -79,6 +80,33 @@ func (c *Client) Check(ctx context.Context) error {
 	return nil
 }
 
+// WaitReady polls until ingress answers and a Ping reaches the Environment
+// object through it, which only works once this orchestrator's deployment is
+// registered. it gives up after timeout and says which half failed: restate
+// unreachable, or reachable with no deployment serving Environment.
+func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var last error
+	for {
+		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
+		if err := c.Check(attempt); err != nil {
+			last = err
+		} else if _, err := c.Ping(attempt, EnvironmentObject, "startup"); err != nil {
+			last = fmt.Errorf("restate is up but no deployment serves %s (register the handler endpoint; see docs/runbooks/restate.mdx): %w", EnvironmentObject, err)
+		} else {
+			stop()
+			return nil
+		}
+		stop()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("restate not ready after %s: %w", timeout, last)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // Ping invokes <object>/<key>/Ping through ingress and waits for the result.
 func (c *Client) Ping(ctx context.Context, object, key string) (PingResult, error) {
 	return ingress.Object[restate.Void, PingResult](c.ingress, object, key, "Ping").
@@ -111,3 +139,5 @@ func (c *Client) Register(ctx context.Context, uri string) error {
 	}
 	return nil
 }
+
+var _ orchestrator.Durable = (*Client)(nil)

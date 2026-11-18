@@ -55,20 +55,15 @@ type DurableForker interface {
 	Fork(ctx context.Context, vmID string, req ForkRequest) error
 }
 
-// SetDurableForker routes forks through restate. nil (mode off, the default)
-// keeps the in-process fork. without a TOKEN_ENCRYPTION_KEY forks stay in
-// process too, as creates do. set it before Start.
+// SetDurableForker routes forks through restate. set it before Start.
 func (fm *FleetManager) SetDurableForker(d DurableForker) {
 	fm.mu.Lock()
 	fm.durableFork = d
 	fm.mu.Unlock()
 }
 
-// durableForker is the forker forks go through, or nil for in process.
+// durableForker is the forker forks go through.
 func (fm *FleetManager) durableForker() DurableForker {
-	if len(fm.tokenEncryptionKey) != 32 {
-		return nil
-	}
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	return fm.durableFork
@@ -78,7 +73,7 @@ func (fm *FleetManager) durableForker() DurableForker {
 // restate is still running. the fork either finishes it or destroys it, so
 // recovery leaves it provisioning.
 func (fm *FleetManager) isForkPlaceholder(v *vm) bool {
-	return fm.durableForker() != nil && strings.HasPrefix(v.taskID, forkTaskPrefix)
+	return strings.HasPrefix(v.taskID, forkTaskPrefix)
 }
 
 // durableForkVM is forkEnvironment on restate: it names the new vm, runs the

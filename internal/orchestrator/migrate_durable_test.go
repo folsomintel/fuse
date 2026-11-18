@@ -27,7 +27,7 @@ func (f *fakeDurableMigrator) Migrate(_ context.Context, vmID string, req Migrat
 	return "fuse-migrate-new", nil
 }
 
-// TestMigrateVM_durable: with restate configured a migrate runs on the
+// TestMigrateVM_durable: a migrate runs on the
 // source's Environment object, and an unknown vm is refused before restate
 // is asked.
 func TestMigrateVM_durable(t *testing.T) {
@@ -96,7 +96,7 @@ func TestMigrateVM_deltaRecordsFrozenTime(t *testing.T) {
 func TestMigratePlaceholder_persistsOnce(t *testing.T) {
 	store := NewMemoryStateStore()
 	provider := newDeltaMigrateProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", StateStore: store, CheckpointInterval: time.Hour})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", StateStore: store, CheckpointInterval: time.Hour})
 	ctx := context.Background()
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(ctx, artifactHost(id, 8), provider); err != nil {
@@ -134,45 +134,30 @@ func TestMigratePlaceholder_persistsOnce(t *testing.T) {
 }
 
 // TestRecover_keepsADurableMigratePlaceholder: a migrate target that was not
-// created before a restart stays provisioning when restate runs migrates, so
-// the migrate resumes onto it; without restate it is torn down as before.
+// created before a restart stays provisioning, so the migrate resumes onto it.
 func TestRecover_keepsADurableMigratePlaceholder(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		durable bool
-		want    VMState
-	}{
-		{"durable", true, VMStateProvisioning},
-		{"in process", false, VMStateDestroying},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			store := NewMemoryStateStore()
-			if err := store.UpsertVM(context.Background(), VMRecord{
-				ID: "gpu-migrate-1", TaskID: "migrate-1", State: VMStateProvisioning, Spec: Spec{Name: "gpu-migrate-1"},
-			}); err != nil {
-				t.Fatal(err)
-			}
-			fm := recoverFleet(store, newStubProvider())
-			if tc.durable {
-				fm.SetDurableMigrator(&fakeDurableMigrator{})
-			}
-			if err := fm.recoverState(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			fm.mu.RLock()
-			v, ok := fm.vms["gpu-migrate-1"]
-			fm.mu.RUnlock()
-			if !ok || v.state != tc.want {
-				t.Fatalf("recovered %+v, want state %s", v, tc.want)
-			}
-		})
+	store := NewMemoryStateStore()
+	if err := store.UpsertVM(context.Background(), VMRecord{
+		ID: "gpu-migrate-1", TaskID: "migrate-1", State: VMStateProvisioning, Spec: Spec{Name: "gpu-migrate-1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fm := recoverFleet(store, newStubProvider())
+	if err := fm.recoverState(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fm.mu.RLock()
+	v, ok := fm.vms["gpu-migrate-1"]
+	fm.mu.RUnlock()
+	if !ok || v.state != VMStateProvisioning {
+		t.Fatalf("recovered %+v, want state %s", v, VMStateProvisioning)
 	}
 }
 
 // TestSealIngress: the ingress publish a migrate journals is ciphertext under
 // the token encryption key, and opens back to the same publish.
 func TestSealIngress(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newStubProvider(), TokenEncryptionKey: bytes.Repeat([]byte{3}, 32)})
+	fm := newInlineFleet(FleetConfig{Provider: newStubProvider(), TokenEncryptionKey: bytes.Repeat([]byte{3}, 32)})
 	p := &ingressPlan{
 		tunnelConfig: []byte(`{"token":"tunnel-secret"}`),
 		grant:        IngressGrant{ProxyAddr: "proxy:4433", Routes: []IngressRoute{{Name: ingressAgentRoute, URL: "edge:1"}}},
@@ -204,7 +189,7 @@ func TestSealIngress(t *testing.T) {
 func TestMigrateVM_credentialsUploadedInPathOrder(t *testing.T) {
 	provider := newCredForkProvider()
 	key := bytes.Repeat([]byte{5}, 32)
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", TokenEncryptionKey: key})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", TokenEncryptionKey: key})
 	ctx := context.Background()
 	if _, err := fm.ProvisionAndAssign(ctx, "task-src", Spec{CPUs: 1, RamMB: 512}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatal(err)
@@ -301,7 +286,7 @@ func TestMigrateResumeSource_retriesAllButGoneOrRunning(t *testing.T) {
 		{&HTTPStatusError{Code: 503}, false},
 		{errors.New("connection refused"), false},
 	} {
-		fm := NewFleetManager(FleetConfig{Provider: newStubProvider()})
+		fm := newInlineFleet(FleetConfig{Provider: newStubProvider()})
 		fm.vms["fuse-src"] = &vm{id: "fuse-src", env: &resumeEnv{err: tc.err}}
 		err := fm.MigrateResumeSource(context.Background(), MigratePlan{SourceVMID: "fuse-src"})
 		if (err == nil) != tc.done {

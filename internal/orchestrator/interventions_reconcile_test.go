@@ -40,8 +40,7 @@ func TestReconcileCancelsWhenEnvGone(t *testing.T) {
 }
 
 func TestIdleReaperSkipsPendingIntervention(t *testing.T) {
-	metrics := &captureMetrics{}
-	fm, vmID := hitlFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute, Metrics: metrics}, askSpec())
+	fm, vmID := hitlFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, askSpec())
 	if _, err := ask(fm, vmID); err != nil {
 		t.Fatal(err)
 	}
@@ -50,14 +49,17 @@ func TestIdleReaperSkipsPendingIntervention(t *testing.T) {
 	fm.vms[vmID].lastActivityAt = time.Now().Add(-time.Hour)
 	fm.mu.Unlock()
 
-	fm.reconcile(context.Background())
-	fm.reconcile(context.Background())
-
-	if got := metrics.last(); got.IdleVMsSuspected != 0 || got.IdleVMsFailed != 0 {
-		t.Fatalf("idle reaper fired on an env with a pending ask: %+v", got)
+	for _, strike := range []string{"", "idle_timeout"} {
+		v, err := fm.ExpiryCheck(context.Background(), vmID, strike)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Reap || v.Strike != "" {
+			t.Fatalf("idle reaper fired on an env with a pending ask: %+v", v)
+		}
 	}
-	if _, ok := fm.GetVM(vmID); !ok {
-		t.Fatal("env reaped while an ask was pending")
+	if s := vmState(fm, vmID); s != VMStateRunning {
+		t.Fatalf("env %s while an ask was pending, want running", s)
 	}
 }
 
@@ -67,7 +69,7 @@ func TestRecoveredFleetResumesPending(t *testing.T) {
 	in, _ := ask(fm, vmID)
 
 	// a fresh manager over the same store stands in for a restart.
-	restarted := NewFleetManager(FleetConfig{StateStore: store, Provider: newMockProvider()})
+	restarted := newInlineFleet(FleetConfig{StateStore: store, Provider: newMockProvider()})
 	got, err := restarted.GetIntervention(context.Background(), in.ID)
 	if err != nil || got.State != hitl.StatePending {
 		t.Fatalf("after restart: %+v, %v", got, err)

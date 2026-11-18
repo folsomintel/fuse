@@ -45,7 +45,7 @@ func assertDrainExec(t *testing.T, e *mockEnv, want int) {
 
 func TestDrain_HappyPath(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -77,7 +77,7 @@ func TestDrain_HappyPath(t *testing.T) {
 
 func TestDrain_NotFound(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	err := fm.Drain(context.Background(), "fuse-missing")
 	if !errors.Is(err, ErrVMNotFound) {
@@ -87,7 +87,7 @@ func TestDrain_NotFound(t *testing.T) {
 
 func TestDrain_NotRunningRejected(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -114,7 +114,7 @@ func TestDrain_NotRunningRejected(t *testing.T) {
 // stays Draining, the error is recorded, and a subsequent DestroyVM succeeds.
 func TestDrain_DrainCommandErrorPreservesDrainingState(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -157,7 +157,7 @@ func TestDrain_DrainCommandErrorPreservesDrainingState(t *testing.T) {
 // succeeds.
 func TestDrain_EmptyDrainCommandSkips(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -196,7 +196,7 @@ func TestDrain_EmptyDrainCommandSkips(t *testing.T) {
 
 func TestDrain_ThenDestroyHappyPath(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -223,7 +223,7 @@ func TestDrain_ThenDestroyHappyPath(t *testing.T) {
 // able to DELETE a Running VM and have it torn down successfully.
 func TestDestroyWithoutDrain_BackCompat(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})
@@ -243,7 +243,7 @@ func TestDestroyWithoutDrain_BackCompat(t *testing.T) {
 // bounded deadline derived from drainTimeout.
 func TestDrain_ExecContextHasTimeout(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 
 	ctx := context.Background()
 	_, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{})

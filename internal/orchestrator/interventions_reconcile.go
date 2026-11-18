@@ -19,16 +19,13 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 	if fm.store == nil {
 		return
 	}
-	if d := fm.durableHitl(); d != nil {
-		// restate resumes a run that was in flight; this hands it the ones
-		// that never reached it.
-		ran := false
-		fm.hitlOrphans.Do(func() { ran = true; fm.resumeApprovedRuns(ctx, d) })
-		if !ran && fm.hitlResend.Load() {
-			fm.resumeApprovedRuns(ctx, d)
-		}
-	} else {
-		fm.hitlOrphans.Do(func() { fm.recoverOrphanRuns(ctx) })
+	// restate resumes a run that was in flight; this hands it the ones that
+	// never reached it.
+	d := fm.durableHitl()
+	ran := false
+	fm.hitlOrphans.Do(func() { ran = true; fm.resumeApprovedRuns(ctx, d) })
+	if !ran && fm.hitlResend.Load() {
+		fm.resumeApprovedRuns(ctx, d)
 	}
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
 	if err != nil {
@@ -57,24 +54,4 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 	}
 	fm.syncLocks(ctx)
 	fm.reconcileSignals(ctx)
-}
-
-// pendingInterventionEnvs returns the environments holding at least one
-// pending intervention. a human deciding is activity, so the idle reaper
-// skips these. ok is false when the store could not be read, in which case
-// the caller must not reap anything it cannot rule out.
-func (fm *FleetManager) pendingInterventionEnvs(ctx context.Context) (map[string]bool, bool) {
-	out := make(map[string]bool)
-	if fm.store == nil {
-		return out, true
-	}
-	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
-	if err != nil {
-		fm.logger.Warn("list pending interventions for idle check failed", "err", err)
-		return nil, false
-	}
-	for _, rec := range recs {
-		out[rec.EnvID] = true
-	}
-	return out, true
 }

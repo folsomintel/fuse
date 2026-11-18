@@ -19,6 +19,9 @@ type snapshotTestEnv struct {
 	mu          sync.Mutex
 	files       map[string][]byte
 	checkpoints []Checkpoint
+	// taken counts every checkpoint ever taken, so an id is never reused
+	// after a delete, as a host never reuses one.
+	taken int
 
 	// deleteCheckpointErr, when set, makes DeleteCheckpoint fail with it.
 	// Lets a test drive the non-404 provider-failure branch.
@@ -52,7 +55,8 @@ func (e *snapshotTestEnv) Checkpoint(_ context.Context, comment string) (string,
 	for _, file := range e.files {
 		sizeBytes += int64(len(file))
 	}
-	id := fmt.Sprintf("cp-%d", len(e.checkpoints)+1)
+	e.taken++
+	id := fmt.Sprintf("cp-%d", e.taken)
 	e.checkpoints = append(e.checkpoints, Checkpoint{
 		ID:        id,
 		Comment:   comment,
@@ -148,7 +152,7 @@ func mustDecodeBase64(t *testing.T, encoded string) []byte {
 
 func TestCreateSnapshot_persistsLineageAndMetadata(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -182,7 +186,7 @@ func TestCreateSnapshot_persistsLineageAndMetadata(t *testing.T) {
 
 func TestDeleteSnapshot_rejectsParentWithChildren(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -207,7 +211,7 @@ func TestDeleteSnapshot_rejectsParentWithChildren(t *testing.T) {
 // ancestor snapshot (a child blocks its parent) and left an undeletable chain.
 func TestDeleteSnapshot_dropsRecordWhenVMIsGone(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -249,7 +253,7 @@ func TestDeleteSnapshot_dropsRecordWhenVMIsGone(t *testing.T) {
 // than silently dropping metadata for an artifact that may still exist.
 func TestDeleteSnapshot_keepsRecordOnNonNotFoundError(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -289,7 +293,7 @@ func TestDeleteSnapshot_keepsRecordOnNonNotFoundError(t *testing.T) {
 
 func TestReconcileSnapshots_deletesExpiredLeaf(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -312,6 +316,7 @@ func TestReconcileSnapshots_deletesExpiredLeaf(t *testing.T) {
 	}
 
 	fm.reconcileSnapshots(context.Background())
+	inlineWait(fm)
 
 	if _, err := fm.GetSnapshot(context.Background(), vmID, second.SnapshotID); err == nil {
 		t.Fatal("expected expired leaf snapshot to be deleted")
@@ -327,7 +332,7 @@ func TestReconcileSnapshots_deletesExpiredLeaf(t *testing.T) {
 // referencing it.
 func TestReconcileSnapshots_keepsExpiredBuildArtifact(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -347,6 +352,7 @@ func TestReconcileSnapshots_keepsExpiredBuildArtifact(t *testing.T) {
 	}
 
 	fm.reconcileSnapshots(context.Background())
+	inlineWait(fm)
 
 	if _, err := fm.GetSnapshot(context.Background(), vmID, artifact.SnapshotID); err != nil {
 		t.Fatalf("expired build artifact should survive gc: %v", err)
@@ -356,7 +362,7 @@ func TestReconcileSnapshots_keepsExpiredBuildArtifact(t *testing.T) {
 // TestEnforceSnapshotQuota_ignoresBuildArtifacts pins the other half of the
 // exemption: build artifacts do not consume the per-tenant checkpoint quota.
 func TestEnforceSnapshotQuota_ignoresBuildArtifacts(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:              newSnapshotTestProvider(),
 		Prefix:                "fuse-",
 		SnapshotQuotaMaxCount: 1,
@@ -389,7 +395,7 @@ func TestEnforceSnapshotQuota_ignoresBuildArtifacts(t *testing.T) {
 // is found by when its random id is not known.
 func TestListSnapshotsFiltered_modeAndName(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -444,7 +450,7 @@ func TestListSnapshotsFiltered_modeAndName(t *testing.T) {
 
 func TestRestoreSnapshot_marksMissingProviderSnapshotError(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -546,7 +552,7 @@ func (p *liveSnapshotTestProvider) Get(ctx context.Context, name string) (Enviro
 // would let a tenant fill a disk it was accounted as not filling.
 func TestCreateSnapshot_liveRecordsKindAndSize(t *testing.T) {
 	provider := newLiveSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	rec, err := fm.CreateSnapshot(context.Background(), vmID, SnapshotOptions{Comment: "live", Live: true})
@@ -578,7 +584,7 @@ func TestCreateSnapshot_liveRecordsKindAndSize(t *testing.T) {
 // resumable.
 func TestCreateSnapshot_liveUnsupportedProvider(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	_, err := fm.CreateSnapshot(context.Background(), vmID, SnapshotOptions{Live: true})
@@ -598,7 +604,7 @@ func TestCreateSnapshot_liveUnsupportedProvider(t *testing.T) {
 // RestoreLive for a caller to get wrong.
 func TestRestoreSnapshot_liveNeedsNoExtraCapability(t *testing.T) {
 	provider := newLiveSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
 	rec, err := fm.CreateSnapshot(context.Background(), vmID, SnapshotOptions{Live: true})

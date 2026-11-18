@@ -117,8 +117,7 @@ type DurableMigrator interface {
 	Migrate(ctx context.Context, vmID string, req MigrateRequest) (string, error)
 }
 
-// SetDurableMigrator routes migrates through restate. nil (mode off, the
-// default) keeps them in process. set it before Start.
+// SetDurableMigrator routes migrates through restate. set it before Start.
 func (fm *FleetManager) SetDurableMigrator(d DurableMigrator) {
 	fm.mu.Lock()
 	fm.durableMigrate = d
@@ -160,7 +159,7 @@ func (fm *FleetManager) durableMigrateVM(ctx context.Context, d DurableMigrator,
 // target of a migrate restate is still running. the migrate either finishes
 // it or destroys it, so recovery leaves it provisioning.
 func (fm *FleetManager) isMigratePlaceholder(v *vm) bool {
-	return fm.durableMigrator() != nil && strings.HasPrefix(v.taskID, migrateTaskPrefix)
+	return strings.HasPrefix(v.taskID, migrateTaskPrefix)
 }
 
 // migrateTaskPrefix starts every migrate's task id, and so its new vm's id.
@@ -180,8 +179,7 @@ func (fm *FleetManager) migrateProvider(hostID string) Provider {
 }
 
 // the methods below are the steps of a migrate. the durable handler runs each
-// inside a journaled restate step, and must be safe to run again; the
-// in-process path calls them in turn.
+// inside a journaled restate step, and must be safe to run again.
 
 // MigrateBegin checks that vmID can be migrated as asked, picks the target
 // and names the new vm. it reads the fleet only, so what it refuses a retry

@@ -58,8 +58,43 @@ type DestroyDeadLetterMetrics interface {
 	DestroyDeadLettered()
 }
 
-// SetDurableDestroyer routes every destroy through restate. nil (mode off,
-// the default) keeps the in-process teardown. set it before Start.
+// Durable is every durable client the fleet runs its operations through.
+// *durable.Client satisfies it.
+type Durable interface {
+	DurableDestroyer
+	DurableCreator
+	DurableForker
+	DurableMigrator
+	DurableSnapshots
+	DurableArtifacts
+	DurableTokenRotator
+	DurableExpiry
+	DurableHitl
+	DurableWebhooks
+	DurableImages
+	DurableBuilds
+}
+
+// SetDurable routes every operation through d. a fleet needs all of them:
+// nothing runs in process, so a missing client fails the first operation
+// that reaches it. set it before Start.
+func (fm *FleetManager) SetDurable(d Durable) {
+	fm.SetDurableDestroyer(d)
+	fm.SetDurableCreator(d)
+	fm.SetDurableForker(d)
+	fm.SetDurableMigrator(d)
+	fm.SetDurableSnapshots(d)
+	fm.SetDurableArtifacts(d)
+	fm.SetDurableTokenRotator(d)
+	fm.SetDurableExpiry(d)
+	fm.SetDurableHitl(d)
+	fm.SetDurableWebhooks(d)
+	fm.SetDurableImages(d)
+	fm.SetDurableBuilds(d)
+}
+
+// SetDurableDestroyer routes every destroy through restate. set it before
+// Start.
 func (fm *FleetManager) SetDurableDestroyer(d DurableDestroyer) {
 	fm.mu.Lock()
 	fm.durableDestroy = d
@@ -76,16 +111,11 @@ func (fm *FleetManager) durableDestroyer() DurableDestroyer {
 }
 
 // destroyAsync starts a teardown without waiting for it: a one-way send to
-// restate, or the in-process destroyAndRemove in mode off. the send runs off
-// the caller's goroutine, at most maxDestroySends at a time, so a slow restate
+// restate. the send runs off the caller's goroutine, at most maxDestroySends at a time, so a slow restate
 // never holds up reconcile. a send that fails leaves the vm in destroying,
 // where reconcile re-sends it.
 func (fm *FleetManager) destroyAsync(vmID, reason string) {
 	d := fm.durableDestroyer()
-	if d == nil {
-		go fm.destroyAndRemove(vmID)
-		return
-	}
 	fm.destroySends.Add(1)
 	go func() {
 		defer fm.destroySends.Done()
@@ -100,30 +130,17 @@ func (fm *FleetManager) destroyAsync(vmID, reason string) {
 }
 
 // cleanupFailedCreate tears down a vm a failed create already dropped from
-// the fleet. v is the dropped vm when its egress needs releasing, or nil.
-func (fm *FleetManager) cleanupFailedCreate(provider Provider, v *vm, vmID, hostID string) {
-	if d := fm.durableDestroyer(); d != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := d.SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: hostID}); err != nil {
-			fm.logger.Error("send durable cleanup destroy failed", "vm", vmID, "host", hostID, "err", err)
-		}
-		return
+// the fleet, on hostID.
+func (fm *FleetManager) cleanupFailedCreate(vmID, hostID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := fm.durableDestroyer().SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: hostID}); err != nil {
+		fm.logger.Error("send durable cleanup destroy failed", "vm", vmID, "host", hostID, "err", err)
 	}
-	// TODO: Track this goroutine so Stop() can wait for it to finish
-	// instead of leaking on shutdown.
-	go func() {
-		if v != nil {
-			fm.releaseEgress(context.Background(), v)
-		}
-		if err := provider.Destroy(context.Background(), vmID); err != nil {
-			fm.logger.Error("cleanup destroy failed", "vm", vmID, "err", err)
-		}
-	}()
 }
 
-// durableDestroyVM is DestroyVM in mode self or cloud. it checks what the
-// in-process path checks before changing anything, then runs the handler and
+// durableDestroyVM is DestroyVM on restate. it checks the vm exists and its
+// host is known before changing anything, then runs the handler and
 // waits for it. a caller that gives up does not stop the destroy.
 func (fm *FleetManager) durableDestroyVM(ctx context.Context, d DurableDestroyer, vmID string) error {
 	fm.mu.RLock()

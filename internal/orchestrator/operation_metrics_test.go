@@ -28,7 +28,7 @@ func (m *opMetrics) OperationCompleted(op string, _ time.Duration, err error) {
 
 func TestLifecycleOperationsAreReported(t *testing.T) {
 	metrics := &opMetrics{}
-	fm := NewFleetManager(FleetConfig{Provider: newForkTestProvider(), Prefix: "fuse-", Metrics: metrics})
+	fm := newInlineFleet(FleetConfig{Provider: newForkTestProvider(), Prefix: "fuse-", Metrics: metrics})
 	ctx := context.Background()
 
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
@@ -43,8 +43,9 @@ func TestLifecycleOperationsAreReported(t *testing.T) {
 		t.Fatal("destroying an unknown vm succeeded")
 	}
 
-	// the fork's seed snapshot is reported too: it is a real checkpoint.
-	want := []string{"create:ok", "snapshot:ok", "fork:ok", "destroy:ok", "destroy:error"}
+	// the fork's seed snapshot is a step of the fork's handler, not an api
+	// snapshot, so it is part of the fork's operation.
+	want := []string{"create:ok", "fork:ok", "destroy:ok", "destroy:error"}
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	if !slices.Equal(metrics.ops, want) {

@@ -20,7 +20,7 @@ func TestChainSteps_fullThenDiff(t *testing.T) {
 	if err != nil || plan.Diff || plan.Gone || plan.Standby != "h-b" {
 		t.Fatalf("first plan = %+v, %v; want a full checkpoint to h-b", plan, err)
 	}
-	full, err := fm.snapshotInProcess(ctx, vmID, plan.Options)
+	full, err := fm.durableSnapshotsClient().Snapshot(ctx, vmID, plan.Options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestChainSteps_fullThenDiff(t *testing.T) {
 	if err != nil || !plan.Diff || plan.Options.Parent != full.SnapshotID || plan.Standby != "h-b" {
 		t.Fatalf("second plan = %+v, %v; want a diff against %s", plan, err, full.SnapshotID)
 	}
-	child, err := fm.snapshotInProcess(ctx, vmID, plan.Options)
+	child, err := fm.durableSnapshotsClient().Snapshot(ctx, vmID, plan.Options)
 	if err != nil {
 		t.Fatal(err)
 	}

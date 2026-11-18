@@ -53,7 +53,7 @@ func TestLoad_provisionAndDestroy(t *testing.T) {
 	t.Logf("load test: %d VMs, %d concurrent workers", totalVMs, concurrency)
 
 	provider := newStubProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "load-",
 	})
@@ -179,7 +179,7 @@ func TestLoad_burstProvision(t *testing.T) {
 	t.Logf("burst test: %d VMs, all concurrent", totalVMs)
 
 	provider := newStubProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "burst-",
 	})
@@ -245,7 +245,7 @@ func TestLoad_provisionWithHosts(t *testing.T) {
 	t.Logf("host scheduling test: %d VMs across %d hosts, %d concurrent", totalVMs, numHosts, concurrency)
 
 	stubProv := newStubProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: stubProv,
 		Prefix:   "sched-",
 	})

@@ -210,3 +210,30 @@ func TestDestroyCleanupOfUntrackedVM(t *testing.T) {
 		t.Fatalf("steps %s, want %s", got, want)
 	}
 }
+
+// TestDestroyCleanupOnHostlessFleet: on a fleet with no registered hosts a
+// booted create's cleanup carries no host, and is still destroyed on the
+// default provider; a plain destroy of an untracked vm with no host is a
+// destroy that already finished.
+func TestDestroyCleanupOnHostlessFleet(t *testing.T) {
+	fleet := newScriptedFleet(0) // not tracked
+	client := serveFleet(t, fleet, fastPolicy)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	vm := fmt.Sprintf("fuse-hostless-%d", time.Now().UnixNano())
+	if err := client.Destroy(ctx, vm, orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonCreateCleanup}); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if got, want := fleet.steps(vm), "begin,egress,host,ingress,finish"; got != want {
+		t.Fatalf("cleanup steps %s, want %s", got, want)
+	}
+
+	gone := fmt.Sprintf("fuse-gone-%d", time.Now().UnixNano())
+	if err := client.Destroy(ctx, gone, orchestrator.DestroyRequest{Reason: "api"}); err != nil {
+		t.Fatalf("destroy: %v", err)
+	}
+	if got := fleet.steps(gone); strings.Contains(got, "host") {
+		t.Fatalf("destroy of a finished vm reached the host: %s", got)
+	}
+}

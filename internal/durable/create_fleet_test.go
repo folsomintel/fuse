@@ -58,9 +58,7 @@ func durableFleet(t *testing.T, store orchestrator.StateStore, p orchestrator.Pr
 	t.Helper()
 	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: tokenTestKey})
 	client, addr, stop := serveFleetAt(t, fm, addr)
-	fm.SetDurableDestroyer(client)
-	fm.SetDurableCreator(client)
-	fm.SetDurableForker(client)
+	fm.SetDurable(client)
 	ctx, cancel := context.WithCancel(context.Background())
 	fm.Start(ctx)
 	return fm, addr, func() {

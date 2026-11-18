@@ -179,7 +179,7 @@ func (s *flakyStateStore) UpsertTask(ctx context.Context, task TaskRecord) error
 
 func TestProvisionAndAssign(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -206,7 +206,7 @@ func TestProvisionAndAssign(t *testing.T) {
 
 func TestDuplicateTaskRejected(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -225,7 +225,7 @@ func TestDuplicateTaskRejected(t *testing.T) {
 
 func TestCompleteTaskDestroysVM(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -252,7 +252,7 @@ func TestCompleteTaskDestroysVM(t *testing.T) {
 }
 
 func TestCompleteTaskNotFound(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: newMockProvider(),
 		Prefix:   "fuse-",
 	})
@@ -265,7 +265,7 @@ func TestCompleteTaskNotFound(t *testing.T) {
 func TestCompleteTaskRollbackOnPersistFailure(t *testing.T) {
 	p := newMockProvider()
 	store := newFlakyStateStore()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -302,7 +302,7 @@ func TestCompleteTaskRollbackOnPersistFailure(t *testing.T) {
 
 func TestListFleet(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -323,7 +323,7 @@ func TestListFleet(t *testing.T) {
 
 func TestGetVM(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -347,7 +347,7 @@ func TestGetVM(t *testing.T) {
 
 func TestGetVMByTask(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -366,7 +366,7 @@ func TestGetVMByTask(t *testing.T) {
 
 func TestDestroyVM(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -389,7 +389,7 @@ func TestDestroyVM(t *testing.T) {
 func TestDestroyVMRollbackOnPersistFailure(t *testing.T) {
 	p := newMockProvider()
 	store := newFlakyStateStore()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -432,7 +432,7 @@ func TestDestroyVMRollbackOnPersistFailure(t *testing.T) {
 
 func TestReconcileOrphans(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:          p,
 		Prefix:            "fuse-",
 		ReconcileInterval: 50 * time.Millisecond,
@@ -458,7 +458,7 @@ func TestReconcileOrphans(t *testing.T) {
 
 func TestReconcileDeadVM(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:          p,
 		Prefix:            "fuse-",
 		ReconcileInterval: 50 * time.Millisecond,
@@ -490,7 +490,7 @@ func TestProvisionFailureCleanup(t *testing.T) {
 		return nil, fmt.Errorf("provider unavailable")
 	}
 
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -510,7 +510,7 @@ func TestStateRecoveryLoadsPersistedVMs(t *testing.T) {
 	p := newMockProvider()
 	store := NewMemoryStateStore()
 
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -522,7 +522,7 @@ func TestStateRecoveryLoadsPersistedVMs(t *testing.T) {
 		t.Fatalf("provision: %v", err)
 	}
 
-	recovered := NewFleetManager(FleetConfig{
+	recovered := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -542,7 +542,7 @@ func TestStateRecoveryMarksMissingProviderVMTaskFailed(t *testing.T) {
 	p := newMockProvider()
 	store := NewMemoryStateStore()
 
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -558,7 +558,7 @@ func TestStateRecoveryMarksMissingProviderVMTaskFailed(t *testing.T) {
 	delete(p.envs, "fuse-task-1")
 	p.mu.Unlock()
 
-	recovered := NewFleetManager(FleetConfig{
+	recovered := newInlineFleet(FleetConfig{
 		Provider:   p,
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -609,7 +609,7 @@ func TestProvisionAndAssign_placementOnNoHostsPathRejected(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newMockProvider()
-			fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+			fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 			_, err := fm.ProvisionAndAssign(context.Background(), "task-1", tc.spec, []byte(`{}`), nil, BootOptions{})
 			if !errors.Is(err, ErrNoHosts) {
 				t.Fatalf("err = %v, want ErrNoHosts", err)
@@ -625,7 +625,7 @@ func TestProvisionAndAssign_placementOnNoHostsPathRejected(t *testing.T) {
 // the guard above: an empty placement still boots on the default provider.
 func TestProvisionAndAssign_noPlacementOnNoHostsPathUnchanged(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	info, err := fm.ProvisionAndAssign(context.Background(), "task-1", Spec{CPUs: 2, RamMB: 1024}, []byte(`{}`), nil, BootOptions{})
 	if err != nil {
 		t.Fatalf("provision: %v", err)
@@ -639,7 +639,7 @@ func TestProvisionAndAssign_noPlacementOnNoHostsPathUnchanged(t *testing.T) {
 // rather than clamped, so the caller can tell "my script is slow" apart from
 // "my bound was never honored".
 func TestProvisionAndAssignStartupScriptTimeoutCeiling(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:                newMockProvider(),
 		Prefix:                  "fuse-",
 		MaxStartupScriptTimeout: 45 * time.Second,
@@ -656,7 +656,7 @@ func TestProvisionAndAssignStartupScriptTimeoutCeiling(t *testing.T) {
 }
 
 func TestProvisionAndAssignStartupScriptTimeoutWithinCeiling(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:                newMockProvider(),
 		Prefix:                  "fuse-",
 		MaxStartupScriptTimeout: 45 * time.Second,
@@ -671,7 +671,7 @@ func TestProvisionAndAssignStartupScriptTimeoutWithinCeiling(t *testing.T) {
 // A ceiling below the default would leave the default itself unrequestable, so
 // NewFleetManager raises it instead of starting in a self-contradictory state.
 func TestNewFleetManagerCeilingNeverBelowDefault(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:                newMockProvider(),
 		StartupScriptTimeout:    30 * time.Second,
 		MaxStartupScriptTimeout: 5 * time.Second,

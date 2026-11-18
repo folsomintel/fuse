@@ -2,47 +2,23 @@ package orchestrator
 
 import (
 	"context"
-	"errors"
 	"sort"
-	"sync"
 	"time"
 )
 
-// checkpointChain is one vm's background checkpoints: the last live snapshot
-// taken on the source (head) and a complete merged copy of it kept on another
-// host (base on standby). each tick takes a diff against head, ships only
-// that, and merges it onto base, so a later migrate to standby only has to
-// move what changed since the last tick.
-//
-// mu serializes everything that takes a live snapshot of the vm through the
-// chain: a tick, and a migrate. any other live snapshot in between resets the
-// host's dirty bitmap, and the next diff is refused rather than wrong.
-//
-// standby and bytes are written under both mu and fm.chainsMu, so the standby
-// picker can read every chain's with chainsMu alone, without waiting on a
-// chain that is mid-tick or mid-migrate.
+// checkpointChain mirrors one vm's background checkpoint chain, whose state
+// lives on its restate Environment object (see MirrorChain): the host its
+// merged base sits on (standby) and how big that base is. the standby picker
+// and the migrate target picker read it under fm.chainsMu.
 type checkpointChain struct {
-	mu      sync.Mutex
 	standby string
-	head    SnapshotRecord
-	base    string
 	// bytes is what the base takes on the standby's disk: the size of the
 	// full checkpoint it started as. a merge rewrites the base at the same
 	// size, so it is not updated per tick (the merged record only carries
 	// the delta that moved).
 	bytes int64
-	// pending is set on restate while a tick's copy to the standby runs.
-	// there the chain's state lives on the Environment object, and this
-	// struct only mirrors it (MirrorChain).
+	// pending is set while a tick's copy to the standby runs.
 	pending bool
-}
-
-// setStandbyLocked records where the chain's base lives and how big it is.
-// the caller holds c.mu.
-func (fm *FleetManager) setStandbyLocked(c *checkpointChain, standby string, bytes int64) {
-	fm.chainsMu.Lock()
-	c.standby, c.bytes = standby, bytes
-	fm.chainsMu.Unlock()
 }
 
 // standbyUsage is what one host holds as a checkpoint standby.
@@ -98,53 +74,6 @@ func copyEstimate(spec Spec) int64 {
 	return int64(spec.StorageGB)<<30 + int64(spec.RamMB)<<20
 }
 
-func (fm *FleetManager) chainFor(vmID string) *checkpointChain {
-	fm.chainsMu.Lock()
-	defer fm.chainsMu.Unlock()
-	c, ok := fm.chains[vmID]
-	if !ok {
-		c = &checkpointChain{}
-		fm.chains[vmID] = c
-	}
-	return c
-}
-
-// dropChain forgets a vm's chain once the vm is gone. the caller holds c.mu.
-func (fm *FleetManager) dropChain(vmID string, c *checkpointChain) {
-	fm.resetChainLocked(c)
-	fm.chainsMu.Lock()
-	if fm.chains[vmID] == c {
-		delete(fm.chains, vmID)
-	}
-	fm.chainsMu.Unlock()
-}
-
-// resetChainLocked empties a chain so the next tick starts a fresh one, and
-// releases the pin on its base. the caller holds c.mu. it deletes nothing:
-// a base that was consumed is already gone, and one that was not is removed
-// by retireChain.
-func (fm *FleetManager) resetChainLocked(c *checkpointChain) {
-	if c.base != "" {
-		fm.endArtifactPull(c.base)
-	}
-	fm.setStandbyLocked(c, "", 0)
-	c.head, c.base = SnapshotRecord{}, ""
-}
-
-// retireChain removes what a broken chain still holds, both ends, then
-// resets it. the caller holds c.mu.
-func (fm *FleetManager) retireChain(ctx context.Context, vmID string, c *checkpointChain) {
-	base, standby, head := c.base, c.standby, c.head
-	fm.resetChainLocked(c)
-	if base != "" {
-		if err := fm.deleteFreeArtifact(ctx, standby, base); err != nil && !IsNotFound(err) {
-			fm.logger.Warn("delete stale checkpoint base failed", "vm", vmID, "host", standby, "snapshot", base, "err", err)
-		}
-		fm.forgetSnapshotRecord(ctx, base)
-	}
-	fm.deleteCheckpoint(ctx, head)
-}
-
 // deleteCheckpoint removes one source-side checkpoint the chain no longer
 // needs. failures are logged and left to retention: the next diff only needs
 // the newest head, never an older one.
@@ -165,43 +94,7 @@ func (fm *FleetManager) checkpointLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if d := fm.durableSnapshotsClient(); d != nil {
-				fm.checkpointTickDurable(ctx, d)
-				continue
-			}
-			fm.checkpointTick(ctx)
-		}
-	}
-}
-
-// checkpointTick advances every eligible vm's chain by one step. vms are
-// visited one at a time: a live snapshot pauses its guest, and the transfer
-// that follows competes with real traffic, so this stays a trickle.
-func (fm *FleetManager) checkpointTick(ctx context.Context) {
-	for _, vmID := range fm.checkpointCandidates() {
-		if ctx.Err() != nil {
-			return
-		}
-		fm.advanceChain(ctx, vmID)
-	}
-
-	// chains of vms that are gone keep pins and bytes; drop them.
-	fm.mu.RLock()
-	fm.chainsMu.Lock()
-	var gone []string
-	for vmID := range fm.chains {
-		if _, ok := fm.vms[vmID]; !ok {
-			gone = append(gone, vmID)
-		}
-	}
-	fm.chainsMu.Unlock()
-	fm.mu.RUnlock()
-	for _, vmID := range gone {
-		c := fm.chainFor(vmID)
-		if c.mu.TryLock() {
-			fm.retireChain(ctx, vmID, c)
-			fm.dropChain(vmID, c)
-			c.mu.Unlock()
+			fm.checkpointTickDurable(ctx, fm.durableSnapshotsClient())
 		}
 	}
 }
@@ -320,116 +213,6 @@ func bytesToGB(n int64) int {
 	}
 	const gb = 1 << 30
 	return int((n + gb - 1) / gb)
-}
-
-// advanceChain takes one step for vmID: a full checkpoint copied whole to a
-// standby host if the chain is empty, otherwise a diff against head merged
-// onto the standby's base. any failure retires the chain, and the next tick
-// starts over with a full one; a chain is only ever extended from a state
-// both ends agree on.
-func (fm *FleetManager) advanceChain(ctx context.Context, vmID string) {
-	c := fm.chainFor(vmID)
-	if !c.mu.TryLock() {
-		// a migrate of this vm is in progress.
-		return
-	}
-	defer c.mu.Unlock()
-
-	fm.mu.RLock()
-	v, ok := fm.vms[vmID]
-	srcHostID := ""
-	if ok {
-		srcHostID = v.hostID
-	}
-	fm.mu.RUnlock()
-	if !ok {
-		return
-	}
-	retention := time.Now().Add(4 * fm.checkpointInterval)
-
-	keep := c.base != "" && c.standby != "" && c.standby != srcHostID
-	if keep {
-		// a standby that was cordoned, or filled up with other work since it
-		// was picked, can no longer take the vm if it has to move: retire the
-		// chain on it and re-pick below.
-		if reason := fm.standbyRejectionFor(vmID, c.standby); reason != "" {
-			fm.logger.Info("checkpoint standby no longer fits; re-picking", "vm", vmID, "host", c.standby, "reason", reason)
-			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{
-				"error": "standby host " + c.standby + " " + reason, "standby_host_id": c.standby,
-			})
-			keep = false
-		}
-	}
-	if keep {
-		child, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
-			Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
-			Live: true, Diff: true, Parent: c.head.SnapshotID, NoLineage: true,
-		})
-		if err != nil {
-			fm.logger.Info("checkpoint chain reset", "vm", vmID, "reason", err)
-			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{"error": err.Error()})
-			fm.retireChain(ctx, vmID, c)
-			return
-		}
-		merged, err := fm.moveDeltaToHost(ctx, child, c.base, c.standby, true)
-		if err != nil {
-			fm.logger.Warn("move checkpoint delta failed; chain reset", "vm", vmID, "host", c.standby, "err", err)
-			fm.appendEventBackground("vm", vmID, "vm.checkpoint_chain_reset", map[string]any{"error": err.Error()})
-			if errors.Is(err, ErrArtifactMoveUnsettled) {
-				// the merge may still be reading the child and writing onto
-				// the base, so neither is deleted: the chain is only
-				// forgotten. retention gc takes the child later.
-				fm.resetChainLocked(c)
-				return
-			}
-			// the base may or may not have been merged and dropped; either way
-			// the chain no longer has an agreed state.
-			fm.deleteCheckpoint(ctx, child)
-			fm.retireChain(ctx, vmID, c)
-			return
-		}
-		fm.endArtifactPull(c.base)
-		fm.beginArtifactPull(merged)
-		old := c.head
-		c.head, c.base = child, merged
-		fm.deleteCheckpoint(ctx, old)
-		fm.appendEventBackground("vm", vmID, "vm.checkpointed", map[string]any{
-			"snapshot_id": child.SnapshotID, "standby_host_id": c.standby, "base": merged, "diff": true,
-		})
-		return
-	}
-
-	if c.head.SnapshotID != "" || c.base != "" {
-		fm.retireChain(ctx, vmID, c)
-	}
-	standby := fm.pickStandby(vmID, srcHostID)
-	if standby == "" {
-		return
-	}
-	full, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{
-		Comment: "checkpoint", Mode: SnapshotModeAuto, RetentionUntil: &retention,
-		Live: true, NoLineage: true,
-	})
-	if err != nil {
-		fm.logger.Warn("full checkpoint failed", "vm", vmID, "err", err)
-		return
-	}
-	base, err := fm.ensureArtifactOnHost(ctx, full, standby, false)
-	if err != nil {
-		fm.logger.Warn("copy full checkpoint to standby failed", "vm", vmID, "host", standby, "err", err)
-		if !errors.Is(err, ErrArtifactMoveUnsettled) {
-			// an unsettled copy may still be reading it; retention gc takes
-			// it later instead.
-			fm.deleteCheckpoint(ctx, full)
-		}
-		return
-	}
-	fm.beginArtifactPull(base)
-	fm.setStandbyLocked(c, standby, full.SizeBytes)
-	c.head, c.base = full, base
-	fm.appendEventBackground("vm", vmID, "vm.checkpointed", map[string]any{
-		"snapshot_id": full.SnapshotID, "standby_host_id": standby, "base": base, "diff": false,
-	})
 }
 
 // standbyRejectionFor says why hostID can no longer serve as vmID's standby,

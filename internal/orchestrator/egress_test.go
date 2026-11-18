@@ -59,7 +59,7 @@ func waitForEgress(t *testing.T, what string, cond func() bool) {
 
 func TestEgressDirectBootMakesNoRegistryCalls(t *testing.T) {
 	rec := &recordingEgress{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
 	ctx := context.Background()
 
 	info, err := fm.ProvisionAndAssign(ctx, "t-direct", Spec{CPUs: 1, RamMB: 256}, egressManifest, nil, BootOptions{})
@@ -79,7 +79,7 @@ func TestEgressDirectBootMakesNoRegistryCalls(t *testing.T) {
 
 func TestEgressProxyBootProvisionsAndDestroyReleases(t *testing.T) {
 	mock := newEgressMock()
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock)})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock)})
 	ctx := context.Background()
 
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: egress.MockName}}
@@ -116,7 +116,7 @@ func TestEgressProxyBootProvisionsAndDestroyReleases(t *testing.T) {
 func TestEgressProvisionFailureIsAFailedCreateWithNoVM(t *testing.T) {
 	mock := newEgressMock()
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock)})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-", EgressRegistry: egress.NewRegistry(mock)})
 	ctx := context.Background()
 
 	mock.FailNextProvision(errors.New("backend refused to start"))
@@ -145,7 +145,7 @@ func TestEgressUnknownProviderAndNoRegistryAreRefused(t *testing.T) {
 	ctx := context.Background()
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "warp"}}
 
-	withMock := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(newEgressMock())})
+	withMock := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(newEgressMock())})
 	_, err := withMock.ProvisionAndAssign(ctx, "t-unknown", spec, egressManifest, nil, BootOptions{})
 	var unknown *egress.UnknownProviderError
 	if !errors.As(err, &unknown) {
@@ -153,7 +153,7 @@ func TestEgressUnknownProviderAndNoRegistryAreRefused(t *testing.T) {
 	}
 
 	// no registry at all must not fall back to direct.
-	none := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	none := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 	_, err = none.ProvisionAndAssign(ctx, "t-none", spec, egressManifest, nil, BootOptions{})
 	if err == nil || !strings.Contains(err.Error(), "no egress providers") {
 		t.Fatalf("err = %v, want a refusal naming the missing registry", err)
@@ -168,7 +168,7 @@ func TestEgressSurvivesRestartAndReleasesAfterRecovery(t *testing.T) {
 	p := newMockProvider()
 	store := NewMemoryStateStore()
 	reg := egress.NewRegistry(mock)
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-", StateStore: store, EgressRegistry: reg})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-", StateStore: store, EgressRegistry: reg})
 	ctx := context.Background()
 
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: egress.MockName}}
@@ -179,7 +179,7 @@ func TestEgressSurvivesRestartAndReleasesAfterRecovery(t *testing.T) {
 
 	// a second fleet over the same store and provider is an orchestrator
 	// restart. the recovered vm must still know its backend and endpoint.
-	fm2 := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-", StateStore: store, EgressRegistry: reg})
+	fm2 := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-", StateStore: store, EgressRegistry: reg})
 	if err := fm2.recoverState(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -199,11 +199,11 @@ func TestEgressSurvivesRestartAndReleasesAfterRecovery(t *testing.T) {
 }
 
 func TestEgressProvidersListsTheRegistry(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), EgressRegistry: egress.NewRegistry(newEgressMock())})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), EgressRegistry: egress.NewRegistry(newEgressMock())})
 	if got := fm.EgressProviders(); len(got) != 1 || got[0] != egress.MockName {
 		t.Fatalf("EgressProviders() = %v", got)
 	}
-	if got := NewFleetManager(FleetConfig{Provider: newMockProvider()}).EgressProviders(); len(got) != 0 {
+	if got := newInlineFleet(FleetConfig{Provider: newMockProvider()}).EgressProviders(); len(got) != 0 {
 		t.Fatalf("EgressProviders() without a registry = %v, want none", got)
 	}
 }
@@ -223,7 +223,7 @@ func (c *credentialEgress) Provision(ctx context.Context, ec egress.Context) (eg
 
 func TestEgressSecretIsResolvedForTheProviderOnly(t *testing.T) {
 	rec := &credentialEgress{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
 	ctx := context.Background()
 
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "recording", Secret: "WG_CONF"}}
@@ -241,7 +241,7 @@ func TestEgressSecretIsResolvedForTheProviderOnly(t *testing.T) {
 
 func TestEgressSecretThatWasNotSuppliedFailsTheCreate(t *testing.T) {
 	rec := &credentialEgress{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(rec)})
 	spec := Spec{CPUs: 1, RamMB: 256, Egress: egress.Spec{Mode: egress.ModeProxy, Provider: "recording", Secret: "WG_CONF"}}
 	_, err := fm.ProvisionAndAssign(context.Background(), "t-nosecret", spec, egressManifest, map[string]string{"OTHER": "o"}, BootOptions{})
 	if err == nil || !strings.Contains(err.Error(), "WG_CONF") {

@@ -81,15 +81,8 @@ type operation struct {
 	done        chan struct{}
 
 	mu         sync.Mutex
-	step       string
 	finishedAt time.Time
 	rec        *opRecorder
-}
-
-func (op *operation) setStep(step string) {
-	op.mu.Lock()
-	op.step = step
-	op.mu.Unlock()
 }
 
 // finished reports whether the handler returned.
@@ -120,7 +113,6 @@ func (op *operation) view() Operation {
 		ID:        op.id,
 		Kind:      op.kind,
 		State:     OpRunning,
-		Step:      op.step,
 		StartedAt: op.startedAt,
 	}
 	if !op.finished() {
@@ -408,7 +400,6 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 	if op.key != "" {
 		ctx = orchestrator.WithIdempotencyKey(ctx, op.owner+":"+op.kind+":"+op.key)
 	}
-	ctx = orchestrator.WithStepReporter(ctx, op.setStep)
 	ctx, cancel := context.WithTimeout(ctx, h.operationTimeout())
 
 	req := r.Clone(ctx)

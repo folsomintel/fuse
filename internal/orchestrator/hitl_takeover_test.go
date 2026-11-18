@@ -83,8 +83,11 @@ func TestSecretRequestRejectsUndeclaredTarget(t *testing.T) {
 	}
 }
 
+// startup refuses a fleet with no TOKEN_ENCRYPTION_KEY; a fleet that lost
+// it anyway still refuses secret requests rather than storing plaintext.
 func TestSecretRequestNeedsEncryptionKey(t *testing.T) {
 	fm, vmID := hitlFleet(t, FleetConfig{}, secretSpec())
+	fm.tokenEncryptionKey = nil
 	if _, err := requestSecret(fm, vmID, "GH_TOKEN"); !errors.Is(err, ErrHitlNeedsKey) {
 		t.Fatalf("no key: err = %v, want ErrHitlNeedsKey", err)
 	}

@@ -149,45 +149,12 @@ type snapshotCursor struct {
 // provider confirms the new checkpoint exists. on restate it runs as the
 // Environment/{vm_id}.Snapshot handler; see snapshot_durable.go.
 func (fm *FleetManager) CreateSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
-	if d := fm.durableSnapshotsClient(); d != nil {
-		ctx, end := fm.startOperation(ctx, "snapshot", vmID)
-		ctx, cancel := durableWait(ctx)
-		defer cancel()
-		rec, err := d.Snapshot(ctx, vmID, opts)
-		end(err)
-		return rec, err
-	}
-	return fm.snapshotInProcess(ctx, vmID, opts)
-}
-
-// snapshotInProcess takes a snapshot in this process whatever the restate
-// mode: what fork and migrate use for their seeds, and the checkpoint chain
-// in mode off.
-func (fm *FleetManager) snapshotInProcess(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
 	ctx, end := fm.startOperation(ctx, "snapshot", vmID)
-	rec, err := fm.createSnapshot(ctx, vmID, opts)
+	ctx, cancel := durableWait(ctx)
+	defer cancel()
+	rec, err := fm.durableSnapshotsClient().Snapshot(ctx, vmID, opts)
 	end(err)
 	return rec, err
-}
-
-func (fm *FleetManager) createSnapshot(ctx context.Context, vmID string, opts SnapshotOptions) (SnapshotRecord, error) {
-	plan, err := fm.SnapshotBegin(ctx, vmID, opts)
-	if err != nil {
-		return SnapshotRecord{}, err
-	}
-	created, err := fm.SnapshotCheckpoint(ctx, vmID, plan)
-	if err != nil {
-		return SnapshotRecord{}, err
-	}
-	record, err := fm.SnapshotRecordCreating(ctx, vmID, plan, created)
-	if err != nil {
-		return SnapshotRecord{}, err
-	}
-	listed, err := fm.SnapshotList(ctx, vmID, record.SnapshotID)
-	if err != nil {
-		return SnapshotRecord{}, err
-	}
-	return fm.SnapshotReady(ctx, record, listed)
 }
 
 // SnapshotPlan is what SnapshotBegin settled before the host checkpoint:
@@ -722,31 +689,11 @@ func (fm *FleetManager) deleteSnapshotRecord(ctx context.Context, record Snapsho
 // Environment/{vm_id}.Restore handler, so a restart resumes it.
 func (fm *FleetManager) RestoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
 	ctx, end := fm.startOperation(ctx, "restore", vmID)
-	var err error
-	if d := fm.durableSnapshotsClient(); d != nil {
-		wctx, cancel := durableWait(ctx)
-		err = d.Restore(wctx, vmID, snapshotID)
-		cancel()
-	} else {
-		err = fm.restoreSnapshot(ctx, vmID, snapshotID)
-	}
+	wctx, cancel := durableWait(ctx)
+	err := fm.durableSnapshotsClient().Restore(wctx, vmID, snapshotID)
+	cancel()
 	end(err)
 	return err
-}
-
-func (fm *FleetManager) restoreSnapshot(ctx context.Context, vmID, snapshotID string) error {
-	record, err := fm.RestoreValidate(ctx, vmID, snapshotID)
-	if err != nil {
-		return err
-	}
-	if err := fm.RestoreBegin(ctx, record); err != nil {
-		return err
-	}
-	if err := fm.RestoreOnHost(ctx, vmID, snapshotID); err != nil {
-		_ = fm.RestoreFailed(ctx, record, err.Error())
-		return err
-	}
-	return fm.RestoreFinish(ctx, record)
 }
 
 // the methods below are the steps of a restore, in order. the durable
@@ -920,7 +867,7 @@ func (fm *FleetManager) reconcileSnapshots(ctx context.Context) {
 			}
 		}
 
-		if d != nil && snapshot.VMID != "" {
+		if snapshot.VMID != "" {
 			// restate retries the deletion under the Environment policy, and
 			// only marks the row error once that runs out.
 			fm.sendCollectSnapshot(ctx, d, snapshot)

@@ -67,7 +67,7 @@ func digestOf(c string) string { return strings.Repeat(c, 64) }
 
 func imageFleet(t *testing.T, hosts map[string]Provider, backends map[string]HostBackend) *FleetManager {
 	t.Helper()
-	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-"})
 	for id, p := range hosts {
 		h := layerHost(id, "amd64")
 		if b, ok := backends[id]; ok {
@@ -110,7 +110,7 @@ func TestConvertImageRunsOnAFirecrackerHost(t *testing.T) {
 // a create with spec.region only lands in that region, so the conversion it
 // boots from has to run there too, whatever host the ref hashes onto.
 func TestConvertImageStaysInTheRegion(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-"})
 	for _, h := range []struct{ id, region string }{{"fc-a", "us-east"}, {"fc-b", "us-east"}, {"fc-c", "eu-west"}} {
 		host := layerHost(h.id, "amd64")
 		host.Region = h.region

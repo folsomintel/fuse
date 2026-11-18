@@ -245,41 +245,6 @@ func (r reapView) nextReap(extendedUntil time.Time) (time.Time, hitl.Reaper) {
 	return at, reaper
 }
 
-// extendedEnvs returns the environments an approved expiry still keeps
-// away from the reapers.
-func (fm *FleetManager) extendedEnvs(now time.Time) map[string]bool {
-	fm.hitlMu.Lock()
-	defer fm.hitlMu.Unlock()
-	out := make(map[string]bool)
-	for id, st := range fm.hitlSignals {
-		if now.Before(st.extendedUntil) {
-			out[id] = true
-		}
-	}
-	return out
-}
-
-// pendingExpiryEnvs returns the environments with a pending expiry. ok is
-// false when the store could not be read; the caller then reaps nothing it
-// cannot rule out.
-func (fm *FleetManager) pendingExpiryEnvs(ctx context.Context) (map[string]bool, bool) {
-	out := make(map[string]bool)
-	if fm.store == nil {
-		return out, true
-	}
-	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
-	if err != nil {
-		fm.logger.Warn("list pending interventions for reap check failed", "err", err)
-		return nil, false
-	}
-	for _, rec := range recs {
-		if rec.Kind == string(hitl.KindExpiry) {
-			out[rec.EnvID] = true
-		}
-	}
-	return out, true
-}
-
 // applyExtension records an approved expiry's extension.
 func (fm *FleetManager) applyExtension(in hitl.Intervention) {
 	if in.Kind != hitl.KindExpiry || in.Signal == nil || in.Signal.ExtendedUntil == nil {

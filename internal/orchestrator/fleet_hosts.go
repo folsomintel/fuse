@@ -216,20 +216,6 @@ func (fm *FleetManager) ListHostsFiltered(filter HostFilter) ([]Host, string, er
 	return all[start:end], next, nil
 }
 
-// activeHosts returns a point-in-time snapshot of all hosts eligible for
-// scheduling. Called under NO lock — takes its own read lock. It returns
-// independent *copies* (not the live map pointers) so the pure Schedule()
-// function can read host capacity/allocation without a lock while another
-// goroutine mutates the real hosts under fm.mu in allocateOnHost. Returning
-// the live pointers here is a data race (Schedule read vs allocateOnHost
-// write); the copies make each scheduling decision operate on a consistent
-// snapshot.
-func (fm *FleetManager) activeHosts() []*Host {
-	fm.mu.RLock()
-	defer fm.mu.RUnlock()
-	return fm.activeHostsLocked()
-}
-
 // activeHostsLocked returns host copies while the caller holds fm.mu.
 func (fm *FleetManager) activeHostsLocked() []*Host {
 	out := make([]*Host, 0, len(fm.hosts))

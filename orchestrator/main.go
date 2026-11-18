@@ -219,10 +219,11 @@ func run() error {
 		maxStartupScriptTimeout time.Duration
 		drainingTimeout         time.Duration
 
-		artifactPullTimeout  time.Duration
-		checkpointInterval   time.Duration
-		artifactIdleTTL      time.Duration
-		artifactMaxPerTenant int
+		restateStartupTimeout time.Duration
+		artifactPullTimeout   time.Duration
+		checkpointInterval    time.Duration
+		artifactIdleTTL       time.Duration
+		artifactMaxPerTenant  int
 
 		fcBaseURL     string
 		fcToken       string
@@ -252,10 +253,14 @@ func run() error {
 	flag.DurationVar(&maxStartupScriptTimeout, "max-startup-script-timeout",
 		orchestrator.DefaultMaxStartupScriptTimeout,
 		"largest startup script bound a request may ask for; must stay under -write-timeout")
+	flag.DurationVar(&restateStartupTimeout, "restate-startup-timeout",
+		time.Duration(envInt("ORCH_RESTATE_STARTUP_TIMEOUT_SECONDS", 120))*time.Second,
+		"how long startup waits for restate ingress to answer and for this orchestrator's deployment "+
+			"to be registered before giving up")
 	flag.DurationVar(&artifactPullTimeout, "artifact-pull-timeout",
 		time.Duration(envInt("ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS", 0))*time.Second,
-		"bound on one attempt at a host-to-host artifact copy; with restate on it is the pull step's timeout, "+
-			"not the request's (0 = bound only by the request context, or the agent client's timeout on restate)")
+		"bound on one attempt at a host-to-host artifact copy: the pull step's timeout, "+
+			"not the request's (0 = bound only by the agent client's timeout)")
 	flag.DurationVar(&checkpointInterval, "checkpoint-interval",
 		time.Duration(envInt("ORCH_CHECKPOINT_INTERVAL_SECONDS", 0))*time.Second,
 		"take a background diff checkpoint of every firecracker vm this often and keep it merged on "+
@@ -315,16 +320,18 @@ func run() error {
 	}
 
 	// Parse token encryption key (hex-encoded 32 bytes = 64 hex chars).
-	var tokenEncKey []byte
-	if tokenEncKeyHex != "" {
-		var err error
-		tokenEncKey, err = hex.DecodeString(tokenEncKeyHex)
-		if err != nil {
-			return fmt.Errorf("TOKEN_ENCRYPTION_KEY: invalid hex: %w", err)
-		}
-		if len(tokenEncKey) != 32 {
-			return fmt.Errorf("TOKEN_ENCRYPTION_KEY: must be 32 bytes (64 hex chars), got %d bytes", len(tokenEncKey))
-		}
+	// required: restate journals create, fork and webhook inputs sealed
+	// with it, so without one those operations cannot run.
+	if tokenEncKeyHex == "" {
+		return errors.New("TOKEN_ENCRYPTION_KEY is required (64 hex chars, e.g. openssl rand -hex 32): " +
+			"restate journals create, fork and webhook inputs sealed with it")
+	}
+	tokenEncKey, err := hex.DecodeString(tokenEncKeyHex)
+	if err != nil {
+		return fmt.Errorf("TOKEN_ENCRYPTION_KEY: invalid hex: %w", err)
+	}
+	if len(tokenEncKey) != 32 {
+		return fmt.Errorf("TOKEN_ENCRYPTION_KEY: must be 32 bytes (64 hex chars), got %d bytes", len(tokenEncKey))
 	}
 
 	// A startup script runs synchronously inside the create request, so a
@@ -347,9 +354,6 @@ func run() error {
 		var missing []string
 		if authToken == "" {
 			missing = append(missing, "ORCH_AUTH_TOKEN")
-		}
-		if len(tokenEncKey) == 0 {
-			missing = append(missing, "TOKEN_ENCRYPTION_KEY")
 		}
 		if databaseURL == "" {
 			missing = append(missing, "DATABASE_URL")
@@ -565,23 +569,9 @@ func run() error {
 	// https://fuse.example.com. empty leaves the link out.
 	fm.SetPublicURL(strings.TrimRight(env("ORCH_PUBLIC_URL", ""), "/"))
 	// restate client, made before the fleet starts so the reconcile loop's
-	// first teardown already goes through restate. mode off makes none.
-	var restateClient *durable.Client
-	if durableCfg.Mode != durable.ModeOff {
-		restateClient = durable.NewClient(durableCfg)
-		fm.SetDurableDestroyer(restateClient)
-		fm.SetDurableArtifacts(restateClient)
-		fm.SetDurableSnapshots(restateClient)
-		fm.SetDurableTokenRotator(restateClient)
-		fm.SetDurableWebhooks(restateClient)
-		fm.SetDurableHitl(restateClient)
-		fm.SetDurableBuilds(restateClient)
-		fm.SetDurableMigrator(restateClient)
-		fm.SetDurableExpiry(restateClient)
-		fm.SetDurableCreator(restateClient)
-		fm.SetDurableForker(restateClient)
-		fm.SetDurableImages(restateClient)
-	}
+	// first teardown already goes through restate.
+	restateClient := durable.NewClient(durableCfg)
+	fm.SetDurable(restateClient)
 	fm.Start(rootCtx)
 	defer fm.Stop()
 
@@ -589,22 +579,35 @@ func run() error {
 	// restate handler endpoint.
 	errCh := make(chan error, 2)
 
-	// restate handler endpoint. mode off starts nothing and leaves the
-	// readiness check out.
-	if restateClient != nil {
-		go func() {
-			if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
-				errCh <- fmt.Errorf("restate handler endpoint: %w", err)
-			}
-		}()
-		if durableCfg.Connect == durable.ConnectTunnel {
-			logger.Info("restate handler endpoint connecting over the restate cloud tunnel",
-				"tunnel", durableCfg.TunnelName, "environment", durableCfg.EnvironmentID, "ingress", durableCfg.IngressURL)
-		} else {
-			logger.Info("restate handler endpoint listening",
-				"mode", durableCfg.Mode, "addr", durableCfg.Listen, "ingress", durableCfg.IngressURL)
+	go func() {
+		if err := durable.Serve(rootCtx, durableCfg, fm, logger); err != nil {
+			errCh <- fmt.Errorf("restate handler endpoint: %w", err)
 		}
+	}()
+	if durableCfg.Connect == durable.ConnectTunnel {
+		logger.Info("restate handler endpoint connecting over the restate cloud tunnel",
+			"tunnel", durableCfg.TunnelName, "environment", durableCfg.EnvironmentID, "ingress", durableCfg.IngressURL)
+	} else {
+		logger.Info("restate handler endpoint listening",
+			"mode", durableCfg.Mode, "addr", durableCfg.Listen, "ingress", durableCfg.IngressURL)
 	}
+
+	// every operation runs on restate, so the api does not open until
+	// restate answers and this deployment is registered (the installer
+	// registers it in mode self once the endpoint is up; mode cloud
+	// registers itself).
+	logger.Info("waiting for restate", "ingress", durableCfg.IngressURL, "timeout", restateStartupTimeout)
+	ready := make(chan error, 1)
+	go func() { ready <- restateClient.WaitReady(rootCtx, restateStartupTimeout) }()
+	select {
+	case err := <-ready:
+		if err != nil {
+			return err
+		}
+	case err := <-errCh:
+		return err
+	}
+	logger.Info("restate ready")
 
 	// Parse CIDR allowlist.
 	var cidrList []string
@@ -676,12 +679,7 @@ func run() error {
 	// router so Prometheus and load-balancer / k8s probes can scrape
 	// without a Bearer token. These probes intentionally do not (and
 	// shouldn't) carry credentials.
-	hc := &api.Healthcheck{Fleet: fm, Store: store, BuildVersion: version}
-	if restateClient != nil {
-		// assigned only when set, so a nil client never becomes a non-nil
-		// interface (same trap as apiKeyStoreOrNil).
-		hc.Restate = restateClient
-	}
+	hc := &api.Healthcheck{Fleet: fm, Store: store, BuildVersion: version, Restate: restateClient}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health", hc.Liveness)

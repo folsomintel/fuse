@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // newLayerTestHandler wires a handler over a state store the test keeps a
@@ -18,7 +19,7 @@ import (
 func newLayerTestHandler(t *testing.T) (*Handler, orchestrator.StateStore) {
 	t.Helper()
 	store := orchestrator.NewMemoryStateStore()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider:   newFakeProvider(),
 		Prefix:     "fuse-",
 		StateStore: store,
@@ -263,7 +264,7 @@ func TestResolveSnapshot(t *testing.T) {
 // another tenant's artifact.
 func TestResolveSnapshot_doesNotCrossTenants(t *testing.T) {
 	store := orchestrator.NewMemoryStateStore()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider:   newFakeProvider(),
 		Prefix:     "fuse-",
 		StateStore: store,

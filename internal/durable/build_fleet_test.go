@@ -121,7 +121,7 @@ func TestBuildOnFleetResumesAfterEndpointRestart(t *testing.T) {
 	p := &guestProvider{holdOn: "date >", held: make(chan struct{}), envs: map[string]*guestEnv{}}
 	// a store that is not the memory one stands in for postgres: a durable
 	// build needs a record that outlives the process.
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-",
+	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-", TokenEncryptionKey: tokenTestKey,
 		StateStore: persistentStore{orchestrator.NewMemoryStateStore()}})
 	ctx := context.Background()
 	if err := fm.RegisterHost(ctx, orchestrator.Host{
@@ -132,10 +132,7 @@ func TestBuildOnFleetResumesAfterEndpointRestart(t *testing.T) {
 	}
 
 	client, addr, stop := serveBuildFleet(t, fm, "")
-	fm.SetDurableDestroyer(client)
-	fm.SetDurableSnapshots(client)
-	fm.SetDurableBuilds(client)
-	fm.SetDurableCreator(client)
+	fm.SetDurable(client)
 
 	in := orchestrator.BuildInput{
 		ID:       fmt.Sprintf("bld_fleet_%d", time.Now().UnixNano()),

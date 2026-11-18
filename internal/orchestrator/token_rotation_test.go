@@ -24,7 +24,7 @@ func newRotateTestFleet(t *testing.T) (*FleetManager, *credForkProvider, *Memory
 	t.Helper()
 	provider := newCredForkProvider()
 	store := NewMemoryStateStore()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:           provider,
 		StateStore:         store,
 		Prefix:             "fuse-",
@@ -53,9 +53,9 @@ func storedToken(t *testing.T, store *MemoryStateStore, vmID string) string {
 	return ""
 }
 
-// TestRotateToken_inProcess: mode off writes a new token into the guest and
-// makes it the vm's own, in memory and on the environment handle.
-func TestRotateToken_inProcess(t *testing.T) {
+// TestRotateToken_rotatesGuestToken: a rotation writes a new token into the
+// guest and makes it the vm's own, in memory and on the environment handle.
+func TestRotateToken_rotatesGuestToken(t *testing.T) {
 	fm, provider, _, vmID := newRotateTestFleet(t)
 	env := provider.envs[vmID]
 	before := string(env.files[fuseAuthTokenPath])
@@ -78,8 +78,8 @@ func TestRotateToken_inProcess(t *testing.T) {
 	}
 }
 
-// TestRotateToken_durable: with restate configured the rotation runs on the
-// Environment object, and nothing happens in process.
+// TestRotateToken_durable: the rotation runs on the Environment object, and
+// the api call itself never touches the guest.
 func TestRotateToken_durable(t *testing.T) {
 	fm, provider, _, vmID := newRotateTestFleet(t)
 	d := &fakeTokenRotator{}
@@ -170,18 +170,21 @@ func TestRotateTokenSteps_refusals(t *testing.T) {
 		t.Fatalf("draining vm: %v, want the not-running refusal", err)
 	}
 
-	noKey := NewFleetManager(FleetConfig{Provider: newCredForkProvider(), Prefix: "fuse-"})
+	// startup refuses a fleet with no key; one that lost it anyway refuses
+	// to rotate rather than store a plaintext token.
+	noKey := newInlineFleet(FleetConfig{Provider: newCredForkProvider(), Prefix: "fuse-"})
 	id := provisionSnapshotTestVM(t, noKey, "task-2")
+	noKey.tokenEncryptionKey = nil
 	if _, err := noKey.RotateTokenGenerate(ctx, id); !errors.Is(err, errRotateNoKey) {
 		t.Fatalf("no key: %v, want errRotateNoKey", err)
 	}
 }
 
 // TestRotateToken_metered: every rotation is counted as rotate_token, a
-// refused one as an error, in both modes.
+// refused one as an error.
 func TestRotateToken_metered(t *testing.T) {
 	metrics := &opMetrics{}
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:           newCredForkProvider(),
 		Prefix:             "fuse-",
 		Metrics:            metrics,
@@ -195,11 +198,7 @@ func TestRotateToken_metered(t *testing.T) {
 	if err := fm.RotateToken(ctx, "fuse-missing"); err == nil {
 		t.Fatal("rotating an unknown vm succeeded")
 	}
-	fm.SetDurableTokenRotator(&fakeTokenRotator{})
-	if err := fm.RotateToken(ctx, vmID); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"create:ok", "rotate_token:ok", "rotate_token:error", "rotate_token:ok"}
+	want := []string{"create:ok", "rotate_token:ok", "rotate_token:error"}
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	if !slices.Equal(metrics.ops, want) {

@@ -8,7 +8,7 @@ import (
 
 // ImageFleetErrors are the sentinel errors a convert fails with. the durable
 // handler carries each one across restate as its own error code, so the api
-// answers it with the same status as in mode off.
+// answers it with the status the sentinel maps to.
 var ImageFleetErrors = []error{
 	ErrInvalidImage,
 	ErrImageNotFound,
@@ -32,15 +32,15 @@ type DurableImages interface {
 	ConvertImage(ctx context.Context, req ConvertImageRequest) (Image, error)
 }
 
-// SetDurableImages routes image converts through restate. nil (mode off, the
-// default) keeps the in-process convert. set it before Start.
+// SetDurableImages routes image converts through restate. set it before
+// Start.
 func (fm *FleetManager) SetDurableImages(d DurableImages) {
 	fm.mu.Lock()
 	fm.durableImage = d
 	fm.mu.Unlock()
 }
 
-// durableImages is the converter converts go through, or nil for in process.
+// durableImages is the converter converts go through.
 func (fm *FleetManager) durableImages() DurableImages {
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()

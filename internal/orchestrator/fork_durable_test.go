@@ -45,7 +45,7 @@ func (s *stepForker) Fork(ctx context.Context, vmID string, req ForkRequest) err
 			if plan.Seed.SnapshotID != "" {
 				return nil
 			}
-			seed, err = fm.snapshotInProcess(ctx, plan.SourceVMID, SnapshotOptions{Comment: plan.Comment})
+			seed, err = fm.durableSnapshotsClient().Snapshot(ctx, plan.SourceVMID, SnapshotOptions{Comment: plan.Comment})
 			return err
 		}},
 		{"place", func() error { hostID, err = fm.ForkPlace(ctx, plan, seed); return err }},
@@ -88,7 +88,7 @@ func (s *stepForker) Fork(ctx context.Context, vmID string, req ForkRequest) err
 func newDurableForkFleet(t *testing.T, store StateStore) (*FleetManager, *forkTestProvider, string) {
 	t.Helper()
 	provider := newForkTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: forkTestKey})
+	fm := newInlineFleet(FleetConfig{Provider: provider, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: forkTestKey})
 	return fm, provider, provisionSnapshotTestVM(t, fm, "task-1")
 }
 
@@ -158,7 +158,7 @@ func TestDurableFork_stepsAreRetrySafe(t *testing.T) {
 }
 
 // the placeholder is persisted provisioning before anything exists on the
-// host, and a restart with restate on keeps it provisioning for the fork to
+// host, and a restart keeps it provisioning for the fork to
 // finish rather than promoting or tearing it down.
 func TestDurableFork_placeholderSurvivesRecovery(t *testing.T) {
 	store := NewMemoryStateStore()
@@ -170,7 +170,7 @@ func TestDurableFork_placeholderSurvivesRecovery(t *testing.T) {
 	}
 	newID := forker.plan.NewVMID
 
-	fm2 := NewFleetManager(FleetConfig{Provider: provider, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: forkTestKey})
+	fm2 := newInlineFleet(FleetConfig{Provider: provider, StateStore: store, Prefix: "fuse-", TokenEncryptionKey: forkTestKey})
 	fm2.SetDurableForker(&stepForker{fm: fm2})
 	if err := fm2.recoverState(context.Background()); err != nil {
 		t.Fatal(err)
@@ -223,7 +223,7 @@ func TestDurableFork_abandonLeavesNothingTracked(t *testing.T) {
 	}
 }
 
-// begin refuses what the in-process fork refuses, before writing anything.
+// begin refuses a gpu source before writing anything.
 func TestDurableFork_beginRefusesGPU(t *testing.T) {
 	store := NewMemoryStateStore()
 	fm, _, srcID := newDurableForkFleet(t, store)

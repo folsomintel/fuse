@@ -65,7 +65,7 @@ func (p *liveMigrateProvider) Create(_ context.Context, spec Spec) (Environment,
 func newLiveMigrateFleet(t *testing.T, provider *liveMigrateProvider, mover *recordingMover) *FleetManager {
 	t.Helper()
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(ctx, artifactHost(id, 8), provider); err != nil {
 			t.Fatal(err)
@@ -166,7 +166,7 @@ func TestMigrateVM_emptyTargetPrefersTheCheckpointStandby(t *testing.T) {
 	if err := fm.RegisterHost(context.Background(), artifactHost("h-c", 8), provider); err != nil {
 		t.Fatal(err)
 	}
-	fm.chainFor("fuse-task-src").standby = "h-c"
+	fm.MirrorChain("fuse-task-src", ChainState{Standby: "h-c"}, false)
 
 	newID, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: true})
 	if err != nil {

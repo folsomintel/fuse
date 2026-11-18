@@ -229,26 +229,3 @@ func TestGateNoSpecIsOff(t *testing.T) {
 		t.Fatalf("no hitl block: held=%v err=%v", held, err)
 	}
 }
-
-func TestRecoverOrphanRuns(t *testing.T) {
-	fm, vmID := hitlFleet(t, FleetConfig{}, gateSpec())
-	now := time.Now()
-	in := hitl.Intervention{
-		ID: hitl.NewID(now), EnvID: vmID, Kind: hitl.KindExec, Gate: "force-push", Mode: hitl.ModeAsk,
-		State: hitl.StateApproved, Exec: &hitl.ExecPayload{Argv: []string{"git"}}, TriggeredBy: testActor,
-		Deadline: now.Add(time.Minute), Decision: &hitl.Decision{Outcome: hitl.OutcomeApprove, DecidedBy: approver, DecidedAt: now},
-		CreatedAt: now, UpdatedAt: now,
-	}
-	rec, err := fm.interventionToRecord(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := fm.store.UpsertIntervention(context.Background(), rec); err != nil {
-		t.Fatal(err)
-	}
-	fm.recoverOrphanRuns(context.Background())
-	got, _ := fm.GetIntervention(context.Background(), in.ID)
-	if !got.Settled() || got.Result.Error == "" {
-		t.Fatalf("orphan not settled: %+v", got.Result)
-	}
-}

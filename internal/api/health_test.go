@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // errStore is a StateStore that returns a configurable error from
@@ -51,7 +52,7 @@ func (s *hangStore) ListVMs(ctx context.Context) ([]orchestrator.VMRecord, error
 
 func newFleetForTest(t *testing.T) *orchestrator.FleetManager {
 	t.Helper()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		StateStore: orchestrator.NewMemoryStateStore(),
 	})
 	return fm
@@ -238,13 +239,15 @@ type fakeRestate struct{ err error }
 
 func (f fakeRestate) Check(context.Context) error { return f.err }
 
-func TestReadiness_NoRestateCheckWhenOff(t *testing.T) {
+// the orchestrator always sets Healthcheck.Restate; a nil checker (tests)
+// leaves the restate entry out.
+func TestReadiness_NoRestateCheckWhenNil(t *testing.T) {
 	hc := &Healthcheck{Fleet: newFleetForTest(t), Store: orchestrator.NewMemoryStateStore()}
 	rr := httptest.NewRecorder()
 	hc.Readiness(rr, httptest.NewRequest(http.MethodGet, "/ready", nil))
 	checks := decodeBody(t, rr)["checks"].(map[string]any)
 	if _, ok := checks["restate"]; ok {
-		t.Fatalf("checks = %v, want no restate entry with restate off", checks)
+		t.Fatalf("checks = %v, want no restate entry with a nil checker", checks)
 	}
 }
 

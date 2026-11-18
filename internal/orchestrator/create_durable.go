@@ -24,8 +24,8 @@ var errCreateSealed = errors.New("create inputs do not decrypt under TOKEN_ENCRY
 
 // CreateFleetErrors are the sentinel errors a create step fails with when a
 // retry cannot change the outcome. the durable handler carries each one
-// across restate as its own error code, so the api answers it with the same
-// status as in mode off.
+// across restate as its own error code, so the api answers it with the
+// status the sentinel maps to.
 var CreateFleetErrors = []error{
 	ErrTaskAlreadyAssigned,
 	ErrNoCapacity,
@@ -181,21 +181,17 @@ type DurableCreator interface {
 	CreateInFlight(ctx context.Context, vmID string) (bool, error)
 }
 
-// SetDurableCreator routes creates through restate. nil (mode off, the
-// default) keeps the in-process create. without a TOKEN_ENCRYPTION_KEY
-// creates stay in process too: their inputs could not be sealed for the
-// journal. set it before Start.
+// SetDurableCreator routes creates through restate. creates seal their
+// inputs with the fleet's TOKEN_ENCRYPTION_KEY before restate journals them.
+// set it before Start.
 func (fm *FleetManager) SetDurableCreator(d DurableCreator) {
 	fm.mu.Lock()
 	fm.durableCreate = d
 	fm.mu.Unlock()
 }
 
-// durableCreator is the creator creates go through, or nil for in process.
+// durableCreator is the creator creates go through.
 func (fm *FleetManager) durableCreator() DurableCreator {
-	if len(fm.tokenEncryptionKey) != 32 {
-		return nil
-	}
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	return fm.durableCreate
@@ -533,7 +529,7 @@ func (fm *FleetManager) CreateBeginFailed(ctx context.Context, vmID string, req 
 // CreatePlace schedules the vm and reserves its capacity, and persists the
 // placement so a restart re-derives the reservation. a vm already placed by
 // an earlier run of this step keeps its host. every scheduling failure is
-// permanent: the create fails as it does in mode off.
+// permanent: retrying cannot make a host fit.
 func (fm *FleetManager) CreatePlace(ctx context.Context, vmID string, req CreateRequest, st CreateState) (string, error) {
 	v, err := fm.createVM(vmID)
 	if err != nil {
@@ -649,7 +645,7 @@ func (fm *FleetManager) CreateRestoreOrCreate(ctx context.Context, vmID string, 
 	if err != nil {
 		return false, err
 	}
-	env, fromCache, err := restoreOrCreate(ctx, b.p, b.in.spec, true)
+	env, fromCache, err := restoreOrCreate(ctx, b.p, b.in.spec)
 	if err != nil {
 		return false, provisionErr(vmID, err, run.sensitive())
 	}
@@ -932,8 +928,8 @@ func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req Crea
 }
 
 // reconcileStaleCreates fails provisioning vms no create will finish: on
-// restate, a vm recovered provisioning whose create ran before restate was on
-// (in process) has no invocation to resume it, and would otherwise hold its
+// restate, a vm recovered provisioning whose create ran in process under an
+// older release has no invocation to resume it, and would otherwise hold its
 // task and its host's capacity forever, since the rest of reconcile skips
 // provisioning vms. only vms recovered provisioning at startup are asked
 // about, never a create, fork or migrate this process is running. a vm
@@ -982,7 +978,6 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 		fm.mu.Lock()
 		delete(fm.recoveredCreates, c.id)
 		fm.mu.Unlock()
-		provider, _ := fm.providerForVM(c.hostID)
-		fm.cleanupFailedCreate(provider, nil, c.id, c.hostID)
+		fm.cleanupFailedCreate(c.id, c.hostID)
 	}
 }

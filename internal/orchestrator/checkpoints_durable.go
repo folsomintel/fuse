@@ -135,14 +135,13 @@ func (fm *FleetManager) MirrorChain(vmID string, chain ChainState, pending bool)
 		c = &checkpointChain{}
 		fm.chains[vmID] = c
 	}
-	c.standby, c.bytes, c.head, c.base, c.pending = chain.Standby, chain.Bytes, chain.Head, chain.Base, pending
+	c.standby, c.bytes, c.pending = chain.Standby, chain.Bytes, pending
 }
 
 // the methods below are the steps of the durable checkpoint chain. each runs
 // inside a journaled restate step and must be safe to run again.
 
-// ChainBegin settles what this tick does with vmID's chain, by the rules
-// advanceChain follows in process.
+// ChainBegin settles what this tick does with vmID's chain.
 func (fm *FleetManager) ChainBegin(ctx context.Context, vmID string, chain ChainState) (ChainPlan, error) {
 	fm.mu.RLock()
 	v, ok := fm.vms[vmID]

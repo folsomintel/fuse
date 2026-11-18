@@ -34,7 +34,7 @@ func deviceFleetHost(id string, devices ...GPUDevice) Host {
 
 func TestAllocateOnHost_bindsConcreteUUIDsAndReleasesThem(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := deviceFleetHost("h1",
 		GPUDevice{UUID: "gpu-a", Model: "a100"},
 		GPUDevice{UUID: "gpu-b", Model: "a100"},
@@ -92,7 +92,7 @@ func findHost(t *testing.T, fm *FleetManager, id string) Host {
 
 func TestAllocateOnHost_incrementsGPUCounter(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 2, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestAllocateOnHost_incrementsGPUCounter(t *testing.T) {
 
 func TestDeallocateOnHost_decrementsGPUCounter(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 2, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestDeallocateOnHost_decrementsGPUCounter(t *testing.T) {
 
 func TestDeallocateOnHost_clampsGPUCounterAtZero(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestDeallocateOnHost_clampsGPUCounterAtZero(t *testing.T) {
 
 func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,10 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 	fm.mu.Unlock()
 
 	// second gpu env must not fit on the same host
-	_, _, err := Schedule(Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, fm.activeHosts(), PlacementSpread)
+	fm.mu.RLock()
+	hosts := fm.activeHostsLocked()
+	fm.mu.RUnlock()
+	_, _, err := Schedule(Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, hosts, PlacementSpread)
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Errorf("err = %v, want ErrNoCapacity (gpu already allocated)", err)
 	}
@@ -163,7 +166,7 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
 	defaultProvider := newMockProvider()
 	hostProvider := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 	ctx := context.Background()
 	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
@@ -194,7 +197,7 @@ func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
 
 func TestProvisionGPUWithoutRegisteredHostReturnsNoCapacity(t *testing.T) {
 	defaultProvider := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 
 	_, err := fm.ProvisionAndAssign(context.Background(), "gpu-task", Spec{GPUs: 1}, []byte(`{}`), nil, BootOptions{})
 	if !errors.Is(err, ErrNoCapacity) {
@@ -218,7 +221,7 @@ func TestConcurrentGPUProvisionReservesBeforeBoot(t *testing.T) {
 		hostProvider.envs[spec.Name] = env
 		return env, nil
 	}
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +259,7 @@ func migInstanceFleetHost(id string, instances ...MIGInstance) Host {
 
 func TestAllocateOnHost_bindsConcreteMIGInstanceUUIDs(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := migInstanceFleetHost("h1",
 		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
 		MIGInstance{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
@@ -317,7 +320,7 @@ func TestAllocateOnHost_bindsConcreteMIGInstanceUUIDs(t *testing.T) {
 
 func TestDeallocateOnHost_migInstanceReleasesAcrossProfiles(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := migInstanceFleetHost("h1",
 		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100"},
 		MIGInstance{UUID: "m3", Profile: "2g.20gb", Kind: "a100"},
@@ -365,7 +368,7 @@ func TestDeallocateOnHost_migInstanceReleasesAcrossProfiles(t *testing.T) {
 // reclaimed to zero once reconcile destroys the orphan.
 func TestReconcileOrphan_destroysAndReclaimsHostAllocation(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := gpuFleetHost("h1", 2, "a100")
 	if err := fm.RegisterHost(context.Background(), host, stub); err != nil {
 		t.Fatal(err)
