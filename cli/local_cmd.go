@@ -62,8 +62,6 @@ type localState struct {
 	fcAgentToken    string
 	orchAuthToken   string
 	setupScript     string // path to the written fuse-local-setup.sh
-	fcAgentScript   string // path to the written fc-agent.py
-	agentLibScript  string // path to the written agentlib.py, imported by fc-agent.py
 	sshKey          string // path to the appliance ssh private key (darwin)
 	applianceDisk   string // path to the appliance raw disk (darwin)
 	vfkitPid        string // path to the vfkit pidfile (darwin)
@@ -92,8 +90,6 @@ func loadLocalState() (*localState, error) {
 	s := &localState{
 		dir:             dir,
 		setupScript:     filepath.Join(dir, "fuse-local-setup.sh"),
-		fcAgentScript:   filepath.Join(dir, "fc-agent.py"),
-		agentLibScript:  filepath.Join(dir, "agentlib.py"),
 		sshKey:          filepath.Join(dir, "appliance_ed25519"),
 		applianceDisk:   filepath.Join(dir, "appliance.raw"),
 		vfkitPid:        filepath.Join(dir, "vfkit.pid"),
@@ -101,14 +97,10 @@ func loadLocalState() (*localState, error) {
 	}
 	// the embedded assets are rewritten every time so a cli upgrade upgrades
 	// the stack scripts with it.
-	if err := os.WriteFile(s.setupScript, hostagent.LocalSetupSh, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(s.fcAgentScript, hostagent.FCAgentPy, 0o644); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(s.agentLibScript, hostagent.AgentLibPy, 0o644); err != nil {
-		return nil, err
+	for _, a := range localAssets() {
+		if err := os.WriteFile(filepath.Join(dir, a.name), a.data, a.mode); err != nil {
+			return nil, err
+		}
 	}
 	if s.fcAgentToken, err = loadOrMintToken(filepath.Join(dir, "fc-agent.token")); err != nil {
 		return nil, err
@@ -117,6 +109,27 @@ func loadLocalState() (*localState, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// localAsset is one embedded stack file, written flat into the stack dir.
+type localAsset struct {
+	name string
+	data []byte
+	mode os.FileMode
+}
+
+// localAssets are the files the stack runs from. the cli writes them into the
+// stack dir on linux and pushes them into the appliance on macOS, on every
+// up; install_stack then stages the bake files where fc-agent.py expects them.
+func localAssets() []localAsset {
+	return []localAsset{
+		{"fuse-local-setup.sh", hostagent.LocalSetupSh, 0o755},
+		{"fc-agent.py", hostagent.FCAgentPy, 0o644},
+		{"agentlib.py", hostagent.AgentLibPy, 0o644},
+		{"fc-bake-distro-rootfs.sh", hostagent.FCBakeDistroRootfsSh, 0o755},
+		{"fc-bake-lib.sh", hostagent.FCBakeLibSh, 0o644},
+		{"fused.service", hostagent.FusedService, 0o644},
+	}
 }
 
 func loadOrMintToken(path string) (string, error) {
@@ -136,7 +149,8 @@ func loadOrMintToken(path string) (string, error) {
 
 // localReleaseVersion pins the stack's release-asset downloads (orchestrator,
 // fused) to the cli's own version, so the local stack matches the cli. a dev
-// build ("dev") falls back to the latest release.
+// build ("dev") falls back to the latest release, which install_stack
+// resolves to a concrete tag on every run.
 func localReleaseVersion() string {
 	if version == "dev" {
 		return "latest"
@@ -294,8 +308,8 @@ func runLocalSetup(s *localState, subcommand string) error {
 
 // injectDevOrchestrator honors FUSE_LOCAL_ORCH_BIN: a path to a locally built
 // linux orchestrator binary that should run instead of the release asset.
-// install skips the download when bin/orchestrator already exists, so copying
-// it into place first is the whole injection.
+// it is copied into place and marked "dev", the one version marker install
+// never replaces (see injectDevOrchestratorAppliance).
 func injectDevOrchestrator(dir string) error {
 	src := os.Getenv("FUSE_LOCAL_ORCH_BIN")
 	if src == "" {
@@ -310,6 +324,9 @@ func injectDevOrchestrator(dir string) error {
 	}
 	dst := filepath.Join(dir, "bin", "orchestrator")
 	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "bin", ".orchestrator-version"), []byte("dev\n"), 0o644); err != nil {
 		return err
 	}
 	infof("using dev orchestrator binary from %s", src)

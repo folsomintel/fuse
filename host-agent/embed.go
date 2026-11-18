@@ -25,3 +25,20 @@ var AgentLibPy []byte
 //
 //go:embed local/fuse-local-setup.sh
 var LocalSetupSh []byte
+
+// FCBakeDistroRootfsSh and FCBakeLibSh are the oci image bake
+// (host-agent/firecracker/scripts/fc-bake-distro-rootfs.sh and the
+// fc-bake-lib.sh it sources), byte-exact. fc-agent.py runs the bake for
+// `fuse image convert`, so the local stack stages them under fc/scripts.
+//
+//go:embed firecracker/scripts/fc-bake-distro-rootfs.sh
+var FCBakeDistroRootfsSh []byte
+
+//go:embed firecracker/scripts/fc-bake-lib.sh
+var FCBakeLibSh []byte
+
+// FusedService is the guest unit the bake installs next to fused
+// (host-agent/firecracker/fused.service), byte-exact.
+//
+//go:embed firecracker/fused.service
+var FusedService []byte

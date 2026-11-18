@@ -1,7 +1,11 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
+	"io"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -197,4 +201,113 @@ func TestFindLeaseIPPrefersLiveAppliance(t *testing.T) {
 			t.Errorf("ips=%v, want [192.168.64.4]", ips)
 		}
 	})
+}
+
+// every up pushes the stack files into the appliance as one tar; it must carry
+// what fc-agent.py and its image convert need, plus the env file, with the
+// modes install relies on.
+func TestApplianceTarCarriesTheStackFiles(t *testing.T) {
+	s := &localState{fcAgentToken: "agent-tok", orchAuthToken: "orch-tok"}
+	data, err := applianceTar(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]*tar.Header{}
+	body := map[string][]byte{}
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[hdr.Name], body[hdr.Name] = hdr, b
+	}
+	want := map[string]int64{
+		"fuse-local-setup.sh":      0o755,
+		"fc-agent.py":              0o644,
+		"agentlib.py":              0o644,
+		"fc-bake-distro-rootfs.sh": 0o755,
+		"fc-bake-lib.sh":           0o644,
+		"fused.service":            0o644,
+		"env":                      0o600,
+	}
+	for name, mode := range want {
+		hdr, ok := got[name]
+		if !ok {
+			t.Errorf("tar is missing %s", name)
+			continue
+		}
+		if hdr.Mode != mode {
+			t.Errorf("%s: mode %o, want %o", name, hdr.Mode, mode)
+		}
+		if len(body[name]) == 0 {
+			t.Errorf("%s is empty", name)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("tar has %d files, want %d", len(got), len(want))
+	}
+	env := string(body["env"])
+	for _, line := range []string{"FC_AGENT_TOKEN=agent-tok\n", "ORCH_AUTH_TOKEN=orch-tok\n", "FUSE_VERSION=" + localReleaseVersion() + "\n"} {
+		if !strings.Contains(env, line) {
+			t.Errorf("env is missing %q:\n%s", line, env)
+		}
+	}
+}
+
+// the assets are embedded byte-exact from the files a fleet host runs, so the
+// local stack bakes images exactly the way a fleet host does.
+func TestLocalAssetsMatchTheRepoFiles(t *testing.T) {
+	src := map[string]string{
+		"fc-agent.py":              "../host-agent/firecracker/fc-agent.py",
+		"agentlib.py":              "../host-agent/shared/agentlib.py",
+		"fuse-local-setup.sh":      "../host-agent/local/fuse-local-setup.sh",
+		"fc-bake-distro-rootfs.sh": "../host-agent/firecracker/scripts/fc-bake-distro-rootfs.sh",
+		"fc-bake-lib.sh":           "../host-agent/firecracker/scripts/fc-bake-lib.sh",
+		"fused.service":            "../host-agent/firecracker/fused.service",
+	}
+	for _, a := range localAssets() {
+		path, ok := src[a.name]
+		if !ok {
+			t.Errorf("unexpected asset %s", a.name)
+			continue
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a.data, b) {
+			t.Errorf("%s differs from %s", a.name, path)
+		}
+	}
+}
+
+// cloud-init only runs on first boot, so it must not be where the stack files
+// come from: a file written there is never refreshed by a cli upgrade.
+func TestCloudInitOnlyCreatesTheUser(t *testing.T) {
+	dir := t.TempDir()
+	s := &localState{dir: dir, sshKey: dir + "/key"}
+	if err := os.WriteFile(s.sshKey+".pub", []byte("ssh-ed25519 AAAA test\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCloudInit(s); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(dir + "/user-data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "write_files") {
+		t.Errorf("user-data still writes files:\n%s", b)
+	}
+	if !strings.Contains(string(b), "ssh-ed25519 AAAA test") {
+		t.Errorf("user-data lacks the ssh key:\n%s", b)
+	}
 }

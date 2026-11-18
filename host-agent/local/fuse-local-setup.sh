@@ -14,10 +14,12 @@
 #   FUSE_LOCAL_DIR    state dir (required). layout:
 #                       bin/{firecracker,orchestrator,restate-server}
 #                       fc/{vmlinux.bin,rootfs.ext4,ubuntu.id_rsa}  restate/ (restate data)
-#                       fc-agent.py  agentlib.py  *.log  *.pid  env
+#                       fc/{fused,fused.service,scripts/}  (what image convert bakes with)
+#                       fc-agent.py  agentlib.py  fc-bake-*.sh  fused.service  *.log  *.pid  env
 #   FC_AGENT_TOKEN    bearer token the orchestrator uses to call fc-agent (required by install)
 #   ORCH_AUTH_TOKEN   orchestrator master token (required by install)
-#   FUSE_VERSION      fuse release tag for orchestrator/fused assets (default: latest)
+#   FUSE_VERSION      fuse release tag for orchestrator/fused assets (default: latest,
+#                     which install resolves to the tag it currently names)
 #   ORCH_PORT         orchestrator listen port (default 8080)
 #   FC_AGENT_PORT     fc-agent listen port (default 8090)
 #   PUBLIC_HOST       address vm urls are published under. "auto" resolves the
@@ -48,12 +50,6 @@ case "$(uname -m)" in
   *) echo "[local] unsupported arch $(uname -m)" >&2; exit 1 ;;
 esac
 CI_BASE="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSION}/${ARCH}"
-
-if [ "$FUSE_VERSION" = "latest" ]; then
-  REL_BASE="https://github.com/folsomintel/fuse/releases/latest/download"
-else
-  REL_BASE="https://github.com/folsomintel/fuse/releases/download/${FUSE_VERSION}"
-fi
 
 # >>> fuse release-asset checksum verification >>>
 # This block is embedded, not sourced: ops/install-orchestrator.sh is
@@ -130,6 +126,17 @@ fetch() { # fetch <url> <dest>
   curl -fSL --retry 3 -o "$2.part" "$1" && mv "$2.part" "$2"
 }
 
+# latest_release_tag: the tag github's /releases/latest redirects to.
+latest_release_tag() {
+  local url
+  url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' --max-time 20 \
+    "https://github.com/folsomintel/fuse/releases/latest") || return 1
+  case "${url##*/}" in
+    v[0-9]*) echo "${url##*/}" ;;
+    *) return 1 ;;
+  esac
+}
+
 install_stack() {
   : "${FC_AGENT_TOKEN:?FC_AGENT_TOKEN is required}"
   : "${ORCH_AUTH_TOKEN:?ORCH_AUTH_TOKEN is required}"
@@ -138,6 +145,28 @@ install_stack() {
   [ -e /dev/kvm ] || die "/dev/kvm not present: firecracker needs kvm (on macOS this script runs inside the appliance VM, which needs nested virtualization: M3 or later + macOS 15+)"
   [ -f "$DIR/fc-agent.py" ] || die "$DIR/fc-agent.py missing: fuse local writes it before calling install"
   [ -f "$DIR/agentlib.py" ] || die "$DIR/agentlib.py missing: fuse local writes it next to fc-agent.py"
+  local f
+  for f in fc-bake-distro-rootfs.sh fc-bake-lib.sh fused.service; do
+    [ -f "$DIR/$f" ] || die "$DIR/$f missing: fuse local writes it next to fc-agent.py"
+  done
+
+  # a dev cli asks for "latest". as a marker, "latest" always equals itself,
+  # so an installed stack never noticed a newer release; resolve it to the
+  # tag it names today. offline, keep the version already installed.
+  if [ "$FUSE_VERSION" = "latest" ]; then
+    local resolved
+    if resolved=$(latest_release_tag); then
+      FUSE_VERSION=$resolved
+    else
+      FUSE_VERSION=$(cat "$DIR/fc/.fused-injected" 2>/dev/null || echo latest)
+      log "warning: could not resolve the latest fuse release; keeping $FUSE_VERSION"
+    fi
+  fi
+  if [ "$FUSE_VERSION" = "latest" ]; then
+    REL_BASE="https://github.com/folsomintel/fuse/releases/latest/download"
+  else
+    REL_BASE="https://github.com/folsomintel/fuse/releases/download/${FUSE_VERSION}"
+  fi
 
   mkdir -p "$DIR/bin" "$DIR/fc"
 
@@ -212,14 +241,16 @@ install_stack() {
   # version whose fused is inside the rootfs; the old marker held a sha and was
   # only ever tested for existence, so "until the asset changes" never fired and
   # guests kept booting the first fused ever installed. an old sha marker does
-  # not equal a version, so upgrading installs re-inject exactly once.
+  # not equal a version, so upgrading installs re-inject exactly once. a copy
+  # stays at fc/fused, which fc-agent.py's image convert bakes into each image.
   local fused_tmp fused_marker
   fused_tmp=$(mktemp -d)
   fused_marker="$DIR/fc/.fused-injected"
-  if [ "$(cat "$fused_marker" 2>/dev/null || true)" != "$FUSE_VERSION" ]; then
+  if [ "$(cat "$fused_marker" 2>/dev/null || true)" != "$FUSE_VERSION" ] || [ ! -x "$DIR/fc/fused" ]; then
     fetch "$REL_BASE/checksums.txt" "$fused_tmp/checksums.txt"
     fetch "$REL_BASE/fused_Linux_${ASSET_ARCH}" "$fused_tmp/fused"
     verify_asset "$fused_tmp/fused" "fused_Linux_${ASSET_ARCH}" "$fused_tmp/checksums.txt" || die "fused asset failed verification"
+    install -m0755 "$fused_tmp/fused" "$DIR/fc/fused"
     local mnt
     mnt=$(mktemp -d)
     sudo -n mount -o loop "$DIR/fc/rootfs.ext4" "$mnt" || die "loop-mounting the base rootfs needs passwordless sudo (or run install as root)"
@@ -233,6 +264,27 @@ install_stack() {
     log "injected fused into base rootfs ($FUSE_VERSION)"
   fi
   rm -rf "$fused_tmp"
+
+  # the rest of what `fuse image convert` needs: the bake scripts and the
+  # guest unit where fc-agent.py looks for them under FC_DIR, plus podman and
+  # mkfs.ext4 for the bake itself. a failed package install only warns, since
+  # the rest of the stack works without it.
+  mkdir -p "$DIR/fc/scripts"
+  install -m0755 "$DIR/fc-bake-distro-rootfs.sh" "$DIR/fc/scripts/fc-bake-distro-rootfs.sh"
+  install -m0644 "$DIR/fc-bake-lib.sh" "$DIR/fc/scripts/fc-bake-lib.sh"
+  install -m0644 "$DIR/fused.service" "$DIR/fc/fused.service"
+  if ! command -v podman >/dev/null 2>&1 || ! command -v mkfs.ext4 >/dev/null 2>&1; then
+    if command -v apt-get >/dev/null 2>&1; then
+      log "installing podman and e2fsprogs (fuse image convert bakes with them)"
+      # a fresh appliance has no package lists yet, so update first
+      if ! { DEBIAN_FRONTEND=noninteractive apt-get update -q >/dev/null \
+          && DEBIAN_FRONTEND=noninteractive apt-get install -y -q podman e2fsprogs >/dev/null; }; then
+        log "warning: installing podman failed; fuse image convert will not work here"
+      fi
+    else
+      log "warning: podman or mkfs.ext4 is missing and there is no apt-get to install them; fuse image convert will not work here"
+    fi
+  fi
 
   log "install complete"
 }
@@ -249,6 +301,32 @@ pid_running() {
   [ -n "$pid" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q -- "$want"
+}
+
+# code_sum <file>...: the digests of the files a process runs from, one line.
+code_sum() {
+  local f
+  for f in "$@"; do sha256_of "$f"; done | tr '\n' ' '
+}
+
+# running_current <name> <want> <file>...: <name> is running and was started
+# from these exact files (start records them in <name>.code). a live process
+# on older code, e.g. after `fuse local up` pushed a new fc-agent.py, is
+# stopped here so start brings the new code up instead of skipping it.
+running_current() {
+  local name="$1" want="$2" pid _
+  shift 2
+  pid_running "$DIR/$name.pid" "$want" || return 1
+  [ "$(cat "$DIR/$name.code" 2>/dev/null)" = "$(code_sum "$@")" ] && return 0
+  pid=$(cat "$DIR/$name.pid")
+  log "restarting $name: its code changed"
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 50); do
+    kill -0 "$pid" 2>/dev/null || return 1
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  return 1
 }
 
 # register_restate: tell restate-server about the orchestrator's handler
@@ -304,7 +382,7 @@ start_stack() {
     log "restate-server started, ingress on 127.0.0.1:$RESTATE_INGRESS_PORT (pid $!)"
   fi
 
-  if pid_running "$DIR/orchestrator.pid" "bin/orchestrator"; then
+  if running_current orchestrator "bin/orchestrator" "$DIR/bin/orchestrator"; then
     log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid"))"
   else
     # the mock egress backend runs inside the orchestrator and binds the
@@ -320,10 +398,11 @@ start_stack() {
     ORCH_RESTATE_LISTEN="$ORCH_RESTATE_LISTEN" \
       nohup "$DIR/bin/orchestrator" >"$DIR/orchestrator.log" 2>&1 &
     echo $! > "$DIR/orchestrator.pid"
+    code_sum "$DIR/bin/orchestrator" > "$DIR/orchestrator.code"
     log "orchestrator started on :$ORCH_PORT (pid $!)"
   fi
 
-  if pid_running "$DIR/fc-agent.pid" "fc-agent.py"; then
+  if running_current fc-agent "fc-agent.py" "$DIR/fc-agent.py" "$DIR/agentlib.py"; then
     log "fc-agent already running (pid $(cat "$DIR/fc-agent.pid"))"
   else
     FC_AGENT_TOKEN="${FC_AGENT_TOKEN:?FC_AGENT_TOKEN is required}" \
@@ -334,6 +413,7 @@ start_stack() {
     PUBLIC_HOST="$public_host" \
       nohup python3 "$DIR/fc-agent.py" >"$DIR/fc-agent.log" 2>&1 &
     echo $! > "$DIR/fc-agent.pid"
+    code_sum "$DIR/fc-agent.py" "$DIR/agentlib.py" > "$DIR/fc-agent.code"
     log "fc-agent started on :$FC_AGENT_PORT (pid $!)"
   fi
 

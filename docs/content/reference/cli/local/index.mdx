@@ -76,7 +76,7 @@ Everything lives under `~/.fuse/local/`:
 | --- | --- |
 | `bin/` | `firecracker`, `orchestrator` (Linux path) |
 | `fc/` | guest kernel, base rootfs, guest SSH key, per-VM state |
-| `fc-agent.py`, `fuse-local-setup.sh` | the embedded stack scripts, rewritten by each `up` so a CLI upgrade upgrades them |
+| `fc-agent.py`, `agentlib.py`, `fuse-local-setup.sh`, `fc-bake-*.sh`, `fused.service` | the embedded stack files, rewritten by each `up` (and pushed into the appliance on macOS) so a CLI upgrade upgrades them; a running agent whose code changed is restarted |
 | `*.token` | the two stack tokens; stable across restarts |
 | `appliance.raw`, `appliance-console.log`, `vfkit.log` | the macOS appliance disk and logs |
 | `*.log`, `*.pid` | process logs and pidfiles (Linux path) |
