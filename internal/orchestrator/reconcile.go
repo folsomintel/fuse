@@ -541,6 +541,9 @@ func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, 
 // expiredMark is what claimExpired changed on a vm, so a durable check whose
 // writes fail can put it back.
 type expiredMark struct {
+	// claimedAt is the updatedAt the claim set; a vm that no longer carries
+	// it was moved on by someone else, whose change is not undone.
+	claimedAt  time.Time
 	state      VMState
 	taskID     string
 	err        string
@@ -562,6 +565,7 @@ func (fm *FleetManager) claimExpired(vmID, taskID string, e expiry) (expiredMark
 	v.taskID = ""
 	v.err = e.reason
 	v.updatedAt = time.Now()
+	m.claimedAt = v.updatedAt
 	delete(fm.stuckStrikes, vmID)
 	delete(fm.idleStrikes, vmID)
 	fm.mu.Unlock()
@@ -576,13 +580,13 @@ func (fm *FleetManager) claimExpired(vmID, taskID string, e expiry) (expiredMark
 	return m, true
 }
 
-// unclaimExpired puts back what claimExpired changed, if nothing has moved
-// the vm on since.
+// unclaimExpired puts back what claimExpired changed, unless something else
+// has touched the vm since (a DELETE, reconcile finding it gone).
 func (fm *FleetManager) unclaimExpired(vmID string, m expiredMark) {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	v, ok := fm.vms[vmID]
-	if !ok || v.state != VMStateDestroying {
+	if !ok || v.state != VMStateDestroying || !v.updatedAt.Equal(m.claimedAt) {
 		return
 	}
 	v.state = m.state

@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -74,7 +75,12 @@ func (fm *FleetManager) HostUnregister(_ context.Context, hostID string) error {
 }
 
 // HostDeleteRecord is the second Host/{host_id}.Remove step: the host's row
-// goes, retried until it does.
+// goes, retried until it does. a restart between the two steps loads the host
+// back from its row, so it leaves the registry again here first; one that has
+// taken a vm since is refused and keeps its row.
 func (fm *FleetManager) HostDeleteRecord(ctx context.Context, hostID string) error {
+	if err := fm.unregisterHost(hostID); err != nil && !errors.Is(err, ErrHostNotFound) {
+		return err
+	}
 	return fm.deleteHostRecord(ctx, hostID)
 }

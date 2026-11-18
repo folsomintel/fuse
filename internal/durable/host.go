@@ -77,7 +77,7 @@ func hostRemove(ctx restate.ObjectContext, fleet Hosts) error {
 		return err
 	}
 	return runStep(ctx, opHost, "delete_record", func(c context.Context) error {
-		return fleet.HostDeleteRecord(c, hostID)
+		return hostRefusal(fleet.HostDeleteRecord(c, hostID))
 	})
 }
 

@@ -147,3 +147,25 @@ func TestDestroyOrphanSuccessClearsCount(t *testing.T) {
 		t.Fatal("a tracked vm was destroyed as an orphan")
 	}
 }
+
+// TestDestroyOrphanQueuedSendsCountOnce: sends that queued behind an attempt
+// on the object make none of their own inside the interval, so a slow host
+// cannot dead-letter an orphan early.
+func TestDestroyOrphanQueuedSendsCountOnce(t *testing.T) {
+	vm := fmt.Sprintf("fuse-orphan-q-%d", time.Now().UnixNano())
+	req := orchestrator.OrphanDestroyRequest{MaxRetries: 2, Interval: time.Hour}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	fleet := &orphanFleet{fail: true}
+	client := serveFleet(t, fleet, fastPolicy)
+	for i := 0; i < 3; i++ {
+		res, err := client.DestroyOrphan(ctx, vm, req)
+		if err != nil || res.DeadLettered {
+			t.Fatalf("send %d = %+v, %v", i+1, res, err)
+		}
+	}
+	if fleet.attempts != 1 || fmt.Sprint(fleet.failures) != "[1]" {
+		t.Fatalf("attempts = %d failures = %v, want one attempt", fleet.attempts, fleet.failures)
+	}
+}

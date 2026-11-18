@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"time"
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
@@ -29,6 +30,8 @@ type Orphans interface {
 // mid-retry neither resets the count nor loses the dead letter.
 type orphanState struct {
 	Retries int `json:"retries"`
+	// LastAttempt is when the last host attempt ran.
+	LastAttempt time.Time `json:"last_attempt"`
 }
 
 // destroyOrphan is Environment/{vm_id}.DestroyOrphan, sent by reconcile for
@@ -59,6 +62,16 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 		restate.Clear(ctx, orphanKey)
 		return orchestrator.OrphanDestroyResult{}, nil
 	}
+	now, err := Run(ctx, opOrphan, "clock", func(context.Context) (time.Time, error) {
+		return time.Now(), nil
+	})
+	if err != nil {
+		return orchestrator.OrphanDestroyResult{}, err
+	}
+	if !st.LastAttempt.IsZero() && now.Sub(st.LastAttempt) < req.Interval {
+		// a send that queued behind the last attempt: the next cycle retries.
+		return orchestrator.OrphanDestroyResult{}, nil
+	}
 
 	// the attempt's outcome is the step's value, not its error, so a failure
 	// is journaled once and counted instead of retried inside the step.
@@ -80,6 +93,7 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 	}
 
 	st.Retries++
+	st.LastAttempt = now
 	restate.Set(ctx, orphanKey, st)
 	dead := st.Retries >= req.MaxRetries
 	if err := runStep(ctx, opOrphan, "failed", func(c context.Context) error {
