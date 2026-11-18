@@ -13,6 +13,11 @@ import (
 // opOrphan is the op label on orphan destroy's step spans and metrics.
 const opOrphan = "orphan"
 
+// orphanQueuedWindow is how soon after the last attempt ended an invocation
+// is taken for a resend queued behind it. a real next cycle is a reconcile
+// interval away. a var so tests can send attempts back to back.
+var orphanQueuedWindow = 2 * time.Second
+
 // orphanKey is the Environment object's orphan destroy state.
 const orphanKey = "orphan"
 
@@ -66,11 +71,10 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 	if err != nil {
 		return orchestrator.OrphanDestroyResult{}, err
 	}
-	// LastAttempt is when the last attempt ended, so a send that queued
-	// behind a slow one starts inside the window however long it took. half
-	// an interval leaves room for one cycle's send arriving a little sooner
-	// than the last.
-	if !st.LastAttempt.IsZero() && now.Sub(st.LastAttempt) < req.Interval/2 {
+	// a send whose client gave up while the attempt ran is resent by a later
+	// cycle and queues behind it on the object; it starts the moment that
+	// attempt ends, well inside the window, and makes none of its own.
+	if !st.LastAttempt.IsZero() && now.Sub(st.LastAttempt) < orphanQueuedWindow {
 		// a send that queued behind the last attempt: the next cycle retries.
 		return orchestrator.OrphanDestroyResult{}, nil
 	}

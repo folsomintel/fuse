@@ -42,14 +42,30 @@ func TestRecoverRestoresWireGuardReservation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "host h-1") {
 		t.Fatalf("same key on a second host after restart err = %v, want refused", err)
 	}
-	// a destroying vm keeps its lease until it goes, and its reap, which no
-	// destroy precedes when it vanished from its host, releases it.
-	if err := wg.Restore("h-2", "fuse-other", gone.Lease); err == nil {
-		t.Fatal("lease of a destroying vm not restored")
-	}
-	fm.reapDestroyedVMs(ctx, map[string]bool{}, vmListing{})
-	fm.bg.Wait()
+	// a destroying vm's destroy may have released its lease already, so it
+	// is not restored.
 	if err := wg.Restore("h-2", "fuse-other", gone.Lease); err != nil {
+		t.Fatalf("lease of a destroying vm was restored: %v", err)
+	}
+}
+
+// TestReapReleasesEgress: a vm that vanished from its host is reaped with no
+// destroy before it, and the reap releases its egress.
+func TestReapReleasesEgress(t *testing.T) {
+	wg := egress.NewWireGuard()
+	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(wg)})
+	const lease = "abc123def456"
+	if err := wg.Restore("h-1", "fuse-gone", lease); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	fm.mu.Lock()
+	fm.vms["fuse-gone"] = &vm{id: "fuse-gone", state: VMStateDestroying, egress: egress.Status{Mode: egress.ModeProxy, Provider: egress.WireGuardName, Lease: lease}, createdAt: now, updatedAt: now}
+	fm.mu.Unlock()
+
+	fm.reapDestroyedVMs(context.Background(), map[string]bool{}, vmListing{})
+	fm.bg.Wait()
+	if err := wg.Restore("h-2", "fuse-new", lease); err != nil {
 		t.Fatalf("reaped vm still holds its key: %v", err)
 	}
 }
