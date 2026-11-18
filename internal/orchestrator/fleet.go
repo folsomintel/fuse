@@ -642,7 +642,7 @@ type FleetManager struct {
 	// flight and destroySends tracks them.
 	durableDestroy   DurableDestroyer
 	destroySendSlots chan struct{}
-	destroySends     sync.WaitGroup
+	destroySends     tracker
 
 	// durableOrphan runs reconcile's orphan destroys on restate; nil in mode
 	// off. see orphan_durable.go. orphanInFlight is the orphans with an
@@ -659,8 +659,12 @@ type FleetManager struct {
 
 	// bg tracks the fire-and-forget store writes and teardowns, so Stop
 	// can wait for them. hostWriteMu serializes host record writes.
-	bg          sync.WaitGroup
+	bg          tracker
 	hostWriteMu sync.Mutex
+	// hostPending is the hosts with a background write queued, see
+	// persistHostBackground.
+	hostPendingMu sync.Mutex
+	hostPending   map[string]bool
 	// runCtx is Start's context, see lifetime.
 	runCtx context.Context
 
@@ -738,7 +742,7 @@ type FleetManager struct {
 	// time of each vm this process has armed, guarded by mu.
 	durableExpiries DurableExpiry
 	expirySendSlots chan struct{}
-	expirySends     sync.WaitGroup
+	expirySends     tracker
 	expiryArmed     map[string]time.Time
 
 	cancel context.CancelFunc
@@ -816,6 +820,7 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		chains:                   make(map[string]*checkpointChain),
 		orphanRetries:            make(map[string]int),
 		orphanInFlight:           make(map[string]bool),
+		hostPending:              make(map[string]bool),
 		orphanSlots:              make(chan struct{}, maxOrphanDestroys),
 		stuckStrikes:             make(map[string]int),
 		idleStrikes:              make(map[string]int),
@@ -2349,10 +2354,21 @@ func (fm *FleetManager) upsertTaskBackground(task TaskRecord) {
 // persistHostBackground writes a host's record to the state store from a
 // goroutine. Used by allocateOnHost / deallocateOnHost, which run under
 // fm.mu, so capacity counters survive an orchestrator restart.
+//
+// a write already pending for the host takes the change with it, since it
+// snapshots the host when it runs, so a burst of placements on one host costs
+// one queued write rather than one each.
 func (fm *FleetManager) persistHostBackground(hostID string) {
 	if fm.store == nil {
 		return
 	}
+	fm.hostPendingMu.Lock()
+	if fm.hostPending[hostID] {
+		fm.hostPendingMu.Unlock()
+		return
+	}
+	fm.hostPending[hostID] = true
+	fm.hostPendingMu.Unlock()
 	fm.goBackground(func() {
 		if err := fm.writeHostRecord(context.Background(), hostID); err != nil {
 			fm.logger.Warn("persist host failed", "host", hostID, "err", err)
@@ -2370,11 +2386,16 @@ func (fm *FleetManager) writeHostRecord(ctx context.Context, hostID string) erro
 	}
 	fm.hostWriteMu.Lock()
 	defer fm.hostWriteMu.Unlock()
+	// this write snapshots the host below, so it covers every change so far;
+	// one after this point queues a background write of its own.
+	fm.hostPendingMu.Lock()
+	delete(fm.hostPending, hostID)
+	fm.hostPendingMu.Unlock()
 	fm.mu.RLock()
 	h, ok := fm.hosts[hostID]
 	var snap Host
 	if ok {
-		snap = *h
+		snap = h.clone()
 	}
 	fm.mu.RUnlock()
 	if !ok {
@@ -2501,14 +2522,15 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 
 // restoreEgressLeases hands each recovered vm's egress lease back to its
 // backend, so state a backend keeps in memory (the wireguard one-host-per-key
-// reservation) holds across the restart. a vm still tearing down keeps its
-// lease until its destroy releases it.
+// reservation) holds across the restart. a vm tearing down is not restored: the reap of a
+// vm already gone from its host never releases egress, and a restored lease
+// would hold the key against every other host until the next restart.
 func (fm *FleetManager) restoreEgressLeases(recovered map[string]*vm) {
 	if fm.egressRegistry == nil {
 		return
 	}
 	for id, v := range recovered {
-		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" {
+		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" || v.state.tearingDown() {
 			continue
 		}
 		if err := fm.egressRegistry.Restore(v.egress.Provider, v.hostID, id, v.egress.Lease); err != nil {

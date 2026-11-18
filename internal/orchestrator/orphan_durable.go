@@ -19,6 +19,10 @@ type OrphanDestroyRequest struct {
 	HostID string `json:"host_id,omitempty"`
 	// MaxRetries is how many failed attempts dead-letter the orphan.
 	MaxRetries int `json:"max_retries"`
+	// Interval is the reconcile interval. an invocation within it of the
+	// last attempt makes none, so sends that queued up behind a slow one on
+	// the object count as one attempt, not one each.
+	Interval time.Duration `json:"interval"`
 }
 
 // OrphanDestroyResult is what one DestroyOrphan invocation found.
@@ -70,7 +74,7 @@ func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string)
 	fm.orphanInFlight[vmID] = true
 	fm.mu.Unlock()
 
-	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries}
+	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries, Interval: fm.reconcileInterval}
 	fm.destroySends.Add(1)
 	go func() {
 		defer fm.destroySends.Done()
