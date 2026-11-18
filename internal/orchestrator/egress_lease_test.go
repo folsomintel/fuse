@@ -50,7 +50,7 @@ func TestRecoverRestoresWireGuardReservation(t *testing.T) {
 }
 
 // TestReapReleasesEgress: a vm that vanished from its host is reaped with no
-// destroy before it, and the reap releases its egress.
+// destroy before it, and the reap drops its reservation before it returns.
 func TestReapReleasesEgress(t *testing.T) {
 	wg := egress.NewWireGuard()
 	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(wg)})
@@ -64,7 +64,6 @@ func TestReapReleasesEgress(t *testing.T) {
 	fm.mu.Unlock()
 
 	fm.reapDestroyedVMs(context.Background(), map[string]bool{}, vmListing{})
-	fm.bg.Wait()
 	if err := wg.Restore("h-2", "fuse-new", lease); err != nil {
 		t.Fatalf("reaped vm still holds its key: %v", err)
 	}

@@ -153,7 +153,9 @@ type Provider interface {
 }
 
 // Restorer is a Provider that keeps per-vm state in memory and takes it back
-// from a vm's persisted lease when the orchestrator restarts.
+// from a vm's persisted lease when the orchestrator restarts. Forget drops
+// that state for a vm that is gone, with no host call.
 type Restorer interface {
 	Restore(hostID, vmID, lease string) error
+	Forget(vmID string)
 }

@@ -147,3 +147,16 @@ func (r *Registry) Restore(provider, hostID, vmID, lease string) error {
 	}
 	return rs.Restore(hostID, vmID, lease)
 }
+
+// Forget drops what provider keeps in memory for a vm that is gone, without
+// asking its host: a vm reaped because its host no longer lists it has no
+// host-side backend left to release.
+func (r *Registry) Forget(provider, vmID string) {
+	p, ok := r.Lookup(provider)
+	if !ok {
+		return
+	}
+	if rs, ok := p.(Restorer); ok {
+		rs.Forget(vmID)
+	}
+}

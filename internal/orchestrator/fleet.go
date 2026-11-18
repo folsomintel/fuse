@@ -1941,6 +1941,12 @@ func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[st
 		if v.hostID != "" {
 			fm.deallocateOnHost(v.hostID, v.spec)
 		}
+		// a vm that vanished from its host had no destroy release its egress
+		// reservation. dropped here, before the id is free, so a replacement
+		// that reuses the name never loses its own.
+		if v.egress.Mode == egress.ModeProxy && fm.egressRegistry != nil {
+			fm.egressRegistry.Forget(v.egress.Provider, id)
+		}
 		delete(fm.vms, id)
 		toRemove = append(toRemove, id)
 		removed = append(removed, v)
@@ -1948,16 +1954,6 @@ func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[st
 	fm.mu.Unlock()
 	for i, id := range toRemove {
 		fm.deleteVMBackground(id)
-		// a vm that vanished from its host had no destroy release its
-		// egress; one that did is released again, which is a no-op.
-		if removed[i].egress.Mode == egress.ModeProxy {
-			v := removed[i]
-			fm.goBackground(func() {
-				releaseCtx, cancel := context.WithTimeout(context.Background(), destroyStepTimeout)
-				defer cancel()
-				fm.releaseEgress(releaseCtx, v)
-			})
-		}
 		fm.appendEventBackground("vm", id, "vm.removed", map[string]any{"reason": "destroyed"})
 		fm.publishTerminalEvent(id, VMStateDestroyed, "")
 		fm.cancelEnvInterventions(ctx, removed[i], id, "environment destroyed")
