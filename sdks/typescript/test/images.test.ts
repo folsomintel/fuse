@@ -65,7 +65,10 @@ describe("images", () => {
     });
 
     await current.client.images.convert({ ref: "ubuntu:24.04" });
-    await current.client.images.convert({ ref: "ubuntu:24.04" }, { idempotencyKey: "my-key" });
+    await current.client.images.convert(
+      { ref: "ubuntu:24.04" },
+      { idempotencyKey: "my-key" },
+    );
 
     expect(keys[0]).toBeTruthy();
     expect(keys[1]).toBe("my-key");

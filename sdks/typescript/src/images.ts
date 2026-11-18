@@ -18,7 +18,10 @@ export class ImagesService {
    * converting or ready returns that image; one that failed is retried.
    * The same idempotency key makes a retry attach to the first convert.
    */
-  async convert(req: ConvertImageRequest, opts: MutatingCallOptions = {}): Promise<Image> {
+  async convert(
+    req: ConvertImageRequest,
+    opts: MutatingCallOptions = {},
+  ): Promise<Image> {
     requireArg(req.ref, "image ref");
     return this.t.json<Image>("POST", "/v1/images", {
       body: req,
