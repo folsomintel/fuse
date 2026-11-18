@@ -47,17 +47,28 @@ type ImagesService struct {
 // Convert starts converting req.Ref and returns the image at once, usually
 // still converting. Poll Get until it is ready. Converting a ref that is
 // already converting or ready returns that image; one that failed is retried.
-func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest) (*Image, error) {
+// The same WithIdempotencyKey makes a retry attach to the first convert.
+func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest, opts ...CallOption) (*Image, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("images service is not configured")
 	}
 	if req.Ref == "" {
 		return nil, errors.New("image ref is required")
 	}
+	var o callOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
+	if o.idempotencyKey == "" {
+		o.idempotencyKey = newIdempotencyKey()
+	}
 	hreq, err := s.t.newRequest(ctx, http.MethodPost, "/v1/images", nil, req)
 	if err != nil {
 		return nil, err
 	}
+	hreq.Header.Set(idempotencyKeyHeader, o.idempotencyKey)
 	resp, err := s.t.do(hreq)
 	if err != nil {
 		return nil, err

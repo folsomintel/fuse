@@ -85,3 +85,17 @@ def test_get_unknown_raises_not_found() -> None:
 def test_spec_serializes_image_digest() -> None:
     spec = fuse.Spec(cpus=1, image_digest=DIGEST)
     assert serialize_body(spec) == {"cpus": 1, "image_digest": DIGEST}
+
+
+@respx.mock
+def test_convert_sends_an_idempotency_key() -> None:
+    route = respx.post(f"{BASE_URL}/v1/images").mock(
+        return_value=httpx.Response(202, json=converting_image())
+    )
+    with fuse.Client(BASE_URL, "tok") as client:
+        client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"))
+        client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"), idempotency_key="my-key")
+
+    keys = [call.request.headers.get("Idempotency-Key") for call in route.calls]
+    assert keys[0]
+    assert keys[1] == "my-key"

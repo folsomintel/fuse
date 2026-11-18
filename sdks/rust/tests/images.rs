@@ -2,7 +2,7 @@
 // body, get's path escaping and failed-image decoding, a 404 on get, and
 // the spec's image_digest field.
 
-use fuse::{Client, ConvertImageRequest, ImageState, Spec};
+use fuse::{CallOptions, Client, ConvertImageRequest, ImageState, Spec};
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -127,4 +127,49 @@ fn spec_serializes_image_digest() {
         json!({"image_digest": DIGEST})
     );
     assert_eq!(serde_json::to_value(Spec::new()).unwrap(), json!({}));
+}
+
+#[tokio::test]
+async fn convert_sends_an_idempotency_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/images"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(json!({
+            "digest": DIGEST,
+            "ref": "python:3.12",
+            "state": "converting",
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    client
+        .images()
+        .convert(ConvertImageRequest::new("python:3.12"))
+        .await
+        .unwrap();
+    client
+        .images()
+        .convert_with_options(
+            ConvertImageRequest::new("python:3.12"),
+            CallOptions::new().idempotency_key("img-42"),
+        )
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let keys: Vec<String> = requests
+        .iter()
+        .map(|r| {
+            r.headers
+                .get("idempotency-key")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(keys[0].len(), 36);
+    assert_eq!(keys[1], "img-42");
 }
