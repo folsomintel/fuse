@@ -7,10 +7,16 @@
 # and expects the caller's cwd to be host-agent/firecracker, where fused and
 # fused.service live.
 
+# the guest runs on the bake host's arch (firecracker has no cross-arch
+# guests), so pick the podman and compose builds for this machine.
+case "$(uname -m)" in
+  aarch64|arm64) PODMAN_STATIC_ARCH=arm64; DOCKER_COMPOSE_ARCH=aarch64 ;;
+  *)             PODMAN_STATIC_ARCH=amd64; DOCKER_COMPOSE_ARCH=x86_64 ;;
+esac
 PODMAN_STATIC_VERSION=${PODMAN_STATIC_VERSION:-v5.8.1}
-PODMAN_STATIC_URL="https://github.com/mgoltzsche/podman-static/releases/download/${PODMAN_STATIC_VERSION}/podman-linux-amd64.tar.gz"
+PODMAN_STATIC_URL="https://github.com/mgoltzsche/podman-static/releases/download/${PODMAN_STATIC_VERSION}/podman-linux-${PODMAN_STATIC_ARCH}.tar.gz"
 DOCKER_COMPOSE_VERSION=${DOCKER_COMPOSE_VERSION:-v2.40.3}
-DOCKER_COMPOSE_URL="https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-x86_64"
+DOCKER_COMPOSE_URL="https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${DOCKER_COMPOSE_ARCH}"
 
 # BAKE_STEP is the last step logged, so a failure can say where it died
 # shellcheck disable=SC2034
