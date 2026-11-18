@@ -48,8 +48,7 @@ is `idempotency_key_reused`, with the first call's id in
 `Details["operation_id"]`. A finished operation is kept for 24 hours; one that
 finished with a 5xx is not kept at all, so its retry runs again. Keys live in
 the orchestrator's memory and an orchestrator restart forgets them, except
-that with [restate](/docs/cloud/orchestrator-deploy#restate) on, the key of a destroy, snapshot or
-restore is also the restate invocation's idempotency key, so a retry after a
+that the key of a destroy, snapshot or restore is also the restate invocation's idempotency key, so a retry after a
 restart attaches to the same invocation. A destroy that already finished is
 the exception: its vm is gone, so that retry answers 404.
 
@@ -124,8 +123,9 @@ func (o *Operation) Done() bool
   `drain`.
 - `State` is `succeeded` when the call answered 2xx and `failed` otherwise.
   `Done` reports whether it is anything but `running`.
-- `Step` is the step the operation last reported starting. Only migrate
-  reports steps: `snapshot`, `transfer`, `delta`, `boot` and `cutover`.
+- `Step` is the step the operation last reported starting. No operation
+  reports one now (every operation runs on restate, whose steps show in the
+  restate ui), so it is empty.
 - `StatusCode`, with `Result` on success or `Error` on failure, is what the
   call itself would have answered. `Result` is the raw response body: an
   `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for

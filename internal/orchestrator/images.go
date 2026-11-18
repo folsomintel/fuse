@@ -112,15 +112,11 @@ type ConvertImageRequest struct {
 }
 
 // ConvertImage picks a firecracker host for req and starts the conversion
-// there: through restate when it is configured (see SetDurableImages), in
-// this process otherwise.
+// there, through restate (see SetDurableImages).
 func (fm *FleetManager) ConvertImage(ctx context.Context, req ConvertImageRequest) (Image, error) {
-	if d := fm.durableImages(); d != nil {
-		ctx, cancel := durableWait(ctx)
-		defer cancel()
-		return d.ConvertImage(ctx, req)
-	}
-	return fm.ImageConvert(ctx, req)
+	ctx, cancel := durableWait(ctx)
+	defer cancel()
+	return fm.durableImages().ConvertImage(ctx, req)
 }
 
 // ImageConvert is the plain step a convert runs: one agent call, no polling,

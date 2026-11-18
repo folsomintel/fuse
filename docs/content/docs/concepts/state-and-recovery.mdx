@@ -47,17 +47,13 @@ to dispatch correctly, then walks the persisted VMs and triages them:
   still has it, the live handle is re-attached and the per-VM auth token is
   decrypted and re-injected. If not, it is demoted to `destroying`.
 - A VM recorded as **provisioning** was mid-create when the orchestrator
-  stopped. With [restate](/docs/cloud/orchestrator-deploy#restate) off, it is
-  probed like a running VM: re-attached and marked `running` if the provider
-  has it, demoted to `destroying` if not. A VM re-attached this way keeps
-  whatever files, startup script run and agent the create got to before the
-  crash. With restate on, it stays `provisioning` with its task assigned: the
-  create is a restate invocation, which resumes at its first unfinished step
-  and either finishes the VM (files, startup script, agent) or rolls it back. A
-  provisioning VM restate holds no create for, such as one left by an
-  in-process create before restate was turned on, is failed and destroyed by
-  reconcile. A fork in flight on restate leaves its new VM `provisioning` the
-  same way, and the fork either finishes it or rolls it back, deleting the
+  stopped. It stays `provisioning` with its task assigned: the create is a
+  [restate](/docs/cloud/orchestrator-deploy#restate) invocation, which resumes
+  at its first unfinished step and either finishes the VM (files, startup
+  script, agent) or rolls it back. A provisioning VM restate holds no create
+  for, such as one left by an in-process create in a release before restate
+  was required, is failed and destroyed by reconcile. A fork in flight leaves
+  its new VM `provisioning` the same way, and the fork either finishes it or rolls it back, deleting the
   seed snapshot it took.
 - Host allocation counters are then **recomputed from the live VMs** rather than
   trusted from the database, which repairs the drift a crash mid-allocation
@@ -65,12 +61,13 @@ to dispatch correctly, then walks the persisted VMs and triages them:
 - Still-running VMs have their secrets re-uploaded, which is cheap, idempotent,
   and covers the case where the guest rebooted on its own.
 
-Some state is deliberately never persisted and resets on every restart: orphan
-retry budgets and stuck-task strike counters (without restate; with it both live
-in the `Environment` object's state), live provider handles, SSE
-subscriptions, and [operations](/docs/concepts/environments#long-operations-and-retries)
-with their idempotency keys. A VM one strike away from being failed as stuck starts over at
-zero after a restart.
+Some state is deliberately never persisted and resets on every restart:
+live provider handles, SSE subscriptions, and
+[operations](/docs/concepts/environments#long-operations-and-retries) with their
+idempotency keys. Orphan retry budgets and stuck-task and idle strikes are not in
+that list: they live in each environment's restate `Environment` object state
+(orphan destroys and the [expiry timer](/docs/concepts/reconcile#expiry-timer)),
+so a restart neither resets nor skips one.
 
 Per-device GPU bindings are a good illustration of the pattern. The set of GPU
 UUIDs a host has handed out is **not** stored as its own column; it is recomputed

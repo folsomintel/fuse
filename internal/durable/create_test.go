@@ -298,3 +298,21 @@ func TestCreateInFlightThroughRestate(t *testing.T) {
 		t.Fatalf("steps %s, want begin,begin_failed", got)
 	}
 }
+
+// TestCreateSentinelsSurviveRestate: every create sentinel a step fails with
+// comes back to the caller as itself, so the api answers it with its status
+// rather than a 500.
+func TestCreateSentinelsSurviveRestate(t *testing.T) {
+	for _, sentinel := range orchestrator.CreateFleetErrors {
+		fleet := newCreateFleet()
+		fleet.fail["place"] = []error{fmt.Errorf("place: %w", sentinel)}
+		client := serveFleet(t, fleet, fastPolicy)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := client.Create(ctx, uniqueVM("create-sentinel"), createRequest(t))
+		cancel()
+		if !errors.Is(err, sentinel) {
+			t.Errorf("create failing with %v: got %v, want the sentinel", sentinel, err)
+		}
+	}
+}

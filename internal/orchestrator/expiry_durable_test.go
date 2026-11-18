@@ -71,7 +71,7 @@ func vmState(fm *FleetManager, vmID string) VMState {
 // TestDurableCreateArmsExpiry: a create that reaches running arms its expiry
 // timer, once.
 func TestDurableCreateArmsExpiry(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 	d := withDurableExpiry(fm)
 	if _, err := fm.ProvisionAndAssign(context.Background(), "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatalf("provision: %v", err)
@@ -84,11 +84,11 @@ func TestDurableCreateArmsExpiry(t *testing.T) {
 	}
 }
 
-// TestDurableDrain: with restate on, Drain goes through the durable handler,
+// TestDurableDrain: Drain goes through the durable handler,
 // which runs the command once and leaves the vm draining.
 func TestDurableDrain(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	d := withDurableExpiry(fm)
 	ctx := context.Background()
 	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
@@ -105,7 +105,7 @@ func TestDurableDrain(t *testing.T) {
 		t.Fatalf("state %s, want draining", s)
 	}
 
-	// a second drain is refused before restate sees it, as in mode off.
+	// a second drain is refused before restate sees it.
 	if err := fm.Drain(ctx, "fuse-task-1"); !errors.Is(err, ErrVMNotRunning) {
 		t.Fatalf("second drain: %v, want ErrVMNotRunning", err)
 	}
@@ -152,7 +152,7 @@ func TestDrainBeginReplay(t *testing.T) {
 // returned as an error a retry would run again, and the vm stays draining.
 func TestDrainCommandFailureIsAResult(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatal(err)
@@ -341,9 +341,8 @@ func TestExpiryCheckDraining(t *testing.T) {
 	}
 }
 
-// TestDurableReconcileArmsInsteadOfReaping: with restate on, reconcile keeps
-// no strikes and reaps nothing itself; it arms each vm once, and again after
-// a failed send.
+// TestDurableReconcileArmsInsteadOfReaping: reconcile reaps nothing itself;
+// it arms each vm once, and again after a failed send.
 func TestDurableReconcileArmsInsteadOfReaping(t *testing.T) {
 	fm, vmID := idleFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, "task-1", 30*time.Minute)
 	d := withDurableExpiry(fm)
@@ -353,13 +352,7 @@ func TestDurableReconcileArmsInsteadOfReaping(t *testing.T) {
 		fm.expirySends.Wait()
 	}
 	if s := vmState(fm, vmID); s != VMStateRunning {
-		t.Fatalf("state %s, want running: reconcile reaped with restate on", s)
-	}
-	fm.mu.RLock()
-	strikes := len(fm.idleStrikes) + len(fm.stuckStrikes)
-	fm.mu.RUnlock()
-	if strikes != 0 {
-		t.Fatalf("reconcile kept %d strikes in memory with restate on", strikes)
+		t.Fatalf("state %s, want running: reconcile reaped the vm itself", s)
 	}
 	if got := d.armed(); len(got) != 1 || got[0] != vmID {
 		t.Fatalf("arms %v, want one after the failed one", got)
@@ -416,4 +409,57 @@ func TestDrainCommandAttachesAfterRestart(t *testing.T) {
 		t.Fatalf("drain command: %s", msg)
 	}
 	assertDrainExec(t, drainEnvFor(t, p, vmID), 1)
+}
+
+// TestExpiryCheckSpecWindows: a spec's idle timeout and max runtime override
+// the fleet defaults either way, activity since a strike clears it, and a vm
+// whose destroy failed is not watched.
+func TestExpiryCheckSpecWindows(t *testing.T) {
+	ctx := context.Background()
+
+	// the fleet default says idle, the spec allows two hours.
+	fm, vmID := idleFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, "task-1", 30*time.Minute)
+	fm.mu.Lock()
+	fm.vms[vmID].spec.IdleTimeout = 2 * time.Hour
+	fm.mu.Unlock()
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "" || v.Reap {
+		t.Fatalf("spec idle timeout over the default: %+v, want no strike", v)
+	}
+
+	// no fleet default, the spec sets one.
+	fm, vmID = idleFleet(t, FleetConfig{}, "task-1", 30*time.Minute)
+	fm.mu.Lock()
+	fm.vms[vmID].spec.IdleTimeout = 5 * time.Minute
+	fm.mu.Unlock()
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "idle_timeout" {
+		t.Fatalf("spec idle timeout with no default: %+v, want an idle strike", v)
+	}
+
+	// activity after the strike restarts the window: the second check does
+	// not reap.
+	fm.touchActivity(vmID)
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "idle_timeout"); v.Reap || v.Strike != "" {
+		t.Fatalf("active again after a strike: %+v, want no reap and no strike", v)
+	}
+	if s := vmState(fm, vmID); s != VMStateRunning {
+		t.Fatalf("state %s, want running", s)
+	}
+
+	// the fleet ceiling says stuck, the spec allows an hour.
+	fm, vmID = fleetWithRunningVM(t, FleetConfig{TaskStuckTimeout: 10 * time.Minute}, "task-1", 30*time.Minute)
+	fm.mu.Lock()
+	fm.vms[vmID].spec.MaxRuntime = time.Hour
+	fm.mu.Unlock()
+	if v, _ := fm.ExpiryCheck(ctx, vmID, ""); v.Strike != "" || v.Reap {
+		t.Fatalf("spec max runtime over the default: %+v, want no strike", v)
+	}
+
+	// a vm whose destroy failed belongs to a DELETE now and is not watched.
+	fm, vmID = idleFleet(t, FleetConfig{DefaultIdleTimeout: 5 * time.Minute}, "task-1", 30*time.Minute)
+	fm.mu.Lock()
+	fm.vms[vmID].state = VMStateDestroyFailed
+	fm.mu.Unlock()
+	if v, _ := fm.ExpiryCheck(ctx, vmID, "idle_timeout"); v != (ExpiryVerdict{}) {
+		t.Fatalf("destroy_failed vm: %+v, want nothing", v)
+	}
 }

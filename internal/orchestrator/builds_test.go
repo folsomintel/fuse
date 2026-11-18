@@ -128,7 +128,7 @@ func (p *buildProvider) env(name string) *buildEnv {
 
 func newBuildFleet(t *testing.T, p *buildProvider) *FleetManager {
 	t.Helper()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), layerHost("h1", "amd64"), p); err != nil {
 		t.Fatal(err)
 	}
@@ -335,8 +335,8 @@ func TestSubmitBuildReplayAndConflict(t *testing.T) {
 	}
 }
 
-// an in-process build whose process went away is failed on its next read
-// instead of reading as running forever.
+// a build an older release ran in process and never finished is failed on
+// its next read instead of reading as running forever.
 func TestOrphanedInProcessBuildReadsFailed(t *testing.T) {
 	ctx := context.Background()
 	fm := newBuildFleet(t, &buildProvider{})
@@ -456,31 +456,8 @@ func TestSubmitBuildClaimsTheIDOnce(t *testing.T) {
 	}
 }
 
-// restate does not run a build whose record a restart would lose: with the
-// memory store it runs in process instead.
-func TestDurableBuildNeedsAPersistentStore(t *testing.T) {
-	fm := newBuildFleet(t, &buildProvider{})
-	fm.SetDurableBuilds(failingBuilds{})
-	rec, _, err := fm.SubmitBuild(context.Background(), testBuildInput("bld_mem"), nil)
-	if err != nil {
-		t.Fatalf("submit: %v", err)
-	}
-	if rec.Durable {
-		t.Errorf("build on the memory store marked durable")
-	}
-	if got := waitBuild(t, fm, rec.ID); got.State != BuildSucceeded {
-		t.Errorf("build %s: %s", got.State, got.Error)
-	}
-}
-
-type failingBuilds struct{}
-
-func (failingBuilds) SubmitBuild(context.Context, BuildInput) error {
-	return errors.New("restate is not used for this build")
-}
-
-// persistentBuildStore stands in for postgres: a durable build needs a record
-// that outlives the process, which the memory store is not.
+// persistentBuildStore stands in for postgres, a store whose build records
+// outlive the process.
 type persistentBuildStore struct{ *MemoryStateStore }
 
 // recordingBuilds is a restate that takes every build and counts the sends.
@@ -502,7 +479,7 @@ func (r *recordingBuilds) SubmitBuild(_ context.Context, in BuildInput) error {
 func TestSubmitBuildResendsAnInterruptedSubmit(t *testing.T) {
 	ctx := context.Background()
 	store := persistentBuildStore{NewMemoryStateStore()}
-	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: store})
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: store})
 	d := &recordingBuilds{}
 	fm.SetDurableBuilds(d)
 
@@ -572,7 +549,7 @@ func TestBuildEventsCarryTheOutcomeBeforeTheBuilderGoes(t *testing.T) {
 // step, not the record.
 func TestBuildFinishNamesTheArtifactOnARecreatedRecord(t *testing.T) {
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-",
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-",
 		StateStore: persistentBuildStore{NewMemoryStateStore()}})
 	in := testBuildInput("bld_recreated", "k0")
 	if err := fm.BuildFinish(ctx, in, "snap-final"); err != nil {

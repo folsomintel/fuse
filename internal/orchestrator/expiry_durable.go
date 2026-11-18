@@ -28,16 +28,14 @@ type DurableExpiry interface {
 	SendArmExpiry(ctx context.Context, vmID string) error
 }
 
-// ExpiryMetrics is an optional extension of ReconcileMetrics. with restate on
-// the expiry timers, not reconcile, strike and reap environments, and report
-// each here. reason is stuck_task, idle_timeout or drain_timeout.
+// ExpiryMetrics is an optional extension of ReconcileMetrics. the expiry
+// timers strike and reap environments, and report each here. reason is stuck_task, idle_timeout or drain_timeout.
 type ExpiryMetrics interface {
 	VMExpiry(reason string, reaped bool)
 }
 
-// SetDurableExpiry routes drain and environment expiry through restate. nil
-// (mode off, the default) keeps the in-process drain and the reconcile
-// detectors. set it before Start.
+// SetDurableExpiry routes drain and environment expiry through restate. set
+// it before Start.
 func (fm *FleetManager) SetDurableExpiry(d DurableExpiry) {
 	fm.mu.Lock()
 	fm.durableExpiries = d
@@ -59,8 +57,7 @@ func (fm *FleetManager) durableExpiry() DurableExpiry {
 // armExpiry hands vmID's expiry to restate, off the caller's goroutine. a vm
 // whose arm is queued, in flight or done is not sent again; a send that fails
 // is forgotten, so the next reconcile sends it again. the armed mark is the
-// vm's create time, so a later vm that reuses the id is armed afresh. mode
-// off does nothing.
+// vm's create time, so a later vm that reuses the id is armed afresh.
 func (fm *FleetManager) armExpiry(vmID string) {
 	fm.sendArm(vmID, false)
 }
@@ -73,9 +70,6 @@ func (fm *FleetManager) rearmExpiry(vmID string) {
 
 func (fm *FleetManager) sendArm(vmID string, again bool) {
 	d := fm.durableExpiry()
-	if d == nil {
-		return
-	}
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	if !ok || (!again && fm.expiryArmed[vmID].Equal(v.createdAt)) {
@@ -111,11 +105,8 @@ func (fm *FleetManager) sendArmExpiry(d DurableExpiry, vmID string, created time
 // yet: one whose create-time arm failed, one a fork or migrate brought up,
 // and after a restart every vm, since the armed set is memory only. arming
 // again is safe: it supersedes the timer restate already holds. it also
-// forgets vms that are gone. mode off does nothing.
+// forgets vms that are gone.
 func (fm *FleetManager) armExpiries() {
-	if fm.durableExpiry() == nil {
-		return
-	}
 	var arm []string
 	fm.mu.Lock()
 	for id, v := range fm.vms {
@@ -162,10 +153,10 @@ type expiryView struct {
 }
 
 // ExpiryCheck is the step of the durable Environment/{vm_id}.Expire timer: it
-// judges vmID by the rules reconcile applies in mode off. strike is the
-// window the previous check struck the vm for, or empty; a vm is reaped only
-// on a second consecutive check past the same window, as reconcile counts
-// idle and runtime strikes apart.
+// judges vmID against its runtime ceiling, idle timeout and drain grace.
+// strike is the window the previous check struck the vm for, or empty; a vm
+// is reaped only on a second consecutive check past the same window, so a
+// runtime strike never counts toward an idle reap or the other way round.
 //
 //   - running: past its max_runtime (with a task) or its idle timeout, the
 //     first check strikes and the next reaps. a pending expiry

@@ -82,7 +82,7 @@ func provisionGPUTestVM(t *testing.T, fm *FleetManager, taskID string) string {
 // not the generic "provider does not support snapshots" wording.
 func TestCreateSnapshot_gpuEnvUnsupported(t *testing.T) {
 	provider := newGPUTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("gpu-host", 1, "a100"), provider); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestCreateSnapshot_gpuEnvUnsupported(t *testing.T) {
 // with the same class of gpu-specific error.
 func TestForkEnvironment_gpuEnvUnsupported(t *testing.T) {
 	provider := newGPUTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("gpu-host", 1, "a100"), provider); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestForkEnvironment_gpuEnvUnsupported(t *testing.T) {
 // send them to retry something that cannot work.
 func TestCreateSnapshot_gpuEnvLiveStillGPUError(t *testing.T) {
 	provider := newGPUTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("gpu-host", 1, "a100"), provider); err != nil {
 		t.Fatal(err)
 	}

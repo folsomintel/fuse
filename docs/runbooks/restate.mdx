@@ -1,17 +1,19 @@
 # runbook: self-hosted restate-server
 
-applies to: an orchestrator installed by `ops/install-orchestrator.sh` with
-`FUSE_RESTATE_MODE=self`
+applies to: an orchestrator installed by `ops/install-orchestrator.sh` in
+`FUSE_RESTATE_MODE=self` (the default)
 
-restate-server runs next to the orchestrator as the pinned docker image in
+restate is required: every operation runs on it. restate-server runs next to
+the orchestrator as the pinned docker image in
 `ops/systemd/restate-server.service`. it owns in-flight multi-step operations
-(timers, retries, waits). postgres stays the read model, so mode self needs
-`DATABASE_URL`.
+(timers, retries, waits). postgres stays the read model: without
+`DATABASE_URL` the installer warns, since the in-memory store forgets every vm
+on restart while restate keeps running what it held for them.
 
 ## install
 
 ```sh
-FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... sudo -E ./ops/install-orchestrator.sh
+DATABASE_URL=postgres://... sudo -E ./ops/install-orchestrator.sh
 # optional partition snapshots (s3 only):
 #   RESTATE_SNAPSHOT_DESTINATION=s3://bucket/prefix
 ```
@@ -19,7 +21,8 @@ FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... sudo -E ./ops/install-orchest
 needs docker (https://docs.docker.com/engine/install/debian/). the installer
 writes `/etc/fuse/restate.env`, pulls and digest-checks the image, starts
 `restate-server`, then the orchestrator, then registers the orchestrator's
-handler endpoint. check it:
+handler endpoint. the orchestrator does not open its api until that
+registration lands (see [startup](#startup)). check it:
 
 ```sh
 systemctl status restate-server fuse-orchestrator
@@ -93,8 +96,7 @@ image if the pin changed), then handles the orchestrator deployment:
   invocations replay on the new code, which breaks them if their steps
   changed).
 - a second upgrade while the first still drains is refused.
-- an existing self install cannot be switched to `off` or `cloud` by the
-  installer; that would strand what restate holds for it. Restate Cloud setup
+- an existing self install cannot be switched to `cloud` by the installer; that would strand what restate holds for it. Restate Cloud setup
   is in `docs/content/docs/cloud/restate-cloud.mdx`.
 
 ```sh
@@ -184,7 +186,7 @@ retention gc marks an expired snapshot `deleting` and sends
 `Environment/<vm_id>/CollectSnapshot`, which retries the host delete under the
 `ENVIRONMENT` policy and only then moves the row to `error`
 (`snapshot.gc_failed`); the next sweep marks it again. gc skips a snapshot any
-pin holds, in process or in `ArtifactPin`.
+`ArtifactPin` pin holds.
 
 migrates run as `Environment/<source vm_id>/Migrate`: plan, a provisioning
 placeholder row for the target (so neither reconcile nor a restart takes it
@@ -204,8 +206,7 @@ inline (reason `migrated`). a source destroy that runs out of retries leaves it
 `destroy_failed` as any destroy does. a target whose rollback destroy ran out
 of retries is `destroy_failed` too, and the source is resumed anyway: check
 that host before deleting it. the credentials and the tunnel token are
-journaled as ciphertext under `TOKEN_ENCRYPTION_KEY`; on a fleet without one
-the guest gets no credentials and its tunnel token is journaled as is.
+journaled as ciphertext under `TOKEN_ENCRYPTION_KEY`.
 
 a lazy migrate pins its seed for `lazy:<new vm_id>` and sends
 `Migrate/<migration_id>/WatchMemory`, which polls the target with durable
@@ -218,8 +219,7 @@ q "SELECT id, target, status FROM sys_invocation WHERE target LIKE 'Environment/
 ```
 
 forks run as `Environment/<new vm_id>/Fork`, keyed by the fork's own vm id so
-the new vm's other ops queue behind it: begin (the same refusals as in mode
-off), a provisioning placeholder row, the seed snapshot as a call to
+the new vm's other ops queue behind it: begin (the fork's usual refusals), a provisioning placeholder row, the seed snapshot as a call to
 `Environment/<source vm_id>/Snapshot` (skipped for `reuse_snapshot_id`), place,
 artifact (off-host only), create, ingress, credentials, upload, start agent,
 running, task and lineage. the fork holds the same in-flight mark as a create,
@@ -297,12 +297,86 @@ copies are metered by `orchestrator_artifact_move_duration_seconds`,
 `orchestrator_artifact_move_failures_total`, labeled `source_host` and
 `target_host`.
 
+## startup
+
+the orchestrator serves its handler endpoint, then waits up to
+`ORCH_RESTATE_STARTUP_TIMEOUT_SECONDS` (default 120) for ingress to answer and
+for a ping to reach the `Environment` object, which only works once its
+deployment is registered. the api opens after both. on timeout it exits with
+one of:
+
+- `restate not ready after 2m0s: ...` with a connection error: restate-server
+  is not running or `FUSE_RESTATE_INGRESS_URL` is wrong.
+- `restate not ready after 2m0s: restate is up but Environment does not
+  answer: is this orchestrator's handler endpoint registered and reachable
+  from restate? ...`: register it with
+  `/usr/local/lib/fuse/restate-deploy register http://127.0.0.1:<handler port>`
+  (or `ops/restate/register.sh` on a hand-rolled install) while the
+  orchestrator is up.
+
+systemd restarts it, so a registration that lands late is picked up on the
+next start.
+
+## upgrading from a release without restate
+
+re-run the installer with the new release. an env file that says
+`FUSE_RESTATE_MODE=off`, or sets no mode, moves to self: the installer installs
+`restate-server.service` and `/etc/fuse/restate.env` (needs docker), points the
+orchestrator at it and registers the deployment after start. an env file
+without `TOKEN_ENCRYPTION_KEY` gets a generated one. host tokens a keyless
+orchestrator stored in plaintext are still read with the new key and stored
+again encrypted on the first start, so hosts need no re-registration.
+passing `FUSE_RESTATE_MODE=off` to the installer is refused.
+
+before upgrading, let approved hitl actions finish (`fuse hitl list
+--state approved` shows none without a result). an in-process run stops with
+the old binary, and the new one hands every approved action without a result
+to restate, which runs it again: a non-idempotent exec would run twice.
+
+a co-located orchestrator updated by `fc-update.sh` is left on its release
+while its env has no `FUSE_RESTATE_MODE` or `TOKEN_ENCRYPTION_KEY` (the
+updater warns each run); run `fc-agent.sh install-orchestrator` once to add
+restate, and later updates go through. the updater also skips the swap while
+invocations are still pinned to the running deployment, and retries on its
+next run (`FUSE_RESTATE_FORCE_UPGRADE=1` swaps anyway).
+
+running environments are untouched: their rows in postgres are read back as
+before. what an old in-process run left half done is closed out:
+
+- a vm left `provisioning` by an in-process create has no invocation to resume
+  it; reconcile's stale-create pass fails it ("provisioning interrupted with
+  no create to finish it") and cleans it up.
+- a build left `running` is failed on its next read ("the orchestrator
+  restarted before the build finished"). run it again; cached layers stay.
+
+a hand-rolled install (not the installer) does the same by hand:
+
+1. add `TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)` if it has none.
+2. run restate-server (`docker compose -f ops/restate/compose.yaml up -d`).
+3. set `FUSE_RESTATE_MODE=self` and
+   `FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080`, and start the
+   orchestrator.
+4. once its handler endpoint is up, run `ops/restate/register.sh`.
+
+what operators see when a step is missing:
+
+- `FUSE_RESTATE_MODE=off was removed: the orchestrator needs restate. ...`
+- `FUSE_RESTATE_MODE=self needs FUSE_RESTATE_INGRESS_URL`
+- `TOKEN_ENCRYPTION_KEY is required (64 hex chars, e.g. openssl rand -hex 32): ...`
+- `restate not ready after ...`: see [startup](#startup).
+
 ## restate-server is down
 
-- the orchestrator keeps serving its api; `/ready` reports restate degraded.
-  operations that run on restate wait and resume once it is back; nothing
-  in flight is lost, it is in `/var/lib/restate`.
-- a `DELETE /v1/environments/{id}` fails with a 500 until restate is back.
+- at startup the orchestrator waits for it, then exits (see
+  [startup](#startup)).
+- once running, the orchestrator keeps serving its api; `/ready` reports restate degraded.
+  invocations already in restate resume once it is back; nothing in flight
+  is lost, it is in `/var/lib/restate`.
+- a new mutating call (create, destroy, fork, snapshot, ...) that cannot
+  connect to restate fails with a 503 `unavailable`: nothing started, so
+  retry it once restate is back. a connection that drops after the call
+  reached restate is a 500, and the operation may still finish; retry those
+  with the same `Idempotency-Key`, which attaches to the first run.
   background teardowns (task completion, reconcile) stay `destroying` and
   are re-sent by reconcile once it answers.
 - `systemctl status restate-server`, `journalctl -u restate-server -n 200`.

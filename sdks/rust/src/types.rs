@@ -2418,8 +2418,8 @@ pub struct Operation {
     pub id: String,
     pub kind: OperationKind,
     pub state: OperationState,
-    /// The step the operation last reported starting, e.g. migrate's
-    /// snapshot, transfer, delta, boot and cutover.
+    /// The step the operation last reported starting. No operation reports
+    /// one now (their steps show in the restate ui), so it is empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     pub started_at: DateTime<Utc>,

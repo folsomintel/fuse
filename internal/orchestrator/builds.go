@@ -100,8 +100,8 @@ type BuildRecord struct {
 	Fingerprint string `json:"fingerprint"`
 	State       string `json:"state"`
 	Step        string `json:"step"`
-	// Durable is set when restate runs the build. one run in process ends
-	// with the process.
+	// Durable is set when restate runs the build: every build since restate
+	// became required. a false one ran in process under an older release.
 	Durable        bool         `json:"durable"`
 	BuilderID      string       `json:"builder_id,omitempty"`
 	Arch           string       `json:"arch,omitempty"`
@@ -145,9 +145,6 @@ type BuildInput struct {
 	// cannot be cached. only the leading run of keys counts: the chain
 	// breaks for good at the first step without one.
 	Keys []string `json:"keys"`
-
-	// secrets is the plaintext of an in-process build. never journaled.
-	secrets map[string]string
 }
 
 // BuildPlan is what the cache lookup settled: the seed the builder boots from
@@ -183,14 +180,9 @@ type DurableBuilds interface {
 type buildRegistry struct {
 	mu      sync.Mutex
 	durable DurableBuilds
-	// local counts, per build id, the in-process runs of this process and
-	// the submits about to start one. a count, since a submit that loses
-	// the claim to a concurrent one must not unmark the winner.
-	local map[string]int
 }
 
-// SetDurableBuilds runs builds on restate. nil (mode off, the default) runs
-// them in this process. set it before Start.
+// SetDurableBuilds runs builds on restate. set it before Start.
 func (fm *FleetManager) SetDurableBuilds(d DurableBuilds) {
 	fm.builds.mu.Lock()
 	fm.builds.durable = d
@@ -265,19 +257,7 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 		return BuildRecord{}, false, errors.New("build: no setup steps")
 	}
 	d := fm.durableBuilds()
-	if _, memory := bs.(*MemoryStateStore); d != nil && memory {
-		// a restart would lose the record while restate resumed the build,
-		// and the steps it replays from the journal would not write it
-		// again.
-		fm.logger.WarnContext(ctx, "builds need a persistent state store to run on restate, running it in process", "build", in.ID)
-		d = nil
-	}
-	if d != nil && len(secretMap) > 0 && len(fm.tokenEncryptionKey) != 32 {
-		// the secrets could not be sealed for the journal.
-		fm.logger.WarnContext(ctx, "build has secrets and no TOKEN_ENCRYPTION_KEY, running it in process", "build", in.ID)
-		d = nil
-	}
-	if d != nil && len(secretMap) > 0 {
+	if len(secretMap) > 0 {
 		raw, err := json.Marshal(secretMap)
 		if err != nil {
 			return BuildRecord{}, false, err
@@ -288,26 +268,18 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 	}
 
 	rec = newBuildRecord(in, time.Now().UTC())
-	rec.Durable = d != nil
-	if d == nil {
-		// marked local before the record exists, so a concurrent read never
-		// takes it for a build whose process went away.
-		fm.setLocalBuild(in.ID, true)
-	}
+	rec.Durable = true
 	// the claim is atomic: of two requests for one id, one inserts the
 	// record and runs the build, the other gets that record back.
 	prev, claimed, err := bs.InsertBuild(ctx, rec)
 	if err != nil || !claimed {
-		if d == nil {
-			fm.setLocalBuild(in.ID, false)
-		}
 		if err != nil {
 			return BuildRecord{}, false, fmt.Errorf("persist build %s: %w", in.ID, err)
 		}
 		if prev.Fingerprint != in.Fingerprint {
 			return BuildRecord{}, false, fmt.Errorf("%w: %s", ErrBuildConflict, in.ID)
 		}
-		if prev.Durable && prev.State == BuildRunning && d != nil {
+		if prev.Durable && prev.State == BuildRunning {
 			// the first submit may have stopped between the record and the
 			// send. restate runs a workflow id once, so sending it again
 			// starts a build nothing started and attaches to one that runs.
@@ -319,42 +291,14 @@ func (fm *FleetManager) SubmitBuild(ctx context.Context, in BuildInput, secretMa
 	}
 	fm.appendEvent(ctx, "build", in.ID, "build.submitted", map[string]any{"name": in.Name, "durable": rec.Durable})
 
-	if d != nil {
-		if err := d.SubmitBuild(ctx, in); err != nil {
-			// nothing runs it, so the record goes and a retry starts over.
-			if derr := bs.DeleteBuild(context.WithoutCancel(ctx), in.ID); derr != nil {
-				fm.logger.ErrorContext(ctx, "drop unsubmitted build record failed", "build", in.ID, "err", derr)
-			}
-			return BuildRecord{}, false, fmt.Errorf("%w: submit build %s: %v", ErrBuildNotStarted, in.ID, err)
+	if err := d.SubmitBuild(ctx, in); err != nil {
+		// nothing runs it, so the record goes and a retry starts over.
+		if derr := bs.DeleteBuild(context.WithoutCancel(ctx), in.ID); derr != nil {
+			fm.logger.ErrorContext(ctx, "drop unsubmitted build record failed", "build", in.ID, "err", derr)
 		}
-		return rec, false, nil
+		return BuildRecord{}, false, fmt.Errorf("%w: submit build %s: %v", ErrBuildNotStarted, in.ID, err)
 	}
-
-	in.secrets = secretMap
-	// a build outlives its request and is not waited for on shutdown: one
-	// cut short is failed by the next read of its record.
-	go func() {
-		defer fm.setLocalBuild(in.ID, false)
-		fm.runBuild(context.WithoutCancel(ctx), in)
-	}()
 	return rec, false, nil
-}
-
-// setLocalBuild counts a run of build id in this process in (running) or
-// out.
-func (fm *FleetManager) setLocalBuild(id string, running bool) {
-	fm.builds.mu.Lock()
-	defer fm.builds.mu.Unlock()
-	if fm.builds.local == nil {
-		fm.builds.local = map[string]int{}
-	}
-	if running {
-		fm.builds.local[id]++
-		return
-	}
-	if fm.builds.local[id]--; fm.builds.local[id] <= 0 {
-		delete(fm.builds.local, id)
-	}
 }
 
 // GetBuild returns a build's record.
@@ -370,17 +314,11 @@ func (fm *FleetManager) GetBuild(ctx context.Context, id string) (BuildRecord, e
 	return fm.liveBuild(ctx, bs, rec), nil
 }
 
-// liveBuild settles an in-process build that is no longer running anywhere:
-// its process went away before it finished, so it is failed rather than left
+// liveBuild settles a build an older release ran in process and never
+// finished: nothing runs it any more, so it is failed rather than left
 // running forever.
 func (fm *FleetManager) liveBuild(ctx context.Context, bs BuildStore, rec BuildRecord) BuildRecord {
 	if rec.State != BuildRunning || rec.Durable {
-		return rec
-	}
-	fm.builds.mu.Lock()
-	local := fm.builds.local[rec.ID] > 0
-	fm.builds.mu.Unlock()
-	if local {
 		return rec
 	}
 	now := time.Now().UTC()
@@ -392,44 +330,6 @@ func (fm *FleetManager) liveBuild(ctx context.Context, bs BuildStore, rec BuildR
 		fm.logger.WarnContext(ctx, "mark orphaned build failed", "build", rec.ID, "err", err)
 	}
 	return rec
-}
-
-// runBuild runs in's steps in this process, in the order the Build workflow
-// runs them.
-func (fm *FleetManager) runBuild(ctx context.Context, in BuildInput) {
-	ctx, end := fm.startOperation(ctx, "build", in.ID)
-	plan, err := fm.BuildResolveCache(ctx, in)
-	var vmID string
-	if err == nil {
-		vmID, err = fm.BuildCreateBuilder(ctx, in, plan)
-	}
-	for _, ex := range plan.Execs {
-		if err != nil {
-			break
-		}
-		if err = fm.BuildExec(ctx, in, vmID, ex); err == nil && ex.Layer >= 0 {
-			_, err = fm.BuildSnapshotLayer(ctx, in, vmID, ex.Layer)
-		}
-	}
-	var snapshotID string
-	if err == nil {
-		snapshotID, err = fm.BuildSnapshot(ctx, in, vmID)
-	}
-	outcome := BuildSucceeded
-	if err != nil {
-		outcome = BuildFailed
-	}
-	if derr := fm.BuildDestroyBuilder(ctx, in, outcome); derr != nil {
-		fm.logger.WarnContext(ctx, "destroy builder failed", "build", in.ID, "err", derr)
-	}
-	if err != nil {
-		if ferr := fm.BuildFailed(ctx, in, err.Error()); ferr != nil {
-			fm.logger.ErrorContext(ctx, "record failed build", "build", in.ID, "err", ferr)
-		}
-	} else if ferr := fm.BuildFinish(ctx, in, snapshotID); ferr != nil {
-		fm.logger.ErrorContext(ctx, "record finished build", "build", in.ID, "err", ferr)
-	}
-	end(err)
 }
 
 // updateBuild changes in's record under the build lock. a record that is
@@ -445,7 +345,7 @@ func (fm *FleetManager) updateBuild(ctx context.Context, in BuildInput, fn func(
 	rec, err := bs.GetBuild(ctx, in.ID)
 	if errors.Is(err, ErrBuildNotFound) {
 		rec, err = newBuildRecord(in, time.Now().UTC()), nil
-		rec.Durable = fm.builds.durable != nil
+		rec.Durable = true
 	}
 	if err != nil {
 		return BuildRecord{}, err
@@ -488,8 +388,8 @@ func (fm *FleetManager) publishBuildEvent(rec BuildRecord) {
 
 // buildSecrets returns in's secrets in plaintext.
 func (fm *FleetManager) buildSecrets(in BuildInput) (map[string]string, error) {
-	if in.secrets != nil || len(in.Sealed) == 0 {
-		return in.secrets, nil
+	if len(in.Sealed) == 0 {
+		return nil, nil
 	}
 	raw, err := secrets.DecryptBytes(in.Sealed, fm.tokenEncryptionKey)
 	if err != nil {

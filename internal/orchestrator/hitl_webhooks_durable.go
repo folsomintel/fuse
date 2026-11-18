@@ -79,11 +79,9 @@ type WebhookMetrics interface {
 	WebhookDeadLettered(endpoint string)
 }
 
-// SetDurableWebhooks routes hitl webhook deliveries through restate. nil
-// (mode off, the default) keeps the in-process retry. without a
-// TOKEN_ENCRYPTION_KEY deliveries stay in process too: the endpoint could
-// not be sealed for the journal, and the signing secrets are memory only
-// anyway. set it before Start.
+// SetDurableWebhooks routes hitl webhook deliveries through restate, with
+// the endpoint sealed by the fleet's TOKEN_ENCRYPTION_KEY. set it before
+// Start.
 func (fm *FleetManager) SetDurableWebhooks(d DurableWebhooks) {
 	fm.mu.Lock()
 	fm.durableHooks = d
@@ -99,41 +97,84 @@ func (fm *FleetManager) durableWebhooks() DurableWebhooks {
 	return fm.durableHooks
 }
 
-// notifyWebhook delivers n to t: a one-way send to restate, or the
-// in-process retry in mode off. the send runs off the caller's goroutine, at
-// most maxWebhookSends at a time. a send restate does not take falls back to
-// the in-process retry, so the notification is not dropped.
+// notifyWebhook delivers n to t: a one-way send to restate, off the caller's
+// goroutine, at most maxWebhookSends at a time. a send restate does not take
+// is retried on the webhook backoff, then kept for the next reconcile to send
+// again (resendWebhooks), for as long as this process runs.
 func (fm *FleetManager) notifyWebhook(ctx context.Context, t webhookTarget, n hitl.Notification) {
 	hooks := fm.durableWebhooks()
-	if hooks == nil || len(fm.tokenEncryptionKey) != 32 {
-		go fm.webhooks.deliver(fm, t, n)
-		return
-	}
 	d, err := fm.newWebhookDelivery(t, n)
 	if err != nil {
-		fm.logger.Warn("seal hitl webhook endpoint failed, delivering in process", "endpoint", webhookEndpoint(t.url), "err", err)
-		go fm.webhooks.deliver(fm, t, n)
+		fm.logger.Error("seal hitl webhook endpoint failed, not delivering", "endpoint", webhookEndpoint(t.url), "event", n.Event, "intervention", n.InterventionID, "err", err)
 		return
 	}
 	fm.webhookPending(d, true)
+	backoff := fm.webhooks.backoff
+	if backoff == nil {
+		backoff = defaultWebhookBackoff
+	}
 	// the send keeps the request id but not the request's deadline.
 	ctx = context.WithoutCancel(ctx)
 	fm.webhookSends.Add(1)
 	go func() {
 		defer fm.webhookSends.Done()
-		fm.webhookSendSlots <- struct{}{}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := hooks.SendWebhook(ctx, d)
-		cancel()
-		// the slot bounds sends only: the fallback's retries must not hold
-		// up other notifications.
-		<-fm.webhookSendSlots
-		if err != nil {
-			fm.logger.Error("send durable hitl webhook failed, delivering in process", "endpoint", d.Endpoint, "event", n.Event, "intervention", n.InterventionID, "err", err)
-			fm.webhookPending(d, false)
-			fm.webhooks.deliver(fm, t, n)
+		var err error
+		for _, wait := range backoff {
+			time.Sleep(wait)
+			// the slot bounds sends only, not the waits between them.
+			fm.webhookSendSlots <- struct{}{}
+			sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err = hooks.SendWebhook(sctx, d)
+			cancel()
+			<-fm.webhookSendSlots
+			if err == nil {
+				return
+			}
 		}
+		fm.logger.Error("send durable hitl webhook failed, the next reconcile sends it again", "endpoint", d.Endpoint, "event", n.Event, "intervention", n.InterventionID, "err", err)
+		fm.webhookMu.Lock()
+		if fm.webhookUnsent == nil {
+			fm.webhookUnsent = map[string]WebhookDelivery{}
+		}
+		if len(fm.webhookUnsent) < maxWebhookUnsent {
+			fm.webhookUnsent[d.ID] = d
+		} else {
+			// a restate outage long enough to fill this drops the rest; the
+			// audit log stays the record.
+			fm.logger.Error("too many hitl webhooks owed while restate is down, dropping one", "endpoint", d.Endpoint, "intervention", n.InterventionID)
+			fm.webhookMu.Unlock()
+			fm.webhookPending(d, false)
+			return
+		}
+		fm.webhookMu.Unlock()
 	}()
+}
+
+// maxWebhookUnsent bounds the deliveries kept for resendWebhooks.
+const maxWebhookUnsent = 1000
+
+// resendWebhooks sends restate the deliveries it would not take before, once
+// each, and keeps the ones it still refuses for the next cycle.
+func (fm *FleetManager) resendWebhooks(ctx context.Context) {
+	fm.webhookMu.Lock()
+	unsent := make([]WebhookDelivery, 0, len(fm.webhookUnsent))
+	for _, d := range fm.webhookUnsent {
+		unsent = append(unsent, d)
+	}
+	fm.webhookMu.Unlock()
+	hooks := fm.durableWebhooks()
+	for _, d := range unsent {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := hooks.SendWebhook(sctx, d)
+		cancel()
+		if err != nil {
+			fm.logger.Warn("resend durable hitl webhook failed, retrying next cycle", "endpoint", d.Endpoint, "err", err)
+			return
+		}
+		fm.webhookMu.Lock()
+		delete(fm.webhookUnsent, d.ID)
+		fm.webhookMu.Unlock()
+	}
 }
 
 // newWebhookDelivery is the first attempt of n to t, with t sealed.

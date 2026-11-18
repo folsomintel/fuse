@@ -101,9 +101,12 @@ The orchestrator registers its deployment URL with `force` on every start,
 retrying with backoff until it succeeds, and logs each failure. A restart or
 upgrade therefore replaces the deployment in place. Invocations pinned to the
 old deployment replay on the new code, the same as
-`FUSE_RESTATE_FORCE_UPGRADE=1` in [self mode](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx). Nothing
-runs on Restate yet, so this costs nothing today. Blue/green drains for cloud
-come with the drain-only mode.
+`FUSE_RESTATE_FORCE_UPGRADE=1` in [self mode](https://github.com/folsomintel/fuse/blob/main/docs/runbooks/restate.mdx). Every
+operation runs on Restate, so an upgrade that changes an operation's steps can
+break invocations in flight on it: check the console for running invocations
+before upgrading. Blue/green drains for cloud come with the drain-only mode.
+The API does not open until the deployment answers (see
+`--restate-startup-timeout` on [Deploying the orchestrator](/docs/cloud/orchestrator-deploy#configuration)).
 
 ## Observability
 
@@ -112,8 +115,8 @@ come with the drain-only mode.
   the self-hosted admin UI on `:9070`.
 - **Fuse**: `/metrics`, `/health` and `/ready` work the same as before.
   `/ready` checks cloud ingress with the API key and reports `degraded`, not a
-  failure, when ingress is unreachable. Registration failures show up only in
-  the orchestrator log. A tunnel that drops after startup, for example because
+  failure, when ingress is unreachable. Registration failures show up in the
+  orchestrator log, and one that outlasts the startup wait stops the orchestrator. A tunnel that drops after startup, for example because
   the API key was revoked, is retried with backoff and logged; the API keeps
   serving. A tunnel that cannot connect at startup stops the orchestrator. See [Monitoring](/docs/cloud/monitoring).
 - The orchestrator has no OTLP exporter of its own. The handlers carry the

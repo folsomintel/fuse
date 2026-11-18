@@ -136,14 +136,22 @@ func TestExpiryApprovedExtendsEnv(t *testing.T) {
 		t.Fatalf("approved expiry = %+v, want a 2h extension", out.Signal)
 	}
 
-	// idle well past the window, but inside the extension: not reaped.
+	// idle well past the window, but inside the extension: not reaped, and
+	// looked at again when the extension ends.
 	fm.mu.Lock()
 	fm.vms[vmID].lastActivityAt = time.Now().Add(-time.Hour)
 	fm.mu.Unlock()
-	fm.reconcile(ctx)
-	fm.reconcile(ctx)
-	if _, ok := fm.GetVM(vmID); !ok {
-		t.Fatal("extended env was reaped")
+	for _, strike := range []string{"", "idle_timeout"} {
+		v, err := fm.ExpiryCheck(ctx, vmID, strike)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v.Reap || v.Strike != "" || v.In < 119*time.Minute {
+			t.Fatalf("check with strike %q on an extended env = %+v, want a recheck when the extension ends", strike, v)
+		}
+	}
+	if s := vmState(fm, vmID); s != VMStateRunning {
+		t.Fatalf("extended env %s, want running", s)
 	}
 
 	// the extension survives a restart.
@@ -151,7 +159,11 @@ func TestExpiryApprovedExtendsEnv(t *testing.T) {
 	fm.hitlSignals = nil
 	fm.hitlMu.Unlock()
 	fm.recoverExtensions(ctx)
-	if !fm.extendedEnvs(time.Now())[vmID] {
+	fm.hitlMu.Lock()
+	st, ok := fm.hitlSignals[vmID]
+	extended := ok && time.Now().Before(st.extendedUntil)
+	fm.hitlMu.Unlock()
+	if !extended {
 		t.Fatal("extension lost on restart")
 	}
 }
@@ -169,10 +181,13 @@ func TestExpiryUnansweredLetsReapProceed(t *testing.T) {
 	fm.mu.Lock()
 	fm.vms[vmID].lastActivityAt = time.Now().Add(-time.Hour)
 	fm.mu.Unlock()
-	fm.reconcileIdleVMs(ctx, &ReconcileSummary{})
-	fm.reconcileIdleVMs(ctx, &ReconcileSummary{})
-	if _, ok := fm.GetVM(vmID); !ok {
-		t.Fatal("env reaped while its expiry was pending")
+	for _, strike := range []string{"", "idle_timeout"} {
+		if v, err := fm.ExpiryCheck(ctx, vmID, strike); err != nil || v.Reap || v.Strike != "" {
+			t.Fatalf("check with strike %q while the expiry was pending = %+v, %v; want a recheck", strike, v, err)
+		}
+	}
+	if s := vmState(fm, vmID); s != VMStateRunning {
+		t.Fatalf("env %s while its expiry was pending, want running", s)
 	}
 
 	// nobody answers: the expiry times out as a reject and the reap goes on.
@@ -183,10 +198,14 @@ func TestExpiryUnansweredLetsReapProceed(t *testing.T) {
 	if got.State != hitl.StateExpired || got.Decision.Outcome != hitl.OutcomeReject {
 		t.Fatalf("timed out expiry = %+v, want expired with reject", got)
 	}
-	fm.reconcileIdleVMs(ctx, &ReconcileSummary{})
-	fm.reconcileIdleVMs(ctx, &ReconcileSummary{})
-	v, ok := fm.GetVM(vmID)
-	if ok && v.State != VMStateDestroying {
-		t.Fatalf("env not reaped after its expiry timed out: %+v", v)
+	v, err := fm.ExpiryCheck(ctx, vmID, "")
+	if err != nil || v.Strike != "idle_timeout" {
+		t.Fatalf("first check after the expiry timed out = %+v, %v; want an idle strike", v, err)
+	}
+	if v, err = fm.ExpiryCheck(ctx, vmID, v.Strike); err != nil || !v.Reap {
+		t.Fatalf("second check after the expiry timed out = %+v, %v; want a reap", v, err)
+	}
+	if s := vmState(fm, vmID); s != VMStateDestroying {
+		t.Fatalf("env %s after its expiry timed out, want destroying", s)
 	}
 }

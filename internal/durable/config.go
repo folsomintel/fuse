@@ -3,9 +3,8 @@
 //
 // restate-server sits in front of the handlers here and journals every step,
 // so an operation that crashes halfway is replayed from its last finished step
-// instead of being lost. nothing is ported onto it yet: this package only
-// stands up the handler endpoint, the ingress client and the two virtual
-// objects (Environment, Host) later work fills in.
+// instead of being lost. every operation the orchestrator runs goes through a
+// handler here; restate is required.
 package durable
 
 import (
@@ -22,9 +21,6 @@ import (
 type Mode string
 
 const (
-	// ModeOff runs no handlers and calls no restate. the default, and
-	// exactly the orchestrator as it was before restate.
-	ModeOff Mode = "off"
 	// ModeSelf talks to a restate-server the operator runs next to the
 	// orchestrator (docker, or the binary on the local appliance).
 	ModeSelf Mode = "self"
@@ -33,15 +29,18 @@ const (
 	ModeCloud Mode = "cloud"
 )
 
-// ParseMode reads a FUSE_RESTATE_MODE value. empty means off.
+// ParseMode reads a FUSE_RESTATE_MODE value. empty means self. off is gone:
+// every operation runs on restate, so there is no orchestrator without it.
 func ParseMode(s string) (Mode, error) {
 	switch m := Mode(strings.ToLower(strings.TrimSpace(s))); m {
 	case "":
-		return ModeOff, nil
-	case ModeOff, ModeSelf, ModeCloud:
+		return ModeSelf, nil
+	case ModeSelf, ModeCloud:
 		return m, nil
+	case "off":
+		return "", errors.New("FUSE_RESTATE_MODE=off was removed: the orchestrator needs restate. set self (restate-server next to the orchestrator) or cloud; see docs/runbooks/restate.mdx")
 	default:
-		return "", fmt.Errorf("FUSE_RESTATE_MODE: want off, self or cloud; got %q", s)
+		return "", fmt.Errorf("FUSE_RESTATE_MODE: want self or cloud; got %q", s)
 	}
 }
 
@@ -121,10 +120,10 @@ type Config struct {
 }
 
 // LoadConfig reads the config from the environment through getenv
-// (os.Getenv in main, a map in tests). mode off ignores every other variable.
+// (os.Getenv in main, a map in tests).
 //
-//	FUSE_RESTATE_MODE          off | self | cloud (default off)
-//	FUSE_RESTATE_INGRESS_URL   restate ingress url (required unless off)
+//	FUSE_RESTATE_MODE          self | cloud (default self)
+//	FUSE_RESTATE_INGRESS_URL   restate ingress url (required)
 //	ORCH_RESTATE_LISTEN        handler endpoint (default 127.0.0.1:9080)
 //	FUSE_RESTATE_RETRY_<SERVICE>_INITIAL_INTERVAL   e.g. 500ms
 //	FUSE_RESTATE_RETRY_<SERVICE>_MAX_INTERVAL       e.g. 30s
@@ -150,9 +149,6 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{Mode: mode}
-	if mode == ModeOff {
-		return cfg, nil
-	}
 	cfg.Listen = getenv("ORCH_RESTATE_LISTEN")
 	if cfg.Listen == "" {
 		cfg.Listen = DefaultListen

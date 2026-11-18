@@ -243,7 +243,9 @@ func TestWebhookSurvivesEndpointRestart(t *testing.T) {
 // retried until the next attempt would fall outside the window, then the
 // delivery is dead-lettered with the last error and ends.
 func TestWebhookDeadLettersAfterTheWindow(t *testing.T) {
-	shortWebhookSchedule(t, 50*time.Millisecond, 100*time.Millisecond, 600*time.Millisecond)
+	// restate 1.8 starts a delayed send up to about a second late, so the
+	// window fits several attempts at that pace.
+	shortWebhookSchedule(t, 50*time.Millisecond, 100*time.Millisecond, 6*time.Second)
 	d := testDelivery(t, "http://"+freeAddr(t)+"/hook")
 	fleet := newHookFleet(d.ID)
 	client := serveFleet(t, fleet, fastPolicy)

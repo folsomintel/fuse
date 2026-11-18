@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
+	"sync/atomic"
 	"time"
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
 
+	"github.com/folsomintel/fuse/internal/orchestrator"
 	"github.com/folsomintel/fuse/internal/telemetry"
 )
 
@@ -33,8 +36,8 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	// the transport carries the request id and trace context, so restate's
 	// invocation joins the api request's trace and the handler sees the id.
-	hc := &http.Client{Timeout: 30 * time.Second, Transport: &telemetry.Transport{Peer: "restate"}}
-	long := &http.Client{Transport: &telemetry.Transport{Peer: "restate"}}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: unavailable{&telemetry.Transport{Peer: "restate"}}}
+	long := &http.Client{Transport: unavailable{&telemetry.Transport{Peer: "restate"}}}
 	return &Client{
 		url:         cfg.IngressURL,
 		adminURL:    cfg.AdminURL,
@@ -43,6 +46,28 @@ func NewClient(cfg Config) *Client {
 		ingress:     ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, hc)...),
 		longIngress: ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, long)...),
 	}
+}
+
+// unavailable marks a request that never reached restate with
+// orchestrator.ErrRestateUnavailable, so the api answers 503 and the caller
+// knows nothing started: one that failed before it was written (refused, no
+// route, a dial that timed out, a proxy that would not connect). a failure
+// after the request was written is left as it is: restate may have accepted
+// the invocation and still be running it. ingress keeps the error chain.
+type unavailable struct{ next http.RoundTripper }
+
+func (u unavailable) RoundTrip(req *http.Request) (*http.Response, error) {
+	var written atomic.Bool
+	trace := &httptrace.ClientTrace{WroteRequest: func(info httptrace.WroteRequestInfo) {
+		if info.Err == nil {
+			written.Store(true)
+		}
+	}}
+	res, err := u.next.RoundTrip(req.WithContext(httptrace.WithClientTrace(req.Context(), trace)))
+	if err != nil && !written.Load() {
+		return nil, fmt.Errorf("%w: %w", orchestrator.ErrRestateUnavailable, err)
+	}
+	return res, err
 }
 
 func ingressOptions(cfg Config, hc *http.Client) []ingress.ClientOption {
@@ -79,6 +104,33 @@ func (c *Client) Check(ctx context.Context) error {
 	return nil
 }
 
+// WaitReady polls until ingress answers and a Ping reaches the Environment
+// object through it, which only works once this orchestrator's deployment is
+// registered. it gives up after timeout and says which half failed: restate
+// unreachable, or reachable with no deployment serving Environment.
+func (c *Client) WaitReady(ctx context.Context, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	var last error
+	for {
+		attempt, stop := context.WithTimeout(ctx, 5*time.Second)
+		if err := c.Check(attempt); err != nil {
+			last = err
+		} else if _, err := c.Ping(attempt, EnvironmentObject, "startup"); err != nil {
+			last = fmt.Errorf("restate is up but %s does not answer: is this orchestrator's handler endpoint registered and reachable from restate? (see docs/runbooks/restate.mdx): %w", EnvironmentObject, err)
+		} else {
+			stop()
+			return nil
+		}
+		stop()
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("restate not ready after %s: %w", timeout, last)
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // Ping invokes <object>/<key>/Ping through ingress and waits for the result.
 func (c *Client) Ping(ctx context.Context, object, key string) (PingResult, error) {
 	return ingress.Object[restate.Void, PingResult](c.ingress, object, key, "Ping").
@@ -111,3 +163,5 @@ func (c *Client) Register(ctx context.Context, uri string) error {
 	}
 	return nil
 }
+
+var _ orchestrator.Durable = (*Client)(nil)

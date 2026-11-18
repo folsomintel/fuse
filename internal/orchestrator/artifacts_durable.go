@@ -26,7 +26,7 @@ type ArtifactMoveJob struct {
 	Files map[string]string `json:"files,omitempty"`
 	Lazy  bool              `json:"lazy,omitempty"`
 	// Base makes this a delta move merged onto Base on HostID, see
-	// moveDeltaToHost.
+	// planDeltaMove.
 	Base     string `json:"base,omitempty"`
 	DropBase bool   `json:"drop_base,omitempty"`
 
@@ -93,8 +93,8 @@ type ArtifactMoveMetrics interface {
 	ArtifactMoveCompleted(sourceHostID, targetHostID string, bytes int64, d time.Duration, err error)
 }
 
-// SetDurableArtifacts routes artifact moves and pull pins through restate. nil
-// (mode off, the default) keeps them in process. set it before Start.
+// SetDurableArtifacts routes artifact moves and pull pins through restate.
+// set it before Start.
 func (fm *FleetManager) SetDurableArtifacts(d DurableArtifacts) {
 	fm.mu.Lock()
 	fm.durableArtifacts = d
@@ -111,59 +111,25 @@ func (fm *FleetManager) durableArtifactsClient() DurableArtifacts {
 // on a durable move.
 const durableMoveWait = time.Hour
 
-// runArtifactMove carries out a planned move: on restate when it is
-// configured, otherwise in process holding in-memory pins. wrap turns a failed
-// copy into the caller's error; a failed record write in process is returned
-// as itself, as before.
+// runArtifactMove carries out a planned move on restate. wrap turns a failed
+// move into the caller's error.
 func (fm *FleetManager) runArtifactMove(ctx context.Context, job ArtifactMoveJob, wrap func(error) error) (string, error) {
-	if d := fm.durableArtifactsClient(); d != nil {
-		waitCtx := ctx
-		if _, ok := ctx.Deadline(); !ok {
-			// a background caller (the checkpoint loop) would otherwise wait
-			// forever on a restate that accepts and never answers. giving up
-			// leaves the move running; its copy is found on the next try.
-			var cancel context.CancelFunc
-			waitCtx, cancel = context.WithTimeout(ctx, durableMoveWait)
-			defer cancel()
-		}
-		id, err := d.MoveArtifact(waitCtx, job)
-		if err != nil {
-			return "", wrap(err)
-		}
-		// a fresh use keeps the copy out of the next sweep, as the in-process
-		// release does.
-		fm.touchArtifact(job.PinIDs()...)
-		return id, nil
+	waitCtx := ctx
+	if _, ok := ctx.Deadline(); !ok {
+		// a background caller (the checkpoint loop) would otherwise wait
+		// forever on a restate that accepts and never answers. giving up
+		// leaves the move running; its copy is found on the next try.
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, durableMoveWait)
+		defer cancel()
 	}
-	ids := job.PinIDs()
-	fm.beginArtifactPull(ids...)
-	defer fm.endArtifactPull(ids...)
-	moved, err := fm.ArtifactPull(ctx, job)
+	id, err := fm.durableArtifactsClient().MoveArtifact(waitCtx, job)
 	if err != nil {
 		return "", wrap(err)
 	}
-	return fm.ArtifactRecord(ctx, job, moved)
-}
-
-// holdArtifact pins id against gc for holder and returns its release. on
-// restate the pin outlives a restart and lapses after ttl if nothing releases
-// it; a pin restate refuses falls back to an in-memory one.
-func (fm *FleetManager) holdArtifact(ctx context.Context, holder string, ttl time.Duration, id string) (release func()) {
-	if d := fm.durableArtifactsClient(); d != nil {
-		if err := d.PinArtifacts(ctx, holder, ttl, id); err == nil {
-			return func() {
-				rctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				if err := d.ReleaseArtifacts(rctx, holder, id); err != nil {
-					fm.logger.Warn("release durable artifact pin failed; it lapses on its timer", "holder", holder, "snapshot", id, "err", err)
-				}
-			}
-		} else {
-			fm.logger.Warn("durable artifact pin failed; holding it in memory", "holder", holder, "snapshot", id, "err", err)
-		}
-	}
-	fm.beginArtifactPull(id)
-	return func() { fm.endArtifactPull(id) }
+	// a fresh use keeps the copy out of the next sweep.
+	fm.touchArtifact(job.PinIDs()...)
+	return id, nil
 }
 
 // dropDurablyPinned removes from collect every artifact a durable pin holds.
@@ -171,9 +137,6 @@ func (fm *FleetManager) holdArtifact(ctx context.Context, holder string, ttl tim
 // rather than deleting something a move may be writing.
 func (fm *FleetManager) dropDurablyPinned(ctx context.Context, collect []SnapshotRecord) []SnapshotRecord {
 	d := fm.durableArtifactsClient()
-	if d == nil {
-		return collect
-	}
 	out := collect[:0]
 	for _, record := range collect {
 		pinned, err := d.ArtifactPinned(ctx, record.SnapshotID)
@@ -190,8 +153,7 @@ func (fm *FleetManager) dropDurablyPinned(ctx context.Context, collect []Snapsho
 }
 
 // the methods below are the steps of a move, in order. the durable handler
-// runs each inside a journaled restate step; the in-process path calls them
-// directly. each must be safe to run again.
+// runs each inside a journaled restate step. each must be safe to run again.
 
 // ArtifactPullTimeout bounds one attempt at a pull, from
 // ORCH_ARTIFACT_PULL_TIMEOUT_SECONDS. zero leaves the agent client's own

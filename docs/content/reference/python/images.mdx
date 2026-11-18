@@ -25,8 +25,8 @@ def get(self, digest: str) -> Image: ...
 answers `202`), usually still `converting`. The bake keeps running on the host
 if your process goes away. Converting a ref that is already converting or ready
 returns that image; one that failed is converted again. Each call sends an
-`Idempotency-Key`, a fresh one unless you pass `idempotency_key`; with restate
-on, a retry under the same key attaches to the first convert. A malformed ref, a
+`Idempotency-Key`, a fresh one unless you pass `idempotency_key`; a retry under
+the same key attaches to the first convert. A malformed ref, a
 registry that needs credentials, or a `host_id` that runs the QEMU backend
 raises `fuse.ApiError` with `code == "invalid_argument"`; a ref the registry
 does not have raises it with `code == "not_found"`. A host whose image cache is

@@ -84,7 +84,7 @@ func (p *deletingProvider) DeleteArtifact(_ context.Context, snapshotID string) 
 func twoHostFleet(t *testing.T, mover ArtifactMover) (*FleetManager, *deletingProvider) {
 	t.Helper()
 	stub := &deletingProvider{stubLoadProvider: newStubProvider()}
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", ArtifactMover: mover})
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(context.Background(), artifactHost(id, 8), stub); err != nil {
 			t.Fatal(err)
@@ -93,9 +93,8 @@ func twoHostFleet(t *testing.T, mover ArtifactMover) (*FleetManager, *deletingPr
 	return fm, stub
 }
 
-// TestEnsureArtifactOnHost_durable: with restate configured the move goes to
-// restate, carrying host ids and no agent token, and the in-process mover is
-// never called.
+// TestEnsureArtifactOnHost_durable: the move goes to restate, carrying host
+// ids and no agent token, and the fleet never calls the mover itself.
 func TestEnsureArtifactOnHost_durable(t *testing.T) {
 	ctx := context.Background()
 	mover := &recordingMover{}
@@ -112,7 +111,7 @@ func TestEnsureArtifactOnHost_durable(t *testing.T) {
 		t.Fatalf("committed %q, want %q", got, want)
 	}
 	if n := len(mover.calls()); n != 0 {
-		t.Fatalf("in-process mover called %d times, want 0", n)
+		t.Fatalf("mover called directly %d times, want 0", n)
 	}
 	if len(d.jobs) != 1 {
 		t.Fatalf("%d durable moves, want 1", len(d.jobs))
@@ -133,7 +132,7 @@ func TestEnsureArtifactOnHost_durable(t *testing.T) {
 }
 
 // TestArtifactSteps: pull resolves endpoints from the fleet and record writes
-// the copy, so the durable handler and the in-process path record the same.
+// the copy, the steps the durable handler runs.
 func TestArtifactSteps(t *testing.T) {
 	ctx := context.Background()
 	mover := &recordingMover{}
@@ -242,7 +241,7 @@ func TestReconcileArtifacts_durablePins(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			fm := NewFleetManager(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-", ArtifactIdleTTL: time.Minute})
+			fm := newInlineFleet(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-", ArtifactIdleTTL: time.Minute})
 			d := newFakeDurableArtifacts()
 			fm.SetDurableArtifacts(d)
 			record := seedArtifactRecord(t, fm, "art-1", "tenant-1", "h-a", "d1")
@@ -258,34 +257,6 @@ func TestReconcileArtifacts_durablePins(t *testing.T) {
 				t.Fatalf("alive = %v, want %v", alive, tc.wantAlive)
 			}
 		})
-	}
-}
-
-// TestHoldArtifact: on restate the pin is durable and released by the caller;
-// a pin restate refuses is held in memory instead.
-func TestHoldArtifact(t *testing.T) {
-	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: newStubProvider(), Prefix: "fuse-"})
-	d := newFakeDurableArtifacts()
-	fm.SetDurableArtifacts(d)
-
-	release := fm.holdArtifact(ctx, "lazy:vm-1", LazyMemoryPinTTL, "seed-1")
-	if p, _ := d.ArtifactPinned(ctx, "seed-1"); !p || len(fm.artifactPulls) != 0 {
-		t.Fatalf("durable pin %v, in-memory pins %v", p, fm.artifactPulls)
-	}
-	release()
-	if p, _ := d.ArtifactPinned(ctx, "seed-1"); p {
-		t.Fatal("release left the durable pin")
-	}
-
-	d.pinErr = errors.New("restate down")
-	release = fm.holdArtifact(ctx, "lazy:vm-2", LazyMemoryPinTTL, "seed-2")
-	if fm.artifactPulls["seed-2"] != 1 {
-		t.Fatalf("in-memory pins %v, want seed-2 held", fm.artifactPulls)
-	}
-	release()
-	if len(fm.artifactPulls) != 0 {
-		t.Fatalf("in-memory pins %v after release", fm.artifactPulls)
 	}
 }
 
@@ -329,7 +300,7 @@ func (flakySnapshotStore) GetSnapshot(context.Context, string) (SnapshotRecord, 
 func TestArtifactDiscard_unreadableRecordKeepsBytes(t *testing.T) {
 	ctx := context.Background()
 	stub := &deletingProvider{stubLoadProvider: newStubProvider()}
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-", StateStore: flakySnapshotStore{NewMemoryStateStore()}})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-", StateStore: flakySnapshotStore{NewMemoryStateStore()}})
 	if err := fm.RegisterHost(ctx, artifactHost("h-b", 8), stub); err != nil {
 		t.Fatal(err)
 	}

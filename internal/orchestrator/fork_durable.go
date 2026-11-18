@@ -14,13 +14,20 @@ import (
 // fork sends for its new vm.
 const DestroyReasonForkRollback = "fork_rollback"
 
+// CleanupOfCreatedVM reports whether a destroy with reason is one a create
+// or fork sends for a vm it created and then gave up on. such a destroy names
+// the vm's host, and an empty one means the default provider of a fleet with
+// no registered hosts.
+func CleanupOfCreatedVM(reason string) bool {
+	return reason == DestroyReasonCreateCleanup || reason == DestroyReasonForkRollback
+}
+
 // forkTaskPrefix starts every fork's task id, and so its new vm's id.
 const forkTaskPrefix = "fork-"
 
 // ForkRefusals are the sentinel errors a fork refuses with besides
 // SnapshotFleetErrors. the durable handler carries each one across restate as
-// its own error code, so the api answers it with the same status as in mode
-// off.
+// its own error code, so the api answers it with that sentinel's status.
 var ForkRefusals = []error{
 	ErrSnapshotNotSeedable,
 }
@@ -55,20 +62,15 @@ type DurableForker interface {
 	Fork(ctx context.Context, vmID string, req ForkRequest) error
 }
 
-// SetDurableForker routes forks through restate. nil (mode off, the default)
-// keeps the in-process fork. without a TOKEN_ENCRYPTION_KEY forks stay in
-// process too, as creates do. set it before Start.
+// SetDurableForker routes forks through restate. set it before Start.
 func (fm *FleetManager) SetDurableForker(d DurableForker) {
 	fm.mu.Lock()
 	fm.durableFork = d
 	fm.mu.Unlock()
 }
 
-// durableForker is the forker forks go through, or nil for in process.
+// durableForker is the forker forks go through.
 func (fm *FleetManager) durableForker() DurableForker {
-	if len(fm.tokenEncryptionKey) != 32 {
-		return nil
-	}
 	fm.mu.RLock()
 	defer fm.mu.RUnlock()
 	return fm.durableFork
@@ -78,7 +80,7 @@ func (fm *FleetManager) durableForker() DurableForker {
 // restate is still running. the fork either finishes it or destroys it, so
 // recovery leaves it provisioning.
 func (fm *FleetManager) isForkPlaceholder(v *vm) bool {
-	return fm.durableForker() != nil && strings.HasPrefix(v.taskID, forkTaskPrefix)
+	return strings.HasPrefix(v.taskID, forkTaskPrefix)
 }
 
 // durableForkVM is forkEnvironment on restate: it names the new vm, runs the

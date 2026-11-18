@@ -11,6 +11,18 @@ LOG="$FC_DIR/fc-agent.log"
 ORCH_BIN="${ORCH_BIN:-/usr/local/bin/orchestrator}"
 ORCH_DEFAULTS=/etc/default/orchestrator
 ORCH_UNIT=/etc/systemd/system/orchestrator.service
+# restate-server, which the orchestrator runs every operation on. the unit and
+# image pin are ops/systemd/restate-server.service; its env is written once.
+RESTATE_ENV=/etc/fuse/restate.env
+RESTATE_UNIT_SRC="$FC_DIR/../../ops/systemd/restate-server.service"
+RESTATE_REGISTER=/usr/local/lib/fuse/register-restate.sh
+
+# orch_mode: FUSE_RESTATE_MODE from the orchestrator defaults, unquoted, or
+# empty.
+orch_mode() {
+  sudo -n grep -E '^FUSE_RESTATE_MODE=' "$ORCH_DEFAULTS" 2>/dev/null | tail -n1 | cut -d= -f2- \
+    | tr -d '"'"'"' \t\r'
+}
 
 # >>> fuse release-asset checksum verification >>>
 # This block is embedded, not sourced: ops/install-orchestrator.sh is
@@ -288,7 +300,8 @@ DATABASE_URL=${DATABASE_URL:-postgres://USER:PASSWORD@HOST:5432/fuse_orchestrato
 ORCH_REQUIRE_AUTH=true
 ORCH_AUTH_TOKEN=$(openssl rand -hex 32)
 
-# Encrypt per-host agent tokens at rest in Postgres.
+# Required. Encrypts per-host agent tokens at rest and seals what restate
+# journals (create, fork and webhook inputs).
 TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 # TLS: terminate at a reverse proxy (recommended). To terminate here instead:
@@ -304,18 +317,109 @@ EOF
       echo "[orch] $ORCH_DEFAULTS exists - leaving it untouched"
     fi
 
-    # 3. install the systemd unit.
+    # 3. restate. the orchestrator refuses to start without it, so a file
+    #    from before restate was required gets its keys too. a file that
+    #    already names a mode (self or cloud) is left as it is.
+    case "$(orch_mode)" in
+      self|cloud) restate_mode_set=1 ;;
+      *) restate_mode_set=0 ;;
+    esac
+    if [ "$restate_mode_set" = 0 ]; then
+      tmp=$(mktemp)
+      sudo -n grep -vE '^(FUSE_RESTATE_MODE|FUSE_RESTATE_INGRESS_URL|ORCH_RESTATE_LISTEN)=' "$ORCH_DEFAULTS" > "$tmp" || true
+      printf '\n# restate (required): restate-server runs beside the orchestrator.\nFUSE_RESTATE_MODE=self\nFUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080\nORCH_RESTATE_LISTEN=127.0.0.1:9080\n' >> "$tmp"
+      sudo -n tee "$ORCH_DEFAULTS" < "$tmp" >/dev/null; rm -f "$tmp"
+      echo "[orch] set FUSE_RESTATE_MODE=self in $ORCH_DEFAULTS"
+    fi
+    if ! sudo -n grep -qE '^TOKEN_ENCRYPTION_KEY=.+' "$ORCH_DEFAULTS"; then
+      tmp=$(mktemp)
+      sudo -n grep -vE '^TOKEN_ENCRYPTION_KEY=' "$ORCH_DEFAULTS" > "$tmp" || true
+      echo "TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$tmp"
+      sudo -n tee "$ORCH_DEFAULTS" < "$tmp" >/dev/null; rm -f "$tmp"
+      # host tokens a keyless orchestrator stored in plaintext are still
+      # read, and stored again encrypted, on the first start.
+      echo "[orch] added a generated TOKEN_ENCRYPTION_KEY to $ORCH_DEFAULTS (now required)"
+    fi
+    register_line=""
+    restate_unit=""
+    if [ "$(orch_mode)" = self ]; then
+      command -v docker >/dev/null 2>&1 || { echo "[orch] FUSE_RESTATE_MODE=self runs restate-server in docker; install docker first" >&2; exit 1; }
+      [ -f "$RESTATE_UNIT_SRC" ] || { echo "[orch] $RESTATE_UNIT_SRC not found; run this from a fuse checkout" >&2; exit 1; }
+      # a restate already answering on the admin port that this unit did not
+      # start (ops/restate/compose.yaml, say) is used as it is: a second one
+      # would fight it for the ports and split the data.
+      own_unit=1
+      if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:9070/health 2>/dev/null \
+        && ! systemctl is-active --quiet restate-server.service; then
+        own_unit=0
+        echo "[orch] restate already answers on 127.0.0.1:9070; using it instead of installing restate-server.service"
+      fi
+      if [ "$own_unit" = 1 ] && ! sudo -n test -f "$RESTATE_ENV"; then
+        sudo -n mkdir -p "$(dirname "$RESTATE_ENV")"
+        # the same file ops/install-orchestrator.sh writes.
+        sudo -n tee "$RESTATE_ENV" >/dev/null <<'RENV'
+# /etc/fuse/restate.env - restate-server config, passed into its container.
+# Edit, then: sudo systemctl restart restate-server
+# Every port stays on 127.0.0.1: the admin api has no auth, and ingress
+# invokes handlers directly. Keep them off the network.
+RESTATE_NODE_NAME=fuse-restate
+RESTATE_BASE_DIR=/restate-data
+RESTATE_LISTEN_MODE=tcp
+RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:18080
+RESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:9070
+RESTATE_BIND_ADDRESS=127.0.0.1:5122
+
+# Keep step history of completed invocations (the default 0 drops it).
+RESTATE_DEFAULT_JOURNAL_RETENTION=7d
+RESTATE_DEFAULT_WORKFLOW_COMPLETION_RETENTION=7d
+RENV
+        sudo -n chmod 600 "$RESTATE_ENV"
+      fi
+      if [ "$own_unit" = 1 ]; then
+        sudo -n install -m0644 "$RESTATE_UNIT_SRC" /etc/systemd/system/restate-server.service
+      fi
+      # registers the handler endpoint once the orchestrator serves it; the
+      # orchestrator waits for that before it opens its api.
+      sudo -n mkdir -p "$(dirname "$RESTATE_REGISTER")"
+      sudo -n tee "$RESTATE_REGISTER" >/dev/null <<'REG'
+#!/bin/sh
+# register-restate.sh: register the co-located orchestrator's restate handler
+# endpoint (ORCH_RESTATE_LISTEN, from the unit's environment) with
+# restate-server. written by fc-agent.sh install-orchestrator, run as the
+# orchestrator unit's ExecStartPost. it gives up (about 80s) before
+# systemd's 90s start timeout; Restart= runs it again.
+uri="http://${ORCH_RESTATE_LISTEN:-127.0.0.1:9080}"
+for i in $(seq 20); do
+  curl -fsS -o /dev/null --max-time 3 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
+    -H 'content-type: application/json' -d "{\"uri\":\"$uri\",\"force\":true}" && exit 0
+  sleep 1
+done
+echo "register-restate: could not register $uri with restate" >&2
+exit 1
+REG
+      sudo -n chmod 0755 "$RESTATE_REGISTER"
+      sudo -n systemctl daemon-reload
+      if [ "$own_unit" = 1 ]; then
+        restate_unit=" restate-server.service"
+        sudo -n systemctl enable --now restate-server.service
+        echo "[orch] restate-server running (ingress 127.0.0.1:18080, admin 127.0.0.1:9070)"
+      fi
+      register_line="ExecStartPost=$RESTATE_REGISTER"
+    fi
+
+    # 4. install the systemd unit.
     sudo -n tee "$ORCH_UNIT" >/dev/null <<EOF
 [Unit]
 Description=Fuse orchestrator (control plane)
-After=network-online.target fc-agent.service
-Wants=network-online.target
+After=network-online.target fc-agent.service${restate_unit}
+Wants=network-online.target${restate_unit}
 
 [Service]
 Type=simple
 User=root
 EnvironmentFile=$ORCH_DEFAULTS
 ExecStart=$ORCH_BIN
+$register_line
 Restart=on-failure
 RestartSec=3
 
@@ -325,7 +429,7 @@ EOF
     sudo -n systemctl daemon-reload
     sudo -n systemctl enable orchestrator.service
 
-    # 4. only start once DATABASE_URL is real - auth-on + a placeholder DB would
+    # 5. only start once DATABASE_URL is real - auth-on + a placeholder DB would
     #    just crash-loop.
     if grep -q 'USER:PASSWORD@HOST' "$ORCH_DEFAULTS"; then
       echo "[orch] enabled but NOT started - edit $ORCH_DEFAULTS (set DATABASE_URL), then:"
@@ -335,7 +439,7 @@ EOF
       sudo -n systemctl status --no-pager orchestrator.service | head -15
     fi
 
-    # 5. print the UI wiring + the updater hint.
+    # 6. print the UI wiring + the updater hint.
     TOK=$(grep -E '^ORCH_AUTH_TOKEN=' "$ORCH_DEFAULTS" | cut -d= -f2- || true)
     echo
     echo "# ---- point the Fuse UI (fuse-frontend) at this orchestrator ----"

@@ -31,7 +31,7 @@ func (p *lazyMigrateProvider) setStatus(st MemoryStatus) {
 func newLazyMigrateFleet(t *testing.T, provider *lazyMigrateProvider, mover *recordingMover, hugePages bool) *FleetManager {
 	t.Helper()
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(ctx, artifactHost(id, 8), provider); err != nil {
 			t.Fatal(err)
@@ -44,32 +44,31 @@ func newLazyMigrateFleet(t *testing.T, provider *lazyMigrateProvider, mover *rec
 	return fm
 }
 
-func pinnedArtifacts(fm *FleetManager) int {
-	fm.mu.RLock()
-	defer fm.mu.RUnlock()
-	return len(fm.artifactPulls)
+// pinnedOf lists the ids among ids that hold a durable pin.
+func pinnedOf(fm *FleetManager, ids ...string) []string {
+	var out []string
+	for _, id := range ids {
+		if pinned, _ := fm.durableArtifactsClient().ArtifactPinned(context.Background(), id); pinned {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
-func waitForNoPins(t *testing.T, fm *FleetManager) {
+// waitForUnpinned waits for the lazy memory watch, whose first poll is 2s out,
+// to release the seed's pin.
+func waitForUnpinned(t *testing.T, fm *FleetManager, seedID string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for pinnedArtifacts(fm) != 0 {
+	deadline := time.Now().Add(10 * time.Second)
+	for len(pinnedOf(fm, seedID)) != 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the seed is still pinned after the memory transfer ended")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
-func withFastLazyPolling(t *testing.T) {
-	t.Helper()
-	prev := lazyMemoryPollInterval
-	lazyMemoryPollInterval = 5 * time.Millisecond
-	t.Cleanup(func() { lazyMemoryPollInterval = prev })
-}
-
 func TestMigrateVM_lazyLeavesMemoryOnTheSourceUntilResident(t *testing.T) {
-	withFastLazyPolling(t)
 	provider := &lazyMigrateProvider{liveMigrateProvider: newLiveMigrateProvider()}
 	mover := &recordingMover{}
 	fm := newLazyMigrateFleet(t, provider, mover, true)
@@ -97,24 +96,32 @@ func TestMigrateVM_lazyLeavesMemoryOnTheSourceUntilResident(t *testing.T) {
 	}
 
 	// the seed is the only copy of the pages the target has not touched yet.
-	time.Sleep(4 * lazyMemoryPollInterval)
-	if pinnedArtifacts(fm) == 0 {
+	seedID := moves[0].SourceSnapshotID
+	if len(pinnedOf(fm, seedID)) == 0 {
 		t.Fatal("the seed was released before the target had all of its memory")
 	}
 	provider.setStatus(MemoryStatus{ResidentChunks: 256, TotalChunks: 256, Done: true})
-	waitForNoPins(t, fm)
+	waitForUnpinned(t, fm, seedID)
 }
 
 func TestMigrateVM_lazyReleasesTheSeedWhenTheTransferFails(t *testing.T) {
-	withFastLazyPolling(t)
 	provider := &lazyMigrateProvider{liveMigrateProvider: newLiveMigrateProvider()}
-	fm := newLazyMigrateFleet(t, provider, &recordingMover{}, true)
+	mover := &recordingMover{}
+	fm := newLazyMigrateFleet(t, provider, mover, true)
 
 	if _, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{TargetHostID: "h-b", Live: true, Lazy: true}); err != nil {
 		t.Fatalf("lazy migrate: %v", err)
 	}
+	moves := mover.calls()
+	if len(moves) != 1 {
+		t.Fatalf("moves = %+v, want one lazy copy", moves)
+	}
+	seedID := moves[0].SourceSnapshotID
+	if len(pinnedOf(fm, seedID)) == 0 {
+		t.Fatal("the seed was not pinned while the target paged it in")
+	}
 	provider.setStatus(MemoryStatus{ResidentChunks: 10, TotalChunks: 256, Error: "chunk 10: digest mismatch"})
-	waitForNoPins(t, fm)
+	waitForUnpinned(t, fm, seedID)
 }
 
 func TestMigrateVM_lazyRefusalsLeaveTheSourceRunning(t *testing.T) {

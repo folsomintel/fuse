@@ -56,14 +56,12 @@ func (f *fakeDurableSnapshots) SendCollectSnapshot(_ context.Context, vmID, snap
 	return nil
 }
 
-// TestSnapshotAndRestore_durable: with restate configured the api's snapshot
-// and restore run on the Environment object, and a fork's seed snapshot stays
-// in process (fork is not on restate yet, and a handler on the same object
-// must never call it).
+// TestSnapshotAndRestore_durable: the api's snapshot and restore run on the
+// Environment object, never on the host directly.
 func TestSnapshotAndRestore_durable(t *testing.T) {
 	ctx := context.Background()
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-durable")
 	d := &fakeDurableSnapshots{}
 	fm.SetDurableSnapshots(d)
@@ -85,15 +83,6 @@ func TestSnapshotAndRestore_durable(t *testing.T) {
 		t.Fatalf("%d in-process checkpoints, want 0", n)
 	}
 
-	if _, err := fm.snapshotInProcess(ctx, vmID, SnapshotOptions{}); err != nil {
-		t.Fatalf("in-process snapshot: %v", err)
-	}
-	if n := len(provider.envs[vmID].checkpoints); n != 1 {
-		t.Fatalf("%d in-process checkpoints, want 1", n)
-	}
-	if len(d.snapshots) != 1 {
-		t.Fatalf("in-process snapshot went to restate")
-	}
 }
 
 // TestSnapshotSteps_abortDeletesArtifactAndMarksError: the compensation of a
@@ -102,7 +91,7 @@ func TestSnapshotAndRestore_durable(t *testing.T) {
 func TestSnapshotSteps_abortDeletesArtifactAndMarksError(t *testing.T) {
 	ctx := context.Background()
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-abort")
 
 	plan, err := fm.SnapshotBegin(ctx, vmID, SnapshotOptions{Comment: "c"})
@@ -158,7 +147,7 @@ func TestPermanentSnapshotError(t *testing.T) {
 func TestRestoreSteps_validateRejectsNonReady(t *testing.T) {
 	ctx := context.Background()
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-restore")
 	rec, err := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{})
 	if err != nil {
@@ -188,11 +177,11 @@ func TestRestoreSteps_validateRejectsNonReady(t *testing.T) {
 
 // TestReconcileSnapshots_durableSendsCollect: on restate an expired leaf is
 // marked deleting and handed to the Environment object, keyed on the
-// marking, instead of being deleted in process.
+// marking, instead of being deleted by reconcile itself.
 func TestReconcileSnapshots_durableSendsCollect(t *testing.T) {
 	ctx := context.Background()
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-gc")
 	first, _ := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{})
 	// no lineage, or first would be kept as the second's parent.
@@ -254,11 +243,11 @@ func TestReconcileSnapshots_durableSendsCollect(t *testing.T) {
 }
 
 // TestReconcileSnapshots_skipsPinned: retention gc leaves a checkpoint that a
-// move is still reading, in process or on restate.
+// move still holds a durable pin on.
 func TestReconcileSnapshots_skipsPinned(t *testing.T) {
 	ctx := context.Background()
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	vmID := provisionSnapshotTestVM(t, fm, "task-pin")
 	first, _ := fm.CreateSnapshot(ctx, vmID, SnapshotOptions{})
 	// no lineage, or first would be kept as the second's parent.
@@ -271,24 +260,19 @@ func TestReconcileSnapshots_skipsPinned(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fm.beginArtifactPull(first.SnapshotID)
-	fm.reconcileSnapshots(ctx)
-	if _, err := fm.GetSnapshotByID(ctx, first.SnapshotID); err != nil {
-		t.Fatalf("in-process pinned checkpoint collected: %v", err)
-	}
-	fm.endArtifactPull(first.SnapshotID)
-
 	da := newFakeDurableArtifacts()
 	fm.SetDurableArtifacts(da)
 	if err := da.PinArtifacts(ctx, "move:x", 0, first.SnapshotID); err != nil {
 		t.Fatal(err)
 	}
 	fm.reconcileSnapshots(ctx)
+	inlineWait(fm)
 	if _, err := fm.GetSnapshotByID(ctx, first.SnapshotID); err != nil {
 		t.Fatalf("durably pinned checkpoint collected: %v", err)
 	}
 	_ = da.ReleaseArtifacts(ctx, "move:x", first.SnapshotID)
 	fm.reconcileSnapshots(ctx)
+	inlineWait(fm)
 	if _, err := fm.GetSnapshotByID(ctx, first.SnapshotID); err == nil {
 		t.Fatal("released checkpoint not collected")
 	}

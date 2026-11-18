@@ -270,20 +270,6 @@ func (fm *FleetManager) ListHostsFiltered(filter HostFilter) ([]Host, string, er
 	return all[start:end], next, nil
 }
 
-// activeHosts returns a point-in-time snapshot of all hosts eligible for
-// scheduling. Called under NO lock — takes its own read lock. It returns
-// independent *copies* (not the live map pointers) so the pure Schedule()
-// function can read host capacity/allocation without a lock while another
-// goroutine mutates the real hosts under fm.mu in allocateOnHost. Returning
-// the live pointers here is a data race (Schedule read vs allocateOnHost
-// write); the copies make each scheduling decision operate on a consistent
-// snapshot.
-func (fm *FleetManager) activeHosts() []*Host {
-	fm.mu.RLock()
-	defer fm.mu.RUnlock()
-	return fm.activeHostsLocked()
-}
-
 // activeHostsLocked returns host copies while the caller holds fm.mu.
 func (fm *FleetManager) activeHostsLocked() []*Host {
 	out := make([]*Host, 0, len(fm.hosts))
@@ -567,11 +553,12 @@ func (fm *FleetManager) hostToRecord(h Host) HostRecord {
 }
 
 // hostFromRecord rebuilds an in-memory Host from a HostRecord, decrypting
-// the bearer token. If decryption fails (wrong key, unencrypted legacy
+// the bearer token. plaintext reports a token a keyless orchestrator stored
+// unencrypted, which the caller should store again encrypted. If decryption fails (wrong key, unencrypted legacy
 // row), falls back to treating the bytes as a plaintext token so
 // recovered state still produces a working provider client.
-func (fm *FleetManager) hostFromRecord(r HostRecord) Host {
-	h := Host{
+func (fm *FleetManager) hostFromRecord(r HostRecord) (h Host, plaintext bool) {
+	h = Host{
 		ID:        r.ID,
 		URL:       r.URL,
 		Region:    r.Region,
@@ -585,13 +572,22 @@ func (fm *FleetManager) hostFromRecord(r HostRecord) Host {
 		UpdatedAt: r.UpdatedAt,
 	}
 	if len(r.TokenEncrypted) == 0 {
-		return h
+		return h, false
 	}
 	if len(fm.tokenEncryptionKey) == 32 {
 		plain, err := secrets.DecryptToken(r.TokenEncrypted, fm.tokenEncryptionKey)
 		if err == nil {
 			h.Token = plain
-			return h
+			return h, false
+		}
+		// a row an orchestrator without a key wrote holds the token in
+		// plaintext. the key became required, so an upgrade meets these:
+		// ciphertext is binary (a random nonce first), so a row that is
+		// all printable is that legacy token, not a key that changed.
+		// recoverState stores it again, encrypted.
+		if legacyPlainToken(r.TokenEncrypted) {
+			h.Token = string(r.TokenEncrypted)
+			return h, true
 		}
 		// A configured 32-byte key that cannot decrypt this row means the
 		// key changed (or the row is corrupt), not a legacy plaintext
@@ -602,10 +598,26 @@ func (fm *FleetManager) hostFromRecord(r HostRecord) Host {
 		// tell the operator the key is the problem.
 		fm.logger.Error("host token decrypt failed; leaving token empty (check TOKEN_ENCRYPTION_KEY has not changed)",
 			"host_id", r.ID, "error", err)
-		return h
+		return h, false
 	}
 	// No encryption key configured: the row holds a plaintext token stored
 	// on a keyless (legacy / dev) orchestrator.
 	h.Token = string(r.TokenEncrypted)
-	return h
+	return h, false
+}
+
+// legacyPlainToken reports whether b is a bearer token stored in plaintext
+// by an orchestrator that had no TOKEN_ENCRYPTION_KEY: printable ascii, of any
+// length. a row shorter than 28 bytes (nonce and tag) cannot be ciphertext at
+// all, and a longer ciphertext is all printable about once in 10^12.
+func legacyPlainToken(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	for _, c := range b {
+		if c < 0x21 || c > 0x7e {
+			return false
+		}
+	}
+	return true
 }

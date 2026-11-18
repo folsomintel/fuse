@@ -120,7 +120,7 @@ Don't pass along your own opinion of the diff. A fresh reviewer is the point.
 
 **durable**
 
-- with `FUSE_RESTATE_MODE=off`, the orchestrator behaves exactly as before restate existed.
+- restate is required: `FUSE_RESTATE_MODE=off` is refused, and startup exits with a clear reason when restate is unreachable or the deployment is not registered. no op regains an in-process fallback.
 - restate down means `/ready` returns 200 "degraded", never 503.
 - the restate version stays in step across `ops/restate/compose.yaml`, `ops/systemd/restate-server.service`, `RESTATE_IMAGE` in `ops/install-orchestrator.sh` and `RESTATE_VERSION` in `host-agent/local/fuse-local-setup.sh`.
 - an upgrade with pinned invocations is refused unless `FUSE_RESTATE_FORCE_UPGRADE=1`, until drain-only mode exists.

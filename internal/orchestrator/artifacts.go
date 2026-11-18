@@ -102,7 +102,7 @@ type ArtifactMoved struct {
 	Kind SnapshotKind
 	// Files is what the receiving host reports about the copy it committed,
 	// file name to sha256. only a delta merge has digests of its own to
-	// report (see moveDeltaToHost); a full move commits the digests it was
+	// report (see planDeltaMove); a full move commits the digests it was
 	// given.
 	Files map[string]string
 }
@@ -251,41 +251,6 @@ func (fm *FleetManager) artifactLastUsedLocked(record SnapshotRecord) time.Time 
 		return record.UpdatedAt
 	}
 	return used
-}
-
-// beginArtifactPull marks both ends of a transfer as in flight, so the
-// collector cannot delete the artifact out from under a copy that is already
-// running: the source is being read and the destination is being written, and
-// removing either mid-flight leaves a half-written rootfs somebody will later
-// boot.
-func (fm *FleetManager) beginArtifactPull(snapshotIDs ...string) {
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
-	for _, id := range snapshotIDs {
-		if id != "" {
-			fm.artifactPulls[id]++
-		}
-	}
-}
-
-// endArtifactPull releases the in-flight marks taken by beginArtifactPull. It
-// also stamps a use, so an artifact that has just been copied is not eligible
-// for the next sweep purely because nothing has referenced it yet.
-func (fm *FleetManager) endArtifactPull(snapshotIDs ...string) {
-	now := time.Now()
-	fm.mu.Lock()
-	defer fm.mu.Unlock()
-	for _, id := range snapshotIDs {
-		if id == "" {
-			continue
-		}
-		if n := fm.artifactPulls[id] - 1; n > 0 {
-			fm.artifactPulls[id] = n
-		} else {
-			delete(fm.artifactPulls, id)
-		}
-		fm.artifactUse[id] = now
-	}
 }
 
 // ArtifactHolder is one host that holds a copy of an artifact, and the snapshot
@@ -524,7 +489,7 @@ func (fm *FleetManager) planArtifactMove(ctx context.Context, record SnapshotRec
 	// captured with it, so copying the disk half alone would plant something on
 	// the target that looks like a seed and cold-boots into a corrupt guest.
 	if parent := diffParent(record); parent != "" {
-		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (a delta move)",
 			ErrArtifactImmovable, record.SnapshotID, parent)
 	}
 	// a delta merged onto a version 2 base records the digests its host agent
@@ -816,11 +781,6 @@ func (fm *FleetManager) classifyArtifacts(all []SnapshotRecord, now time.Time) (
 			protected[v.spec.SeedSnapshotID] = true
 		}
 	}
-	for id, inflight := range fm.artifactPulls {
-		if inflight > 0 {
-			protected[id] = true
-		}
-	}
 
 	candidates := make([]artifactCandidate, 0)
 	for _, snapshot := range all {
@@ -906,7 +866,7 @@ func (fm *FleetManager) pruneArtifactUse(all []SnapshotRecord) {
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 	for id := range fm.artifactUse {
-		if !live[id] && fm.artifactPulls[id] == 0 {
+		if !live[id] {
 			delete(fm.artifactUse, id)
 		}
 	}

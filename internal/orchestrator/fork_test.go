@@ -73,7 +73,7 @@ func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, sr
 
 func TestForkEnvironment_snapshotsSourceAndRegistersRunning(t *testing.T) {
 	provider := newForkTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -123,7 +123,7 @@ func TestForkEnvironment_snapshotsSourceAndRegistersRunning(t *testing.T) {
 
 func TestForkEnvironment_reuseSnapshotDoesNotCreateExtra(t *testing.T) {
 	provider := newForkTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -165,7 +165,7 @@ func TestForkEnvironment_reuseSnapshotDoesNotCreateExtra(t *testing.T) {
 
 func TestForkEnvironment_rejectsNonRunning(t *testing.T) {
 	provider := newForkTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -185,7 +185,7 @@ func TestForkEnvironment_providerNotForkable(t *testing.T) {
 	// snapshotTestProvider is SnapshotCapable at the env level but does not
 	// implement SnapshotForkable, matching the real firecracker provider.
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -240,7 +240,7 @@ func (p *liveForkTestProvider) Get(ctx context.Context, name string) (Environmen
 // provisioned and had to be rolled back.
 func TestForkEnvironment_rejectsLiveSeed(t *testing.T) {
 	provider := newLiveForkTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -270,7 +270,7 @@ func TestForkEnvironment_rejectsLiveSeed(t *testing.T) {
 // kind check must reject live only, not every reused snapshot.
 func TestForkEnvironment_diskSeedStillWorks(t *testing.T) {
 	provider := newLiveForkTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})

@@ -87,7 +87,7 @@ type BuildStep struct {
 
 - `Spec` is the same spec `Environments.Create` takes. GPU builds are refused.
 - `ManifestInline` is a base64 manifest.
-- `Secrets` reach the builder like a create's. With restate on they are
+- `Secrets` reach the builder like a create's. They are
   sealed under the orchestrator's `TOKEN_ENCRYPTION_KEY` before the build is
   journaled, and redacted from the build's error and output.
 - `Arch` is the arch layer artifacts are looked up and filed under. Empty lets

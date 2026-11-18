@@ -58,7 +58,8 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrNoLabelMatch),
 		errors.Is(err, orchestrator.ErrGuestUnavailable),
 		errors.Is(err, orchestrator.ErrBuildNotStarted),
-		errors.Is(err, orchestrator.ErrImageHostFailed):
+		errors.Is(err, orchestrator.ErrImageHostFailed),
+		errors.Is(err, orchestrator.ErrRestateUnavailable):
 		return http.StatusServiceUnavailable, CodeUnavailable
 	case errors.Is(err, orchestrator.ErrImageCacheFull):
 		// the host is out of room until something is destroyed, the same

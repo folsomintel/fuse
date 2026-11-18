@@ -279,7 +279,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Namespace: "orchestrator",
 			Subsystem: "step",
 			Name:      "duration_seconds",
-			Help:      "Lifecycle step latency by op and step, one sample per execution: durable (restate) steps, and a create's steps in mode off. Replayed steps are not counted.",
+			Help:      "Lifecycle step latency by op and step, one sample per execution of a durable (restate) step. Replayed steps are not counted.",
 			Buckets:   []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"op", "step"}),
 		stepRetries: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -395,11 +395,6 @@ func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) 
 	m.orphansDestroyed.Add(float64(s.OrphansDestroyed))
 	m.orphansFailed.Add(float64(s.OrphansFailed))
 	m.orphansDeadLettered.Add(float64(s.OrphansDeadLettered))
-	m.stuckTasksSuspected.Add(float64(s.StuckTasksSuspected))
-	m.stuckTasksFailed.Add(float64(s.StuckTasksFailed))
-	m.idleVMsSuspected.Add(float64(s.IdleVMsSuspected))
-	m.idleVMsFailed.Add(float64(s.IdleVMsFailed))
-	m.drainingVMsDestroyed.Add(float64(s.DrainingVMsDestroyed))
 	m.vmsMissingProvider.Add(float64(s.VMsMissingProvider))
 	m.healthChecked.Set(float64(s.HealthChecked))
 	m.healthFailing.Set(float64(s.HealthFailing))
@@ -421,9 +416,8 @@ var _ orchestrator.WebhookMetrics = (*PrometheusMetrics)(nil)
 
 var _ orchestrator.ExpiryMetrics = (*PrometheusMetrics)(nil)
 
-// VMExpiry implements orchestrator.ExpiryMetrics. with restate on, the
-// environment expiry timers count into the same series reconcile does in
-// mode off.
+// VMExpiry implements orchestrator.ExpiryMetrics: the environment expiry
+// timers' strikes and reaps.
 func (m *PrometheusMetrics) VMExpiry(reason string, reaped bool) {
 	switch {
 	case reason == "stuck_task" && reaped:
@@ -525,7 +519,6 @@ var (
 	_ orchestrator.OperationMetrics    = (*PrometheusMetrics)(nil)
 	_ orchestrator.ArtifactMoveMetrics = (*PrometheusMetrics)(nil)
 	_ durable.StepMetrics              = (*PrometheusMetrics)(nil)
-	_ orchestrator.StepMetrics         = (*PrometheusMetrics)(nil)
 )
 
 // MigrateFrozen implements orchestrator.MigrateMetrics.

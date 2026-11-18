@@ -423,8 +423,7 @@ func (fm *FleetManager) expireIntervention(ctx context.Context, id string) (hitl
 // returns the stored intervention and ErrInterventionResolved when it was
 // already terminal.
 func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta auditMeta, apply func(hitl.Intervention, time.Time) (hitl.Intervention, error)) (hitl.Intervention, error) {
-	// in modes self and cloud restate runs an approval; otherwise this
-	// process does.
+	// restate runs an approval.
 	durable := fm.durableHitl()
 	fm.hitlMu.Lock()
 	rec, err := fm.store.GetIntervention(ctx, id)
@@ -458,13 +457,9 @@ func (fm *FleetManager) resolveIntervention(ctx context.Context, id string, meta
 		close(ch)
 		delete(fm.hitlWaiters, id)
 	}
-	run := durable == nil && fm.claimRun(next)
 	fm.dropLockLocked(next.EnvID, id)
 	fm.hitlMu.Unlock()
-	switch {
-	case run:
-		fm.launchRun(next)
-	case durable != nil && needsRun(next):
+	if needsRun(next) {
 		fm.sendHitlRun(durable, id)
 	}
 	if m := fm.hitlMetrics(); m != nil && current.State == hitl.StatePending && next.Gate != "" && next.Decision != nil {

@@ -45,8 +45,7 @@ type HitlMetrics interface {
 }
 
 // SetDurableHitl routes approved hitl actions and intervention deadlines
-// through restate. nil (mode off, the default) keeps the in-process run and
-// the orphan pass. set it before Start.
+// through restate. set it before Start.
 func (fm *FleetManager) SetDurableHitl(d DurableHitl) {
 	fm.mu.Lock()
 	fm.durableHitlRuns = d
@@ -118,7 +117,7 @@ func (fm *FleetManager) sendHitlRun(d DurableHitl, id string) {
 // that fails is covered by the reconcile expiry sweep.
 func (fm *FleetManager) scheduleExpiry(in hitl.Intervention) {
 	d := fm.durableHitl()
-	if d == nil || in.State != hitl.StatePending {
+	if in.State != hitl.StatePending {
 		return
 	}
 	// the delay is taken when the send goes out, so time spent waiting for
@@ -131,9 +130,8 @@ func (fm *FleetManager) scheduleExpiry(in hitl.Intervention) {
 // resumeApprovedRuns sends every approved action still owed a result to
 // restate again: one whose send was lost, or whose approval landed just
 // before a crash. the send is keyed on the intervention, so one already in
-// flight is not started twice. it replaces recoverOrphanRuns in modes self
-// and cloud: restate resumes the run instead of the result saying it may or
-// may not have happened.
+// flight is not started twice. restate resumes the run, so the result never
+// has to say it may or may not have happened.
 func (fm *FleetManager) resumeApprovedRuns(ctx context.Context, d DurableHitl) {
 	fm.hitlResend.Store(false)
 	for _, state := range []hitl.State{hitl.StateApproved, hitl.StateExpired} {

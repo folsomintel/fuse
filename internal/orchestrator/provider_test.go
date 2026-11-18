@@ -9,6 +9,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/folsomintel/fuse/internal/egress"
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // bootMockEnv implements Environment for boot testing.
@@ -112,12 +115,71 @@ func (p *bootMockProvider) List(_ context.Context, _ string) ([]Environment, err
 }
 func (p *bootMockProvider) Close() error { return nil }
 
+// BootResult is returned after provisioning or restoring an environment.
+type BootResult struct {
+	Env                Environment
+	BootTime           time.Duration
+	FromCache          bool       // true if restored from checkpoint
+	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token for persistence
+	DrainCommand       string     // graceful-shutdown command for the configured agent ('' => skip)
+	Endpoints          []Endpoint // published endpoints, if the provider reported any
+	// Egress is the resolved outbound policy: direct, or the proxy endpoint
+	// that was provisioned for this boot.
+	Egress egress.Status
+}
+
+// testBoot runs the boot steps in the order the durable create runs them
+// (restore or create, egress, upload, startup script, start agent), over p,
+// for tests of the steps themselves.
+func testBoot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions, encryptionKey []byte) (*BootResult, error) {
+	start := time.Now()
+	var creds *secrets.VMCredentials
+	var encToken []byte
+	if len(encryptionKey) == 32 {
+		var err error
+		if creds, err = secrets.GenerateVMCredentials(spec.Name); err != nil {
+			return nil, err
+		}
+		if encToken, err = secrets.EncryptToken(creds.AuthToken, encryptionKey); err != nil {
+			return nil, err
+		}
+	}
+	agentSpec := FusedAgentSpec(manifest, GuestSecrets(secretMap, spec.Egress), creds, opts)
+	b := &bootRun{p: p, in: bootInputs{spec: spec, manifest: manifest, secretMap: secretMap, creds: creds, agentSpec: agentSpec, opts: opts}}
+	var err error
+	if b.env, b.fromCache, err = restoreOrCreate(ctx, p, spec); err != nil {
+		return nil, err
+	}
+	if err := b.provisionEgress(ctx, b.fromCache); err != nil {
+		return nil, err
+	}
+	if err := b.upload(ctx); err != nil {
+		return nil, err
+	}
+	if err := b.startup(ctx); err != nil {
+		return nil, err
+	}
+	endpoints, err := b.startAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &BootResult{
+		Env:                b.env,
+		BootTime:           time.Since(start),
+		FromCache:          b.fromCache,
+		AuthTokenEncrypted: encToken,
+		DrainCommand:       agentSpec.DrainCommand,
+		Endpoints:          endpoints,
+		Egress:             b.egress,
+	}, nil
+}
+
 func TestBoot_fresh_provision(t *testing.T) {
 	p := newBootMockProvider()
 	spec := Spec{Name: "test-vm", CPUs: 2, RamMB: 1024}
 	manifest := []byte(`{"version":"1"}`)
 
-	result, err := Boot(context.Background(), p, spec, manifest, nil, BootOptions{}, nil)
+	result, err := testBoot(context.Background(), p, spec, manifest, nil, BootOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +208,7 @@ func TestBoot_with_secrets(t *testing.T) {
 	manifest := []byte(`{"version":"1"}`)
 	secrets := map[string]string{"KEY": "val"}
 
-	result, err := Boot(context.Background(), p, spec, manifest, secrets, BootOptions{}, nil)
+	result, err := testBoot(context.Background(), p, spec, manifest, secrets, BootOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +231,7 @@ func TestBoot_runs_startup_script(t *testing.T) {
 	spec := Spec{Name: "test-vm"}
 	manifest := []byte(`{"version":"1"}`)
 
-	result, err := Boot(context.Background(), p, spec, manifest, nil, BootOptions{StartupScript: "echo hello"}, nil)
+	result, err := testBoot(context.Background(), p, spec, manifest, nil, BootOptions{StartupScript: "echo hello"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +256,7 @@ func TestBoot_startup_script_timeout(t *testing.T) {
 	manifest := []byte(`{"version":"1"}`)
 
 	start := time.Now()
-	_, err := Boot(context.Background(), p, spec, manifest, nil, BootOptions{
+	_, err := testBoot(context.Background(), p, spec, manifest, nil, BootOptions{
 		StartupScript:        "sleep infinity",
 		StartupScriptTimeout: 50 * time.Millisecond,
 	}, nil)
@@ -234,7 +296,7 @@ func TestBoot_startup_script_respects_caller_cancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	_, err := Boot(ctx, p, spec, manifest, nil, BootOptions{
+	_, err := testBoot(ctx, p, spec, manifest, nil, BootOptions{
 		StartupScript:        "sleep infinity",
 		StartupScriptTimeout: 30 * time.Second,
 	}, nil)
@@ -259,7 +321,7 @@ func TestBoot_from_checkpoint(t *testing.T) {
 	spec := Spec{Name: "test-vm"}
 	manifest := []byte(`{"version":"1"}`)
 
-	result, err := Boot(context.Background(), p, spec, manifest, nil, BootOptions{}, nil)
+	result, err := testBoot(context.Background(), p, spec, manifest, nil, BootOptions{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +336,7 @@ func TestBoot_create_failure(t *testing.T) {
 	p.createErr = fmt.Errorf("provider unavailable")
 
 	spec := Spec{Name: "test-vm"}
-	_, err := Boot(context.Background(), p, spec, []byte(`{}`), nil, BootOptions{}, nil)
+	_, err := testBoot(context.Background(), p, spec, []byte(`{}`), nil, BootOptions{}, nil)
 	if err == nil {
 		t.Fatal("expected error on create failure")
 	}

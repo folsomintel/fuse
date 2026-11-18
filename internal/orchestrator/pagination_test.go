@@ -12,7 +12,7 @@ import (
 // to the full set.
 func TestListFleetFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 
 	const total = 120
@@ -76,7 +76,7 @@ func TestListFleetFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 // is clamped down rather than rejected.
 func TestListFleetFiltered_limitClamping(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 
 	for i := 0; i < DefaultPageLimit+10; i++ {
@@ -109,7 +109,7 @@ func TestListFleetFiltered_limitClamping(t *testing.T) {
 // TestListFleetFiltered_invalidCursorErrors checks a malformed cursor
 // surfaces ErrInvalidCursor rather than panicking or silently ignoring it.
 func TestListFleetFiltered_invalidCursorErrors(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 
 	if _, _, err := fm.ListFleetFiltered(VMFilter{Cursor: "not-a-valid-cursor!!"}); err == nil {
 		t.Fatal("expected an error for a malformed cursor")
@@ -121,7 +121,7 @@ func TestListFleetFiltered_invalidCursorErrors(t *testing.T) {
 // sortSnapshotRecords (newest first).
 func TestListSnapshotsFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 	ctx := context.Background()
 	vmID := provisionSnapshotTestVM(t, fm, "task-1")
 
@@ -180,7 +180,7 @@ func TestListSnapshotsFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 // pagination test for hosts.
 func TestListHostsFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-"})
 	ctx := context.Background()
 
 	const total = 30
@@ -238,7 +238,7 @@ func TestListHostsFiltered_paginatesAndRoundTripsCursor(t *testing.T) {
 // still returns the full set once results exceed one page.
 func TestListFleet_autoPaginatesBeyondOnePage(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 
 	const total = DefaultPageLimit + 15
@@ -262,7 +262,7 @@ func TestListFleet_autoPaginatesBeyondOnePage(t *testing.T) {
 // This pins the orchestrator-level contract directly.
 func TestCreateSnapshot_quotaUsesCountNotFullScan(t *testing.T) {
 	provider := newSnapshotTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:              provider,
 		Prefix:                "fuse-",
 		SnapshotQuotaMaxCount: 2,

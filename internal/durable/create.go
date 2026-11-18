@@ -72,10 +72,8 @@ func createPermanent(err error) error {
 	if err == nil || !orchestrator.PermanentCreateError(err) {
 		return err
 	}
-	for i, s := range orchestrator.CreateFleetErrors {
-		if errors.Is(err, s) {
-			return restate.ToTerminalError(err, restate.WithErrorCode(createErrorBase+restate.Code(i)))
-		}
+	if i := sentinelIndex(err, orchestrator.CreateFleetErrors); i >= 0 {
+		return restate.ToTerminalError(err, restate.WithErrorCode(createErrorBase+restate.Code(i)))
 	}
 	return restate.ToTerminalError(err, restate.WithErrorCode(createFailedCode))
 }
@@ -251,7 +249,7 @@ func (c *Client) Create(ctx context.Context, vmID string, req orchestrator.Creat
 }
 
 // createError turns a create's failure back into the fleet sentinel its code
-// names, or into its own message, so the api answers it as in mode off.
+// names, or into its own message, so the api answers it by that sentinel.
 func createError(err error) error {
 	var ierr ingress.Error
 	if !errors.As(err, &ierr) {

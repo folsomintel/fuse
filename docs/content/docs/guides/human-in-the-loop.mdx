@@ -298,11 +298,8 @@ approved action failed. `GET
 answers `403` with `details.reason: hitl_denied`, the gate in
 `details.gate`, and the gate's `reason` as the message.
 
-**Across an orchestrator restart.** With restate off, an approved action the
-orchestrator was running when it stopped is settled with `result.error` saying
-it may or may not have run. With restate on (`FUSE_RESTATE_MODE=self` or
-`cloud`), the approval is a restate `Intervention/{id}.Run` invocation and
-the restarted orchestrator carries it on: an exec runs once (the host agent
+**Across an orchestrator restart.** The approval is a restate
+`Intervention/{id}.Run` invocation and the restarted orchestrator carries it on: an exec runs once (the host agent
 replays a command it already finished instead of running it again; an exec
 whose first attempt is more than an hour old gets the may-or-may-not error
 instead, since the agent may have forgotten it), and a
@@ -700,9 +697,7 @@ Where the value lands:
 - **`file`**: the file is created (with its parent directories) with mode
   0600 before the value is written, replacing what was there.
 
-Secret requests need `TOKEN_ENCRYPTION_KEY` on the orchestrator. Without
-it, creating an environment that declares `hitl.requests.secret` is a 400,
-and so is raising or answering a secret request.
+Secret request values are sealed with the orchestrator's `TOKEN_ENCRYPTION_KEY`.
 
 ## Takeover
 
@@ -807,8 +802,7 @@ The first thing the human sees is a banner:
 The session is saved as an [asciinema](https://asciinema.org) v2 cast: what
 the guest printed and each window resize, never the keystrokes. A password
 typed at a prompt that does not echo is not in it; anything the guest echoes
-back is. The cast is encrypted with `TOKEN_ENCRYPTION_KEY` (and stored in
-the clear, with a warning in the orchestrator log, without it), stops
+back is. The cast is encrypted with `TOKEN_ENCRYPTION_KEY`, stops
 growing at 8 MiB, and is linked from a `takeover_session` audit row by its
 `recording_id`. Fetch it with `hitl:read`:
 
@@ -1269,24 +1263,21 @@ def verify_fuse(secret: bytes, header: str, raw_body: bytes, tolerance: int = 30
 ```
 
 A delivery is retried on any transport error or non-2xx answer, with a 10s
-timeout per try. Redirects are not followed. With restate off it is tried up
-to 4 times: at once, then after 1s, 4s and 16s, in the orchestrator process,
-so a restart drops it; the audit log is the record, the webhook is a nudge.
-
-With restate on (`FUSE_RESTATE_MODE=self` or `cloud`) and `TOKEN_ENCRYPTION_KEY`
-set, each delivery is a restate `Webhooks.Deliver` invocation and survives an
-orchestrator restart. It is retried after 1s, then four times longer each try
+timeout per try. Redirects are not followed. Each delivery is a restate
+`Webhooks.Deliver` invocation and survives an orchestrator restart. It is retried after 1s, then four times longer each try
 up to once an hour, for 24 hours from the event; a delivery still failing
 after that is recorded as a `hitl_webhook` dead letter. The same notification
 can arrive more than once if the orchestrator dies mid-post, so dedupe on
 `intervention_id` and `event`. Restate journals the delivery, but the
 endpoint url and signing secret go in sealed with `TOKEN_ENCRYPTION_KEY`;
-the journal holds the notification's ids, gate, deadline and link. Without
-the key, deliveries stay in process as with restate off.
+the journal holds the notification's ids, gate, deadline and link. If
+handing a delivery to restate fails, the orchestrator retries the hand-off at
+once, then after 1s, 4s and 16s, then keeps it and hands it over again on
+each reconcile until restate takes it. That backlog lives in the
+orchestrator's memory, so a restart during a restate outage loses it; the
+audit log stays the record, the webhook is a nudge.
 
-The signing secrets are sealed with `TOKEN_ENCRYPTION_KEY`. Without it they
-are kept in memory only, so deliveries stop after an orchestrator restart
-rather than the secret being stored in the clear.
+The signing secrets are stored sealed with `TOKEN_ENCRYPTION_KEY`.
 
 ## Watching
 
@@ -1308,10 +1299,8 @@ The payload (a question, a held argv or computer action, a review's
 content), the answer and the reason are encrypted at rest with the
 orchestrator's `TOKEN_ENCRYPTION_KEY` before they reach Postgres. Ids,
 states and timestamps stay plaintext so the deadline sweep and list filters
-work without decrypting. Without the key (dev mode) the content is stored in
-the clear.
+work without decrypting.
 
-Two things are different. A secret's value is never stored at all, with or
-without the key: it goes into the guest and is dropped. Takeover recordings,
-terminal and desktop, are sealed with the same key, and stored in the clear
-without it. The screenshot sent to a decider is not stored at all.
+Two things are different. A secret's value is never stored at all: it goes
+into the guest and is dropped. Takeover recordings, terminal and desktop, are
+sealed with the same key. The screenshot sent to a decider is not stored at all.

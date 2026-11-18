@@ -3,7 +3,6 @@ package durable
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	restate "github.com/restatedev/sdk-go"
 	"github.com/restatedev/sdk-go/ingress"
@@ -51,16 +50,27 @@ func permanent(err error) error {
 	if err == nil || !orchestrator.PermanentSnapshotError(err) {
 		return err
 	}
-	for i, s := range orchestrator.SnapshotFleetErrors {
-		if errors.Is(err, s) {
-			return restate.ToTerminalError(err, restate.WithErrorCode(fleetErrorBase+restate.Code(i)))
-		}
+	if i := sentinelIndex(err, orchestrator.SnapshotFleetErrors); i >= 0 {
+		return restate.ToTerminalError(err, restate.WithErrorCode(fleetErrorBase+restate.Code(i)))
 	}
 	return restate.ToTerminalError(err)
 }
 
+// sentinelIndex is the index of the sentinel in table that err matches, or
+// -1. the last match wins: a table lists a general sentinel before the
+// specific ones that wrap it (ErrNoCapacity before ErrSeedUnplaceable), and
+// the specific one is what the caller should get back.
+func sentinelIndex(err error, table []error) int {
+	for i := len(table) - 1; i >= 0; i-- {
+		if errors.Is(err, table[i]) {
+			return i
+		}
+	}
+	return -1
+}
+
 // fleetError turns a handler's failure back into the fleet sentinel its code
-// names, so the api answers it with the same status as in mode off.
+// names, with the handler's message, so the api answers it by that sentinel.
 func fleetError(err error) error {
 	var ierr ingress.Error
 	if !errors.As(err, &ierr) {
@@ -70,7 +80,7 @@ func fleetError(err error) error {
 	if i < 0 || i >= len(orchestrator.SnapshotFleetErrors) {
 		return err
 	}
-	return fmt.Errorf("%w: %s", orchestrator.SnapshotFleetErrors[i], ierr.Message())
+	return &sentinelError{msg: ierr.Message(), sentinel: orchestrator.SnapshotFleetErrors[i]}
 }
 
 // retryUnder is policy as the options of one step.

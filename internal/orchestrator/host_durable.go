@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 // HostRefusals are the host op failures a retry cannot change. the durable
@@ -53,10 +55,15 @@ func (fm *FleetManager) registersDurably() bool {
 // its record with a provider of its own and registered. registering it again
 // replaces it, so a retry is safe.
 func (fm *FleetManager) HostRegister(ctx context.Context, rec HostRecord) error {
-	h := fm.hostFromRecord(rec)
-	if h.Token == "" && len(rec.TokenEncrypted) > 0 {
-		return fmt.Errorf("%w: host %s: agent token could not be decrypted", ErrHostRecordInvalid, rec.ID)
+	// the record's token is sealed by RegisterHost, so one that does not
+	// decrypt is a bad record, not a legacy plaintext token. an empty token
+	// seals to non-empty bytes, so the check is on the decrypt, not the token.
+	if len(rec.TokenEncrypted) > 0 {
+		if _, err := secrets.DecryptToken(rec.TokenEncrypted, fm.tokenEncryptionKey); err != nil {
+			return fmt.Errorf("%w: host %s: agent token could not be decrypted", ErrHostRecordInvalid, rec.ID)
+		}
 	}
+	h, _ := fm.hostFromRecord(rec)
 	return fm.registerHost(ctx, h, fm.hostProviderFactory(h.URL, h.Token, h.Backend))
 }
 

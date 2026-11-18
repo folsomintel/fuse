@@ -16,6 +16,7 @@ import (
 
 	"github.com/folsomintel/fuse/internal/egress"
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // TODO: Add test cases for invalid/edge-case inputs: negative CPU counts,
@@ -298,7 +299,7 @@ func (p *liveFakeProvider) wrap(e *fakeEnv) orchestrator.Environment {
 func newLiveTestHandler(t *testing.T, stale bool) (*Handler, *orchestrator.FleetManager) {
 	t.Helper()
 	p := &liveFakeProvider{fakeProvider: newFakeProvider(), stale: stale}
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -327,7 +328,7 @@ func (p *capacityProbeProvider) Capacity(_ context.Context) (orchestrator.HostCa
 func newTestHandler(t *testing.T) (*Handler, *orchestrator.FleetManager, *fakeProvider) {
 	t.Helper()
 	p := newFakeProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -466,7 +467,7 @@ func newEgressTestHandler(t *testing.T) (*Handler, *egress.Mock) {
 	t.Helper()
 	mock := egress.NewMock()
 	mock.AllowLoopback = true
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider:       newFakeProvider(),
 		Prefix:         "fuse-",
 		EgressRegistry: egress.NewRegistry(mock),
@@ -1074,7 +1075,7 @@ func TestSnapshot_deleteLifecycle(t *testing.T) {
 
 func TestSnapshot_quotaExceededReturns409(t *testing.T) {
 	p := newFakeProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider:              p,
 		Prefix:                "fuse-",
 		SnapshotQuotaMaxCount: 1,
@@ -1302,7 +1303,7 @@ func TestEnvironmentAction_Fork_NotFound(t *testing.T) {
 func newTestHandlerWithProvider(t *testing.T) (*Handler, *orchestrator.FleetManager) {
 	t.Helper()
 	p := newFakeProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -1429,7 +1430,7 @@ func TestRegisterHost_GPUsWithDefaultBackendReturns400(t *testing.T) {
 
 func TestRegisterHost_ProviderFactoryReceivesBackend(t *testing.T) {
 	p := newFakeProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -1547,7 +1548,7 @@ func TestRegisterHost_NoProviderNoCapacityReturns400(t *testing.T) {
 func newTestHandlerWithCapacityProvider(t *testing.T, capacity orchestrator.HostCapacity, probeErr error) (*Handler, *orchestrator.FleetManager) {
 	t.Helper()
 	p := newFakeProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})

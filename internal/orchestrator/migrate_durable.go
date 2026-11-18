@@ -31,6 +31,9 @@ var MigrateRefusals = []error{
 	ErrNoHosts,
 	ErrHostPinUnschedulable,
 	ErrNoLabelMatch,
+	// appended, as CreateFleetErrors: the last match wins.
+	ErrSeedUnplaceable,
+	ErrArtifactImmovable,
 }
 
 // MigrateRequest is the input of the durable Environment/{vm_id}.Migrate
@@ -117,8 +120,7 @@ type DurableMigrator interface {
 	Migrate(ctx context.Context, vmID string, req MigrateRequest) (string, error)
 }
 
-// SetDurableMigrator routes migrates through restate. nil (mode off, the
-// default) keeps them in process. set it before Start.
+// SetDurableMigrator routes migrates through restate. set it before Start.
 func (fm *FleetManager) SetDurableMigrator(d DurableMigrator) {
 	fm.mu.Lock()
 	fm.durableMigrate = d
@@ -160,7 +162,7 @@ func (fm *FleetManager) durableMigrateVM(ctx context.Context, d DurableMigrator,
 // target of a migrate restate is still running. the migrate either finishes
 // it or destroys it, so recovery leaves it provisioning.
 func (fm *FleetManager) isMigratePlaceholder(v *vm) bool {
-	return fm.durableMigrator() != nil && strings.HasPrefix(v.taskID, migrateTaskPrefix)
+	return strings.HasPrefix(v.taskID, migrateTaskPrefix)
 }
 
 // migrateTaskPrefix starts every migrate's task id, and so its new vm's id.
@@ -180,8 +182,7 @@ func (fm *FleetManager) migrateProvider(hostID string) Provider {
 }
 
 // the methods below are the steps of a migrate. the durable handler runs each
-// inside a journaled restate step, and must be safe to run again; the
-// in-process path calls them in turn.
+// inside a journaled restate step, and must be safe to run again.
 
 // MigrateBegin checks that vmID can be migrated as asked, picks the target
 // and names the new vm. it reads the fleet only, so what it refuses a retry
@@ -622,6 +623,13 @@ func (fm *FleetManager) MigratePersist(ctx context.Context, plan MigratePlan, st
 		return err
 	}
 	fm.mu.Lock()
+	if fm.vms[plan.NewVMID] != v {
+		// the stale-create pass abandoned the target since it was looked
+		// up: the migrate rolls back rather than running a vm nothing
+		// tracks.
+		fm.mu.Unlock()
+		return fmt.Errorf("%w: migrate target %s is no longer tracked", ErrVMNotFound, plan.NewVMID)
+	}
 	prevState := v.state
 	v.state = VMStateRunning
 	v.env = env

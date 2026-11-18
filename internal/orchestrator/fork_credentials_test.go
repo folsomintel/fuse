@@ -170,7 +170,7 @@ func testEncryptionKey() []byte {
 // the source's token, because it reads the token file only at startup.
 func TestForkEnvironment_mintsItsOwnCredentials(t *testing.T) {
 	provider := newCredForkProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:           provider,
 		Prefix:             "fuse-",
 		TokenEncryptionKey: testEncryptionKey(),
@@ -254,7 +254,7 @@ func TestForkEnvironment_mintsItsOwnCredentials(t *testing.T) {
 // unprotected window.
 func TestForkEnvironment_survivesReconcileDuringCredentialUpload(t *testing.T) {
 	provider := newCredForkProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:           provider,
 		Prefix:             "fuse-",
 		TokenEncryptionKey: testEncryptionKey(),
@@ -309,7 +309,7 @@ func TestForkEnvironment_survivesReconcileDuringCredentialUpload(t *testing.T) {
 // and letting the scheduler overcommit it.
 func TestForkEnvironment_chargesSourceHost(t *testing.T) {
 	provider := newCredForkProvider()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-"})
 
 	host := Host{
 		ID:       "host-1",

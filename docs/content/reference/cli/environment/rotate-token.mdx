@@ -32,15 +32,13 @@ leaked.
 
 ## Errors
 
-Rotation only works on a `running` environment, and the orchestrator must have
-been started with a 32-byte hex `TOKEN_ENCRYPTION_KEY`. Neither precondition
-wraps a sentinel error, so both surface as HTTP 500 rather than a 4xx.
+Rotation only works on a `running` environment. That precondition does not wrap
+a sentinel error, so it surfaces as HTTP 500 rather than a 4xx.
 
 :::warning[Known limitation]
-A 500 from `rotate-token` almost always means one of those two preconditions
-rather than a real server fault. Both are permanent properties of the request,
-not transient failures, so the status should be a 4xx. Match on the error
-message (`token rotation requires running`,
-`token rotation requires a 32-byte encryption key`) rather than the status
-until this is fixed.
+A 500 from `rotate-token` almost always means that precondition rather than a
+real server fault. It is a permanent property of the request, not a transient
+failure, so the status should be a 4xx. Match on the error message
+(`token rotation requires running`) rather than the status until this is
+fixed.
 :::

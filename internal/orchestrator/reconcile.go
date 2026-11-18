@@ -10,7 +10,7 @@ import (
 )
 
 // orphanDestroyTimeout bounds one orphan destroy, the same 60s ceiling
-// destroyAndRemove uses. without it a single host call (for example a delete
+// destroyStepTimeout puts on a durable host destroy. without it a single host call (for example a delete
 // queued behind a runaway exec holding the agent's vm lock) blocks the whole
 // reconcile cycle until the hostwire header timeout, minutes later.
 const orphanDestroyTimeout = 60 * time.Second
@@ -123,92 +123,6 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, listing vmListing,
 	fm.mu.Unlock()
 }
 
-// reconcileStuckTasks flags and tears down VMs in the Running state whose
-// age exceeds the configured runtime ceiling. This is a leak detector, not
-// a liveness check — see the docstring on FleetConfig.TaskStuckTimeout.
-//
-// Detection is two-strike: a VM must exceed its timeout on two consecutive
-// reconcile cycles before it is failed. Between strikes it is annotated
-// with a task.stuck_suspected event.
-func (fm *FleetManager) reconcileStuckTasks(ctx context.Context, summary *ReconcileSummary) {
-	if fm.durableExpiry() != nil {
-		// the Environment/{vm_id}.Expire timer owns it, strikes included.
-		return
-	}
-	now := time.Now()
-
-	type stuckCandidate struct {
-		vmID     string
-		taskID   string
-		age      time.Duration
-		ceiling  time.Duration
-		strikes  int
-		needFail bool
-	}
-
-	// a human deciding an expiry, or an extension they approved, holds the
-	// runtime ceiling the same way it holds the idle reaper.
-	pendingExpiry, ok := fm.pendingExpiryEnvs(ctx)
-	if !ok {
-		return
-	}
-	extended := fm.extendedEnvs(now)
-
-	fm.mu.Lock()
-	candidates := make([]stuckCandidate, 0)
-	live := make(map[string]bool, len(fm.vms))
-	for id, v := range fm.vms {
-		live[id] = true
-
-		if v.state != VMStateRunning || v.taskID == "" || pendingExpiry[id] || extended[id] {
-			// Reset any strike history — the VM either transitioned or no
-			// longer carries a task, so past staleness is no longer meaningful.
-			delete(fm.stuckStrikes, id)
-			continue
-		}
-
-		ceiling := v.spec.MaxRuntime
-		if ceiling <= 0 {
-			ceiling = fm.taskStuckTimeout
-		}
-		age := now.Sub(v.createdAt)
-		if age <= ceiling {
-			delete(fm.stuckStrikes, id)
-			continue
-		}
-
-		fm.stuckStrikes[id]++
-		strikes := fm.stuckStrikes[id]
-		candidates = append(candidates, stuckCandidate{
-			vmID:     id,
-			taskID:   v.taskID,
-			age:      age,
-			ceiling:  ceiling,
-			strikes:  strikes,
-			needFail: strikes >= 2,
-		})
-	}
-	// Drop strike entries for VMs that no longer exist.
-	for id := range fm.stuckStrikes {
-		if !live[id] {
-			delete(fm.stuckStrikes, id)
-		}
-	}
-	fm.mu.Unlock()
-
-	for _, c := range candidates {
-		if !c.needFail {
-			summary.StuckTasksSuspected++
-			fm.noteStuckSuspected(c.vmID, c.taskID, c.age, c.ceiling, c.strikes)
-			continue
-		}
-
-		// Second strike — fail the task and mark the VM destroying.
-		fm.failStuckTask(ctx, c.vmID, c.taskID, c.age, c.ceiling)
-		summary.StuckTasksFailed++
-	}
-}
-
 // noteStuckSuspected records a first strike against a vm past its runtime
 // ceiling.
 func (fm *FleetManager) noteStuckSuspected(vmID, taskID string, age, ceiling time.Duration, strike int) {
@@ -245,180 +159,18 @@ func (fm *FleetManager) noteIdleSuspected(vmID, taskID string, idle, timeout tim
 	})
 }
 
-// reconcileIdleVMs tears down Running VMs that have gone longer than their
-// idle timeout with no exec and no attach session. This is the liveness check
-// reconcileStuckTasks is not: it reads vm.lastActivityAt, which only the
-// guest-touching entry points in exec.go bump.
-//
-// "Idle" means no control-plane activity. In-guest CPU use and traffic on
-// exposed ports are deliberately not observed — the orchestrator has no
-// channel for either — so a VM busy computing with nobody attached will be
-// destroyed once its window elapses. Authors opt in per environment via
-// resources.idle_timeout; a zero timeout (the default) disables the check.
-//
-// Detection is two-strike like reconcileStuckTasks, so resolution is bounded
-// by roughly two reconcile ticks.
-func (fm *FleetManager) reconcileIdleVMs(ctx context.Context, summary *ReconcileSummary) {
-	if fm.durableExpiry() != nil {
-		// the Environment/{vm_id}.Expire timer owns it, strikes included.
-		return
-	}
-	now := time.Now()
-
-	type idleCandidate struct {
-		vmID     string
-		taskID   string
-		idle     time.Duration
-		timeout  time.Duration
-		strikes  int
-		needFail bool
-	}
-
-	// a pending intervention means a human is deciding, which is activity.
-	// if the store cannot say which envs those are, reap nothing this cycle
-	// rather than kill an env mid-decision.
-	waiting, ok := fm.pendingInterventionEnvs(ctx)
-	if !ok {
-		return
-	}
-	// an approved expiry keeps the reaper away until its extension ends.
-	extended := fm.extendedEnvs(now)
-
-	fm.mu.Lock()
-	candidates := make([]idleCandidate, 0)
-	live := make(map[string]bool, len(fm.vms))
-	for id, v := range fm.vms {
-		live[id] = true
-
-		if v.state != VMStateRunning || v.attachSessions > 0 || waiting[id] || extended[id] {
-			// Not eligible: the VM is not running, somebody is attached
-			// right now, or a human is deciding one of its interventions. Reset any strike history so it starts from a
-			// clean slate once it becomes eligible again.
-			delete(fm.idleStrikes, id)
-			continue
-		}
-
-		timeout := v.spec.IdleTimeout
-		if timeout <= 0 {
-			timeout = fm.defaultIdleTimeout
-		}
-		if timeout <= 0 {
-			delete(fm.idleStrikes, id)
-			continue
-		}
-
-		// A VM recorded before the activity clock existed (or one that
-		// somehow missed initialisation) falls back to its create time.
-		since := v.lastActivityAt
-		if since.IsZero() {
-			since = v.createdAt
-		}
-		idle := now.Sub(since)
-		if idle <= timeout {
-			delete(fm.idleStrikes, id)
-			continue
-		}
-
-		fm.idleStrikes[id]++
-		strikes := fm.idleStrikes[id]
-		candidates = append(candidates, idleCandidate{
-			vmID:     id,
-			taskID:   v.taskID,
-			idle:     idle,
-			timeout:  timeout,
-			strikes:  strikes,
-			needFail: strikes >= 2,
-		})
-	}
-	// Drop strike entries for VMs that no longer exist.
-	for id := range fm.idleStrikes {
-		if !live[id] {
-			delete(fm.idleStrikes, id)
-		}
-	}
-	fm.mu.Unlock()
-
-	for _, c := range candidates {
-		if !c.needFail {
-			summary.IdleVMsSuspected++
-			fm.noteIdleSuspected(c.vmID, c.taskID, c.idle, c.timeout, c.strikes)
-			continue
-		}
-
-		// Second strike — tear the environment down.
-		fm.failIdleVM(ctx, c.vmID, c.taskID, c.idle, c.timeout)
-		summary.IdleVMsFailed++
-	}
-}
-
-// reconcileStuckDraining destroys VMs that have sat in Draining longer than
-// the draining timeout. Drain is phase one of a two-phase teardown and never
-// destroys on its own; a caller that drains and then crashes or forgets the
-// DELETE would otherwise leave the VM holding host capacity forever.
-//
-// The clock is updatedAt, which Drain sets on the Running -> Draining
-// transition (and again when the drain command finishes, within its own
-// ceiling). It is persisted, so the window survives an orchestrator restart.
-// A single strike is enough: unlike a long-running task, nothing legitimate
-// keeps a VM in Draining, and exec is already refused there.
-func (fm *FleetManager) reconcileStuckDraining(ctx context.Context, summary *ReconcileSummary) {
-	if fm.durableExpiry() != nil {
-		// the timer the durable drain armed owns it.
-		return
-	}
-	now := time.Now()
-
-	type drainingCandidate struct {
-		vmID   string
-		taskID string
-		age    time.Duration
-	}
-
-	// a human deciding something about the env, or an extension they
-	// approved, holds the reaper the same way it holds the idle detector. if
-	// the store cannot say which envs those are, reap nothing this cycle.
-	waiting, ok := fm.pendingInterventionEnvs(ctx)
-	if !ok {
-		return
-	}
-	extended := fm.extendedEnvs(now)
-
-	fm.mu.RLock()
-	candidates := make([]drainingCandidate, 0)
-	for id, v := range fm.vms {
-		if v.state != VMStateDraining || waiting[id] || extended[id] || destroyGated(v.spec.Hitl) {
-			continue
-		}
-		age := now.Sub(v.updatedAt)
-		if age <= fm.drainingTimeout {
-			continue
-		}
-		candidates = append(candidates, drainingCandidate{vmID: id, taskID: v.taskID, age: age})
-	}
-	fm.mu.RUnlock()
-
-	for _, c := range candidates {
-		if !fm.failExpiredVM(ctx, c.vmID, c.taskID, fm.drainExpiry(c.age)) {
-			// a DELETE got there between the scan and the teardown.
-			continue
-		}
-		fm.noteDrainExpired(c.vmID, c.taskID, c.age)
-		summary.DrainingVMsDestroyed++
-	}
-}
-
 // teardownRetryAfter is how long a VM may sit in Destroying while its
 // provider still lists it before reconcile tries the destroy again. it is
-// longer than the 60s bound on destroyAndRemove and on a DELETE request, so a
-// destroy still in flight is never doubled up.
+// longer than the 60s bound on a host destroy step and on a DELETE request,
+// so a destroy still in flight is never doubled up.
 const teardownRetryAfter = 2 * time.Minute
 
 // retryFailedTeardowns re-runs the destroy of VMs left in Destroying whose
-// provider still lists them. a background teardown (from the stuck-task, idle
-// or draining detectors) that hit a host error gives up once and leaves the
-// VM there; without a retry nothing else touches it, since the orphan pass
-// skips tracked VMs and reapDestroyedVMs waits for the provider to drop it, so
-// the VM and its host allocation would outlive the host's recovery.
+// provider still lists them. a one-way destroy whose send failed (from
+// destroyAsync) leaves the VM there; without a retry nothing else touches
+// it, since the orphan pass skips tracked VMs and reapDestroyedVMs waits for
+// the provider to drop it, so the VM and its host allocation would outlive
+// the host's recovery.
 func (fm *FleetManager) retryFailedTeardowns(providerVMs map[string]bool) {
 	now := time.Now()
 
@@ -458,9 +210,9 @@ func destroyGated(spec *hitl.Spec) bool {
 	return false
 }
 
-// expiry describes why a VM is being torn down by a reconcile detector. The
-// stuck-task and idle detectors differ only in these strings and counters, so
-// they share failExpiredVM below.
+// expiry describes why ExpiryCheck is tearing a VM down. the runtime
+// ceiling, idle timeout and draining timeout differ only in these strings
+// and counters, so they share markExpiredVM below.
 type expiry struct {
 	from       VMState        // the state the vm must still be in to be torn down
 	reasonCode string         // short code carried on events and dead letters
@@ -468,13 +220,6 @@ type expiry struct {
 	reason     string         // human-readable, stored on the vm and the task
 	age        time.Duration  // observed age or idle duration
 	ceiling    time.Duration  // the window that was exceeded
-}
-
-// failStuckTask marks a Running VM as destroying and fails its task with
-// a "stuck" reason. Shares structure with the "vm missing from provider"
-// path in reconcile() but is triggered by the stuck-task detector.
-func (fm *FleetManager) failStuckTask(ctx context.Context, vmID, taskID string, age, ceiling time.Duration) {
-	fm.failExpiredVM(ctx, vmID, taskID, stuckExpiry(age, ceiling))
 }
 
 func stuckExpiry(age, ceiling time.Duration) expiry {
@@ -486,13 +231,6 @@ func stuckExpiry(age, ceiling time.Duration) expiry {
 		age:        age,
 		ceiling:    ceiling,
 	}
-}
-
-// failIdleVM marks a Running VM as destroying because it has gone longer than
-// its idle timeout with no exec and no attach session. Takes the same teardown
-// path as failStuckTask, with its own reason code.
-func (fm *FleetManager) failIdleVM(ctx context.Context, vmID, taskID string, idle, timeout time.Duration) {
-	fm.failExpiredVM(ctx, vmID, taskID, idleExpiry(idle, timeout))
 }
 
 func idleExpiry(idle, timeout time.Duration) expiry {
@@ -527,17 +265,6 @@ func (fm *FleetManager) noteDrainExpired(vmID, taskID string, age time.Duration)
 	})
 }
 
-// failExpiredVM marks a VM still in e.from as destroying, fails its task if it
-// carries one, dead-letters the reason, and destroys the VM in the background.
-// It reports false when the VM had already moved on and nothing was done.
-func (fm *FleetManager) failExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
-	if !fm.markExpiredVM(ctx, vmID, taskID, e) {
-		return false
-	}
-	fm.destroyAsync(vmID, DestroyReasonExpired)
-	return true
-}
-
 // expiredMark is what claimExpired changed on a vm, so a durable check whose
 // writes fail can put it back.
 type expiredMark struct {
@@ -566,8 +293,6 @@ func (fm *FleetManager) claimExpired(vmID, taskID string, e expiry) (expiredMark
 	v.err = e.reason
 	v.updatedAt = time.Now()
 	m.claimedAt = v.updatedAt
-	delete(fm.stuckStrikes, vmID)
-	delete(fm.idleStrikes, vmID)
 	fm.mu.Unlock()
 
 	fm.logger.Error("tearing down expired vm",
@@ -620,33 +345,12 @@ func expiredDeadLetter(vmID, taskID string, e expiry) DeadLetterRecord {
 	}
 }
 
-// markExpiredVM is failExpiredVM without the destroy. its store writes run in
-// the background, as reconcile's always have.
-func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
-	m, ok := fm.claimExpired(vmID, taskID, e)
-	if !ok {
-		return false
-	}
-	fm.persistVMBackground(vmID)
-	fm.appendEventBackground("vm", vmID, "vm.destroying", map[string]any{"reason": e.reasonCode})
-	fm.publishStateChange(vmID, "")
-	if taskID != "" {
-		fm.upsertTaskBackground(expiredTask(vmID, taskID, e, m.assignedAt))
-		fm.appendEventBackground("task", taskID, "task.failed", map[string]any{
-			"vm_id":  vmID,
-			"error":  e.reason,
-			"reason": e.reasonCode,
-		})
-	}
-	fm.recordDeadLetter(ctx, expiredDeadLetter(vmID, taskID, e))
-	return true
-}
-
-// markExpiredVMDurable is markExpiredVM for the durable expiry check: the vm,
-// its task and the dead letter are written before it returns, and a write
-// that fails puts the vm back and fails the step, so restate retries the
-// check instead of journaling a teardown that never reached the store. the
-// timer sends the destroy itself, as a journaled step.
+// markExpiredVMDurable moves a vm still in e.from to destroying and fails its
+// task, for the durable expiry check: the vm, its task and the dead letter
+// are written before it returns, and a write that fails puts the vm back and
+// fails the step, so restate retries the check instead of journaling a
+// teardown that never reached the store. the timer sends the destroy itself,
+// as a journaled step.
 func (fm *FleetManager) markExpiredVMDurable(ctx context.Context, vmID, taskID string, e expiry) (bool, error) {
 	m, ok := fm.claimExpired(vmID, taskID, e)
 	if !ok {

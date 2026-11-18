@@ -168,21 +168,6 @@ func (p *ingressPlan) withTunnelFiles(files map[string][]byte) map[string][]byte
 	return out
 }
 
-// retunnelWithoutCredentials gives a cloned guest its own tunnel identity on a
-// fleet with no encryption key, where fork and migrate otherwise leave the
-// guest agent alone. the clone booted a copy of its source's disk, tunnel.json
-// included, and the source's identity stops working the moment the source is
-// destroyed, so skipping this would leave the clone with no ingress at all.
-func (fm *FleetManager) retunnelWithoutCredentials(ctx context.Context, env Environment, plan *ingressPlan, drainCommand string) error {
-	if plan == nil {
-		return nil
-	}
-	if err := uploadFiles(ctx, env, plan.tunnelFiles()); err != nil {
-		return err
-	}
-	return env.StartAgent(ctx, AgentSpec{DrainCommand: drainCommand, TunnelConfigPath: plan.tunnelConfigPath()})
-}
-
 // tunnelFiles is the guest file a published vm needs, or nothing.
 func (p *ingressPlan) tunnelFiles() map[string][]byte {
 	if p == nil {

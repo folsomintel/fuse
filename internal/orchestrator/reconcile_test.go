@@ -71,7 +71,7 @@ func (c *captureMetrics) count() int {
 func TestReconcileOrphan_successClearsRetries(t *testing.T) {
 	p := newMockProvider()
 	metrics := &captureMetrics{}
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 		Metrics:  metrics,
@@ -108,7 +108,7 @@ func TestReconcileOrphan_successClearsRetries(t *testing.T) {
 func TestReconcileOrphanUsesHostProvider(t *testing.T) {
 	defaultProvider := newMockProvider()
 	hostProvider := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("gpu-host", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
 	store := NewMemoryStateStore()
 	metrics := &captureMetrics{}
 
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:                p,
 		StateStore:              store,
 		Prefix:                  "fuse-",
@@ -184,7 +184,7 @@ func TestReconcileOrphan_deadLettersAfterMaxRetries(t *testing.T) {
 
 func TestReconcileOrphan_retriesClearedWhenOrphanDisappears(t *testing.T) {
 	p := newFailingDestroyProvider("fuse-orphan")
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:                p,
 		Prefix:                  "fuse-",
 		OrphanDestroyMaxRetries: 5,
@@ -229,7 +229,7 @@ func fleetWithRunningVM(t *testing.T, cfg FleetConfig, taskID string, age time.D
 	if cfg.Prefix == "" {
 		cfg.Prefix = "fuse-"
 	}
-	fm := NewFleetManager(cfg)
+	fm := newInlineFleet(cfg)
 
 	vmID := "fuse-" + taskID
 	now := time.Now()
@@ -253,170 +253,6 @@ func fleetWithRunningVM(t *testing.T, cfg FleetConfig, taskID string, age time.D
 	}
 	fm.mu.Unlock()
 	return fm, vmID
-}
-
-func TestStuckTask_underCeilingIsIgnored(t *testing.T) {
-	metrics := &captureMetrics{}
-	fm, _ := fleetWithRunningVM(t, FleetConfig{
-		TaskStuckTimeout: 1 * time.Hour,
-		Metrics:          metrics,
-	}, "task-1", 10*time.Minute)
-
-	fm.reconcile(context.Background())
-
-	got := metrics.last()
-	if got.StuckTasksSuspected != 0 || got.StuckTasksFailed != 0 {
-		t.Errorf("healthy VM flagged: %+v", got)
-	}
-}
-
-func TestStuckTask_firstCycleIsSuspectedOnly(t *testing.T) {
-	store := NewMemoryStateStore()
-	metrics := &captureMetrics{}
-	fm, vmID := fleetWithRunningVM(t, FleetConfig{
-		TaskStuckTimeout: 5 * time.Minute,
-		StateStore:       store,
-		Metrics:          metrics,
-	}, "task-1", 30*time.Minute)
-
-	fm.reconcile(context.Background())
-
-	got := metrics.last()
-	if got.StuckTasksSuspected != 1 {
-		t.Errorf("StuckTasksSuspected = %d, want 1", got.StuckTasksSuspected)
-	}
-	if got.StuckTasksFailed != 0 {
-		t.Errorf("StuckTasksFailed = %d, want 0 on first cycle", got.StuckTasksFailed)
-	}
-
-	// VM should still be Running — strike count is 1, not failed yet.
-	info, ok := fm.GetVM(vmID)
-	if !ok {
-		t.Fatal("vm removed prematurely")
-	}
-	if info.State != VMStateRunning {
-		t.Errorf("VM state = %q, want running", info.State)
-	}
-
-	fm.mu.RLock()
-	strikes := fm.stuckStrikes[vmID]
-	fm.mu.RUnlock()
-	if strikes != 1 {
-		t.Errorf("strike count = %d, want 1", strikes)
-	}
-}
-
-func TestStuckTask_secondCycleFailsAndDeadLetters(t *testing.T) {
-	store := NewMemoryStateStore()
-	metrics := &captureMetrics{}
-	fm, vmID := fleetWithRunningVM(t, FleetConfig{
-		TaskStuckTimeout: 5 * time.Minute,
-		StateStore:       store,
-		Metrics:          metrics,
-	}, "task-1", 30*time.Minute)
-
-	fm.reconcile(context.Background()) // strike 1
-	fm.reconcile(context.Background()) // strike 2 → fail
-
-	var failed int
-	for _, s := range metrics.summaries {
-		failed += s.StuckTasksFailed
-	}
-	if failed != 1 {
-		t.Errorf("StuckTasksFailed total = %d, want 1", failed)
-	}
-
-	// The fail path persists the failed task and dead-letter entry via
-	// background goroutines. Poll briefly for both to land.
-	var foundFailed bool
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && !foundFailed {
-		tasks, err := store.ListTasks(context.Background())
-		if err != nil {
-			t.Fatalf("list tasks: %v", err)
-		}
-		for _, task := range tasks {
-			if task.TaskID == "task-1" && task.RunStatus == TaskRunFailed {
-				foundFailed = true
-				if task.LastError == "" {
-					t.Error("failed task missing LastError")
-				}
-			}
-		}
-		if !foundFailed {
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
-	if !foundFailed {
-		t.Error("task-1 not marked failed in state store within deadline")
-	}
-
-	entries, err := store.ListDeadLetters(context.Background())
-	if err != nil {
-		t.Fatalf("list dead letters: %v", err)
-	}
-	var foundDLQ bool
-	for _, e := range entries {
-		if e.Kind == DeadLetterStuckTask && e.EntityID == vmID {
-			foundDLQ = true
-			if e.TaskID != "task-1" {
-				t.Errorf("DLQ TaskID = %q", e.TaskID)
-			}
-		}
-	}
-	if !foundDLQ {
-		t.Errorf("stuck task not dead-lettered: %+v", entries)
-	}
-}
-
-func TestStuckTask_specMaxRuntimeOverridesDefault(t *testing.T) {
-	metrics := &captureMetrics{}
-	fm, _ := fleetWithRunningVM(t, FleetConfig{
-		TaskStuckTimeout: 10 * time.Minute, // default would say "stuck"
-		Metrics:          metrics,
-	}, "task-1", 30*time.Minute)
-
-	// Override: task is allowed to run 1h.
-	fm.mu.Lock()
-	fm.vms["fuse-task-1"].spec.MaxRuntime = 1 * time.Hour
-	fm.mu.Unlock()
-
-	fm.reconcile(context.Background())
-
-	got := metrics.last()
-	if got.StuckTasksSuspected != 0 || got.StuckTasksFailed != 0 {
-		t.Errorf("per-spec override not honored: %+v", got)
-	}
-}
-
-func TestStuckTask_strikeClearsOnStateChange(t *testing.T) {
-	fm, vmID := fleetWithRunningVM(t, FleetConfig{
-		TaskStuckTimeout: 5 * time.Minute,
-	}, "task-1", 30*time.Minute)
-
-	fm.reconcile(context.Background())
-
-	fm.mu.RLock()
-	if fm.stuckStrikes[vmID] != 1 {
-		t.Fatal("strike 1 not recorded")
-	}
-	fm.mu.RUnlock()
-
-	// Simulate progress — move to destroying so the VM is no longer
-	// eligible for stuck detection.
-	fm.mu.Lock()
-	fm.vms[vmID].state = VMStateDestroying
-	fm.vms[vmID].taskID = ""
-	fm.mu.Unlock()
-
-	fm.reconcile(context.Background())
-
-	fm.mu.RLock()
-	_, present := fm.stuckStrikes[vmID]
-	fm.mu.RUnlock()
-	if present {
-		t.Error("strike counter should be cleared when VM leaves Running")
-	}
 }
 
 func TestMemoryDeadLetter_upsertAdvancesLastSeen(t *testing.T) {
@@ -465,7 +301,7 @@ func TestMemoryDeadLetter_upsertAdvancesLastSeen(t *testing.T) {
 
 func TestReconcile_metricsAlwaysEmitted(t *testing.T) {
 	metrics := &captureMetrics{}
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: newMockProvider(),
 		Prefix:   "fuse-",
 		Metrics:  metrics,

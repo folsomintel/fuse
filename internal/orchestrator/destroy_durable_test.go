@@ -76,7 +76,7 @@ func (p *destroyErrProvider) Destroy(context.Context, string) error { return p.e
 func newDurableFleet(t *testing.T, p Provider) (*FleetManager, *inlineDestroyer, *MemoryStateStore) {
 	t.Helper()
 	store := NewMemoryStateStore()
-	fm := NewFleetManager(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, StateStore: store, Prefix: "fuse-"})
 	d := &inlineDestroyer{fm: fm}
 	fm.SetDurableDestroyer(d)
 	return fm, d, store
@@ -135,7 +135,7 @@ func (d *blockingDestroyer) SendDestroy(ctx context.Context, vmID string, req De
 // a restate that never answers must not hold up the caller, and holds at
 // most maxDestroySends sends at once.
 func TestDestroyAsyncDoesNotBlockAndIsBounded(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 	d := &blockingDestroyer{release: make(chan struct{})}
 	fm.SetDurableDestroyer(d)
 
@@ -186,21 +186,6 @@ func TestDurableCompleteTaskSendsDestroy(t *testing.T) {
 	}
 	if p.count() != 0 || len(fm.ListFleet()) != 0 {
 		t.Fatal("vm survived the durable destroy")
-	}
-}
-
-func TestDurableCreateCleanupCarriesHost(t *testing.T) {
-	p := newMockProvider()
-	p.createFn = func(context.Context, Spec) (Environment, error) {
-		return nil, errors.New("boom")
-	}
-	fm, d, _ := newDurableFleet(t, p)
-	if _, err := fm.ProvisionAndAssign(context.Background(), "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err == nil {
-		t.Fatal("provision succeeded, want an error")
-	}
-	sent, _ := d.requests()
-	if len(sent) != 1 || sent[0].Reason != DestroyReasonCreateCleanup {
-		t.Fatalf("sent %+v, want one create_cleanup destroy", sent)
 	}
 }
 
@@ -274,7 +259,7 @@ func (deadLetterErrStore) UpsertDeadLetter(context.Context, DeadLetterRecord) er
 // the dead letter is the record of a destroy that gave up, so a failed write
 // fails the step for restate to retry instead of being dropped.
 func TestDestroyFailedReturnsDeadLetterError(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider:   newMockProvider(),
 		StateStore: deadLetterErrStore{NewMemoryStateStore()},
 		Prefix:     "fuse-",
@@ -351,7 +336,7 @@ func waitForState(t *testing.T, ch <-chan EnvironmentEvent, want VMState) {
 // first attempt never reached.
 func TestDestroyStepRetriesKeepEvents(t *testing.T) {
 	store := &failOnceStore{MemoryStateStore: NewMemoryStateStore()}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), StateStore: store, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), StateStore: store, Prefix: "fuse-"})
 	ctx := context.Background()
 	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatal(err)
@@ -389,7 +374,7 @@ func TestRetryFailedTeardownsResendsDurably(t *testing.T) {
 	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// a vm left destroying long ago, e.g. by a mode off release before the
+	// a vm left destroying long ago, e.g. by an older release before the
 	// upgrade, with nothing in restate working on it.
 	fm.mu.Lock()
 	v := fm.vms["fuse-task-1"]

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -65,7 +66,7 @@ func (p *liveMigrateProvider) Create(_ context.Context, spec Spec) (Environment,
 func newLiveMigrateFleet(t *testing.T, provider *liveMigrateProvider, mover *recordingMover) *FleetManager {
 	t.Helper()
 	ctx := context.Background()
-	fm := NewFleetManager(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: mover})
 	for _, id := range []string{"h-a", "h-b"} {
 		if err := fm.RegisterHost(ctx, artifactHost(id, 8), provider); err != nil {
 			t.Fatal(err)
@@ -166,7 +167,7 @@ func TestMigrateVM_emptyTargetPrefersTheCheckpointStandby(t *testing.T) {
 	if err := fm.RegisterHost(context.Background(), artifactHost("h-c", 8), provider); err != nil {
 		t.Fatal(err)
 	}
-	fm.chainFor("fuse-task-src").standby = "h-c"
+	fm.MirrorChain("fuse-task-src", ChainState{Standby: "h-c"}, false)
 
 	newID, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{Live: true})
 	if err != nil {
@@ -235,7 +236,13 @@ func TestMigrateVM_liveRefusalsLeaveTheSourceRunning(t *testing.T) {
 			fm := newLiveMigrateFleet(t, provider, mover)
 
 			_, err := fm.MigrateVM(context.Background(), "fuse-task-src", tc.opts)
-			if !errors.Is(err, tc.want) {
+			// a transfer failure is no refusal sentinel: it crosses restate
+			// as its message.
+			if tc.want == ErrArtifactTransferFailed {
+				if err == nil || !strings.Contains(err.Error(), tc.want.Error()) {
+					t.Fatalf("err = %v, want %v", err, tc.want)
+				}
+			} else if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 			if info, ok := fm.GetVM("fuse-task-src"); !ok || info.State != VMStateRunning {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // ── Test doubles ──────────────────────────────────────────────────
@@ -80,7 +81,7 @@ func (*plainProvider) Close() error { return nil }
 func newPlainHandler(t *testing.T) (*Handler, *orchestrator.FleetManager, *plainProvider) {
 	t.Helper()
 	p := newPlainProvider()
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -383,7 +384,7 @@ func TestRemoveHost_withVMsReturns409(t *testing.T) {
 func TestCreateEnvironment_startupScriptTimeoutReturns400(t *testing.T) {
 	p := newFakeProvider()
 	p.blockExec = true
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{
 		Provider:             p,
 		Prefix:               "fuse-",
 		StartupScriptTimeout: 50 * time.Millisecond,
@@ -416,6 +417,7 @@ func TestBuildSentinels(t *testing.T) {
 		{orchestrator.ErrBuildNotFound, http.StatusNotFound},
 		{orchestrator.ErrBuildConflict, http.StatusConflict},
 		{orchestrator.ErrBuildNotStarted, http.StatusServiceUnavailable},
+		{fmt.Errorf("destroy: %w: dial tcp: connection refused", orchestrator.ErrRestateUnavailable), http.StatusServiceUnavailable},
 	} {
 		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
 			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)
@@ -453,7 +455,7 @@ func (refusingBuilds) SubmitBuild(context.Context, orchestrator.BuildInput) erro
 func TestCreateBuild_restateDownReturns503(t *testing.T) {
 	// restate only runs a build whose record outlives the process, so the
 	// memory store is wrapped to stand in for postgres.
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-",
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{Provider: newFakeProvider(), Prefix: "fuse-",
 		StateStore: persistentStore{orchestrator.NewMemoryStateStore()}})
 	h := &Handler{Fleet: fm}
 	fm.SetDurableBuilds(refusingBuilds{})

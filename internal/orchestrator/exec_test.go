@@ -21,7 +21,7 @@ func provisionRunning(t *testing.T, fm *FleetManager) string {
 
 func TestExec_HappyPath(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	env := p.envs[vmID]
@@ -52,7 +52,7 @@ func TestExec_HappyPath(t *testing.T) {
 // caller cannot tell "ran and failed" from "could not run".
 func TestExec_NonZeroExitIsNotAnError(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	p.envs[vmID].execResult = ExecResult{
@@ -80,7 +80,7 @@ func TestExec_NonZeroExitIsNotAnError(t *testing.T) {
 // together, which is precisely the fidelity this change exists to recover.
 func TestExec_StreamsStaySeparate(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	p.envs[vmID].execResult = ExecResult{Stdout: []byte("out"), Stderr: []byte("err")}
@@ -96,7 +96,7 @@ func TestExec_StreamsStaySeparate(t *testing.T) {
 
 func TestExec_TransportErrorIsReported(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	p.envs[vmID].execRunErr = errors.New("host agent unreachable")
@@ -110,7 +110,7 @@ func TestExec_TransportErrorIsReported(t *testing.T) {
 // BaseURL is unset) must say so rather than fake a clean run.
 func TestExec_UnsupportedProviderSurfaces(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	p.envs[vmID].execRunErr = ErrExecUnsupported
@@ -122,7 +122,7 @@ func TestExec_UnsupportedProviderSurfaces(t *testing.T) {
 }
 
 func TestExec_NotFound(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 
 	_, err := fm.Exec(context.Background(), "fuse-missing", []string{"true"}, ExecOptions{})
 	if !errors.Is(err, ErrVMNotFound) {
@@ -134,7 +134,7 @@ func TestExec_NotFound(t *testing.T) {
 // drain would undo the quiesce it is performing.
 func TestExec_NotRunningRejected(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 	vmID := provisionRunning(t, fm)
 
@@ -150,7 +150,7 @@ func TestExec_NotRunningRejected(t *testing.T) {
 
 func TestExec_EmptyCommandRejected(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	if _, err := fm.Exec(context.Background(), vmID, nil, ExecOptions{}); err == nil {
@@ -173,7 +173,7 @@ func TestExec_TimeoutDefaultedAndClamped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := newMockProvider()
-			fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+			fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 			vmID := provisionRunning(t, fm)
 
 			if _, err := fm.Exec(context.Background(), vmID, []string{"true"}, ExecOptions{Timeout: tt.give}); err != nil {
@@ -205,7 +205,7 @@ func (e *attachableEnv) Attach(_ context.Context, spec AttachSpec) (io.ReadWrite
 
 func TestAttach_HappyPath(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 	vmID := provisionRunning(t, fm)
 
@@ -238,7 +238,7 @@ func TestAttach_HappyPath(t *testing.T) {
 // provider that cannot open a shell.
 func TestAttach_UnsupportedProvider(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	_, err := fm.Attach(context.Background(), vmID, AttachSpec{TTY: true})
@@ -248,7 +248,7 @@ func TestAttach_UnsupportedProvider(t *testing.T) {
 }
 
 func TestAttach_NotFound(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
 
 	_, err := fm.Attach(context.Background(), "fuse-missing", AttachSpec{})
 	if !errors.Is(err, ErrVMNotFound) {
@@ -258,7 +258,7 @@ func TestAttach_NotFound(t *testing.T) {
 
 func TestAttach_NotRunningRejected(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 	vmID := provisionRunning(t, fm)
 
@@ -274,7 +274,7 @@ func TestAttach_NotRunningRejected(t *testing.T) {
 
 func TestExec_RecordsActivity(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	vmID := provisionRunning(t, fm)
 
 	// Back-date the activity clock so the bump is unambiguous.
@@ -297,7 +297,7 @@ func TestExec_RecordsActivity(t *testing.T) {
 
 func TestAttach_TracksSessionUntilStreamClose(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
 	ctx := context.Background()
 	vmID := provisionRunning(t, fm)
 

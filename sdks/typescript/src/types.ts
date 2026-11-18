@@ -1184,7 +1184,10 @@ export interface Operation {
   kind: string;
   /** One of OperationState. */
   state: string;
-  /** The step the operation last reported starting. */
+  /**
+   * The step the operation last reported starting. No operation reports one
+   * now (their steps show in the restate ui), so it is empty.
+   */
   step?: string;
   started_at: string;
   finished_at?: string;

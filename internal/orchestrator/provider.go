@@ -542,9 +542,6 @@ type BootOptions struct {
 	// fleet. nil means no proxy egress can be provisioned; a proxy spec then
 	// fails the boot rather than silently booting direct.
 	EgressRegistry *egress.Registry
-
-	// stepDone, set by the fleet, is told each boot step's duration.
-	stepDone func(step string, d time.Duration, err error)
 }
 
 // DefaultStartupScriptTimeout bounds a boot-time startup script when
@@ -609,19 +606,6 @@ type Checkpoint struct {
 	// one. a diff is not restorable on its own; it only merges onto a copy of
 	// its parent on another host.
 	Parent string
-}
-
-// BootResult is returned after provisioning or restoring an environment.
-type BootResult struct {
-	Env                Environment
-	BootTime           time.Duration
-	FromCache          bool       // true if restored from checkpoint
-	AuthTokenEncrypted []byte     // AES-GCM encrypted per-VM auth token for persistence
-	DrainCommand       string     // graceful-shutdown command for the configured agent ('' => skip)
-	Endpoints          []Endpoint // published endpoints, if the provider reported any
-	// Egress is the resolved outbound policy: direct, or the proxy endpoint
-	// that was provisioned for this boot.
-	Egress egress.Status
 }
 
 // reportedEndpoints returns env.Endpoints() when env implements
@@ -821,18 +805,13 @@ func restoreLatest(ctx context.Context, env Environment) bool {
 
 // restoreOrCreate is the first step of a boot: a vm by spec.Name that p
 // already has is restored from its latest checkpoint, and anything else is
-// created. fromCache reports a restore. reuse keeps an existing vm that has
-// nothing to restore instead of creating over it, which is what a retried
-// durable boot step needs (create-if-absent); mode off creates as it always
-// has. fork's durable boot reuses this shape with CreateFromCheckpoint.
-func restoreOrCreate(ctx context.Context, p Provider, spec Spec, reuse bool) (env Environment, fromCache bool, err error) {
+// created. fromCache reports a restore. an existing vm with nothing to
+// restore is kept rather than created over, which is what a retried durable
+// boot step needs (create-if-absent). fork's durable boot reuses this shape
+// with CreateFromCheckpoint.
+func restoreOrCreate(ctx context.Context, p Provider, spec Spec) (env Environment, fromCache bool, err error) {
 	if existing, getErr := p.Get(ctx, spec.Name); getErr == nil {
-		if restoreLatest(ctx, existing) {
-			return existing, true, nil
-		}
-		if reuse {
-			return existing, false, nil
-		}
+		return existing, restoreLatest(ctx, existing), nil
 	}
 	env, err = p.Create(ctx, spec)
 	if err != nil && spec.ImageDigest != "" && IsNotFound(err) {
@@ -845,8 +824,8 @@ func restoreOrCreate(ctx context.Context, p Provider, spec Spec, reuse bool) (en
 }
 
 // bootRun is one boot between its steps: restore-or-create, egress, upload,
-// startup script and start agent. Boot runs them in turn; the durable create
-// runs each as a journaled step over a bootRun it rebuilds from the vm.
+// startup script and start agent. the durable create runs each as a
+// journaled step over a bootRun it rebuilds from the vm.
 type bootRun struct {
 	p         Provider
 	in        bootInputs
@@ -892,111 +871,4 @@ func (b *bootRun) startAgent(ctx context.Context) ([]Endpoint, error) {
 		return nil, err
 	}
 	return reportedEndpoints(b.env), nil
-}
-
-// release tears down the egress a failed boot brought up.
-func (b *bootRun) release(ctx context.Context) {
-	releaseEgress(ctx, b.p, b.env, b.in, b.egress)
-}
-
-// timeStep runs fn as boot step name and reports its duration to the
-// fleet's observer, when it set one.
-func (in bootInputs) timeStep(name string, fn func() error) error {
-	start := time.Now()
-	err := fn()
-	if in.opts.stepDone != nil {
-		in.opts.stepDone(name, time.Since(start), err)
-	}
-	return err
-}
-
-// Boot provisions or restores an environment, uploads the agent's files, and
-// starts the configured guest agent. If a matching checkpoint exists, it
-// restores from it. Otherwise creates fresh. When encryptionKey is non-nil (32
-// bytes), per-VM TLS credentials and an auth token are generated and injected.
-// The encrypted token is returned in BootResult for persistence.
-//
-// The guest agent is described by an AgentSpec; today that is always the fused
-// profile (FusedAgentSpec), which carries the fused manifest/secrets/TLS files
-// and launch command. Boot itself is profile-agnostic.
-func Boot(ctx context.Context, p Provider, spec Spec, manifest []byte, secretMap map[string]string, opts BootOptions, encryptionKey []byte) (*BootResult, error) {
-	start := time.Now()
-
-	// Generate per-VM credentials when an encryption key is provided.
-	var creds *secrets.VMCredentials
-	var encToken []byte
-	if len(encryptionKey) == 32 {
-		var err error
-		creds, err = secrets.GenerateVMCredentials(spec.Name)
-		if err != nil {
-			return nil, fmt.Errorf("generate vm credentials: %w", err)
-		}
-		encToken, err = secrets.EncryptToken(creds.AuthToken, encryptionKey)
-		if err != nil {
-			return nil, fmt.Errorf("encrypt vm token: %w", err)
-		}
-	}
-
-	// Build the fused profile: this is the SINGLE place the fused /fuse/*
-	// paths and launch command are assembled (see agent_profile.go). Credential
-	// files are included in AgentSpec.Files and uploaded generically; the
-	// in-memory token side effect is applied by setTokenIfSupported in
-	// bootRun.upload.
-	agentSpec := FusedAgentSpec(manifest, GuestSecrets(secretMap, spec.Egress), creds, opts)
-
-	in := bootInputs{
-		spec:      spec,
-		manifest:  manifest,
-		secretMap: secretMap,
-		creds:     creds,
-		agentSpec: agentSpec,
-		opts:      opts,
-	}
-
-	// restore from an existing checkpoint when there is one, else create.
-	// the steps after it are the same either way: a restored vm re-provisions
-	// its egress rather than inheriting a stale endpoint, and gets its files
-	// and agent again. every step after egress releases it on failure; the
-	// fleet's rollback destroys the vm.
-	b := &bootRun{p: p, in: in}
-	if err := in.timeStep("boot", func() error {
-		var err error
-		b.env, b.fromCache, err = restoreOrCreate(ctx, p, spec, false)
-		return err
-	}); err != nil {
-		return nil, err
-	}
-	// egress comes up between Create and the upload pass: the endpoint binds
-	// to the vm's tap, so it cannot precede Create, and the guest files that
-	// carry it have to go up with the manifest. a failure here returns before
-	// anything is uploaded, and the fleet's rollback destroys the vm.
-	if err := in.timeStep("egress", func() error { return b.provisionEgress(ctx, b.fromCache) }); err != nil {
-		return nil, err
-	}
-	if err := in.timeStep("upload", func() error { return b.upload(ctx) }); err != nil {
-		b.release(ctx)
-		return nil, err
-	}
-	if err := in.timeStep("startup", func() error { return b.startup(ctx) }); err != nil {
-		b.release(ctx)
-		return nil, err
-	}
-	var endpoints []Endpoint
-	if err := in.timeStep("agent", func() error {
-		var err error
-		endpoints, err = b.startAgent(ctx)
-		return err
-	}); err != nil {
-		b.release(ctx)
-		return nil, err
-	}
-	return &BootResult{
-		Env:                b.env,
-		BootTime:           time.Since(start),
-		FromCache:          b.fromCache,
-		AuthTokenEncrypted: encToken,
-		DrainCommand:       agentSpec.DrainCommand,
-		Endpoints:          endpoints,
-		Egress:             b.egress,
-	}, nil
 }

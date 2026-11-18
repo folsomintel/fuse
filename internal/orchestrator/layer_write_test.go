@@ -151,7 +151,7 @@ func TestCreateSnapshot_recordsLayerIdentity(t *testing.T) {
 			ctx := context.Background()
 			env := &layerEnv{digest: tc.digest}
 			hostProvider := &layerProvider{env: env}
-			fm := NewFleetManager(FleetConfig{Provider: &layerProvider{env: env}, Prefix: "b-"})
+			fm := newInlineFleet(FleetConfig{Provider: &layerProvider{env: env}, Prefix: "b-"})
 			if err := fm.RegisterHost(ctx, layerHost("h1", tc.hostArch), hostProvider); err != nil {
 				t.Fatal(err)
 			}
@@ -201,7 +201,7 @@ func TestResolveLayer_findsWhatCreateSnapshotWrote(t *testing.T) {
 	ctx := context.Background()
 	env := &layerEnv{digest: "abc123"}
 	hostProvider := &layerProvider{env: env}
-	fm := NewFleetManager(FleetConfig{Provider: &layerProvider{env: env}, Prefix: "b-"})
+	fm := newInlineFleet(FleetConfig{Provider: &layerProvider{env: env}, Prefix: "b-"})
 	if err := fm.RegisterHost(ctx, layerHost("h1", "x86_64"), hostProvider); err != nil {
 		t.Fatal(err)
 	}

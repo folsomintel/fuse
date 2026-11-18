@@ -7,7 +7,9 @@ import (
 	"time"
 
 	restate "github.com/restatedev/sdk-go"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/folsomintel/fuse/internal/hostwire"
@@ -51,7 +53,7 @@ func Run[T any](ctx restate.Context, op, step string, fn func(context.Context) (
 	opts = append([]restate.RunOption{restate.WithName(step)}, opts...)
 	out, err := restate.Run(ctx, func(rc restate.RunContext) (T, error) {
 		start := time.Now()
-		sctx := telemetry.WithRequestID(rc, invocationRequestID(rc.Request()))
+		sctx := telemetry.WithRequestID(invocationTrace(rc, rc.Request()), invocationRequestID(rc.Request()))
 		sctx = hostwire.WithIdempotencyKey(sctx, stepIdempotencyKey(rc.Request().ID, op, step))
 		sctx, span := telemetry.Tracer().Start(sctx, op+"."+step,
 			trace.WithAttributes(
@@ -82,6 +84,21 @@ func stepIdempotencyKey(invocationID, op, step string) string {
 		return ""
 	}
 	return invocationID + ":" + op + "." + step
+}
+
+// invocationTrace parents ctx on the trace the invocation was started with
+// when the attempt carries none. restate 1.8 sends no traceparent on an
+// attempt unless its own tracing is configured, but it keeps the ingress
+// request's traceparent on the invocation's headers.
+func invocationTrace(ctx context.Context, req *restate.Request) context.Context {
+	if trace.SpanContextFromContext(ctx).IsValid() || req == nil || req.Headers == nil {
+		return ctx
+	}
+	carrier := propagation.MapCarrier{}
+	for k, v := range req.Headers.Iter() {
+		carrier[strings.ToLower(k)] = v
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
 }
 
 // invocationRequestID returns the X-Request-ID the invocation was started

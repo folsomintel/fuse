@@ -57,8 +57,8 @@ type DurableTokenRotator interface {
 	RotateToken(ctx context.Context, vmID string) error
 }
 
-// SetDurableTokenRotator routes token rotation through restate. nil (mode
-// off, the default) keeps it in process. set it before Start.
+// SetDurableTokenRotator routes token rotation through restate. set it
+// before Start.
 func (fm *FleetManager) SetDurableTokenRotator(d DurableTokenRotator) {
 	fm.mu.Lock()
 	fm.durableTokens = d
@@ -96,30 +96,13 @@ func (fm *FleetManager) RotateToken(ctx context.Context, vmID string) error {
 }
 
 func (fm *FleetManager) rotateToken(ctx context.Context, vmID string) error {
-	if d := fm.durableTokenRotator(); d != nil {
-		ctx, cancel := durableWait(ctx)
-		defer cancel()
-		return d.RotateToken(ctx, vmID)
-	}
-	rotated, err := fm.RotateTokenGenerate(ctx, vmID)
-	if err != nil {
-		return err
-	}
-	if err := fm.RotateTokenUpload(ctx, vmID, rotated); err != nil {
-		return err
-	}
-	if err := fm.storeRotatedToken(vmID, rotated); err != nil {
-		return err
-	}
-	// mode off keeps the background persist it always had.
-	fm.persistVMBackground(vmID)
-	fm.appendEvent(ctx, "vm", vmID, "vm.token_rotated", nil)
-	fm.logger.InfoContext(ctx, "vm token rotated", "vm", vmID)
-	return nil
+	ctx, cancel := durableWait(ctx)
+	defer cancel()
+	return fm.durableTokenRotator().RotateToken(ctx, vmID)
 }
 
 // the methods below are the steps of a token rotation, in order. the
-// durable handler runs each as a journaled step; mode off runs them in turn.
+// durable handler runs each as a journaled step.
 
 // rotateTarget returns vmID's environment handle when the vm can take a
 // rotation.

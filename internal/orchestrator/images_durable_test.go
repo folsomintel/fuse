@@ -17,7 +17,9 @@ func (d *durableImagesStub) ConvertImage(_ context.Context, req ConvertImageRequ
 	return Image{Digest: digestOf("d"), Ref: req.Ref, HostID: "fc-1", State: ImageConverting}, nil
 }
 
-func TestConvertImageGoesThroughRestateWhenSet(t *testing.T) {
+// TestConvertImageGoesThroughRestate: a convert is handed to restate and never
+// calls the host itself.
+func TestConvertImageGoesThroughRestate(t *testing.T) {
 	fc := newImageProvider()
 	fm := imageFleet(t, map[string]Provider{"fc-1": fc}, nil)
 	d := &durableImagesStub{}
@@ -32,15 +34,6 @@ func TestConvertImageGoesThroughRestateWhenSet(t *testing.T) {
 	}
 	if len(fc.converted) != 0 {
 		t.Fatalf("the host was called in process: %v", fc.converted)
-	}
-
-	// mode off: the host is called directly.
-	fm.SetDurableImages(nil)
-	if _, err := fm.ConvertImage(context.Background(), ConvertImageRequest{Ref: "ubuntu"}); err != nil {
-		t.Fatalf("ConvertImage in process: %v", err)
-	}
-	if len(fc.converted) != 1 || len(d.reqs) != 1 {
-		t.Fatalf("in process: host converted %v, durable requests %d", fc.converted, len(d.reqs))
 	}
 }
 
@@ -128,13 +121,13 @@ func (failEventStore) AppendEvent(context.Context, EventRecord) error {
 // when its event does not land, so restate retries it instead of journaling
 // an outcome nothing recorded.
 func TestImageConvertDoneReturnsAFailedEventWrite(t *testing.T) {
-	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: failEventStore{NewMemoryStateStore()}})
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: failEventStore{NewMemoryStateStore()}})
 	img := Image{Digest: digestOf("d"), Ref: "ubuntu", HostID: "fc-1", State: ImageReady}
 	if err := fm.ImageConvertDone(context.Background(), img, false); err == nil || !strings.Contains(err.Error(), "db down") {
 		t.Fatalf("ImageConvertDone = %v, want the event write error", err)
 	}
 
-	fm = NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: NewMemoryStateStore()})
+	fm = newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: NewMemoryStateStore()})
 	if err := fm.ImageConvertDone(context.Background(), img, false); err != nil {
 		t.Fatalf("ImageConvertDone with a working store: %v", err)
 	}

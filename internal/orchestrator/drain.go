@@ -54,18 +54,15 @@ const DefaultDrainingTimeout = drainTimeout + 5*time.Minute
 // alternative (command first, then state flip) would lose the intent of
 // the drain on a crash.
 func (fm *FleetManager) Drain(ctx context.Context, vmID string) error {
-	if d := fm.durableExpiry(); d != nil {
-		// refuse what mode off refuses before restate sees it: the durable
-		// begin step accepts a vm already draining, so a replay after a
-		// crash finds its own transition done.
-		if err := fm.drainable(vmID); err != nil {
-			return err
-		}
-		ctx, cancel := durableWait(ctx)
-		defer cancel()
-		return d.Drain(ctx, vmID)
+	// refuse a vm that cannot drain before restate sees it: the durable
+	// begin step accepts a vm already draining, so a replay after a crash
+	// finds its own transition done.
+	if err := fm.drainable(vmID); err != nil {
+		return err
 	}
-	return fm.drainInProcess(ctx, vmID)
+	ctx, cancel := durableWait(ctx)
+	defer cancel()
+	return fm.durableExpiry().Drain(ctx, vmID)
 }
 
 // drainInProcess is Drain run in this process. a durable migrate drains its
@@ -106,7 +103,7 @@ func (fm *FleetManager) drainable(vmID string) error {
 
 // the two methods below are the steps of a drain, in order. the durable
 // Environment/{vm_id}.Drain handler runs each as a journaled step and arms
-// the grace timer between them; mode off runs them in turn.
+// the grace timer between them.
 
 // DrainCheck refuses a vm that is not running. the durable drain journals it
 // before DrainBegin, so a second drain queued behind the first on the object

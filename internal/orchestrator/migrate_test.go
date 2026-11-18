@@ -35,7 +35,7 @@ func (p *migrateTestProvider) Create(ctx context.Context, spec Spec) (Environmen
 
 func TestMigrateVM_happyPath(t *testing.T) {
 	provider := newMigrateTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -82,7 +82,7 @@ func TestMigrateVM_happyPath(t *testing.T) {
 
 func TestMigrateVM_sameHost(t *testing.T) {
 	provider := newMigrateTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -106,7 +106,7 @@ func TestMigrateVM_sameHost(t *testing.T) {
 
 func TestMigrateVM_rejectsGPU(t *testing.T) {
 	provider := newMigrateTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -120,7 +120,7 @@ func TestMigrateVM_rejectsGPU(t *testing.T) {
 	// since we can't provision a GPU vm in single-provider mode, we
 	// manually inject one to test the guardrail.
 	provider2 := newMigrateTestProvider()
-	fm2 := NewFleetManager(FleetConfig{
+	fm2 := newInlineFleet(FleetConfig{
 		Provider: provider2,
 		Prefix:   "fuse-",
 	})
@@ -145,7 +145,7 @@ func TestMigrateVM_rejectsGPU(t *testing.T) {
 
 func TestMigrateVM_rejectsNotRunning(t *testing.T) {
 	provider := newMigrateTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -163,7 +163,7 @@ func TestMigrateVM_rejectsNotRunning(t *testing.T) {
 
 func TestMigrateVM_notFound(t *testing.T) {
 	provider := newMigrateTestProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})
@@ -176,7 +176,7 @@ func TestMigrateVM_notFound(t *testing.T) {
 
 func TestMigrateVM_providerNotForkable(t *testing.T) {
 	p := newMockProvider()
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: p,
 		Prefix:   "fuse-",
 	})
@@ -195,7 +195,7 @@ func TestMigrateVM_providerNotForkable(t *testing.T) {
 func TestMigrateVM_cleanupOnCreateFromCheckpointFailure(t *testing.T) {
 	provider := newMigrateTestProvider()
 	provider.failCreateFromCheckpoint = true
-	fm := NewFleetManager(FleetConfig{
+	fm := newInlineFleet(FleetConfig{
 		Provider: provider,
 		Prefix:   "fuse-",
 	})

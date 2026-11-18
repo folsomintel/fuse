@@ -27,7 +27,7 @@ func cpuFleetHost(id string) Host {
 // when other hosts are registered and would otherwise be candidates.
 func TestProvisionAndAssign_pinnedHostWins(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-"})
 	for _, id := range []string{"h1", "h2", "h3"} {
 		if err := fm.RegisterHost(context.Background(), cpuFleetHost(id), stub); err != nil {
 			t.Fatalf("register %s: %v", id, err)
@@ -54,7 +54,7 @@ func TestProvisionAndAssign_pinnedHostWins(t *testing.T) {
 // image instead of the artifact the caller asked for.
 func TestProvisionAndAssign_pinnedHostMissingFails(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), cpuFleetHost("h1"), stub); err != nil {
 		t.Fatalf("register h1: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestProvisionAndAssign_pinnedHostMissingFails(t *testing.T) {
 // narrowing the candidate set when no pin was asked for.
 func TestProvisionAndAssign_unpinnedStillSchedules(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "fuse-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "fuse-"})
 	if err := fm.RegisterHost(context.Background(), cpuFleetHost("h1"), stub); err != nil {
 		t.Fatalf("register h1: %v", err)
 	}

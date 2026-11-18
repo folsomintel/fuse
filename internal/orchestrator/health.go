@@ -122,7 +122,7 @@ const healthPollTimeout = 5 * time.Second
 //
 // A read that fails is not a failing probe: an unreachable guest could equally
 // be a host agent hiccup, and this pass does not have the two-strike structure
-// the destructive detectors have. The last known verdict is left in place and
+// the expiry check has. The last known verdict is left in place and
 // the next tick tries again.
 func (fm *FleetManager) reconcileHealth(ctx context.Context, summary *ReconcileSummary) {
 	type candidate struct {

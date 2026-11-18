@@ -214,14 +214,11 @@ seed_upgrade() {
 
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
-# 1. mode self without a database is refused before anything is installed.
+# 1. mode self without a database installs, with a warning.
 R="$WORK/o-nodb"
-if run_orch "$R" FUSE_RESTATE_MODE=self DATABASE_URL=; then
-  bad "mode self without DATABASE_URL is refused"
-else
-  check "mode self without DATABASE_URL is refused, nothing installed" \
-    '[ ! -e "$R/usr/local/bin/orchestrator" ] && [ ! -e "$R/etc/fuse/restate.env" ] && grep -q DATABASE_URL "$R.out"'
-fi
+check "mode self without DATABASE_URL installs" 'run_orch "$R" FUSE_RESTATE_MODE=self DATABASE_URL='
+check "mode self without DATABASE_URL warns about the in-memory store" \
+  '[ -e "$R/etc/fuse/restate.env" ] && grep -q "warning: no DATABASE_URL" "$R.out"'
 
 # 2. fresh install.
 R="$WORK/o-fresh"
@@ -351,10 +348,10 @@ fi
 R="$WORK/o-leave-self"
 seed_upgrade "$R" "$WORK/orch-old"
 if run_orch "$R" FUSE_RESTATE_MODE=off FAKE_DEPLOYED_9080=1; then
-  bad "switching a self install to off is refused"
+  bad "mode off is refused"
 else
-  check "switching a self install to off is refused, old binary kept" \
-    '"$R/usr/local/bin/orchestrator" | grep -q v1 && grep -qx FUSE_RESTATE_MODE=self "$R/etc/fuse/orchestrator.env"'
+  check "mode off is refused as removed, old binary kept" \
+    'grep -q "off was removed" "$R.out" && "$R/usr/local/bin/orchestrator" | grep -q v1 && grep -qx FUSE_RESTATE_MODE=self "$R/etc/fuse/orchestrator.env"'
 fi
 
 # 10. mode cloud writes the cloud env and runs no restate-server.
@@ -387,11 +384,23 @@ fi
 check "a public cloud install saves the deployment url" \
   'run_orch "$R" $CLOUD FUSE_RESTATE_CONNECT=public FUSE_RESTATE_DEPLOYMENT_URL=https://orch.example.com && grep -qx FUSE_RESTATE_DEPLOYMENT_URL=https://orch.example.com "$R/etc/fuse/orchestrator.env"'
 
-# 11. mode off stays restate-free.
-R="$WORK/o-off"
-check "mode off installs" 'run_orch "$R"'
-check "mode off installs no restate pieces and calls no docker" \
-  '[ -x "$R/usr/local/bin/orchestrator" ] && [ ! -e "$R/etc/fuse/restate.env" ] && ! grep -q "^docker" "$R.log" && ! grep -q FUSE_RESTATE "$R/etc/fuse/orchestrator.env"'
+# 11. no mode means self, and an install from before restate was required
+#     (mode off, no TOKEN_ENCRYPTION_KEY) moves to self on upgrade.
+R="$WORK/o-default"
+check "an install with no mode succeeds" 'run_orch "$R" DATABASE_URL=postgres://db'
+check "an install with no mode runs mode self" \
+  'grep -qx FUSE_RESTATE_MODE=self "$R/etc/fuse/orchestrator.env" && [ -e "$R/etc/fuse/restate.env" ] && [ -e "$R/etc/systemd/system/restate-server.service" ]'
+R="$WORK/o-from-off"
+mkdir -p "$R/usr/local/bin" "$R/etc/fuse"
+install -m0755 "$WORK/orch-old" "$R/usr/local/bin/orchestrator"
+printf 'ORCH_AUTH_TOKEN=t\nDATABASE_URL=postgres://db\nFUSE_RESTATE_MODE=off\n' > "$R/etc/fuse/orchestrator.env"
+check "an upgrade of a mode off install succeeds" 'run_orch "$R"'
+# shellcheck disable=SC2034 # read by the check strings below
+O="$R/etc/fuse/orchestrator.env"
+check "an upgrade of a mode off install moves to self and adds the restate unit" \
+  'grep -qx FUSE_RESTATE_MODE=self "$O" && [ "$(grep -c ^FUSE_RESTATE_MODE= "$O")" = 1 ] && [ -e "$R/etc/systemd/system/restate-server.service" ] && grep -q "^register" "$R.log"'
+check "an upgrade of an install without a TOKEN_ENCRYPTION_KEY adds one" \
+  'grep -qE "^TOKEN_ENCRYPTION_KEY=[0-9a-f]{64}$" "$O" && grep -qx ORCH_AUTH_TOKEN=t "$O"'
 
 # 12. curl'd standalone, the inline units match the tracked ones.
 mkdir -p "$WORK/standalone"

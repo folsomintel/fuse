@@ -11,7 +11,7 @@ import (
 // recovered host resolves to the same stub, which is fine because the tests
 // register a single host.
 func recoverFleet(store StateStore, stub Provider) *FleetManager {
-	return NewFleetManager(FleetConfig{
+	return newInlineFleet(FleetConfig{
 		Provider:   stub,
 		Prefix:     "gpu-",
 		StateStore: store,
@@ -321,11 +321,9 @@ func TestRecoverRebuildsLegacyMIGCountMap(t *testing.T) {
 
 // TestRecoverReattachesProvisioningInterruptedByCrash verifies the core #68
 // fix: a VM persisted in VMStateProvisioning when the orchestrator crashed
-// must be re-attached to its still-live provider sandbox (and promoted to
-// Running) rather than destroyed. The sandbox survives the orchestrator
-// crash, so provider.Get succeeds and the in-flight work — including the
-// uploadfiles/retry that previously 404'd against a destroyed sandbox —
-// continues against the live environment, and its task stays assigned.
+// is never destroyed by recovery. its durable create finishes or abandons it
+// (see TestStaleCreateIsAbandoned), so recovery leaves the vm provisioning
+// with its task assigned and its still-live sandbox untouched.
 func TestRecoverReattachesProvisioningInterruptedByCrash(t *testing.T) {
 	store := NewMemoryStateStore()
 	stub := newStubProvider()
@@ -356,54 +354,16 @@ func TestRecoverReattachesProvisioningInterruptedByCrash(t *testing.T) {
 	if !ok {
 		t.Fatal("vm not recovered into fleet")
 	}
-	if v.state != VMStateRunning {
-		t.Errorf("state = %q, want %s (in-flight provision must be re-attached, not destroyed)", v.state, VMStateRunning)
+	if v.state != VMStateProvisioning {
+		t.Errorf("state = %q, want %s (its create finishes it, recovery does not)", v.state, VMStateProvisioning)
 	}
 	if v.taskID != "task-1" {
-		t.Errorf("taskID = %q, want task retained for the re-attached vm", v.taskID)
+		t.Errorf("taskID = %q, want task retained for the in-flight create", v.taskID)
 	}
 	stub.mu.Lock()
 	_, stillAlive := stub.envs[vmID]
 	stub.mu.Unlock()
 	if !stillAlive {
-		t.Error("provider sandbox was destroyed; a re-attached in-flight provision must keep its sandbox alive")
-	}
-}
-
-// TestRecoverProvisioningWithoutSandboxIsCleanedUp checks that the Provisioning
-// re-attach branch still falls back to the pre-existing teardown when the
-// sandbox never materialised in the provider: the VM is marked Destroying and
-// its task is released for retry.
-func TestRecoverProvisioningWithoutSandboxIsCleanedUp(t *testing.T) {
-	store := NewMemoryStateStore()
-	stub := newStubProvider()
-
-	vmID := "gpu-vm-1"
-	// Sandbox NOT seeded: provider.Get must fail.
-	if err := store.UpsertVM(context.Background(), VMRecord{
-		ID:     vmID,
-		State:  VMStateProvisioning,
-		TaskID: "task-1",
-		Spec:   Spec{Name: vmID},
-	}); err != nil {
-		t.Fatalf("seed vm: %v", err)
-	}
-
-	fm := recoverFleet(store, stub)
-	if err := fm.recoverState(context.Background()); err != nil {
-		t.Fatalf("recoverState: %v", err)
-	}
-
-	fm.mu.RLock()
-	v, ok := fm.vms[vmID]
-	fm.mu.RUnlock()
-	if !ok {
-		t.Fatal("vm not recovered into fleet")
-	}
-	if v.state != VMStateDestroying {
-		t.Errorf("state = %q, want %s (lost provision must be cleaned up for retry)", v.state, VMStateDestroying)
-	}
-	if v.taskID != "" {
-		t.Errorf("taskID = %q, want empty (task must be released for retry)", v.taskID)
+		t.Error("provider sandbox was destroyed; an in-flight provision must keep its sandbox alive")
 	}
 }

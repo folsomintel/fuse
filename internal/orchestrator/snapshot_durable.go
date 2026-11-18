@@ -77,8 +77,7 @@ type DurableSnapshots interface {
 }
 
 // SetDurableSnapshots routes snapshots, restores, the checkpoint chain and
-// retention gc through restate. nil (mode off, the default) keeps them in
-// process. set it before Start.
+// retention gc through restate. set it before Start.
 func (fm *FleetManager) SetDurableSnapshots(d DurableSnapshots) {
 	fm.mu.Lock()
 	fm.durableSnapshots = d
@@ -101,21 +100,10 @@ func durableWait(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(ctx, durableMoveWait)
 }
 
-// snapshotPinned reports whether something holds id against gc: a transfer
-// in this process, or a durable pin (a move, a checkpoint chain's base). a
-// durable pin that cannot be read counts as held.
+// snapshotPinned reports whether a durable pin (a move, a checkpoint chain's
+// base) holds id against gc. a pin that cannot be read counts as held.
 func (fm *FleetManager) snapshotPinned(ctx context.Context, id string) bool {
-	fm.mu.RLock()
-	pulling := fm.artifactPulls[id] > 0
-	fm.mu.RUnlock()
-	if pulling {
-		return true
-	}
-	d := fm.durableArtifactsClient()
-	if d == nil {
-		return false
-	}
-	pinned, err := d.ArtifactPinned(ctx, id)
+	pinned, err := fm.durableArtifactsClient().ArtifactPinned(ctx, id)
 	if err != nil {
 		fm.logger.Warn("read durable artifact pin failed; not collecting", "snapshot", id, "err", err)
 		return true

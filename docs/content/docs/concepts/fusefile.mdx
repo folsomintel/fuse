@@ -657,14 +657,14 @@ baked into the rootfs, so a tag that moves, or a new `fused` build, is a new
 image. Converting a ref that is already converting or ready reuses that image;
 one that failed is converted again.
 
-With [restate](/docs/cloud/orchestrator-deploy#restate) on, the convert is a
-durable operation: the host call runs as a restate step, and an `Images.Watch`
+The convert is a durable [restate](/docs/cloud/orchestrator-deploy#restate)
+operation: the host call runs as a restate step, and an `Images.Watch`
 invocation, keyed by the host, the digest and the conversion attempt, polls
 the host until the image is `ready` or `failed` (for at most an hour) and
 records an `image.ready` or `image.failed` event. A duplicate convert of the
 same conversion joins that watch, and an orchestrator restart mid-bake resumes
-polling instead of converting again. The bake itself runs on the host either
-way, and a bake that fails or times out leaves no partial rootfs behind.
+polling instead of converting again. The bake itself runs on the host, and a
+bake that fails or times out leaves no partial rootfs behind.
 
 The limits:
 

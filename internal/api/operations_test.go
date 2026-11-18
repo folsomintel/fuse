@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
+	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
 // slowProvider is a fakeProvider whose Create waits for release, standing in
@@ -32,7 +33,7 @@ func (p *slowProvider) Create(ctx context.Context, spec orchestrator.Spec) (orch
 func newSlowTestHandler(t *testing.T) (*Handler, *slowProvider) {
 	t.Helper()
 	p := &slowProvider{fakeProvider: newFakeProvider(), release: make(chan struct{})}
-	fm := orchestrator.NewFleetManager(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-"})
+	fm, _ := orchestratortest.NewFleet(orchestrator.FleetConfig{Provider: p, Prefix: "fuse-"})
 	return &Handler{Fleet: fm}, p
 }
 

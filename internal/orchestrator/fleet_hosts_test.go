@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 func gpuFleetHost(id string, gpus int, kind string) Host {
@@ -34,7 +37,7 @@ func deviceFleetHost(id string, devices ...GPUDevice) Host {
 
 func TestAllocateOnHost_bindsConcreteUUIDsAndReleasesThem(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := deviceFleetHost("h1",
 		GPUDevice{UUID: "gpu-a", Model: "a100"},
 		GPUDevice{UUID: "gpu-b", Model: "a100"},
@@ -92,7 +95,7 @@ func findHost(t *testing.T, fm *FleetManager, id string) Host {
 
 func TestAllocateOnHost_incrementsGPUCounter(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 2, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +111,7 @@ func TestAllocateOnHost_incrementsGPUCounter(t *testing.T) {
 
 func TestDeallocateOnHost_decrementsGPUCounter(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 2, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +128,7 @@ func TestDeallocateOnHost_decrementsGPUCounter(t *testing.T) {
 
 func TestDeallocateOnHost_clampsGPUCounterAtZero(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +146,7 @@ func TestDeallocateOnHost_clampsGPUCounterAtZero(t *testing.T) {
 
 func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), stub); err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +157,10 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 	fm.mu.Unlock()
 
 	// second gpu env must not fit on the same host
-	_, _, err := Schedule(Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, fm.activeHosts(), PlacementSpread)
+	fm.mu.RLock()
+	hosts := fm.activeHostsLocked()
+	fm.mu.RUnlock()
+	_, _, err := Schedule(Spec{CPUs: 1, RamMB: 256, StorageGB: 10, GPUs: 1}, hosts, PlacementSpread)
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Errorf("err = %v, want ErrNoCapacity (gpu already allocated)", err)
 	}
@@ -163,7 +169,7 @@ func TestSingleGPUHost_secondGPUEnvHasNoCapacity(t *testing.T) {
 func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
 	defaultProvider := newMockProvider()
 	hostProvider := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 	ctx := context.Background()
 	if err := fm.RegisterHost(ctx, gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
@@ -194,7 +200,7 @@ func TestProvisionAndDestroy_gpuEnvRoundTripsAllocation(t *testing.T) {
 
 func TestProvisionGPUWithoutRegisteredHostReturnsNoCapacity(t *testing.T) {
 	defaultProvider := newMockProvider()
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 
 	_, err := fm.ProvisionAndAssign(context.Background(), "gpu-task", Spec{GPUs: 1}, []byte(`{}`), nil, BootOptions{})
 	if !errors.Is(err, ErrNoCapacity) {
@@ -218,7 +224,7 @@ func TestConcurrentGPUProvisionReservesBeforeBoot(t *testing.T) {
 		hostProvider.envs[spec.Name] = env
 		return env, nil
 	}
-	fm := NewFleetManager(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: defaultProvider, Prefix: "gpu-"})
 	if err := fm.RegisterHost(context.Background(), gpuFleetHost("h1", 1, "a100"), hostProvider); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +262,7 @@ func migInstanceFleetHost(id string, instances ...MIGInstance) Host {
 
 func TestAllocateOnHost_bindsConcreteMIGInstanceUUIDs(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := migInstanceFleetHost("h1",
 		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
 		MIGInstance{UUID: "m2", Profile: "1g.10gb", Kind: "a100", ParentGPUUUID: "gpu-a"},
@@ -317,7 +323,7 @@ func TestAllocateOnHost_bindsConcreteMIGInstanceUUIDs(t *testing.T) {
 
 func TestDeallocateOnHost_migInstanceReleasesAcrossProfiles(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := migInstanceFleetHost("h1",
 		MIGInstance{UUID: "m1", Profile: "1g.10gb", Kind: "a100"},
 		MIGInstance{UUID: "m3", Profile: "2g.20gb", Kind: "a100"},
@@ -365,7 +371,7 @@ func TestDeallocateOnHost_migInstanceReleasesAcrossProfiles(t *testing.T) {
 // reclaimed to zero once reconcile destroys the orphan.
 func TestReconcileOrphan_destroysAndReclaimsHostAllocation(t *testing.T) {
 	stub := newStubProvider()
-	fm := NewFleetManager(FleetConfig{Provider: stub, Prefix: "gpu-"})
+	fm := newInlineFleet(FleetConfig{Provider: stub, Prefix: "gpu-"})
 	host := gpuFleetHost("h1", 2, "a100")
 	if err := fm.RegisterHost(context.Background(), host, stub); err != nil {
 		t.Fatal(err)
@@ -399,5 +405,62 @@ func TestReconcileOrphan_destroysAndReclaimsHostAllocation(t *testing.T) {
 	stub.mu.Unlock()
 	if !orphanGone {
 		t.Errorf("orphan not destroyed: %d envs remain", len(stub.envs))
+	}
+}
+
+// TestRecoverHostTokenStoredBeforeTheKey: a host registered on an
+// orchestrator without a TOKEN_ENCRYPTION_KEY was stored with its token in
+// plaintext. once the key is required, recovery still reads that token, and
+// stores it again encrypted; a row the key cannot decrypt that is not such a
+// token still comes back empty.
+func TestRecoverHostTokenStoredBeforeTheKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	now := time.Now()
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-old", URL: "http://h-old", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte("0123456789abcdef0123456789abcdef"), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-short", URL: "http://h-short", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte("test-token"), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-rekeyed", URL: "http://h-rekeyed", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte{0x00, 0x9f, 0x10, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		CreatedAt:      now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), StateStore: store, Prefix: "fuse-"})
+	if err := fm.recoverState(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if h, ok := fm.GetHost("h-old"); !ok || h.Token != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("legacy host token = %q (found %v), want the plaintext token", h.Token, ok)
+	}
+	if h, ok := fm.GetHost("h-short"); !ok || h.Token != "test-token" {
+		t.Fatalf("short legacy host token = %q (found %v), want the plaintext token", h.Token, ok)
+	}
+	if h, ok := fm.GetHost("h-rekeyed"); !ok || h.Token != "" {
+		t.Fatalf("undecryptable host token = %q (found %v), want empty", h.Token, ok)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		recs, err := store.ListHosts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range recs {
+			if r.ID != "h-old" {
+				continue
+			}
+			if plain, err := secrets.DecryptToken(r.TokenEncrypted, fm.tokenEncryptionKey); err == nil && plain == "0123456789abcdef0123456789abcdef" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the legacy token was never stored again encrypted")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

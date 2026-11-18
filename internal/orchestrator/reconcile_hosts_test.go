@@ -23,7 +23,7 @@ func TestReconcileIsolatesUnreachableHost(t *testing.T) {
 	up := newMockProvider()
 	down := &listFailProvider{mockProvider: newMockProvider()}
 	metrics := &captureMetrics{}
-	fm := NewFleetManager(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", Metrics: metrics})
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", Metrics: metrics})
 	ctx := context.Background()
 	if err := fm.RegisterHost(ctx, gpuFleetHost("up", 1, "a100"), up); err != nil {
 		t.Fatal(err)
@@ -63,12 +63,12 @@ func TestReconcileIsolatesUnreachableHost(t *testing.T) {
 	}
 }
 
-// TestReconcileSingleProviderListFailureRunsOtherPasses: with no hosts, a
-// failed list skips only the passes that read it.
-func TestReconcileSingleProviderListFailureRunsOtherPasses(t *testing.T) {
+// TestReconcileSingleProviderListFailure: with no hosts, a failed list counts
+// the provider unreachable and marks none of its vms missing.
+func TestReconcileSingleProviderListFailure(t *testing.T) {
 	p := &listFailProvider{mockProvider: newMockProvider()}
 	metrics := &captureMetrics{}
-	fm := NewFleetManager(FleetConfig{Provider: p, Prefix: "fuse-", Metrics: metrics, TaskStuckTimeout: time.Minute})
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-", Metrics: metrics})
 	old := time.Now().Add(-time.Hour)
 	fm.mu.Lock()
 	fm.vms["fuse-a"] = &vm{id: "fuse-a", state: VMStateRunning, taskID: "t1", createdAt: old, updatedAt: old}
@@ -79,9 +79,5 @@ func TestReconcileSingleProviderListFailureRunsOtherPasses(t *testing.T) {
 	got := metrics.last()
 	if got.HostsUnreachable != 1 || got.VMsMissingProvider != 0 {
 		t.Errorf("summary = %+v, want 1 unreachable and nothing missing", got)
-	}
-	// the stuck-task detector does not read the list, so it still strikes.
-	if got.StuckTasksSuspected != 1 {
-		t.Errorf("StuckTasksSuspected = %d, want 1", got.StuckTasksSuspected)
 	}
 }

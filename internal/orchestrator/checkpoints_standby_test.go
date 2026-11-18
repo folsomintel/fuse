@@ -17,11 +17,24 @@ func newStandbyFleet(t *testing.T, mover ArtifactMover) *FleetManager {
 	return fm
 }
 
+// chainStandby is the standby the vm's chain mirrors into the fleet.
 func chainStandby(fm *FleetManager, vmID string) string {
-	c := fm.chainFor(vmID)
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.standby
+	fm.chainsMu.Lock()
+	defer fm.chainsMu.Unlock()
+	if c, ok := fm.chains[vmID]; ok {
+		return c.standby
+	}
+	return ""
+}
+
+// advanceChain runs one checkpoint tick on vmID's Environment object and
+// waits for the copy to its standby to report back.
+func advanceChain(t *testing.T, fm *FleetManager, vmID string) {
+	t.Helper()
+	if err := fm.durableSnapshotsClient().Checkpoint(context.Background(), vmID); err != nil {
+		t.Fatalf("checkpoint %s: %v", vmID, err)
+	}
+	inlineWait(fm)
 }
 
 func TestCheckpointChain_aCordonedStandbyIsReplaced(t *testing.T) {
@@ -29,7 +42,7 @@ func TestCheckpointChain_aCordonedStandbyIsReplaced(t *testing.T) {
 	fm := newStandbyFleet(t, mover)
 	ctx := context.Background()
 
-	fm.advanceChain(ctx, "fuse-task-src")
+	advanceChain(t, fm, "fuse-task-src")
 	if got := chainStandby(fm, "fuse-task-src"); got != "h-b" {
 		t.Fatalf("first standby = %q, want h-b", got)
 	}
@@ -37,7 +50,7 @@ func TestCheckpointChain_aCordonedStandbyIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fm.advanceChain(ctx, "fuse-task-src")
+	advanceChain(t, fm, "fuse-task-src")
 	if got := chainStandby(fm, "fuse-task-src"); got != "h-c" {
 		t.Fatalf("standby after cordon = %q, want h-c", got)
 	}
@@ -48,8 +61,8 @@ func TestCheckpointChain_aCordonedStandbyIsReplaced(t *testing.T) {
 	if _, err := fm.GetSnapshotByID(ctx, moves[0].SnapshotID); err == nil {
 		t.Errorf("the old chain's base %s on the cordoned host is still recorded", moves[0].SnapshotID)
 	}
-	if pinnedArtifacts(fm) != 1 {
-		t.Errorf("%d artifacts pinned, want only the new base", pinnedArtifacts(fm))
+	if got := pinnedOf(fm, moves[0].SnapshotID, moves[1].SnapshotID); len(got) != 1 || got[0] != moves[1].SnapshotID {
+		t.Errorf("pinned %v, want only the new base %s", got, moves[1].SnapshotID)
 	}
 }
 
@@ -58,7 +71,7 @@ func TestCheckpointChain_aFullStandbyIsReplaced(t *testing.T) {
 	fm := newStandbyFleet(t, mover)
 	ctx := context.Background()
 
-	fm.advanceChain(ctx, "fuse-task-src")
+	advanceChain(t, fm, "fuse-task-src")
 	if got := chainStandby(fm, "fuse-task-src"); got != "h-b" {
 		t.Fatalf("first standby = %q, want h-b", got)
 	}
@@ -71,7 +84,7 @@ func TestCheckpointChain_aFullStandbyIsReplaced(t *testing.T) {
 	fm.vms["fuse-task-src"].spec.StorageGB = 1
 	fm.mu.Unlock()
 
-	fm.advanceChain(ctx, "fuse-task-src")
+	advanceChain(t, fm, "fuse-task-src")
 	if got := chainStandby(fm, "fuse-task-src"); got != "h-c" {
 		t.Fatalf("standby after h-b filled = %q, want h-c", got)
 	}

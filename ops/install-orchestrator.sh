@@ -11,11 +11,13 @@
 #   3. installs the systemd unit and starts it
 #   4. prints the exact `fuse connect` command to run next
 #
-# with FUSE_RESTATE_MODE=self it also runs restate-server next to the
-# orchestrator, as a pinned docker image (restate-server.service), writes
-# /etc/fuse/restate.env (every port on 127.0.0.1), and registers the
-# orchestrator's handler endpoint with it after the orchestrator starts. mode
-# self needs docker and DATABASE_URL. on an upgrade, restate invocations still
+# the orchestrator runs every operation on restate. in mode self (the
+# default) it also runs restate-server next to the orchestrator, as a pinned
+# docker image (restate-server.service), writes /etc/fuse/restate.env (every
+# port on 127.0.0.1), and registers the orchestrator's handler endpoint with
+# it after the orchestrator starts. mode self needs docker; DATABASE_URL is
+# strongly recommended. an install from before restate was required (mode off
+# or unset) moves to mode self on upgrade. on an upgrade, restate invocations still
 # pinned to the old deployment keep running on the old binary
 # (fuse-orchestrator-drain.service) while the new one registers on the other
 # handler port; see docs/runbooks/restate.mdx.
@@ -31,11 +33,12 @@
 #   sudo ./install-orchestrator.sh
 #   ORCH_BIN_SRC=/path/to/orchestrator sudo -E ./install-orchestrator.sh
 #   FUSE_REPO=folsomintel/fuse VERSION=v0.4.0 sudo -E ./install-orchestrator.sh
-#   FUSE_RESTATE_MODE=self DATABASE_URL=postgres://... sudo -E ./install-orchestrator.sh
+#   DATABASE_URL=postgres://... sudo -E ./install-orchestrator.sh
 #
 # restate options (mode self):
-#   FUSE_RESTATE_MODE              off (default) | self | cloud. read from the
-#                                  env file when unset. only self installs
+#   FUSE_RESTATE_MODE              self (default) | cloud. read from the env
+#                                  file when unset; an env file still on off
+#                                  moves to self. only self installs
 #                                  restate-server.
 #   RESTATE_SNAPSHOT_DESTINATION   s3://bucket/prefix for partition snapshots
 #                                  (credentials go in /etc/fuse/restate.env)
@@ -164,11 +167,16 @@ verify_asset() {
 command -v openssl >/dev/null 2>&1 || die "openssl is required (token generation)"
 command -v systemctl >/dev/null 2>&1 || die "systemctl is required (this installer targets systemd hosts)"
 
+[ "${FUSE_RESTATE_MODE:-}" != off ] || die "FUSE_RESTATE_MODE=off was removed: the orchestrator needs restate. use self (the default) or cloud"
 MODE="${FUSE_RESTATE_MODE:-$(env_value FUSE_RESTATE_MODE)}"
-MODE="${MODE:-off}"
+# an install from before restate was required ran mode off, or set no mode:
+# it moves to self, which installs restate-server beside it.
 case "$MODE" in
-  off|self|cloud) ;;
-  *) die "FUSE_RESTATE_MODE must be off, self or cloud (got $MODE)" ;;
+  ""|off) MODE=self ;;
+esac
+case "$MODE" in
+  self|cloud) ;;
+  *) die "FUSE_RESTATE_MODE must be self or cloud (got $MODE)" ;;
 esac
 # leaving self mode would strand whatever restate still holds for this
 # orchestrator; the installer does not do that switch.
@@ -536,7 +544,7 @@ EOF
 if [ "$MODE" = self ]; then
   # postgres stays the read model; the in-memory store forgets every vm on
   # restart while restate remembers the invocations about them.
-  [ -n "$DB_URL" ] || die "FUSE_RESTATE_MODE=self needs DATABASE_URL (postgres); set it in the environment or in $ENV_FILE"
+  [ -n "$DB_URL" ] || log "warning: no DATABASE_URL. the in-memory store forgets every vm on restart while restate keeps running what it held for them; set a postgres DATABASE_URL in $ENV_FILE for anything that must survive one"
   command -v docker >/dev/null 2>&1 || die "FUSE_RESTATE_MODE=self runs restate-server in docker; install docker first (https://docs.docker.com/engine/install/debian/)"
   docker info >/dev/null 2>&1 || die "docker is installed but its daemon is not reachable (systemctl start docker)"
   command -v curl >/dev/null 2>&1 || die "curl is required for FUSE_RESTATE_MODE=self"
@@ -624,7 +632,8 @@ ORCH_LISTEN=$LISTEN
 # pass to \`fuse connect --token\`. Keep it secret.
 ORCH_AUTH_TOKEN=$AUTH_TOKEN
 
-# Encrypts per-host agent tokens at rest (used once DATABASE_URL is set).
+# Required. Encrypts per-host agent tokens at rest and seals what restate
+# journals (create, fork and webhook inputs).
 TOKEN_ENCRYPTION_KEY=$ENC_KEY
 
 # State: empty = in-memory (does NOT survive a restart). For production set a
@@ -645,6 +654,14 @@ else
   # shellcheck disable=SC1090
   AUTH_TOKEN=$(grep -E '^ORCH_AUTH_TOKEN=' "$ENV_FILE" | head -n1 | cut -d= -f2- || true)
   log "$ENV_FILE exists - leaving it untouched"
+  # the orchestrator refuses to start without a key: restate journals
+  # create, fork and webhook inputs sealed with it. an env file from before
+  # it was required may lack one. host tokens such an orchestrator stored in
+  # plaintext are still read, and stored again encrypted, on the first start.
+  if [ -z "$(env_value TOKEN_ENCRYPTION_KEY)" ]; then
+    set_env_key "$ENV_FILE" TOKEN_ENCRYPTION_KEY "$(openssl rand -hex 32)"
+    log "added a generated TOKEN_ENCRYPTION_KEY to $ENV_FILE (now required)"
+  fi
 fi
 
 # mode self: point the orchestrator at restate. these keys are the only edits
@@ -664,9 +681,6 @@ elif [ "$MODE" = cloud ]; then
   done
   connect="$(env_value FUSE_RESTATE_CONNECT)"
   log "set FUSE_RESTATE_MODE=cloud in $ENV_FILE (connect ${connect:-tunnel}); the orchestrator registers itself with restate cloud"
-elif [ -n "${FUSE_RESTATE_MODE:-}" ]; then
-  set_env_key "$ENV_FILE" FUSE_RESTATE_MODE "$MODE"
-  log "set FUSE_RESTATE_MODE=$MODE in $ENV_FILE"
 fi
 
 if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then

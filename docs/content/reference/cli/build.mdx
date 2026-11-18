@@ -38,12 +38,12 @@ destroys its builder. `--detach` submits the build, prints its id and exits at
 once; read it later with `GET /v1/builds/{id}` or the SDKs' `builds.get` and
 `builds.wait`.
 
-With restate on (`FUSE_RESTATE_MODE=self` or `cloud`) and a postgres state
-store (`DATABASE_URL`), the build runs as the `Build/{build_id}` workflow, so an orchestrator restart resumes it at the step
-it was on: a setup step that was running runs again on the same builder, and
-nothing before it repeats. Otherwise (mode off, no postgres, or secrets with no
-`TOKEN_ENCRYPTION_KEY` to seal them for restate's journal) it runs inside the
-orchestrator process, and a restart fails it.
+The build runs as the restate `Build/{build_id}` workflow (its secrets sealed
+with `TOKEN_ENCRYPTION_KEY` for the journal), so an orchestrator restart resumes
+it at the step it was on: a setup step that was running runs again on the same
+builder, and nothing before it repeats. A build left `running` by an older
+release's in-process run is failed on its next read (`the orchestrator restarted
+before the build finished`).
 
 ## Why this exists
 

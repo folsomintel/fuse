@@ -52,9 +52,9 @@ func TestHitlTakeover_scopedKeyLocksAgentExec(t *testing.T) {
 	}
 }
 
-func TestHitlSecret_needsSecretScopeAndKey(t *testing.T) {
-	// the test handler has no TOKEN_ENCRYPTION_KEY, so a policy with secret
-	// requests is refused at create.
+func TestHitlSecret_needsSecretScope(t *testing.T) {
+	// the fleet always has a TOKEN_ENCRYPTION_KEY now (the orchestrator will
+	// not start without one), so a policy with secret requests is accepted.
 	h, _, _ := newTestHandler(t)
 	h.AuthToken = "master"
 	f := &accessFixture{t: t, r: mustRouter(t, h), agent: "master"}
@@ -62,8 +62,8 @@ func TestHitlSecret_needsSecretScopeAndKey(t *testing.T) {
 		TaskID: "task-s", ManifestInline: encodeManifest(t),
 		Hitl: &HitlSpec{Requests: HitlRequests{Secret: &HitlSecretRequests{Targets: []HitlSecretTarget{{Env: "GH_TOKEN", Label: "token"}}}}},
 	})
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("create with secret requests and no key: %d %s, want 400", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create with secret requests: %d %s, want 201", rr.Code, rr.Body.String())
 	}
 
 	// an undeclared kind is still a 400 at the request.

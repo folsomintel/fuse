@@ -25,9 +25,15 @@ ORCH_REQUIRE_AUTH=true
 # Shared bearer token. Set the UI's FUSE_TOKEN to the SAME value.
 ORCH_AUTH_TOKEN=
 
-# --- Encrypt per-host agent tokens at rest in Postgres (recommended) ---
-# 32-byte hex key. Generate: openssl rand -hex 32
+# --- Required: encrypts per-host agent tokens at rest and seals what restate ---
+# --- journals. 32-byte hex key. Generate: openssl rand -hex 32               ---
 TOKEN_ENCRYPTION_KEY=
+
+# --- Restate (required): every operation runs on it. self = restate-server ---
+# --- beside the orchestrator (install-orchestrator sets it up).            ---
+FUSE_RESTATE_MODE=self
+FUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080
+ORCH_RESTATE_LISTEN=127.0.0.1:9080
 
 # --- TLS: terminate at a reverse proxy (recommended). To terminate in the   ---
 # --- orchestrator itself instead, uncomment both and point at your cert/key. ---
