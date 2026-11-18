@@ -282,8 +282,12 @@ type ReconcileMetrics interface {
 
 // ReconcileSummary captures counts from a single reconcile cycle.
 type ReconcileSummary struct {
-	TrackedVMs          int
-	ProviderVMs         int
+	TrackedVMs  int
+	ProviderVMs int
+	// HostsUnreachable counts hosts whose vm list failed this cycle. their
+	// vms are skipped by the passes that read the list; every other host,
+	// and every pass that does not, runs as usual.
+	HostsUnreachable    int
 	OrphansDestroyed    int
 	OrphansFailed       int
 	OrphansDeadLettered int
@@ -1683,28 +1687,12 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 
 	// Multi-host mode: list VMs from all registered host providers.
 	// Single-provider fallback: list from fm.provider (legacy path).
-	var envs []Environment
-	envProviders := make(map[string]Provider)
-	var listErr error
-	fm.mu.RLock()
-	multiHost := len(fm.hosts) > 0
-	fm.mu.RUnlock()
-	if multiHost {
-		envs, envProviders, listErr = fm.listAllHostVMs(ctx)
-	} else {
-		envs, listErr = fm.provider.List(ctx, fm.prefix)
-		for _, env := range envs {
-			envProviders[env.Name()] = fm.provider
-		}
+	listing := fm.listProviderVMs(ctx)
+	for hostID, err := range listing.unreachable {
+		fm.logger.Error("reconcile list failed, host unreachable this cycle", "host", hostID, "err", err)
 	}
-	if listErr != nil {
-		fm.logger.Error("reconcile list failed", "err", listErr)
-		if fm.metrics != nil {
-			summary.Duration = time.Since(start)
-			fm.metrics.ReconcileCompleted(summary)
-		}
-		return
-	}
+	summary.HostsUnreachable = len(listing.unreachable)
+	envs := listing.envs
 
 	providerVMs := make(map[string]bool, len(envs))
 	for _, e := range envs {
@@ -1721,7 +1709,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 		if v.state == VMStateProvisioning || v.state.tearingDown() {
 			continue
 		}
-		if !providerVMs[id] {
+		if !providerVMs[id] && listing.reachable(v.hostID) {
 			fm.logger.Warn("vm missing from provider, marking destroying", "vm", id)
 			oldTaskID := v.taskID
 			v.state = VMStateDestroying
@@ -1762,7 +1750,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 
 	// Handle orphans and stuck tasks in their own pass. These helpers live
 	// in reconcile.go so that fleet.go stays focused on the lifecycle API.
-	fm.reconcileOrphans(ctx, envs, envProviders, tracked, &summary)
+	fm.reconcileOrphans(ctx, envs, listing.hostOf, tracked, &summary)
 	fm.reconcileStuckTasks(ctx, &summary)
 	fm.reconcileInterventions(ctx)
 	fm.reconcileIdleVMs(ctx, &summary)
@@ -1782,7 +1770,7 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 	// sweep VMs that have been marked destroying and are no longer present
 	// in the provider so they don't accumulate in memory or in the store.
 	fm.retryFailedTeardowns(providerVMs)
-	fm.reapDestroyedVMs(ctx, providerVMs)
+	fm.reapDestroyedVMs(ctx, providerVMs, listing)
 
 	// Heal host allocation drift when an orphan is destroyed (#68). An orphan
 	// is untracked by definition, so it has no persisted Spec for
@@ -1802,6 +1790,29 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 		summary.Duration = time.Since(start)
 		fm.metrics.ReconcileCompleted(summary)
 	}
+}
+
+// listProviderVMs lists every vm the fleet's providers hold: each registered
+// host's, or the single provider's when there are none. a provider whose list
+// fails is unreachable for the cycle; the single one is keyed "".
+func (fm *FleetManager) listProviderVMs(ctx context.Context) vmListing {
+	fm.mu.RLock()
+	multiHost := len(fm.hosts) > 0
+	fm.mu.RUnlock()
+	if multiHost {
+		return fm.listAllHostVMs(ctx)
+	}
+	out := vmListing{hostOf: make(map[string]string), unreachable: make(map[string]error)}
+	envs, err := fm.provider.List(ctx, fm.prefix)
+	if err != nil {
+		out.unreachable[""] = err
+		return out
+	}
+	out.envs = envs
+	for _, env := range envs {
+		out.hostOf[env.Name()] = ""
+	}
+	return out
 }
 
 func (fm *FleetManager) destroyAndRemove(vmID string) {
@@ -1851,7 +1862,7 @@ func (fm *FleetManager) destroyAndRemove(vmID string) {
 // in-memory fleet, and the persisted record is deleted. what belonged to the
 // vm is closed out as a finished destroy would: a destroy_failed vm has no
 // destroy left running to do it.
-func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool) {
+func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[string]bool, listing vmListing) {
 	fm.mu.Lock()
 	toRemove := make([]string, 0)
 	removed := make([]*vm, 0)
@@ -1859,7 +1870,8 @@ func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[st
 		if !v.state.tearingDown() {
 			continue
 		}
-		if providerVMs[id] {
+		// absent from an unreachable host's list says nothing about it.
+		if providerVMs[id] || !listing.reachable(v.hostID) {
 			continue
 		}
 		if v.hostID != "" {

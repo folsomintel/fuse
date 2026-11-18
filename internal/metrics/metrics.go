@@ -18,6 +18,7 @@ type PrometheusMetrics struct {
 	reconcileTotal       prometheus.Counter
 	trackedVMs           prometheus.Gauge
 	providerVMs          prometheus.Gauge
+	hostsUnreachable     prometheus.Gauge
 	orphansDestroyed     prometheus.Counter
 	orphansFailed        prometheus.Counter
 	orphansDeadLettered  prometheus.Counter
@@ -109,6 +110,12 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Subsystem: "fleet",
 			Name:      "provider_vms",
 			Help:      "Number of VMs reported by the provider(s).",
+		}),
+		hostsUnreachable: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "orchestrator",
+			Subsystem: "reconcile",
+			Name:      "hosts_unreachable",
+			Help:      "Number of hosts whose VM list failed in the last reconcile cycle.",
 		}),
 		orphansDestroyed: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: "orchestrator",
@@ -337,6 +344,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 		m.reconcileTotal,
 		m.trackedVMs,
 		m.providerVMs,
+		m.hostsUnreachable,
 		m.orphansDestroyed,
 		m.orphansFailed,
 		m.orphansDeadLettered,
@@ -383,6 +391,7 @@ func (m *PrometheusMetrics) ReconcileCompleted(s orchestrator.ReconcileSummary) 
 	m.reconcileDuration.Observe(s.Duration.Seconds())
 	m.trackedVMs.Set(float64(s.TrackedVMs))
 	m.providerVMs.Set(float64(s.ProviderVMs))
+	m.hostsUnreachable.Set(float64(s.HostsUnreachable))
 	m.orphansDestroyed.Add(float64(s.OrphansDestroyed))
 	m.orphansFailed.Add(float64(s.OrphansFailed))
 	m.orphansDeadLettered.Add(float64(s.OrphansDeadLettered))
