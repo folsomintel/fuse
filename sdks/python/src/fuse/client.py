@@ -9,6 +9,7 @@ from ._services.apikeys import APIKeysService
 from ._services.builds import BuildsService
 from ._services.environments import EnvironmentsService
 from ._services.hosts import HostsService
+from ._services.images import ImagesService
 from ._services.interventions import InterventionsService
 from ._services.operations import OperationsService
 from ._services.snapshots import SnapshotsService
@@ -72,6 +73,7 @@ class Client:
         self.interventions = InterventionsService(self._t)
         self.operations = OperationsService(self._t)
         self.builds = BuildsService(self._t)
+        self.images = ImagesService(self._t)
 
     def with_actor(self, actor: ActorLabel) -> Client:
         # returns a copy that sends actor as the Fuse-Actor headers, sharing

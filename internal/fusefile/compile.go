@@ -35,9 +35,13 @@ type ResourceSpec struct {
 	// with no exec and no attach session. Zero means no idle expiry.
 	IdleTimeoutSeconds int64
 	Image              string
-	GPUs               int32
-	GPUKind            string
-	GPUProfile         string
+	// From is the fusefile's oci reference. It is not a wire field: the cli
+	// converts it with POST /v1/images first and sends the resulting digest
+	// as the create's spec.image_digest.
+	From       string
+	GPUs       int32
+	GPUKind    string
+	GPUProfile string
 	// HostID pins the environment to an exact host id (placement.host).
 	HostID string
 	// Labels are the placement label selectors (placement.labels); every
@@ -345,6 +349,26 @@ func ValidGPUProfile(s string) bool {
 	return gpuProfilePattern.MatchString(strings.ToLower(s))
 }
 
+// imageRefPattern is the accepted form for an oci image reference: an
+// optional registry host (with port), slash separated lowercase path
+// components, an optional tag and an optional sha256 digest. It is the
+// docker reference grammar minus uppercase registry hosts, and it never
+// starts with a dash, so a ref is safe to pass as an argument to the host's
+// bake script.
+var imageRefPattern = regexp.MustCompile(
+	`^(?:[a-zA-Z0-9][a-zA-Z0-9.-]*(?::[0-9]+)?/)?` +
+		`[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*` +
+		`(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*` +
+		`(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?` +
+		`(?:@sha256:[a-f0-9]{64})?$`)
+
+// ValidImageRef reports whether s is a well-formed oci image reference for
+// `from:`. Shared with the API layer so a raw POST /v1/images is held to the
+// same grammar as a Fusefile.
+func ValidImageRef(s string) bool {
+	return len(s) <= 255 && imageRefPattern.MatchString(s)
+}
+
 // labelPattern is the accepted form for a placement label key or value:
 // alphanumeric at both ends, dots, dashes, and underscores inside, 63 chars
 // max. Deliberately narrow so a label is safe to render in an error message
@@ -591,6 +615,7 @@ func Compile(f *Fusefile) (*Compiled, error) {
 			MaxRuntimeSeconds:  maxRuntimeSeconds,
 			IdleTimeoutSeconds: idleTimeoutSeconds,
 			Image:              f.Image,
+			From:               f.From,
 			GPUs:               int32(f.Resources.GPU),
 			GPUKind:            f.Resources.GPUKind,
 			GPUProfile:         strings.ToLower(f.Resources.GPUProfile),

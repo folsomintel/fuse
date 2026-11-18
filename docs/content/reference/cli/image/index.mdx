@@ -1,0 +1,29 @@
+---
+title: Overview
+sidebar:
+  icon: package
+description: Converting OCI images into bootable rootfs images
+---
+
+`fuse image` (alias `images`) converts an OCI image, such as `ubuntu:24.04`,
+into a rootfs on a Firecracker host and reads a converted image back by digest.
+It is the step a Fusefile's [`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from)
+runs for you inside [`fuse up`](/reference/cli/up) and
+[`fuse build`](/reference/cli/build), so you only need it to convert ahead of
+time or to check on a conversion.
+
+A converted image is named by its digest, a hex sha256 of the image's manifest
+digest for the host's arch and the `fused` binary baked into the rootfs. A
+create boots it by passing that digest as `spec.image_digest`, which pins the
+environment to a host where the image is `ready`. A digest that is not ready on
+any host fails the create with a 409.
+
+Public registries only, and only apt and dnf based images convert. QEMU hosts
+cannot convert: a convert pinned to one is a 400.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| [`fuse image convert`](/reference/cli/image/convert) | Convert an OCI image on a Firecracker host and wait until it is ready. |
+| [`fuse image get`](/reference/cli/image/get) | Show an image's conversion state. |

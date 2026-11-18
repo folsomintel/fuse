@@ -253,6 +253,9 @@ func (h *Handler) validateBuild(req CreateBuildRequest) error {
 	if err := validatePlacementSpec(req.Spec); err != nil {
 		return err
 	}
+	if err := validateImageDigest(req.Spec, "", false); err != nil {
+		return err
+	}
 	return validateTimeoutSpec(req.Spec)
 }
 

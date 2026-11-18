@@ -74,7 +74,7 @@ func newBuildCmd() *cobra.Command {
 			// describes exactly this command's work. derive it before booting
 			// the builder: a bad `inputs` entry should fail here rather than
 			// after a vm is up and holding host capacity.
-			lp, err := planSetupLayers(path, f, plan)
+			lp, err := planSetupLayers(path, f, plan, "")
 			if err != nil {
 				return err
 			}
@@ -111,6 +111,22 @@ func newBuildCmd() *cobra.Command {
 				return err
 			}
 
+			// a `from:` image is converted first, and the layer keys root at
+			// the digest that comes back, so the plan is derived again with it.
+			imageDigest := ""
+			if c.Spec.From != "" {
+				img, err := convertImage(cmd.Context(), cl, fuse.ConvertImageRequest{Ref: c.Spec.From, HostID: c.Spec.HostID, Region: c.Spec.Region, Labels: c.Spec.Labels})
+				if err != nil {
+					return err
+				}
+				imageDigest = img.Digest
+				if lp != nil {
+					if lp, err = planSetupLayers(path, f, false, imageDigest); err != nil {
+						return err
+					}
+				}
+			}
+
 			// the layer keys are derived here because only this machine can
 			// read the files a step's `inputs` name. the orchestrator looks
 			// them up and runs the rest.
@@ -127,6 +143,7 @@ func newBuildCmd() *cobra.Command {
 				}
 			}
 			req := buildRequest(name, c, secretMap, setup, lp, arch, keep)
+			req.Spec.ImageDigest = imageDigest
 
 			b, err := cl.Builds.Create(cmd.Context(), req)
 			if err != nil {

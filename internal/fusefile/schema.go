@@ -28,7 +28,16 @@ type Fusefile struct {
 	// of a vm name rather than free text.
 	Name string `yaml:"name,omitempty"`
 
-	Image     string      `yaml:"image,omitempty"`
+	Image string `yaml:"image,omitempty"`
+
+	// From boots a user's oci image (e.g. "ubuntu:24.04") instead of a rootfs
+	// an operator pre-baked on the host. The image is converted to a rootfs on
+	// a firecracker host before the create (POST /v1/images), and the create
+	// then names the converted digest. Mutually exclusive with Image, and
+	// refused with Desktop: a plain oci image does not carry the desktop
+	// stack. Only apt and dnf based images convert.
+	From string `yaml:"from,omitempty"`
+
 	Resources Resources   `yaml:"resources,omitempty"`
 	Placement Placement   `yaml:"placement,omitempty"`
 	Cache     Cache       `yaml:"cache,omitempty"`

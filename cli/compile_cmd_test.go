@@ -333,7 +333,7 @@ func TestCompiledRequestMirrorsWireTypes(t *testing.T) {
 	// gateway fields carry a credential and are not compiled from a Fusefile.
 	skipped := map[string]bool{"gateway_url": true, "gateway_token": true}
 	// required_secrets is compile-only, not part of the wire body.
-	extra := map[string]bool{"required_secrets": true}
+	extra := map[string]bool{"required_secrets": true, "from": true}
 
 	assertMirror(t, "spec", reflect.TypeFor[fuse.Spec](), reflect.TypeFor[compiledSpec](), nil, nil)
 	assertMirror(t, "request", reflect.TypeFor[fuse.CreateRequest](), reflect.TypeFor[compiledRequest](), skipped, extra)

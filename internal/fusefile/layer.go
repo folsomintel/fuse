@@ -26,6 +26,10 @@ const (
 	// the qemu backend, whose snapshot endpoints hard-501 because a vfio
 	// device cannot be checkpointed, so there is nowhere to store a layer.
 	ReasonGPU = "gpu environments cannot be snapshotted"
+	// ReasonImageUnconverted means the Fusefile boots a `from:` oci image
+	// whose digest is not known yet: the key is rooted at that digest, and it
+	// only exists once the image is converted (POST /v1/images).
+	ReasonImageUnconverted = "the from: image has not been converted yet"
 )
 
 // InputDigester hashes a step's declared `inputs` patterns and returns the
@@ -39,14 +43,20 @@ type InputDigester func(patterns []string) (string, error)
 // Fusefile itself.
 type LayerOptions struct {
 	// BaseKey identifies the base rootfs the first step builds on. Empty
-	// means derive it from Fusefile.Image via BaseKey.
+	// means derive it with ResolveBaseKey.
 	//
-	// Ideally this is a digest of the resolved rootfs bytes; the host agent
-	// does not expose one yet (it resolves `image` to a file by name with no
-	// content hash), so today it is a digest of the image reference. That is
-	// a weaker binding: republishing the same tag with new contents does not
-	// invalidate. Wiring a real rootfs digest is backend work.
+	// For a named `image:` the host agent exposes no content hash (it
+	// resolves the name to a file), so the key is a digest of the name. That
+	// is a weaker binding: re-baking the same name with new contents does not
+	// invalidate. A `from:` image has a real one, see ImageDigest.
 	BaseKey string
+
+	// ImageDigest is the converted digest of the Fusefile's `from:` image, as
+	// POST /v1/images returned it. It is real content identity (the host
+	// arch's manifest digest plus the fused binary baked in), so a moved tag
+	// gets new layer keys. Empty with `from:` set leaves every step
+	// uncacheable with ReasonImageUnconverted.
+	ImageDigest string
 }
 
 // LayerKey is the derived cache identity of one build step.
@@ -112,10 +122,7 @@ func LayerKeys(f *Fusefile, inputs InputDigester, opts LayerOptions) ([]LayerKey
 		return nil, nil
 	}
 
-	baseKey := opts.BaseKey
-	if baseKey == "" {
-		baseKey = BaseKey(f.Image, f.Files)
-	}
+	baseKey := ResolveBaseKey(f, opts)
 	workspace := workspaceOf(f)
 
 	scripts := setupScripts(f)
@@ -129,6 +136,8 @@ func LayerKeys(f *Fusefile, inputs InputDigester, opts LayerOptions) ([]LayerKey
 		global = ReasonCacheDisabled
 	case f.Resources.GPU > 0:
 		global = ReasonGPU
+	case baseKey == "":
+		global = ReasonImageUnconverted
 	}
 
 	// chainBroken records that an earlier step opted out, so from here on
@@ -140,6 +149,18 @@ func LayerKeys(f *Fusefile, inputs InputDigester, opts LayerOptions) ([]LayerKey
 		lk := LayerKey{Index: i, Script: scripts[i]}
 
 		switch {
+		case global == ReasonImageUnconverted:
+			lk.Reason = global
+			// the digest only exists once the image is converted, but the
+			// inputs can be read now. check the ones the converted plan will
+			// digest, so a bad entry fails before the conversion is waited on.
+			if !chainBroken && step.cacheable() {
+				if _, err := digestInputs(inputs, step.Inputs); err != nil {
+					return nil, fmt.Errorf("%s[%d].inputs: %w", f.buildField(), i, err)
+				}
+			} else {
+				chainBroken = true
+			}
 		case global != "":
 			lk.Reason = global
 		case chainBroken:
@@ -200,8 +221,36 @@ func hashLayer(parent, script, inputsDigest, workspace string) string {
 // builds on. Leaving them out would let an edited `files:` entry serve a layer
 // baked against the old contents.
 func BaseKey(image string, files []File) string {
+	return "image:" + hashBase(image, files)
+}
+
+// ImageBaseKey is BaseKey for a `from:` image: the root of the chain is the
+// converted image digest rather than a name. It is prefixed differently so a
+// digest can never collide with an `image:` name of the same bytes.
+func ImageBaseKey(digest string, files []File) string {
+	return "oci:" + hashBase(digest, files)
+}
+
+// ResolveBaseKey returns the base key the first step of f chains onto: the
+// caller's override, the converted digest for a `from:` image, or the image
+// name. It returns "" for a `from:` image with no digest yet, which LayerKeys
+// reports as ReasonImageUnconverted.
+func ResolveBaseKey(f *Fusefile, opts LayerOptions) string {
+	switch {
+	case opts.BaseKey != "":
+		return opts.BaseKey
+	case f.From == "":
+		return BaseKey(f.Image, f.Files)
+	case opts.ImageDigest != "":
+		return ImageBaseKey(opts.ImageDigest, f.Files)
+	}
+	return ""
+}
+
+// hashBase hashes a base identity together with the file block.
+func hashBase(base string, files []File) string {
 	h := sha256.New()
-	h.Write([]byte(image))
+	h.Write([]byte(base))
 	// length-prefixed so ("ab", "c") and ("a", "bc") cannot collide.
 	// a hash.Hash never returns an error, but errcheck does not know that.
 	_, _ = fmt.Fprintf(h, "\x00files:%d\x00", len(files))
@@ -209,7 +258,7 @@ func BaseKey(image string, files []File) string {
 		_, _ = fmt.Fprintf(h, "%d:%s\x00%d:%s\x00",
 			len(f.Path), f.Path, len(f.Content), f.Content)
 	}
-	return "image:" + hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // cacheable reports whether the step opted out of caching. an unset `cache`

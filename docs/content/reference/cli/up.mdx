@@ -54,6 +54,21 @@ The gateway carries a credential, so it is a flag rather than a Fusefile
 field. Setting it here is the only difference that remained between the
 Fusefile path and `fuse environment create`.
 
+## Booting an OCI image
+
+When the Fusefile sets [`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from),
+`up` converts that image before it creates anything, exactly as
+[`fuse image convert`](/reference/cli/image/convert) would, on a Firecracker
+host picked by the Fusefile's `placement` and `resources.region`. It waits until the image is `ready`
+and exits non-zero with the host's reason if the conversion fails. The create
+then carries the image's digest as `spec.image_digest`, which pins the
+environment to a host where the image is ready.
+
+A cache hit replaces the image: the environment boots from the cached layer
+instead, as it would for an `image:`. `--from-build` with a Fusefile that sets
+`from:` is an error, since both name the rootfs to boot. `--dry-run` and
+`--plan` exit before the conversion, so neither contacts a host for it.
+
 ## Waiting for healthy
 
 Reaching `running` means the VM booted and the startup script returned. It does

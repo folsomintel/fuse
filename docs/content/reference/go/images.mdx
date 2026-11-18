@@ -1,0 +1,95 @@
+---
+title: Images
+sidebar:
+  icon: package
+description: Convert OCI images into bootable rootfs images with the images service
+---
+
+The images service converts an OCI image, such as `ubuntu:24.04`, into a
+rootfs on a Firecracker host, the step a Fusefile's
+[`from:`](/docs/concepts/fusefile#booting-an-oci-image-with-from) runs inside
+`fuse up`. A create boots the result by naming its digest in
+`Spec.ImageDigest`. Public registries only, and only apt and dnf based images
+convert.
+
+## client.Images
+
+```go
+func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest) (*Image, error)
+func (s *ImagesService) Get(ctx context.Context, digest string) (*Image, error)
+```
+
+`Convert` sends `POST /v1/images` and returns the image at once (a `202`),
+usually still `ImageConverting`. The bake keeps running on the host if your
+process goes away. Converting a ref that is already converting or ready returns
+that image; one that failed is converted again. A malformed ref, a registry that
+needs credentials, or a `HostID` that runs the QEMU backend is an error
+`IsInvalidArgument` reports; a ref the registry does not have is one
+`IsNotFound` reports.
+
+`Get` reads an image by digest. When more than one host holds it, the most
+usable record wins: ready, then converting, then failed. An unknown digest is an
+error `IsNotFound` reports. There is no `Wait`: poll `Get` until `State` is no
+longer `ImageConverting`.
+
+```go
+img, err := client.Images.Convert(ctx, fuse.ConvertImageRequest{Ref: "ubuntu:24.04"})
+if err != nil {
+	return err
+}
+for img.State == fuse.ImageConverting {
+	time.Sleep(2 * time.Second)
+	if img, err = client.Images.Get(ctx, img.Digest); err != nil {
+		return err
+	}
+}
+if img.State != fuse.ImageReady {
+	return fmt.Errorf("convert %s: %s", img.Ref, img.Error)
+}
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID: "t",
+	Spec:   fuse.Spec{ImageDigest: img.Digest},
+})
+```
+
+## ConvertImageRequest
+
+```go
+type ConvertImageRequest struct {
+	Ref    string
+	HostID string
+	Region string
+	Labels map[string]string
+}
+```
+
+- `Ref` is required: an OCI reference such as `ubuntu:24.04` or
+  `ghcr.io/org/app@sha256:<digest>`.
+- `HostID`, `Region` and `Labels` pick the Firecracker host the way a create's
+  placement does. Convert where the environment will run: a create lands only on a host
+  where the image is ready.
+
+## Image
+
+```go
+type Image struct {
+	Digest         string
+	Ref            string
+	ManifestDigest string
+	HostID         string
+	State          string // ImageConverting, ImageReady or ImageFailed
+	Error          string
+}
+```
+
+- `Digest` is a hex sha256 of the manifest digest for the host's arch and the
+  `fused` binary baked into the rootfs, so a moved tag or a new `fused` is a
+  new image.
+- `Error` says why when `State` is `ImageFailed`.
+
+## Spec.ImageDigest
+
+`Spec.ImageDigest` boots a converted image. The create is pinned to a host
+where the image is ready; one that is not ready on any host is a `409`
+`conflict`. It is mutually exclusive with `Spec.Image` and `SeedSnapshotID`,
+and is refused with `Spec.GPUs` and with a desktop (a `400`).

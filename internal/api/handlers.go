@@ -279,6 +279,11 @@ func (h *Handler) register(r chi.Router) {
 
 	r.Post("/v1/builds", h.createBuild)
 	r.Get("/v1/builds/{buildId}", h.getBuild)
+
+	// Images are oci images converted to a rootfs on a firecracker host. The
+	// convert is async: POST starts it and GET polls it. See images.go.
+	r.Post("/v1/images", h.convertImage)
+	r.Get("/v1/images/{digest}", h.getImage)
 }
 
 // resolver returns h.Resolver or the default inline resolver.
@@ -334,6 +339,10 @@ func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := validateTimeoutSpec(req.Spec); err != nil {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
+		return
+	}
+	if err := validateImageDigest(req.Spec, req.SeedSnapshotID, req.Desktop != nil); err != nil {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
@@ -686,6 +695,29 @@ func validatePlacementSpec(s ResourceSpec) error {
 		if value := s.Labels[key]; !fusefile.ValidLabel(value) {
 			return fmt.Errorf("spec.labels[%s]: invalid label value %q", key, value)
 		}
+	}
+	return nil
+}
+
+// validateImageDigest holds spec.image_digest to its shape and to what it
+// cannot be combined with: it names the rootfs, like image and a seed, and a
+// converted oci image boots only on firecracker hosts, which have no gpus,
+// and carries no desktop stack. The fusefile applies the same rules to
+// `from:` client-side.
+func validateImageDigest(s ResourceSpec, seedSnapshotID string, desktop bool) error {
+	switch {
+	case s.ImageDigest == "":
+		return nil
+	case !orchestrator.ValidImageDigest(s.ImageDigest):
+		return fmt.Errorf("spec.image_digest: %q is not a hex sha256 (use the digest POST /v1/images returned)", s.ImageDigest)
+	case s.Image != "":
+		return errors.New("spec.image_digest and spec.image are mutually exclusive: both name the rootfs to boot")
+	case seedSnapshotID != "":
+		return errors.New("spec.image_digest and seed_snapshot_id are mutually exclusive: both name the rootfs to boot")
+	case s.GPUs > 0:
+		return errors.New("spec.image_digest cannot be combined with spec.gpus: oci images boot only on firecracker hosts, which have no gpus")
+	case desktop:
+		return errors.New("spec.image_digest cannot be combined with desktop: an oci image does not carry the desktop stack")
 	}
 	return nil
 }

@@ -1216,6 +1216,13 @@ class Handler(agentlib.BaseHandler):
                         if not load_meta(vm_id):
                             raise HTTPError(404, "vm not found")
                         return self._text(204, "")
+            # oci images are converted to ext4 on firecracker hosts only; this
+            # backend boots qcow2 images and has no conversion. the
+            # orchestrator never sends one here, so this is the defensive half.
+            if path == "/v1/images" or path.startswith("/v1/images/"):
+                if method == "POST":
+                    self._read_json()
+                raise HTTPError(501, "oci images are not supported on qemu hosts; convert them on a firecracker host")
             # Capacity
             if path == "/v1/capacity" and method == "GET":
                 return self._json(200, host_capacity())

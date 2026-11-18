@@ -45,6 +45,10 @@ type compiledSpec struct {
 	// environment is destroyed. Zero means no idle expiry.
 	IdleTimeoutSeconds int64  `json:"idle_timeout_seconds,omitempty" yaml:"idle_timeout_seconds,omitempty"`
 	Image              string `json:"image,omitempty" yaml:"image,omitempty"`
+	// ImageDigest is the converted digest of a `from:` image. It is only
+	// known once `fuse up` has converted the image, so compile leaves it
+	// empty and reports the ref as the request's `from` instead.
+	ImageDigest string `json:"image_digest,omitempty" yaml:"image_digest,omitempty"`
 	// HostID and Labels are the placement constraints; both are hard gates
 	// the scheduler applies, so they belong in what the Fusefile compiles to.
 	HostID string            `json:"host_id,omitempty" yaml:"host_id,omitempty"`
@@ -207,6 +211,9 @@ type compiledRequest struct {
 	// asked for no bound and the orchestrator's default applies.
 	StartupScriptTimeoutSeconds int64    `json:"startup_script_timeout_seconds,omitempty" yaml:"startup_script_timeout_seconds,omitempty"`
 	RequiredSecrets             []string `json:"required_secrets,omitempty" yaml:"required_secrets,omitempty"`
+	// From is the Fusefile's oci ref. Like required_secrets it is compile
+	// output only: `fuse up` converts it and sends spec.image_digest.
+	From string `json:"from,omitempty" yaml:"from,omitempty"`
 }
 
 func newCompileCmd() *cobra.Command {
@@ -253,6 +260,9 @@ func newCompileCmd() *cobra.Command {
 			// the orchestrator would reject.
 			if fromBuild != "" && c.Spec.Image != "" {
 				return fmt.Errorf("--from-build and the Fusefile's `image` are mutually exclusive: both name the rootfs to boot")
+			}
+			if fromBuild != "" && c.Spec.From != "" {
+				return fmt.Errorf("--from-build and the Fusefile's `from` are mutually exclusive: both name the rootfs to boot")
 			}
 
 			if taskID == "" {
@@ -331,6 +341,7 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		SeedSnapshotID:              seedSnapshotID,
 		StartupScriptTimeoutSeconds: c.StartupTimeoutSeconds,
 		RequiredSecrets:             c.RequiredSecrets,
+		From:                        c.Spec.From,
 	}
 	if len(c.ManifestJSON) > 0 {
 		req.ManifestInline = base64.StdEncoding.EncodeToString(c.ManifestJSON)
@@ -436,6 +447,9 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 	}
 	if req.Spec.Image != "" {
 		rows = append(rows, [2]string{"image", req.Spec.Image})
+	}
+	if req.From != "" {
+		rows = append(rows, [2]string{"from", req.From + " (converted by fuse up)"})
 	}
 	if req.Spec.Region != "" {
 		rows = append(rows, [2]string{"region", req.Spec.Region})

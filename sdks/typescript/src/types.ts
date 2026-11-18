@@ -26,6 +26,9 @@ export interface Spec {
    * from the last exec or attach. */
   idle_timeout_seconds?: number;
   image?: string;
+  /** Boots a rootfs converted from an oci image (images.convert), named by
+   * the image's digest once it is ready. Mutually exclusive with image. */
+  image_digest?: string;
   /** Pins the environment to an exact host id (the Fusefile's
    * placement.host). The pinned host still has to be active, run the right
    * backend, and fit the request. */
@@ -1272,4 +1275,36 @@ export interface Build {
   created_at: string;
   updated_at: string;
   finished_at?: string;
+}
+
+/** Image conversion states. */
+export const ImageState = {
+  Converting: "converting",
+  Ready: "ready",
+  Failed: "failed",
+} as const;
+
+export type ImageState = (typeof ImageState)[keyof typeof ImageState];
+
+/** ConvertImageRequest asks for an oci image to be converted to a rootfs on a
+ * firecracker host. host_id, region and labels pick the host the way a
+ * create's placement does. */
+export interface ConvertImageRequest {
+  ref: string;
+  host_id?: string;
+  region?: string;
+  labels?: Record<string, string>;
+}
+
+/** Image is an oci image converted, or being converted, on a host. digest is
+ * what a create names in spec.image_digest once state is ready; error says
+ * why when it is failed. */
+export interface Image {
+  digest: string;
+  ref: string;
+  manifest_digest: string;
+  host_id: string;
+  /** One of ImageState. */
+  state: string;
+  error?: string;
 }

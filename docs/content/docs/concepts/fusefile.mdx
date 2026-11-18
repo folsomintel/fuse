@@ -75,6 +75,10 @@ name: sandbox
 # against the rootfs images baked on that host. omit for the host's default.
 image: worker-base
 
+# or boot an oci image instead: converted to a rootfs on a firecracker host
+# before the create. set one of image and from, not both.
+# from: ubuntu:24.04
+
 # files materialized in the guest before the build steps run. config and small
 # code only; the combined size is capped at 64KiB.
 files:
@@ -222,7 +226,8 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | --- | --- | --- |
 | `version` | int | Currently always `1`. A Fusefile is a single yaml document; anything after a second `---` is rejected rather than silently dropped. |
 | `name` | string | The task id this Fusefile boots under, and through it the environment's identity: the orchestrator prefixes it, so `name: sandbox` is the environment `fuse-sandbox`. Optional. A DNS label: lowercase letters, digits and dashes, alphanumeric at both ends, 63 chars max. See [Naming an environment](#naming-an-environment). |
-| `image` | string | Name of a rootfs pre-baked on the host, **not** an OCI image ref. There is no OCI pull: fc-agent resolves it to `<IMAGES_DIR>/<image>.ext4` and qemu-agent to `<IMAGES_DIR>/<image>.qcow2`, and returns a 400 if no such file exists. An operator bakes and places it out of band (e.g. with `fc-bake-rootfs.sh`). Omit to use the baked base rootfs. The distro catalogue names `debian-12`, `ubuntu-24.04` and `fedora-40` work once the host has baked them. See [Base images](#base-images-are-not-oci-images). |
+| `image` | string | Name of a rootfs pre-baked on the host, **not** an OCI image ref (that is `from`). fc-agent resolves it to `<IMAGES_DIR>/<image>.ext4` and qemu-agent to `<IMAGES_DIR>/<image>.qcow2`, and returns a 400 if no such file exists. An operator bakes and places it out of band (e.g. with `fc-bake-rootfs.sh`). Omit to use the baked base rootfs. The distro catalogue names `debian-12`, `ubuntu-24.04` and `fedora-40` work once the host has baked them. See [Base images](#base-images-and-oci-images). |
+| `from` | string | An OCI image reference, e.g. `ubuntu:24.04` or `ghcr.io/org/app@sha256:<digest>`, 255 chars max. `fuse up` and `fuse build` convert it to a rootfs on a Firecracker host first, then boot that. Public registries only, and only apt and dnf based images convert. Mutually exclusive with `image`, and refused with `desktop` and with `resources.gpu`. See [Booting an OCI image](#booting-an-oci-image-with-from). |
 | `files` | list of `{path, source \| content, mode}` | Files written into the guest before the `build` steps run. See [Files](#files). |
 | `copy` | list of `{from, to}` | Local files **and directories** copied into the guest before the `build` steps run. See [Copy](#copy). |
 | `copy[].from` | string | A file or directory on your machine, resolved relative to the Fusefile, not your working directory. A directory is walked into one upload per regular file. A symlink is an error, never followed. |
@@ -583,21 +588,21 @@ The guest agent restarts the display if it came up at a different size, or
 just the window manager if a different one is running. The display number is
 fixed at `:1`.
 
-## Base images are not OCI images
+## Base images and OCI images
 
 `image` names a rootfs that has already been baked onto the host, and the host
 agent resolves that name against the images stored there. It is not a container
-reference, and there is no registry pull: `image: ghcr.io/acme/worker:latest`
-fails the create with `base image not found`.
+reference, and it is never pulled: `image: ghcr.io/acme/worker:latest` fails the
+create with `base image not found`. To boot a container image, use
+[`from`](#booting-an-oci-image-with-from) instead.
 
-The distinction is per-field, not global. `services[].image` **is** an OCI
-reference, because services run as containers inside the guest via podman and
-compose. Only the top-level `image`, which decides what disk the VM boots from,
-is a host-local rootfs name.
+`services[].image` **is** an OCI reference, because services run as containers
+inside the guest via podman and compose. Only the top-level `image`, which
+decides what disk the VM boots from, is a host-local rootfs name.
 
-To get a custom base, either bake a rootfs on the host (`fc-bake-rootfs.sh`, or
-`qemu-bake-cuda-rootfs.sh` for GPU hosts) or run
-[`fuse build`](/reference/cli/build), which runs your `build` phase once and
+To get a custom base, bake a rootfs on the host (`fc-bake-rootfs.sh`, or
+`qemu-bake-cuda-rootfs.sh` for GPU hosts), boot an OCI image with `from`, or
+run [`fuse build`](/reference/cli/build), which runs your `build` phase once and
 snapshots the result into a bootable artifact.
 
 ### Distro catalogue
@@ -629,6 +634,40 @@ image the same way, for example
 Images without apt-get or dnf, such as alpine, are refused. The desktop
 variant layers onto ubuntu 22.04 only, so there is no desktop build of these
 images yet.
+
+### Booting an OCI image with `from`
+
+```yaml
+version: 1
+from: ubuntu:24.04
+run: cat /etc/os-release > os-release.txt
+```
+
+`from` boots an image from a public registry. Before the create, `fuse up` (and
+`fuse build`) converts it with [`POST /v1/images`](/reference/api): a
+Firecracker host picked by the Fusefile's `placement` and `resources.region` resolves the ref to the
+manifest for its own arch and bakes that into an ext4 rootfs. The CLI waits
+until the image is `ready`, failing with the host's reason if it ends `failed`,
+then creates with `spec.image_digest`, which pins the environment to a host
+where that image is ready. [`fuse image convert`](/reference/cli/image/convert)
+runs the conversion on its own.
+
+The image's digest covers the arch's manifest digest and the `fused` binary
+baked into the rootfs, so a tag that moves, or a new `fused` build, is a new
+image. Converting a ref that is already converting or ready reuses that image;
+one that failed is converted again.
+
+The limits:
+
+- Public registries only. A registry that asks for credentials is a 400.
+- Only apt and dnf based images convert.
+- Firecracker hosts only. A QEMU host cannot convert, so `from` is refused with
+  `resources.gpu`, and a `placement.host` naming a QEMU host fails the convert
+  with a 400.
+- No desktop stack, so `from` is refused with `desktop`. Use an image baked
+  with `fc-bake-desktop-rootfs.sh` for that.
+- `from` and `image` both name the rootfs to boot, so set one of them. For the
+  same reason `--from-build` is an error with a Fusefile that sets `from`.
 
 ## Workspace
 
@@ -934,7 +973,8 @@ layer_key(i) = sha256(
     inputs_digest(i) + "\n" +
     workspace)                 // the steps run after `cd <workspace>`
 
-base_key      = "image:" + sha256(<base image reference> + the `files` block)
+base_key      = "image:" + sha256(<base image name> + the `files` block)
+                "oci:"   + sha256(<converted from: digest> + the `files` block)  // with `from`
 inputs_digest = sha256 over the sorted list of
                 (relative path, mode & 0o111, sha256(content)); "" when unset
 ```
@@ -943,6 +983,14 @@ Edit step *N* and steps *N..end* all get new keys; steps before *N* are
 untouched. The same chaining is why a miss cascades: step *N+1*'s key is defined
 in terms of step *N*'s, so a step whose parent is unknown cannot be keyed at all,
 and neither can anything after it.
+
+With [`from`](#booting-an-oci-image-with-from), the chain roots at the
+converted image's digest rather than at a name, so a moved tag or a new `fused`
+build misses instead of serving layers baked on the old image. That digest only
+exists once the image is converted, and `--plan` converts nothing, so under
+`--plan` every step is uncacheable with the reason
+`the from: image has not been converted yet`. `fuse up` and `fuse build` derive
+the keys again after the conversion.
 
 Deliberately **not** in the key: secret values, the task ID, `run:` (it is the
 entrypoint, not a layer), and every `resources` field, since none of them change

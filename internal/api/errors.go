@@ -49,14 +49,16 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrSnapshotNotFound),
 		errors.Is(err, orchestrator.ErrInterventionNotFound),
 		errors.Is(err, orchestrator.ErrRecordingNotFound),
-		errors.Is(err, orchestrator.ErrBuildNotFound):
+		errors.Is(err, orchestrator.ErrBuildNotFound),
+		errors.Is(err, orchestrator.ErrImageNotFound):
 		return http.StatusNotFound, CodeNotFound
 	case errors.Is(err, orchestrator.ErrNoCapacity),
 		errors.Is(err, orchestrator.ErrNoHosts),
 		errors.Is(err, orchestrator.ErrHostPinUnschedulable),
 		errors.Is(err, orchestrator.ErrNoLabelMatch),
 		errors.Is(err, orchestrator.ErrGuestUnavailable),
-		errors.Is(err, orchestrator.ErrBuildNotStarted):
+		errors.Is(err, orchestrator.ErrBuildNotStarted),
+		errors.Is(err, orchestrator.ErrImageHostFailed):
 		return http.StatusServiceUnavailable, CodeUnavailable
 	case errors.Is(err, orchestrator.ErrSnapshotQuotaExceeded),
 		errors.Is(err, orchestrator.ErrSnapshotInvalidState),
@@ -68,7 +70,8 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrHostHasVMs),
 		errors.Is(err, orchestrator.ErrInterventionResolved),
 		errors.Is(err, orchestrator.ErrNoTakeover),
-		errors.Is(err, orchestrator.ErrTakeoverHeld):
+		errors.Is(err, orchestrator.ErrTakeoverHeld),
+		errors.Is(err, orchestrator.ErrImageNotReady):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrExecUnsupported),
 		errors.Is(err, orchestrator.ErrAttachUnsupported),
@@ -82,7 +85,9 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrHitlNotDeclared),
 		errors.Is(err, orchestrator.ErrHitlSecretMissing),
 		errors.Is(err, orchestrator.ErrHitlNeedsKey),
-		errors.Is(err, orchestrator.ErrInvalidIntervention):
+		errors.Is(err, orchestrator.ErrInvalidIntervention),
+		errors.Is(err, orchestrator.ErrInvalidImage),
+		errors.Is(err, orchestrator.ErrImageUnsupported):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:
 		return http.StatusInternalServerError, CodeInternal
