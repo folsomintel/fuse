@@ -140,10 +140,13 @@ func (t *idempotencyTransport) RoundTrip(req *http.Request) (*http.Response, err
 
 // retryable reports whether a keyed attempt is worth repeating: the request
 // may not have reached the agent, or the agent failed it without storing a
-// result. 501 is the agent saying it never will, so it is final.
+// result. 501 is the agent saying it never will and 507 is a full image
+// cache that a retry cannot free, so both are final.
 func retryable(res *http.Response, err error) bool {
 	if err != nil {
 		return true
 	}
-	return res.StatusCode >= 500 && res.StatusCode != http.StatusNotImplemented
+	return res.StatusCode >= 500 &&
+		res.StatusCode != http.StatusNotImplemented &&
+		res.StatusCode != http.StatusInsufficientStorage
 }

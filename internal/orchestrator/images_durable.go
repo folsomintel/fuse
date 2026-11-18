@@ -17,6 +17,7 @@ var ImageFleetErrors = []error{
 	ErrNoHosts,
 	ErrHostNotFound,
 	ErrNoCapacity,
+	ErrImageCacheFull,
 }
 
 // ImageWatchTimeout bounds how long a durable convert polls its host. it is
