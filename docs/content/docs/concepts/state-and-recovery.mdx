@@ -66,7 +66,8 @@ to dispatch correctly, then walks the persisted VMs and triages them:
   and covers the case where the guest rebooted on its own.
 
 Some state is deliberately never persisted and resets on every restart: orphan
-retry budgets, stuck-task strike counters, live provider handles, SSE
+retry budgets and stuck-task strike counters (without restate; with it both live
+in the `Environment` object's state), live provider handles, SSE
 subscriptions, and [operations](/docs/concepts/environments#long-operations-and-retries)
 with their idempotency keys. A VM one strike away from being failed as stuck starts over at
 zero after a restart.
