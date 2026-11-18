@@ -2462,6 +2462,12 @@ paths:
         snapshot on the host was booted from; an evicted image reads as
         404 again and a create naming it is a 409 until it is converted
         again. When nothing can be evicted the convert is a 507.
+
+        With restate on, a retry that carries the first call's
+        `Idempotency-Key` attaches to the first convert instead of
+        starting another.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
