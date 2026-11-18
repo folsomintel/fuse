@@ -27,6 +27,9 @@ set -euo pipefail
 FC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO="${FUSE_REPO:-folsomintel/fuse}"
 MARKER="$FC_DIR/.fc-version"
+# the co-located orchestrator's own marker: its swap can wait on restate
+# while the agent is already current.
+ORCH_MARKER="$FC_DIR/.fc-orch-version"
 
 log()  { printf '\033[1;36m[update] %s\033[0m\n' "$*"; }
 ok()   { printf '\033[1;32m  ✓ %s\033[0m\n' "$*"; }
@@ -181,11 +184,18 @@ fi
 # --- 3. idempotency: skip if already at this version and fused is present ------
 INSTALLED="$(cat "$MARKER" 2>/dev/null || echo none)"
 log "installed=$INSTALLED  target=$VERSION"
+AGENT_CURRENT=""
 if [ "$INSTALLED" = "$VERSION" ] && [ -x "$FC_DIR/fused" ] && [ "${FC_FORCE:-0}" != "1" ]; then
-  ok "already up to date (FC_FORCE=1 to re-apply)"
-  exit 0
+  if [ -z "${FUSE_ORCH_SERVICE:-}" ] || [ "$(cat "$ORCH_MARKER" 2>/dev/null || echo none)" = "$VERSION" ]; then
+    ok "already up to date (FC_FORCE=1 to re-apply)"
+    exit 0
+  fi
+  # the agent is current; only the orchestrator's swap is still owed.
+  AGENT_CURRENT=1
+  ok "agent already at $VERSION; retrying the orchestrator update"
 fi
 
+if [ -z "$AGENT_CURRENT" ]; then
 # --- 4. obtain the fused binary -----------------------------------------------
 if [ -n "$LATEST" ]; then
   ASSET="fused_Linux_${ASSET_ARCH}"
@@ -231,6 +241,7 @@ else
   fi
   ok "fc-agent restarted"
 fi
+fi # AGENT_CURRENT
 
 # --- 7. optional: update a co-located orchestrator service (release only) ------
 # the orchestrator needs restate and a token encryption key. one configured
@@ -265,7 +276,8 @@ orch_pinned() {
 # count what still is, and swap only when nothing is (or the swap is
 # forced). a count restate cannot give refuses the swap too. whenever the
 # swap does not happen the old binary starts again and ORCH_DEFERRED is set,
-# so the version marker is not written and the next run tries again.
+# so the orchestrator's marker is not written and the next run tries again
+# (without redoing the agent).
 ORCH_DEFERRED=""
 orch_swap() {
   local pinned
@@ -324,9 +336,12 @@ elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
 fi
 
 # --- 8. record the applied version --------------------------------------------
-if [ -n "$ORCH_DEFERRED" ]; then
-  warn "not recording $VERSION as installed: the orchestrator was not updated, so the next run tries again"
-else
-  printf '%s\n' "$VERSION" > "$MARKER"
+printf '%s\n' "$VERSION" > "$MARKER"
+if [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
+  if [ -n "$ORCH_DEFERRED" ]; then
+    warn "orchestrator not updated to $VERSION; the next run tries again"
+  else
+    printf '%s\n' "$VERSION" > "$ORCH_MARKER"
+  fi
 fi
 printf '\n\033[1;32m[update] applied %s -> %s\033[0m\n' "$INSTALLED" "$VERSION"

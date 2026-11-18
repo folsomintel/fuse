@@ -136,10 +136,22 @@ func (fm *FleetManager) notifyWebhook(ctx context.Context, t webhookTarget, n hi
 		if fm.webhookUnsent == nil {
 			fm.webhookUnsent = map[string]WebhookDelivery{}
 		}
-		fm.webhookUnsent[d.ID] = d
+		if len(fm.webhookUnsent) < maxWebhookUnsent {
+			fm.webhookUnsent[d.ID] = d
+		} else {
+			// a restate outage long enough to fill this drops the rest; the
+			// audit log stays the record.
+			fm.logger.Error("too many hitl webhooks owed while restate is down, dropping one", "endpoint", d.Endpoint, "intervention", n.InterventionID)
+			fm.webhookMu.Unlock()
+			fm.webhookPending(d, false)
+			return
+		}
 		fm.webhookMu.Unlock()
 	}()
 }
+
+// maxWebhookUnsent bounds the deliveries kept for resendWebhooks.
+const maxWebhookUnsent = 1000
 
 // resendWebhooks sends restate the deliveries it would not take before, once
 // each, and keeps the ones it still refuses for the next cycle.

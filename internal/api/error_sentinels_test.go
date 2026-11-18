@@ -417,6 +417,7 @@ func TestBuildSentinels(t *testing.T) {
 		{orchestrator.ErrBuildNotFound, http.StatusNotFound},
 		{orchestrator.ErrBuildConflict, http.StatusConflict},
 		{orchestrator.ErrBuildNotStarted, http.StatusServiceUnavailable},
+		{fmt.Errorf("destroy: %w: dial tcp: connection refused", orchestrator.ErrRestateUnavailable), http.StatusServiceUnavailable},
 	} {
 		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
 			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)

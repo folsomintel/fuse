@@ -609,6 +609,8 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           $ref: "#/components/responses/Unimplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
     delete:
       tags: [environments]
       operationId: destroyEnvironment
@@ -666,6 +668,8 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
   /v1/environments/{vmId}/attach:
     parameters:
@@ -1233,6 +1237,8 @@ paths:
                 $ref: "#/components/schemas/Error"
         "500":
           $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
         "501":
           description: |
             The provider has no snapshot support at all, or `live: true`
@@ -1432,6 +1438,8 @@ paths:
           $ref: "#/components/responses/InternalError"
         "501":
           $ref: "#/components/responses/Unimplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
     delete:
       tags: [snapshots]
       operationId: deleteSnapshot
@@ -2730,9 +2738,10 @@ components:
         No registered host has room for this spec — the scheduler found
         no capacity, or no hosts are registered at all (code
         `unavailable`). This includes the GPU case: a spec asking for
-        GPUs a host cannot satisfy lands here. There is no
-        shutdown-rejection path; a 503 always means placement failed,
-        so it is worth retrying once capacity frees up.
+        GPUs a host cannot satisfy lands here. It is also the answer when
+        the orchestrator could not reach restate, which runs every
+        mutating operation: nothing was started. Either way it is worth
+        retrying, once capacity frees up or restate is back.
       content:
         application/json:
           schema:
