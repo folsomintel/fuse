@@ -133,9 +133,12 @@ GitHub release), writes `/etc/default/orchestrator` prefilled with
 `FIRECRACKER_BASE_URL=http://127.0.0.1:8090`, this host's `FIRECRACKER_TOKEN`, and
 freshly generated `ORCH_AUTH_TOKEN` + `TOKEN_ENCRYPTION_KEY` (never overwriting an
 existing file), then installs `orchestrator.service` ordered after
-`fc-agent.service`. That env file has no restate settings: run restate-server and
-add `FUSE_RESTATE_MODE=self` and `FUSE_RESTATE_INGRESS_URL` as in [Restate](#restate)
-before starting, or the orchestrator exits at startup.
+`fc-agent.service`. It also sets up restate: it adds `FUSE_RESTATE_MODE=self`,
+`FUSE_RESTATE_INGRESS_URL` and `ORCH_RESTATE_LISTEN` to the env file (and a
+`TOKEN_ENCRYPTION_KEY` to an existing file that has none), installs and starts
+`restate-server.service` (docker), or reuses a restate already answering on
+127.0.0.1:9070, and registers the orchestrator's handler endpoint from the
+unit's `ExecStartPost` on every start.
 
 Auth is on by default: the orchestrator refuses to boot until you supply a Postgres
 `DATABASE_URL`. The installer leaves that as a placeholder and does not start the
