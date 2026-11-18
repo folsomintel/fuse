@@ -653,6 +653,10 @@ type FleetManager struct {
 	orphanSlots    chan struct{}
 	orphanResults  orphanOutcomes
 
+	// durableHost runs host register, cordon and remove on restate; nil in
+	// mode off. see host_durable.go.
+	durableHost DurableHosts
+
 	// durableArtifacts runs artifact moves and holds pull pins on restate;
 	// nil in mode off. see artifacts_durable.go.
 	durableArtifacts DurableArtifacts

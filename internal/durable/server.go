@@ -57,6 +57,7 @@ type Fleet interface {
 	GetHost(hostID string) (orchestrator.Host, bool)
 	Destroyer
 	Orphans
+	Hosts
 	Artifacts
 	Snapshots
 	Checkpoints
@@ -165,6 +166,18 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 					_, ok := fleet.GetHost(key)
 					return ok
 				})
+			})).
+		Handler("Register", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, rec orchestrator.HostRecord) (restate.Void, error) {
+				return restate.Void{}, hostRegister(ctx, fleet, rec)
+			})).
+		Handler("SetState", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, state orchestrator.HostState) (restate.Void, error) {
+				return restate.Void{}, hostSetState(ctx, fleet, state)
+			})).
+		Handler("Remove", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, _ restate.Void) (restate.Void, error) {
+				return restate.Void{}, hostRemove(ctx, fleet)
 			}))
 
 	artifacts := restate.NewObject(ArtifactsObject, retryOption(cfg, ArtifactsObject)).
