@@ -25,10 +25,20 @@ var ErrHostNotFound = fmt.Errorf("host not found")
 // cycles with concrete provider packages.
 func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) error {
 	if d := fm.durableHostsFor(); d != nil && fm.registersDurably() {
-		// the handler builds its own provider from the record; this one only
-		// served the api's capacity probe.
-		_ = p.Close()
-		return d.RegisterHost(ctx, fm.hostToRecord(h))
+		// the token is encrypted here rather than through hostToRecord, whose
+		// fallback stores it in the clear: a record that cannot be sealed is
+		// registered in process instead, so the token never reaches the journal.
+		if sealed, err := secrets.EncryptToken(h.Token, fm.tokenEncryptionKey); err == nil {
+			tokenless := h
+			tokenless.Token = ""
+			rec := fm.hostToRecord(tokenless)
+			rec.TokenEncrypted = sealed
+			// the handler builds its own provider from the record; this one
+			// only served the api's capacity probe.
+			_ = p.Close()
+			return d.RegisterHost(ctx, rec)
+		}
+		fm.logger.Warn("encrypt host token failed; registering in process", "host", h.ID)
 	}
 	return fm.registerHost(ctx, h, p)
 }

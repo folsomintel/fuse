@@ -423,6 +423,24 @@ func TestBuildSentinels(t *testing.T) {
 	}
 }
 
+// TestHostSentinels: the host refusals a durable host op carries back keep
+// their statuses; a host record the orchestrator cannot read is its own
+// fault, a 500.
+func TestHostSentinels(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{orchestrator.ErrHostNotFound, http.StatusNotFound},
+		{orchestrator.ErrHostHasVMs, http.StatusConflict},
+		{orchestrator.ErrHostRecordInvalid, http.StatusInternalServerError},
+	} {
+		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
+			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
 type persistentStore struct{ *orchestrator.MemoryStateStore }
 
 // refusingBuilds is a restate that does not take a build.
