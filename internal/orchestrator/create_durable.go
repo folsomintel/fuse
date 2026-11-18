@@ -887,14 +887,24 @@ func (fm *FleetManager) CreateUnpublishIngress(ctx context.Context, vmID string)
 // the vm's row and reservation go and subscribers learn it failed. the task
 // write goes first, so a replay after the row is gone still fails the task.
 func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req CreateRequest, cause string) error {
-	fm.mu.RLock()
+	// the check and the removal from the fleet are one critical section, so
+	// a step that makes the vm running meanwhile (a migrate's persist on a
+	// target the stale pass is abandoning) either wins, and the vm is left
+	// alone, or finds the vm gone and rolls back. a retry after a failed
+	// write below finds the vm already gone and only redoes the writes.
+	fm.mu.Lock()
 	v, ok := fm.vms[vmID]
 	ours := ok && v.state == VMStateProvisioning && v.taskID == req.TaskID
 	createdAt := time.Now()
 	if ours {
 		createdAt = v.createdAt
+		if v.hostID != "" {
+			fm.deallocateOnHost(v.hostID, v.spec)
+		}
+		v.err = cause
+		delete(fm.vms, vmID)
 	}
-	fm.mu.RUnlock()
+	fm.mu.Unlock()
 	if ok && !ours {
 		// the vm id belongs to something else now; leave it alone.
 		fm.dropCreateRun(vmID)
@@ -912,15 +922,6 @@ func (fm *FleetManager) CreateAbandon(ctx context.Context, vmID string, req Crea
 	}
 	if err := fm.store.DeleteVM(ctx, vmID); err != nil {
 		return fmt.Errorf("delete vm %s row: %w", vmID, err)
-	}
-	if ours {
-		fm.mu.Lock()
-		if v.hostID != "" {
-			fm.deallocateOnHost(v.hostID, v.spec)
-		}
-		v.err = cause
-		delete(fm.vms, vmID)
-		fm.mu.Unlock()
 	}
 	fm.dropCreateRun(vmID)
 	fm.logger.ErrorContext(ctx, "provision failed", "vm", vmID, "task", req.TaskID, "err", cause)

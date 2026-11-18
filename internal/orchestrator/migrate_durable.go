@@ -623,6 +623,13 @@ func (fm *FleetManager) MigratePersist(ctx context.Context, plan MigratePlan, st
 		return err
 	}
 	fm.mu.Lock()
+	if fm.vms[plan.NewVMID] != v {
+		// the stale-create pass abandoned the target since it was looked
+		// up: the migrate rolls back rather than running a vm nothing
+		// tracks.
+		fm.mu.Unlock()
+		return fmt.Errorf("%w: migrate target %s is no longer tracked", ErrVMNotFound, plan.NewVMID)
+	}
 	prevState := v.state
 	v.state = VMStateRunning
 	v.env = env
