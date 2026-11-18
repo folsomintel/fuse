@@ -24,6 +24,18 @@ var ErrHostNotFound = fmt.Errorf("host not found")
 // FleetManager holds only the Provider interface to avoid import
 // cycles with concrete provider packages.
 func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) error {
+	if d := fm.durableHostsFor(); d != nil && fm.registersDurably() {
+		// the handler builds its own provider from the record; this one only
+		// served the api's capacity probe.
+		_ = p.Close()
+		return d.RegisterHost(ctx, fm.hostToRecord(h))
+	}
+	return fm.registerHost(ctx, h, p)
+}
+
+// registerHost is RegisterHost in process: the host and its provider go into
+// the registry, then the store.
+func (fm *FleetManager) registerHost(ctx context.Context, h Host, p Provider) error {
 	now := time.Now()
 	if h.CreatedAt.IsZero() {
 		h.CreatedAt = now
@@ -62,16 +74,26 @@ func (fm *FleetManager) RegisterHost(ctx context.Context, h Host, p Provider) er
 // CordonHost marks a host as cordoned (no new VMs). Existing VMs
 // are left running.
 func (fm *FleetManager) CordonHost(ctx context.Context, hostID string) error {
-	return fm.setHostState(ctx, hostID, HostCordoned, "host.cordoned")
+	if d := fm.durableHostsFor(); d != nil {
+		return d.SetHostState(ctx, hostID, HostCordoned)
+	}
+	return fm.setHostState(ctx, hostID, HostCordoned)
 }
 
 // UncordonHost returns a cordoned or draining host to active
 // scheduling.
 func (fm *FleetManager) UncordonHost(ctx context.Context, hostID string) error {
-	return fm.setHostState(ctx, hostID, HostActive, "host.uncordoned")
+	if d := fm.durableHostsFor(); d != nil {
+		return d.SetHostState(ctx, hostID, HostActive)
+	}
+	return fm.setHostState(ctx, hostID, HostActive)
 }
 
-func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state HostState, event string) error {
+func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state HostState) error {
+	event := "host.cordoned"
+	if state == HostActive {
+		event = "host.uncordoned"
+	}
 	fm.mu.Lock()
 	h, ok := fm.hosts[hostID]
 	if !ok {
@@ -95,6 +117,18 @@ func (fm *FleetManager) setHostState(ctx context.Context, hostID string, state H
 // assigned to it; callers should cordon/drain and wait for VMs to
 // leave before removing.
 func (fm *FleetManager) RemoveHost(ctx context.Context, hostID string) error {
+	if d := fm.durableHostsFor(); d != nil {
+		return d.RemoveHost(ctx, hostID)
+	}
+	if err := fm.unregisterHost(hostID); err != nil {
+		return err
+	}
+	return fm.deleteHostRecord(ctx, hostID)
+}
+
+// unregisterHost drops a host with no vms from the registry and closes its
+// provider.
+func (fm *FleetManager) unregisterHost(hostID string) error {
 	fm.mu.Lock()
 	_, ok := fm.hosts[hostID]
 	if !ok {
@@ -116,7 +150,12 @@ func (fm *FleetManager) RemoveHost(ctx context.Context, hostID string) error {
 	}
 	delete(fm.hosts, hostID)
 	fm.mu.Unlock()
+	return nil
+}
 
+// deleteHostRecord deletes a removed host's row and records the removal.
+// deleting a row that is already gone is not an error, so it can be retried.
+func (fm *FleetManager) deleteHostRecord(ctx context.Context, hostID string) error {
 	if fm.store != nil {
 		if err := fm.store.DeleteHost(ctx, hostID); err != nil {
 			return fmt.Errorf("delete host %s: %w", hostID, err)

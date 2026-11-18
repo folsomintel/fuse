@@ -67,8 +67,7 @@ func TestDestroyOrphanCountSurvivesRestart(t *testing.T) {
 	defer cancel()
 
 	first := &orphanFleet{fail: true}
-	serveCtx, stop := context.WithCancel(ctx)
-	client := serveFleetUntil(t, serveCtx, first, fastPolicy)
+	client, _, stop := serveFleetAt(t, first, "")
 	for i := 0; i < 2; i++ {
 		res, err := client.DestroyOrphan(ctx, vm, req)
 		if err != nil || res.DeadLettered {

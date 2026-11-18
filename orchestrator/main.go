@@ -571,6 +571,7 @@ func run() error {
 		restateClient = durable.NewClient(durableCfg)
 		fm.SetDurableDestroyer(restateClient)
 		fm.SetDurableOrphans(restateClient)
+		fm.SetDurableHosts(restateClient)
 		fm.SetDurableArtifacts(restateClient)
 		fm.SetDurableSnapshots(restateClient)
 		fm.SetDurableTokenRotator(restateClient)
