@@ -116,3 +116,26 @@ func TestImagePollSupersededAttempt(t *testing.T) {
 		}
 	}
 }
+
+// failEventStore refuses every event write.
+type failEventStore struct{ *MemoryStateStore }
+
+func (failEventStore) AppendEvent(context.Context, EventRecord) error {
+	return errors.New("db down")
+}
+
+// TestImageConvertDoneReturnsAFailedEventWrite: the done step has to fail
+// when its event does not land, so restate retries it instead of journaling
+// an outcome nothing recorded.
+func TestImageConvertDoneReturnsAFailedEventWrite(t *testing.T) {
+	fm := NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: failEventStore{NewMemoryStateStore()}})
+	img := Image{Digest: digestOf("d"), Ref: "ubuntu", HostID: "fc-1", State: ImageReady}
+	if err := fm.ImageConvertDone(context.Background(), img, false); err == nil || !strings.Contains(err.Error(), "db down") {
+		t.Fatalf("ImageConvertDone = %v, want the event write error", err)
+	}
+
+	fm = NewFleetManager(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: NewMemoryStateStore()})
+	if err := fm.ImageConvertDone(context.Background(), img, false); err != nil {
+		t.Fatalf("ImageConvertDone with a working store: %v", err)
+	}
+}
