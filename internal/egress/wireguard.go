@@ -151,6 +151,9 @@ func (w *WireGuard) Restore(hostID, vmID, lease string) error {
 	return w.reserve(lease, hostID, vmID)
 }
 
+// Forget implements Restorer.
+func (w *WireGuard) Forget(vmID string) { w.forget(vmID) }
+
 // forget drops vmID from whichever config it was using.
 func (w *WireGuard) forget(vmID string) {
 	w.mu.Lock()
