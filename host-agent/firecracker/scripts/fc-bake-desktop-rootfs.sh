@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# Layer a desktop onto rootfs-fused.ext4, producing rootfs-desktop.ext4.
+# Layer a desktop onto a baked image: fc-bake-desktop-rootfs.sh [base.ext4 [out.ext4]]
+# Defaults: rootfs-fused.ext4 in, rootfs-desktop.ext4 out.
 # Idempotent. Requires: podman on host (for the desktop bundle extraction),
 # sudo, mount, truncate, e2fsck, resize2fs, tar, chroot.
 #
 # Inputs:
-#   rootfs-fused.ext4      baked image from ./scripts/fc-bake-rootfs.sh (working dir)
+#   base.ext4              baked image with fused in it; default rootfs-fused.ext4
+#                          from ./scripts/fc-bake-rootfs.sh (working dir). the
+#                          bundle is ubuntu 22.04 files, so the base must be an
+#                          ubuntu 22.04 image; any other is refused (its libc
+#                          would be overwritten)
 #   fuse-display-run       xvfb runner script (ships in host-agent/firecracker/)
 #   fuse-wm-run            window manager runner script (same place)
 #   ops/systemd/fuse-display.service   systemd unit for the display
@@ -36,8 +41,12 @@ cd "$FC_DIR"
 # systemd units live with the repo's other service files
 OPS_SYSTEMD="$(cd "$FC_DIR/../../ops/systemd" && pwd)"
 
-BASE=rootfs-fused.ext4
-OUT=rootfs-desktop.ext4
+BASE=${1:-rootfs-fused.ext4}
+OUT=${2:-rootfs-desktop.ext4}
+[ "$BASE" != "$OUT" ] || { echo "base and output are the same file: $BASE" >&2; exit 1; }
+# built under a temp name and moved into place at the end, so a refused base
+# or a failed bake never clobbers an existing output
+TMP_OUT="$(dirname "$OUT")/.$(basename "$OUT").tmp"
 SIZE=${FC_DESKTOP_ROOTFS_SIZE:-8G}
 GEOMETRY=${FC_DESKTOP_GEOMETRY:-1024x768x24}
 MOUNT_POINT=${FC_BAKE_MOUNT:-/tmp/fcbake-desktop}
@@ -88,6 +97,7 @@ cleanup() {
   sudo -n umount "$MOUNT_POINT/dev" 2>/dev/null || true
   sudo -n umount "$MOUNT_POINT/proc" 2>/dev/null || true
   sudo -n umount "$MOUNT_POINT" 2>/dev/null || true
+  rm -f "$TMP_OUT" 2>/dev/null || sudo -n rm -f "$TMP_OUT" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -106,16 +116,33 @@ fsck_ok() {
 mkdir -p "$WORK"
 
 log "copy base -> $OUT"
-cp -f "$BASE" "$OUT"
+cp -f "$BASE" "$TMP_OUT"
 
 log "grow $OUT to $SIZE"
-sudo -n truncate -s "$SIZE" "$OUT"
-fsck_ok "$OUT"
-sudo -n resize2fs "$OUT" >/dev/null
+sudo -n truncate -s "$SIZE" "$TMP_OUT"
+fsck_ok "$TMP_OUT"
+sudo -n resize2fs "$TMP_OUT" >/dev/null
 
 log "mount loopback at $MOUNT_POINT"
 sudo -n mkdir -p "$MOUNT_POINT"
-sudo -n mount -o loop "$OUT" "$MOUNT_POINT"
+sudo -n mount -o loop "$TMP_OUT" "$MOUNT_POINT"
+
+# the bundle carries ubuntu 22.04's libc and libraries; on any other release
+# they would replace the base's own and leave it unbootable. read the file
+# /etc/os-release links to, never the link itself, which could point at the
+# host's. a base with no os-release is let through as before.
+base_os=""
+for f in "$MOUNT_POINT/usr/lib/os-release" "$MOUNT_POINT/etc/os-release"; do
+  if [ -f "$f" ] && [ ! -L "$f" ]; then
+    # parsed, not sourced: it is a file from the image
+    base_os="$(sed -n 's/^ID=//p' "$f" | tr -d '"')-$(sed -n 's/^VERSION_ID=//p' "$f" | tr -d '"')"
+    break
+  fi
+done
+if [ -n "$base_os" ] && [ "$base_os" != "ubuntu-22.04" ]; then
+  echo "[bake] $BASE is $base_os, not ubuntu-22.04; the desktop bundle only fits ubuntu 22.04" >&2
+  exit 1
+fi
 
 # --- 1. desktop bundle (built in ubuntu:22.04 via host podman) ---------------
 
@@ -279,6 +306,7 @@ if [ "${FC_DESKTOP_SKIP_DISPLAY_CHECK:-0}" != "1" ]; then
 fi
 
 sudo -n umount "$MOUNT_POINT"
+mv -f "$TMP_OUT" "$OUT"
 trap - EXIT
 
 log "done -> $OUT ($(du -h "$OUT" | cut -f1))"
