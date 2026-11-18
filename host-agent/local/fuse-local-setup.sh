@@ -307,12 +307,19 @@ start_stack() {
   if pid_running "$DIR/orchestrator.pid" "bin/orchestrator"; then
     log "orchestrator already running (pid $(cat "$DIR/orchestrator.pid"))"
   else
+    # the orchestrator refuses to start without a token encryption key:
+    # restate journals create, fork and webhook inputs sealed with it. made
+    # once and kept, so a restart can still open what an earlier run sealed.
+    if [ ! -s "$DIR/token-encryption.key" ]; then
+      (umask 077 && od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$DIR/token-encryption.key")
+    fi
     # the mock egress backend runs inside the orchestrator and binds the
     # host side of each vm's tap, which is reachable here because the
     # orchestrator and fc-agent share this machine. it provides no privacy
     # or isolation; it is what lets a proxy-mode environment be exercised
     # end to end locally.
     ORCH_AUTH_TOKEN="${ORCH_AUTH_TOKEN:?ORCH_AUTH_TOKEN is required}" \
+    TOKEN_ENCRYPTION_KEY="$(cat "$DIR/token-encryption.key")" \
     ORCH_LISTEN=":${ORCH_PORT}" \
     ORCH_EGRESS_MOCK=true \
     FUSE_RESTATE_MODE=self \

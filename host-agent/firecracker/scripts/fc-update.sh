@@ -233,7 +233,18 @@ else
 fi
 
 # --- 7. optional: update a co-located orchestrator service (release only) ------
-if [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
+# the orchestrator needs restate and a token encryption key. one configured
+# without them would crash-loop on the new binary, so it is left as it is
+# until `fc-agent.sh install-orchestrator` adds them.
+orch_env_ready() {
+  local f
+  f=$(systemctl show -p EnvironmentFiles --value "$FUSE_ORCH_SERVICE" 2>/dev/null | awk '{print $1}')
+  [ -n "$f" ] || return 0
+  sudo -n grep -qE '^FUSE_RESTATE_MODE=(self|cloud)$' "$f" && sudo -n grep -qE '^TOKEN_ENCRYPTION_KEY=.+' "$f"
+}
+if [ -n "${FUSE_ORCH_SERVICE:-}" ] && ! orch_env_ready; then
+  warn "skipping orchestrator update: its env has no FUSE_RESTATE_MODE or TOKEN_ENCRYPTION_KEY, which the new orchestrator requires; run fc-agent.sh install-orchestrator to add restate"
+elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
   [ -n "${FUSE_ORCH_BIN:-}" ] || die "FUSE_ORCH_SERVICE set but FUSE_ORCH_BIN is not"
   if [ -n "$LATEST" ]; then
     log "updating orchestrator -> $FUSE_ORCH_BIN"

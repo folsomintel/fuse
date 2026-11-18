@@ -48,7 +48,27 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # every operation runs on restate, so the durable handlers are tested
+      # against a real restate-server rather than skipped. host networking
+      # lets it reach the handler endpoints the tests serve on 127.0.0.1.
+      # keep the image in step with ops/systemd/restate-server.service.
+      - name: Start restate-server
+        run: |
+          docker run -d --name restate --network host \
+            -e RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:18080 \
+            -e RESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:9070 \
+            docker.io/restatedev/restate:1.8.1@sha256:fea6b4a893616fd8ec4594bd72fbf9967f9ab9242c8c75008de75edfbb58b2c7
+          for i in $(seq 60); do
+            curl -fsS -o /dev/null http://127.0.0.1:9070/health && exit 0
+            sleep 1
+          done
+          docker logs restate
+          exit 1
+
       - name: Test
+        env:
+          FUSE_RESTATE_TEST_ADMIN_URL: http://127.0.0.1:9070
+          FUSE_RESTATE_TEST_INGRESS_URL: http://127.0.0.1:18080
         run: go test ./... -race -count=1
 
   # Blocking vulnerability scan. govulncheck reports only vulnerabilities on
