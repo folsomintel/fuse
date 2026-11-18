@@ -51,10 +51,11 @@ func toAPIImage(img orchestrator.Image) Image {
 // convertImage starts converting an oci image.
 //
 //	@Summary		Convert an oci image
-//	@Description	Resolves ref to its manifest for a firecracker host's arch and starts converting it to a rootfs in the background. Answers 202 with the image's digest and state; poll GET /v1/images/{digest} until it is ready, then create with spec.image_digest. Converting a ref that is already converting or ready answers with that record; one that failed is retried. Public registries only, apt and dnf based images only; qemu hosts cannot convert.
+//	@Description	Resolves ref to its manifest for a firecracker host's arch and starts converting it to a rootfs in the background. Answers 202 with the image's digest and state; poll GET /v1/images/{digest} until it is ready, then create with spec.image_digest. Converting a ref that is already converting or ready answers with that record; one that failed is retried. Public registries only, apt and dnf based images only; qemu hosts cannot convert. With restate on, an Idempotency-Key makes a retry attach to the first convert instead of starting another.
 //	@Tags			images
 //	@Accept			json
 //	@Produce		json
+//	@Param			Idempotency-Key	header	string	false	"Dedupes a retried convert"
 //	@Param			body	body		ConvertImageRequest	true	"Image to convert"
 //	@Success		202		{object}	Image
 //	@Failure		400		{object}	Error
@@ -63,6 +64,12 @@ func toAPIImage(img orchestrator.Image) Image {
 //	@Security		BearerAuth
 //	@Router			/v1/images [post]
 func (h *Handler) convertImage(w http.ResponseWriter, r *http.Request) {
+	key := r.Header.Get(HeaderIdempotencyKey)
+	if key != "" && !validIdempotencyKey(key) {
+		writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+			HeaderIdempotencyKey+": want 1 to 255 visible ascii characters", nil)
+		return
+	}
 	var req ConvertImageRequest
 	if !decodeJSON(w, r, MaxJSONBodyBytes, &req) {
 		return
@@ -80,7 +87,14 @@ func (h *Handler) convertImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeInvalidArgument, err.Error(), nil)
 		return
 	}
-	img, err := h.Fleet.ConvertImage(r.Context(), orchestrator.ConvertImageRequest{
+	// the key rides the context to the durable client, so a retry after a
+	// lost response attaches to the first Images.Convert instead of starting
+	// another.
+	ctx := r.Context()
+	if key != "" {
+		ctx = orchestrator.WithIdempotencyKey(ctx, operationOwner(principal(r))+":image.convert:"+key)
+	}
+	img, err := h.Fleet.ConvertImage(ctx, orchestrator.ConvertImageRequest{
 		Ref:    req.Ref,
 		HostID: req.HostID,
 		Region: req.Region,

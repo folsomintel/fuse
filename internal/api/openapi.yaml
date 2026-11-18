@@ -2455,6 +2455,12 @@ paths:
 
         Public registries only, and only apt and dnf based images convert.
         A qemu host cannot convert: pinning to one is a 400.
+
+        With restate on, a retry that carries the first call's
+        `Idempotency-Key` attaches to the first convert instead of
+        starting another.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:

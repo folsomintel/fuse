@@ -1,4 +1,9 @@
-import type { CallOptions, Transport } from "./transport.js";
+import {
+  idempotencyKey,
+  type CallOptions,
+  type MutatingCallOptions,
+  type Transport,
+} from "./transport.js";
 import type { ConvertImageRequest, Image } from "./types.js";
 import { requireArg } from "./validate.js";
 
@@ -11,10 +16,15 @@ export class ImagesService {
    * Start converting req.ref and return the image at once, usually still
    * converting. Poll get until it is ready. Converting a ref that is already
    * converting or ready returns that image; one that failed is retried.
+   * The same idempotency key makes a retry attach to the first convert.
    */
-  async convert(req: ConvertImageRequest, opts: CallOptions = {}): Promise<Image> {
+  async convert(req: ConvertImageRequest, opts: MutatingCallOptions = {}): Promise<Image> {
     requireArg(req.ref, "image ref");
-    return this.t.json<Image>("POST", "/v1/images", { body: req, signal: opts.signal });
+    return this.t.json<Image>("POST", "/v1/images", {
+      body: req,
+      signal: opts.signal,
+      idempotencyKey: idempotencyKey(opts),
+    });
   }
 
   /** Report an image's conversion state by digest. */

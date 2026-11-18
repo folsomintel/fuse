@@ -57,6 +57,20 @@ describe("images", () => {
     expect(img.manifest_digest.startsWith("sha256:")).toBe(true);
   });
 
+  it("convert sends an idempotency key, the caller's when given", async () => {
+    const keys: (string | undefined)[] = [];
+    current = await serve((req, res) => {
+      keys.push(req.headers["idempotency-key"] as string | undefined);
+      json(res, 202, image("converting"));
+    });
+
+    await current.client.images.convert({ ref: "ubuntu:24.04" });
+    await current.client.images.convert({ ref: "ubuntu:24.04" }, { idempotencyKey: "my-key" });
+
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBe("my-key");
+  });
+
   it("convert requires a ref", async () => {
     current = await serve((_req, res) => json(res, 202, image("converting")));
     await expect(current.client.images.convert({ ref: "" })).rejects.toThrow(
