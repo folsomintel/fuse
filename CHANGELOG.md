@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.47.0](https://github.com/folsomintel/fuse/compare/v0.46.0...v0.47.0) (2026-11-18)
+
+
+### Features
+
+* run oci image conversion as a durable restate op ([2238b38](https://github.com/folsomintel/fuse/commit/2238b381f27c4de5b43bdb563c90021f1d0bf3b1))
+
+
+### Bug Fixes
+
+* carry the image cache full error across restate and stop keyed calls retrying a 507 ([2f0f18b](https://github.com/folsomintel/fuse/commit/2f0f18bf52807e4c8896122ef968d64f4065f9bd))
+* end an image watch as failed when its attempt was retried under it ([cd22947](https://github.com/folsomintel/fuse/commit/cd229475724adf226001084f59918a2a05784e85))
+* fail the image convert done step when its outcome event does not land so restate retries it ([07690c7](https://github.com/folsomintel/fuse/commit/07690c723981e14220d42a51b81d0f07b902cfe0))
+* forward the caller's idempotency key on image convert so a retry attaches to the first restate invocation, across all four sdks ([2a14303](https://github.com/folsomintel/fuse/commit/2a14303e907f08060517fe530584798d999c3aec))
+* journal the image convert host choice as its own step so a replay keeps the host ([32903e8](https://github.com/folsomintel/fuse/commit/32903e84e7b73c8fa63d2f9fbded5831f10cdd4a))
+* send the image watch unkeyed when the agent reports no attempt time ([dc6f93e](https://github.com/folsomintel/fuse/commit/dc6f93e35e37287bd6be736fcab2e4812cbcbcc3))
+
 ## [0.46.0](https://github.com/folsomintel/fuse/compare/v0.45.0...v0.46.0) (2026-11-18)
 
 
