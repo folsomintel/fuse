@@ -356,6 +356,8 @@ class EvictionTest(ConvertBase):
         self.bake(BAKE_64K)
         for p in (
             mock.patch.object(fc_agent, "VMS_DIR", root / "vms"),
+            # list_vms lives in agentlib and reads its own copy.
+            mock.patch.object(fc_agent.agentlib, "VMS_DIR", root / "vms"),
             mock.patch.object(fc_agent, "SNAPSHOTS_DIR", root / "snapshots"),
             mock.patch.object(fc_agent, "IMAGE_CACHE_BYTES", 200 * KIB),
             mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": "128K"}),
