@@ -570,6 +570,7 @@ func run() error {
 	if durableCfg.Mode != durable.ModeOff {
 		restateClient = durable.NewClient(durableCfg)
 		fm.SetDurableDestroyer(restateClient)
+		fm.SetDurableOrphans(restateClient)
 		fm.SetDurableArtifacts(restateClient)
 		fm.SetDurableSnapshots(restateClient)
 		fm.SetDurableTokenRotator(restateClient)

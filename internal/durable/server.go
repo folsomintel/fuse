@@ -56,6 +56,7 @@ type Fleet interface {
 	GetVM(vmID string) (orchestrator.VMInfo, bool)
 	GetHost(hostID string) (orchestrator.Host, bool)
 	Destroyer
+	Orphans
 	Artifacts
 	Snapshots
 	Checkpoints
@@ -97,6 +98,10 @@ func NewEndpoint(cfg Config, fleet Fleet, logger *slog.Logger) *server.Restate {
 		Handler("Destroy", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, req orchestrator.DestroyRequest) (restate.Void, error) {
 				return restate.Void{}, destroy(ctx, fleet, servicePolicy(cfg, EnvironmentObject), req)
+			})).
+		Handler("DestroyOrphan", restate.NewObjectHandler(
+			func(ctx restate.ObjectContext, req orchestrator.OrphanDestroyRequest) (orchestrator.OrphanDestroyResult, error) {
+				return destroyOrphan(ctx, fleet, req)
 			})).
 		Handler("Snapshot", restate.NewObjectHandler(
 			func(ctx restate.ObjectContext, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
