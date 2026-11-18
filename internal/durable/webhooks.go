@@ -78,10 +78,11 @@ func deliverWebhook(ctx restate.Context, fleet Webhooks, d orchestrator.WebhookD
 	})
 }
 
-// SendWebhook enqueues the first attempt of d without waiting.
+// SendWebhook enqueues the first attempt of d without waiting. it is keyed
+// on d.ID, so sending d again starts nothing new.
 func (c *Client) SendWebhook(ctx context.Context, d orchestrator.WebhookDelivery) error {
 	_, err := ingress.ServiceSend[orchestrator.WebhookDelivery](c.ingress, WebhooksService, "Deliver").
-		Send(ctx, d)
+		Send(ctx, d, restate.WithIdempotencyKey("webhook:"+d.ID))
 	return err
 }
 

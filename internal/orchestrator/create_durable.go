@@ -35,7 +35,10 @@ var CreateFleetErrors = []error{
 	ErrStartupScriptTimeout,
 	ErrHitlNotDeclared,
 	ErrHitlSecretMissing,
-	ErrHitlNeedsKey,
+	// a code is its index, and create has ten (530 to 539). this slot was
+	// ErrHitlNeedsKey, which no durable create could fail with (it always
+	// had the key, which is now required), so no journal holds its code.
+	ErrImageNotReady,
 	ErrVMNotFound,
 }
 
@@ -978,6 +981,11 @@ func (fm *FleetManager) reconcileStaleCreates(ctx context.Context) {
 		fm.mu.Lock()
 		delete(fm.recoveredCreates, c.id)
 		fm.mu.Unlock()
-		fm.cleanupFailedCreate(c.id, c.hostID)
+		fm.mu.RLock()
+		hostless := len(fm.hosts) == 0
+		fm.mu.RUnlock()
+		if c.hostID != "" || hostless {
+			fm.cleanupFailedCreate(c.id, c.hostID)
+		}
 	}
 }

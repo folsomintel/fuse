@@ -1137,8 +1137,8 @@ type Operation struct {
 	Kind string `json:"kind" enums:"create,destroy,fork,migrate,snapshot,restore,drain"`
 	// State is running, succeeded (a 2xx answer) or failed.
 	State string `json:"state" enums:"running,succeeded,failed"`
-	// Step is the step the operation last reported starting, when its kind
-	// reports steps (migrate does).
+	// Step is the step the operation last reported starting. No operation
+	// reports one now (their steps show in the restate ui), so it is empty.
 	Step       string     `json:"step,omitempty"`
 	StartedAt  time.Time  `json:"started_at"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`

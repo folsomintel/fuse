@@ -31,6 +31,9 @@ var MigrateRefusals = []error{
 	ErrNoHosts,
 	ErrHostPinUnschedulable,
 	ErrNoLabelMatch,
+	// appended, as CreateFleetErrors: the last match wins.
+	ErrSeedUnplaceable,
+	ErrArtifactImmovable,
 }
 
 // MigrateRequest is the input of the durable Environment/{vm_id}.Migrate

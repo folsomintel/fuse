@@ -28,9 +28,8 @@ type DurableExpiry interface {
 	SendArmExpiry(ctx context.Context, vmID string) error
 }
 
-// ExpiryMetrics is an optional extension of ReconcileMetrics. with restate on
-// the expiry timers, not reconcile, strike and reap environments, and report
-// each here. reason is stuck_task, idle_timeout or drain_timeout.
+// ExpiryMetrics is an optional extension of ReconcileMetrics. the expiry
+// timers strike and reap environments, and report each here. reason is stuck_task, idle_timeout or drain_timeout.
 type ExpiryMetrics interface {
 	VMExpiry(reason string, reaped bool)
 }
@@ -155,10 +154,9 @@ type expiryView struct {
 
 // ExpiryCheck is the step of the durable Environment/{vm_id}.Expire timer: it
 // judges vmID against its runtime ceiling, idle timeout and drain grace.
-// strike is the
-// window the previous check struck the vm for, or empty; a vm is reaped only
-// on a second consecutive check past the same window, as reconcile counts
-// idle and runtime strikes apart.
+// strike is the window the previous check struck the vm for, or empty; a vm
+// is reaped only on a second consecutive check past the same window, so a
+// runtime strike never counts toward an idle reap or the other way round.
 //
 //   - running: past its max_runtime (with a task) or its idle timeout, the
 //     first check strikes and the next reaps. a pending expiry

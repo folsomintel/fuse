@@ -34,8 +34,8 @@ type Client struct {
 func NewClient(cfg Config) *Client {
 	// the transport carries the request id and trace context, so restate's
 	// invocation joins the api request's trace and the handler sees the id.
-	hc := &http.Client{Timeout: 30 * time.Second, Transport: &telemetry.Transport{Peer: "restate"}}
-	long := &http.Client{Transport: &telemetry.Transport{Peer: "restate"}}
+	hc := &http.Client{Timeout: 30 * time.Second, Transport: unavailable{&telemetry.Transport{Peer: "restate"}}}
+	long := &http.Client{Transport: unavailable{&telemetry.Transport{Peer: "restate"}}}
 	return &Client{
 		url:         cfg.IngressURL,
 		adminURL:    cfg.AdminURL,
@@ -44,6 +44,20 @@ func NewClient(cfg Config) *Client {
 		ingress:     ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, hc)...),
 		longIngress: ingress.NewClient(cfg.IngressURL, ingressOptions(cfg, long)...),
 	}
+}
+
+// unavailable marks a request that never got an answer from restate with
+// orchestrator.ErrRestateUnavailable, unless the caller's own context ended
+// it. ingress keeps the error chain, so callers can tell a restate outage
+// from an operation that failed.
+type unavailable struct{ next http.RoundTripper }
+
+func (u unavailable) RoundTrip(req *http.Request) (*http.Response, error) {
+	res, err := u.next.RoundTrip(req)
+	if err != nil && req.Context().Err() == nil {
+		return nil, fmt.Errorf("%w: %w", orchestrator.ErrRestateUnavailable, err)
+	}
+	return res, err
 }
 
 func ingressOptions(cfg Config, hc *http.Client) []ingress.ClientOption {

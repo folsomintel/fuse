@@ -26,7 +26,7 @@ type ArtifactMoveJob struct {
 	Files map[string]string `json:"files,omitempty"`
 	Lazy  bool              `json:"lazy,omitempty"`
 	// Base makes this a delta move merged onto Base on HostID, see
-	// moveDeltaToHost.
+	// planDeltaMove.
 	Base     string `json:"base,omitempty"`
 	DropBase bool   `json:"drop_base,omitempty"`
 

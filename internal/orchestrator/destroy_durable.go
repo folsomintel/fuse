@@ -16,8 +16,8 @@ const (
 	DestroyReasonExpired       = "expired"
 )
 
-// destroyStepTimeout bounds one attempt at the host destroy, the same bound
-// destroyAndRemove puts on the whole teardown.
+// destroyStepTimeout bounds one attempt at the host destroy, the same 60s a
+// DELETE request waits.
 const destroyStepTimeout = 60 * time.Second
 
 // maxDestroySends bounds the one-way destroy sends in flight, so a restate
@@ -111,9 +111,9 @@ func (fm *FleetManager) durableDestroyer() DurableDestroyer {
 }
 
 // destroyAsync starts a teardown without waiting for it: a one-way send to
-// restate. the send runs off the caller's goroutine, at most maxDestroySends at a time, so a slow restate
-// never holds up reconcile. a send that fails leaves the vm in destroying,
-// where reconcile re-sends it.
+// restate. the send runs off the caller's goroutine, at most
+// maxDestroySends at a time, so a slow restate never holds up reconcile. a
+// send that fails leaves the vm in destroying, where reconcile re-sends it.
 func (fm *FleetManager) destroyAsync(vmID, reason string) {
 	d := fm.durableDestroyer()
 	fm.destroySends.Add(1)
@@ -185,7 +185,7 @@ func (fm *FleetManager) DestroyBegin(ctx context.Context, vmID, reason string) (
 	target := DestroyTarget{Tracked: true, HostID: v.hostID}
 	priorTaskID := v.taskID
 	assignedAt := v.createdAt
-	// CompleteTask and the expiry detectors mark the vm destroying and emit
+	// CompleteTask and the expiry check mark the vm destroying and emit
 	// the event themselves before they send the destroy.
 	already := v.state == VMStateDestroying
 	fm.mu.RUnlock()

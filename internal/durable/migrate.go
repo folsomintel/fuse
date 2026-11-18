@@ -82,10 +82,8 @@ func migratePermanent(err error) error {
 	if err == nil {
 		return nil
 	}
-	for i, s := range orchestrator.MigrateRefusals {
-		if errors.Is(err, s) {
-			return restate.ToTerminalError(err, restate.WithErrorCode(migrateErrorBase+restate.Code(i)))
-		}
+	if i := sentinelIndex(err, orchestrator.MigrateRefusals); i >= 0 {
+		return restate.ToTerminalError(err, restate.WithErrorCode(migrateErrorBase+restate.Code(i)))
 	}
 	return permanent(err)
 }
@@ -103,8 +101,7 @@ func migrateRefusal(err error) error {
 }
 
 // migrateError turns a migrate's failure back into the fleet error its code
-// names, so the api answers it with the same status and message as in mode
-// off.
+// names, so the api answers it with that error's own status and message.
 func migrateError(err error) error {
 	var ierr ingress.Error
 	if !errors.As(err, &ierr) {

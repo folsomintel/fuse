@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -244,7 +245,7 @@ func TestMigrateVM_aFailedDeltaThawsTheSource(t *testing.T) {
 	fm := newDeltaFleet(t, provider, mover)
 
 	_, err := fm.MigrateVM(context.Background(), "fuse-task-src", MigrateOptions{TargetHostID: "h-b", Live: true})
-	if !errors.Is(err, ErrArtifactTransferFailed) {
+	if err == nil || !strings.Contains(err.Error(), ErrArtifactTransferFailed.Error()) {
 		t.Fatalf("err = %v, want a transfer failure", err)
 	}
 	if provider.resumes != 1 {

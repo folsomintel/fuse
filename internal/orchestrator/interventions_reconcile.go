@@ -27,6 +27,7 @@ func (fm *FleetManager) reconcileInterventions(ctx context.Context) {
 	if !ran && fm.hitlResend.Load() {
 		fm.resumeApprovedRuns(ctx, d)
 	}
+	fm.resendWebhooks(ctx)
 	recs, err := fm.store.ListInterventions(ctx, InterventionFilter{State: string(hitl.StatePending)})
 	if err != nil {
 		fm.logger.Warn("list pending interventions failed", "err", err)

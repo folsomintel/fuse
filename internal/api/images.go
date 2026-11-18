@@ -51,7 +51,7 @@ func toAPIImage(img orchestrator.Image) Image {
 // convertImage starts converting an oci image.
 //
 //	@Summary		Convert an oci image
-//	@Description	Resolves ref to its manifest for a firecracker host's arch and starts converting it to a rootfs in the background. Answers 202 with the image's digest and state; poll GET /v1/images/{digest} until it is ready, then create with spec.image_digest. Converting a ref that is already converting or ready answers with that record; one that failed is retried. Public registries only, apt and dnf based images only; qemu hosts cannot convert. With restate on, an Idempotency-Key makes a retry attach to the first convert instead of starting another.
+//	@Description	Resolves ref to its manifest for a firecracker host's arch and starts converting it to a rootfs in the background. Answers 202 with the image's digest and state; poll GET /v1/images/{digest} until it is ready, then create with spec.image_digest. Converting a ref that is already converting or ready answers with that record; one that failed is retried. Public registries only, apt and dnf based images only; qemu hosts cannot convert. An Idempotency-Key makes a retry attach to the first convert instead of starting another.
 //	@Tags			images
 //	@Accept			json
 //	@Produce		json

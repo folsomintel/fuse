@@ -374,7 +374,7 @@ func TestRetryFailedTeardownsResendsDurably(t *testing.T) {
 	if _, err := fm.ProvisionAndAssign(ctx, "task-1", Spec{}, []byte(`{}`), nil, BootOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	// a vm left destroying long ago, e.g. by a mode off release before the
+	// a vm left destroying long ago, e.g. by an older release before the
 	// upgrade, with nothing in restate working on it.
 	fm.mu.Lock()
 	v := fm.vms["fuse-task-1"]

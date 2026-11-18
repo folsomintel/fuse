@@ -147,9 +147,10 @@ func TestEgressUnknownProviderAndNoRegistryAreRefused(t *testing.T) {
 
 	withMock := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", EgressRegistry: egress.NewRegistry(newEgressMock())})
 	_, err := withMock.ProvisionAndAssign(ctx, "t-unknown", spec, egressManifest, nil, BootOptions{})
-	var unknown *egress.UnknownProviderError
-	if !errors.As(err, &unknown) {
-		t.Fatalf("err = %v, want *egress.UnknownProviderError", err)
+	// it crosses restate as its message; the api refuses an unknown
+	// provider before the create.
+	if err == nil || !strings.Contains(err.Error(), `unknown provider "warp"`) {
+		t.Fatalf("err = %v, want the unknown provider refusal", err)
 	}
 
 	// no registry at all must not fall back to direct.

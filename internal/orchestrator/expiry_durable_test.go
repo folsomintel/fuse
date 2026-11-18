@@ -413,8 +413,7 @@ func TestDrainCommandAttachesAfterRestart(t *testing.T) {
 
 // TestExpiryCheckSpecWindows: a spec's idle timeout and max runtime override
 // the fleet defaults either way, activity since a strike clears it, and a vm
-// whose destroy failed is not watched. these are the rules
-// the reconcile detectors applied before expiry moved to the durable timer.
+// whose destroy failed is not watched.
 func TestExpiryCheckSpecWindows(t *testing.T) {
 	ctx := context.Background()
 

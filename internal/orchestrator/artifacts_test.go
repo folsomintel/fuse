@@ -321,7 +321,9 @@ func TestProvisionAndAssign_seedFallbackLadder(t *testing.T) {
 			}
 			info, err := fm.ProvisionAndAssign(ctx, taskID, spec, nil, nil, BootOptions{})
 			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
+				// the refusal crosses restate as ErrNoCapacity, which the
+				// api maps, with its own message.
+				if !errors.Is(err, ErrNoCapacity) || !strings.Contains(err.Error(), tc.wantErr.Error()) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
 				}
 				// Wrapping ErrNoCapacity is what makes the api answer 503; a
@@ -440,8 +442,10 @@ func TestProvisionAndAssign_failedPullLeavesNoHalfState(t *testing.T) {
 	_, err := fm.ProvisionAndAssign(ctx, "task-seed", Spec{
 		CPUs: 4, RamMB: 1024, SeedSnapshotID: "art-1", PinnedHostID: "h-a",
 	}, nil, nil, BootOptions{})
-	if !errors.Is(err, ErrArtifactTransferFailed) {
-		t.Fatalf("err = %v, want ErrArtifactTransferFailed", err)
+	// the failure crosses restate as its message: the api maps no status
+	// to it.
+	if err == nil || !strings.Contains(err.Error(), ErrArtifactTransferFailed.Error()) {
+		t.Fatalf("err = %v, want the transfer failure", err)
 	}
 
 	if _, tracked := fm.GetVM("fuse-task-seed"); tracked {

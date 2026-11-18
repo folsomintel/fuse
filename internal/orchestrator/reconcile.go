@@ -10,7 +10,7 @@ import (
 )
 
 // orphanDestroyTimeout bounds one orphan destroy, the same 60s ceiling
-// destroyAndRemove uses. without it a single host call (for example a delete
+// destroyStepTimeout puts on a durable host destroy. without it a single host call (for example a delete
 // queued behind a runaway exec holding the agent's vm lock) blocks the whole
 // reconcile cycle until the hostwire header timeout, minutes later.
 const orphanDestroyTimeout = 60 * time.Second
@@ -142,16 +142,16 @@ func (fm *FleetManager) noteIdleSuspected(vmID, taskID string, idle, timeout tim
 
 // teardownRetryAfter is how long a VM may sit in Destroying while its
 // provider still lists it before reconcile tries the destroy again. it is
-// longer than the 60s bound on destroyAndRemove and on a DELETE request, so a
-// destroy still in flight is never doubled up.
+// longer than the 60s bound on a host destroy step and on a DELETE request,
+// so a destroy still in flight is never doubled up.
 const teardownRetryAfter = 2 * time.Minute
 
 // retryFailedTeardowns re-runs the destroy of VMs left in Destroying whose
-// provider still lists them. a background teardown (from the stuck-task, idle
-// or draining detectors) that hit a host error gives up once and leaves the
-// VM there; without a retry nothing else touches it, since the orphan pass
-// skips tracked VMs and reapDestroyedVMs waits for the provider to drop it, so
-// the VM and its host allocation would outlive the host's recovery.
+// provider still lists them. a one-way destroy whose send failed (from
+// destroyAsync) leaves the VM there; without a retry nothing else touches
+// it, since the orphan pass skips tracked VMs and reapDestroyedVMs waits for
+// the provider to drop it, so the VM and its host allocation would outlive
+// the host's recovery.
 func (fm *FleetManager) retryFailedTeardowns(providerVMs map[string]bool) {
 	now := time.Now()
 
@@ -191,9 +191,9 @@ func destroyGated(spec *hitl.Spec) bool {
 	return false
 }
 
-// expiry describes why a VM is being torn down by a reconcile detector. The
-// stuck-task and idle detectors differ only in these strings and counters, so
-// they share failExpiredVM below.
+// expiry describes why ExpiryCheck is tearing a VM down. the runtime
+// ceiling, idle timeout and draining timeout differ only in these strings
+// and counters, so they share markExpiredVM below.
 type expiry struct {
 	from       VMState        // the state the vm must still be in to be torn down
 	reasonCode string         // short code carried on events and dead letters
@@ -246,8 +246,9 @@ func (fm *FleetManager) noteDrainExpired(vmID, taskID string, age time.Duration)
 	})
 }
 
-// markExpiredVM is failExpiredVM without the destroy: the durable expiry
-// timer sends that itself, as a journaled step.
+// markExpiredVM moves a vm still in e.from to destroying and fails its task.
+// it does not destroy: the durable expiry timer sends that itself, as a
+// journaled step.
 func (fm *FleetManager) markExpiredVM(ctx context.Context, vmID, taskID string, e expiry) bool {
 	fm.mu.Lock()
 	v, ok := fm.vms[vmID]

@@ -32,6 +32,11 @@ var (
 	// id is included in the wrapping fmt.Errorf context.
 	ErrTaskAlreadyAssigned = errors.New("task already assigned")
 
+	// ErrRestateUnavailable is an operation that could not reach restate
+	// ingress. every operation runs on restate, so it is retryable once
+	// restate is back; the api answers it with 503.
+	ErrRestateUnavailable = errors.New("restate unavailable")
+
 	// ErrVMNotFound is returned by DestroyVM, CreateSnapshot,
 	// RestoreSnapshot, and ListSnapshots when the vm id does not
 	// match a tracked VM.
@@ -196,7 +201,7 @@ type vm struct {
 	egress    egress.Status
 	createdAt time.Time
 	updatedAt time.Time
-	// lastActivityAt is the clock the idle detector reads: the last time a
+	// lastActivityAt is the clock the idle expiry check reads: the last time a
 	// caller exec'd or attached to this VM (create counts as activity). It is
 	// deliberately separate from updatedAt, which only moves on state
 	// transitions and would make every healthy VM look permanently idle.
@@ -321,11 +326,11 @@ type EgressMetrics interface {
 
 // OperationMetrics is an optional extension of ReconcileMetrics for
 // lifecycle operations: create, destroy, fork, migrate, migrate_live,
-// snapshot, restore and rotate_token. destroy is DestroyVM only: the reconcile loop's own
-// teardowns and the one after CompleteTask go through destroyAndRemove and are
-// not counted. snapshot includes the snapshots fork, migrate and checkpoint
-// chains take internally, since each is a real checkpoint the host had to
-// write. an implementation that omits it loses these and nothing else.
+// snapshot, restore and rotate_token. destroy is DestroyVM only: the
+// one-way destroys reconcile and CompleteTask send are not counted.
+// snapshot includes the snapshots fork, migrate and checkpoint chains take
+// internally, since each is a real checkpoint the host had to write. an
+// implementation that omits it loses these and nothing else.
 type OperationMetrics interface {
 	OperationCompleted(op string, d time.Duration, err error)
 }
@@ -571,7 +576,7 @@ type FleetManager struct {
 	// closed when it resolves. see interventions.go.
 	hitlMu      sync.Mutex
 	hitlWaiters map[string]chan struct{}
-	// hitlOrphans runs the orphaned-run pass once per process.
+	// hitlOrphans runs resumeApprovedRuns once per process.
 	hitlOrphans sync.Once
 	// hitlLocks are the environments a human holds right now, keyed by env
 	// id, and hitlAnswering the secret requests whose value is on its way
@@ -645,10 +650,13 @@ type FleetManager struct {
 	webhookSends     sync.WaitGroup
 	webhookMu        sync.Mutex
 	webhookBacklog   map[string]map[string]struct{}
+	// webhookUnsent is the deliveries restate would not take, by id, for
+	// the next reconcile to send again. guarded by webhookMu.
+	webhookUnsent map[string]WebhookDelivery
 
 	// durableHitlRuns runs approved hitl actions and intervention deadlines
-	// on restate. see hitl_durable.go. hitlSendSlots
-	// bounds the one-way sends in flight and hitlSends tracks them.
+	// on restate. see hitl_durable.go. hitlSendSlots bounds the one-way
+	// sends in flight and hitlSends tracks them.
 	// hitlResend asks the next reconcile to send every approved action
 	// still owed a result again, after a send failed. hitlUnstored holds a
 	// result whose write failed, for the step's retry; guarded by hitlMu.
@@ -665,9 +673,10 @@ type FleetManager struct {
 	// builds.go.
 	builds buildRegistry
 
-	// durableExpiries runs drain and environment expiry on restate. see expiry_durable.go. expirySendSlots bounds the one-way
-	// arms in flight and expirySends tracks them. expiryArmed is the create
-	// time of each vm this process has armed, guarded by mu.
+	// durableExpiries runs drain and environment expiry on restate. see
+	// expiry_durable.go. expirySendSlots bounds the one-way arms in flight
+	// and expirySends tracks them. expiryArmed is the create time of each
+	// vm this process has armed, guarded by mu.
 	durableExpiries DurableExpiry
 	expirySendSlots chan struct{}
 	expirySends     sync.WaitGroup
@@ -783,9 +792,8 @@ func (fm *FleetManager) SubscribeEnvironmentEvents(vmID string) (<-chan Environm
 //
 // Pass terminalState != "" to override the wire state for a removed
 // VM. Once a VM is deleted from fm.vms there is no live record to
-// snapshot, so callers (destroyAndRemove, reapDestroyedVMs,
-// ProvisionAndAssign failure path) supply the terminal state
-// explicitly.
+// snapshot, so the caller supplies the terminal state explicitly
+// (the removal paths use publishTerminalEvent for this today).
 func (fm *FleetManager) publishStateChange(vmID string, terminalState VMState) {
 	if fm.broadcaster == nil {
 		return
@@ -1425,7 +1433,12 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 		return fmt.Errorf("list persisted hosts: %w", err)
 	}
 	for _, hr := range hostRecords {
-		host := fm.hostFromRecord(hr)
+		host, plaintext := fm.hostFromRecord(hr)
+		if plaintext {
+			// a token stored before the key was required: encrypt it now.
+			fm.logger.Info("encrypting a host token stored in plaintext before TOKEN_ENCRYPTION_KEY was required", "host", host.ID)
+			fm.persistHostRecordBackground(fm.hostToRecord(host))
+		}
 		var p Provider
 		if fm.hostProviderFactory != nil {
 			p = fm.hostProviderFactory(host.URL, host.Token, host.Backend)
@@ -1495,7 +1508,7 @@ func (fm *FleetManager) recoverState(ctx context.Context) error {
 	fm.mu.Lock()
 	for id, recoveredVM := range recovered {
 		fm.vms[id] = recoveredVM
-		if recoveredVM.state == VMStateProvisioning {
+		if recoveredVM.state == VMStateProvisioning && !fm.isMigratePlaceholder(recoveredVM) {
 			fm.recoveredCreates[id] = true
 		}
 	}

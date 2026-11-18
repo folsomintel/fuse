@@ -33,7 +33,8 @@ func (fm *FleetManager) forgetSnapshotRecord(ctx context.Context, snapshotID str
 	}
 }
 
-// planDeltaMove is the move moveDeltaToHost runs.
+// planDeltaMove is the move that merges child, a diff, onto the copy of
+// base on hostID, dropping that copy when dropBase is set.
 func (fm *FleetManager) planDeltaMove(child SnapshotRecord, base, hostID string, dropBase bool) (ArtifactMoveJob, error) {
 	if diffParent(child) == "" {
 		return ArtifactMoveJob{}, fmt.Errorf("%w: snapshot %s is not a diff", ErrArtifactImmovable, child.SnapshotID)

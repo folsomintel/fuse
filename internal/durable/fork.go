@@ -73,10 +73,8 @@ func forkPermanent(err error) error {
 	if err == nil {
 		return nil
 	}
-	for i, s := range orchestrator.ForkRefusals {
-		if errors.Is(err, s) {
-			return restate.ToTerminalError(err, restate.WithErrorCode(forkErrorBase+restate.Code(i)))
-		}
+	if i := sentinelIndex(err, orchestrator.ForkRefusals); i >= 0 {
+		return restate.ToTerminalError(err, restate.WithErrorCode(forkErrorBase+restate.Code(i)))
 	}
 	return permanent(err)
 }
@@ -327,7 +325,7 @@ func (c *Client) Fork(ctx context.Context, vmID string, req orchestrator.ForkReq
 }
 
 // forkError turns a fork's failure back into the fleet error its code names,
-// so the api answers it with the same status and message as in mode off.
+// so the api answers it with that error's own status and message.
 func forkError(err error) error {
 	var ierr ingress.Error
 	if !errors.As(err, &ierr) {

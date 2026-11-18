@@ -236,14 +236,37 @@ fi
 # the orchestrator needs restate and a token encryption key. one configured
 # without them would crash-loop on the new binary, so it is left as it is
 # until `fc-agent.sh install-orchestrator` adds them.
-orch_env_ready() {
-  local f
-  f=$(systemctl show -p EnvironmentFiles --value "$FUSE_ORCH_SERVICE" 2>/dev/null | awk '{print $1}')
-  [ -n "$f" ] || return 0
-  sudo -n grep -qE '^FUSE_RESTATE_MODE=(self|cloud)$' "$f" && sudo -n grep -qE '^TOKEN_ENCRYPTION_KEY=.+' "$f"
+orch_env_file() {
+  systemctl show -p EnvironmentFiles --value "$FUSE_ORCH_SERVICE" 2>/dev/null | awk '{print $1}'
 }
+orch_env_value() {
+  sudo -n grep -E "^$1=" "$(orch_env_file)" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"'"'"' \t\r'
+}
+orch_env_ready() {
+  [ -n "$(orch_env_file)" ] || return 0
+  case "$(orch_env_value FUSE_RESTATE_MODE)" in self|cloud) ;; *) return 1 ;; esac
+  [ -n "$(orch_env_value TOKEN_ENCRYPTION_KEY)" ]
+}
+# orch_pinned: invocations not yet done that are pinned to the co-located
+# deployment. a new binary behind the same address would replay them on
+# code they were not journaled with, so the swap waits for them (the same
+# rule ops/install-orchestrator.sh applies). prints nothing when restate is
+# unreachable or the mode is not self.
+orch_pinned() {
+  local listen out
+  [ "$(orch_env_value FUSE_RESTATE_MODE)" = self ] || return 0
+  listen=$(orch_env_value ORCH_RESTATE_LISTEN)
+  out=$(curl -fsS --max-time 10 -X POST http://127.0.0.1:9070/query \
+    -H 'content-type: application/json' -H 'accept: application/json' \
+    -d "{\"query\":\"SELECT count(*) AS n FROM sys_invocation i JOIN sys_deployment d ON i.pinned_deployment_id = d.id WHERE d.endpoint = 'http://${listen:-127.0.0.1:9080}/' AND i.status != 'completed'\"}" 2>/dev/null) || return 0
+  echo "$out" | grep -oE '"n":[0-9]+' | cut -d: -f2
+}
+ORCH_PINNED=""
+[ -z "${FUSE_ORCH_SERVICE:-}" ] || ORCH_PINNED=$(orch_pinned)
 if [ -n "${FUSE_ORCH_SERVICE:-}" ] && ! orch_env_ready; then
   warn "skipping orchestrator update: its env has no FUSE_RESTATE_MODE or TOKEN_ENCRYPTION_KEY, which the new orchestrator requires; run fc-agent.sh install-orchestrator to add restate"
+elif [ -n "${FUSE_ORCH_SERVICE:-}" ] && [ -n "$ORCH_PINNED" ] && [ "$ORCH_PINNED" != 0 ] && [ "${FUSE_RESTATE_FORCE_UPGRADE:-}" != 1 ]; then
+  warn "skipping orchestrator update: $ORCH_PINNED restate invocations are still pinned to its deployment; the next run retries (FUSE_RESTATE_FORCE_UPGRADE=1 replaces it anyway)"
 elif [ -n "${FUSE_ORCH_SERVICE:-}" ]; then
   [ -n "${FUSE_ORCH_BIN:-}" ] || die "FUSE_ORCH_SERVICE set but FUSE_ORCH_BIN is not"
   if [ -n "$LATEST" ]; then

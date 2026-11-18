@@ -69,6 +69,36 @@ func terminal(err error) bool {
 	return err != nil && !retrying
 }
 
+// crossed is a handler's failure as the durable client hands it back: a
+// terminal error keeps its identity only when it is one of the sentinels
+// tables lists (the handler carries those across restate as error codes),
+// and is otherwise its message alone. an error restate would still be
+// retrying, or the caller's own cancellation, is returned as it is.
+func crossed(err error, tables ...[]error) error {
+	if err == nil || !terminal(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	// the last match in a table wins, as internal/durable's sentinelIndex.
+	for _, table := range tables {
+		for i := len(table) - 1; i >= 0; i-- {
+			if errors.Is(err, table[i]) {
+				return &sentinelError{msg: err.Error(), sentinel: table[i]}
+			}
+		}
+	}
+	return errors.New(err.Error())
+}
+
+// sentinelError is a sentinel brought back across restate with the
+// handler's message, as internal/durable's of the same name.
+type sentinelError struct {
+	msg      string
+	sentinel error
+}
+
+func (e *sentinelError) Error() string { return e.msg }
+func (e *sentinelError) Unwrap() error { return e.sentinel }
+
 // handlerCtx is the context a handler runs under: the caller's values, but
 // not its cancellation, as an invocation keeps running when its caller gives
 // up.
@@ -332,7 +362,7 @@ func (d *Inline) destroy(ctx context.Context, vmID string, req orchestrator.Dest
 	}
 	hostID := target.HostID
 	if !target.Tracked {
-		if req.HostID == "" && req.Reason != orchestrator.DestroyReasonCreateCleanup {
+		if req.HostID == "" && !orchestrator.CleanupOfCreatedVM(req.Reason) {
 			return d.dropChain(ctx, vmID)
 		}
 		hostID = req.HostID
@@ -368,7 +398,7 @@ func (d *Inline) Create(ctx context.Context, vmID string, req orchestrator.Creat
 		}
 		return struct{}{}, err
 	})
-	return err
+	return crossed(err, orchestrator.CreateFleetErrors)
 }
 
 // CreateInFlight mirrors Environment/{vm_id}.CreateInFlight.
@@ -479,7 +509,7 @@ func (d *Inline) Fork(ctx context.Context, vmID string, req orchestrator.ForkReq
 		}
 		return struct{}{}, err
 	})
-	return err
+	return crossed(err, orchestrator.ForkRefusals, orchestrator.SnapshotFleetErrors)
 }
 
 func (d *Inline) forkLocked(ctx context.Context, vmID string, req orchestrator.ForkRequest) (*orchestrator.DestroyRequest, error) {
@@ -607,9 +637,10 @@ func (d *Inline) forkCompensate(ctx context.Context, f *forking, cause error) (*
 
 // Snapshot mirrors Environment/{vm_id}.Snapshot, awaited.
 func (d *Inline) Snapshot(ctx context.Context, vmID string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
-	return request(d, ctx, "Environment/"+vmID+"/Snapshot", func(c context.Context) (orchestrator.SnapshotRecord, error) {
+	v, err := request(d, ctx, "Environment/"+vmID+"/Snapshot", func(c context.Context) (orchestrator.SnapshotRecord, error) {
 		return d.snapshotLocked(c, vmID, opts)
 	})
+	return v, crossed(err, orchestrator.SnapshotFleetErrors)
 }
 
 func (d *Inline) snapshotLocked(ctx context.Context, vmID string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
@@ -652,7 +683,7 @@ func (d *Inline) Restore(ctx context.Context, vmID, snapshotID string) error {
 		defer d.lockEnv(vmID)()
 		return struct{}{}, d.restore(c, vmID, snapshotID)
 	})
-	return err
+	return crossed(err, orchestrator.SnapshotFleetErrors)
 }
 
 // restore mirrors restore in internal/durable/snapshot.go.
@@ -1104,7 +1135,7 @@ func (d *Inline) RotateToken(ctx context.Context, vmID string) error {
 	_, err := request(d, ctx, "", func(c context.Context) (struct{}, error) {
 		return struct{}{}, d.rotateLocked(c, vmID)
 	})
-	return err
+	return crossed(err, orchestrator.SnapshotFleetErrors)
 }
 
 func (d *Inline) rotateLocked(ctx context.Context, vmID string) error {
@@ -1141,7 +1172,7 @@ func (d *Inline) Drain(ctx context.Context, vmID string) error {
 		defer d.lockEnv(vmID)()
 		return struct{}{}, d.drain(c, vmID)
 	})
-	return err
+	return crossed(err, orchestrator.SnapshotFleetErrors)
 }
 
 // drain mirrors drain in internal/durable/expiry.go.
@@ -1180,10 +1211,11 @@ func (d *Inline) SendArmExpiry(_ context.Context, vmID string) error {
 // Migrate mirrors Environment/{vm_id}.Migrate on the source's key, awaited,
 // returning the new vm's id.
 func (d *Inline) Migrate(ctx context.Context, vmID string, req orchestrator.MigrateRequest) (string, error) {
-	return request(d, ctx, "Environment/"+vmID+"/Migrate", func(c context.Context) (string, error) {
+	v, err := request(d, ctx, "Environment/"+vmID+"/Migrate", func(c context.Context) (string, error) {
 		defer d.lockEnv(vmID)()
 		return d.migrate(c, vmID, req)
 	})
+	return v, crossed(err, orchestrator.MigrateRefusals, orchestrator.SnapshotFleetErrors)
 }
 
 // migrate mirrors migrate in internal/durable/migrate.go. plan's every
@@ -1545,9 +1577,10 @@ func (d *Inline) deliverWebhook(ctx context.Context, wd orchestrator.WebhookDeli
 
 // ConvertImage mirrors Images.Convert, awaited.
 func (d *Inline) ConvertImage(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
-	return request(d, ctx, "Images/Convert", func(c context.Context) (orchestrator.Image, error) {
+	v, err := request(d, ctx, "Images/Convert", func(c context.Context) (orchestrator.Image, error) {
 		return d.convertImage(c, req)
 	})
+	return v, crossed(err, orchestrator.ImageFleetErrors)
 }
 
 // convertImage mirrors convertImage in internal/durable/convert.go: every

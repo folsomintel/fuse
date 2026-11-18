@@ -323,9 +323,22 @@ re-run the installer with the new release. an env file that says
 `FUSE_RESTATE_MODE=off`, or sets no mode, moves to self: the installer installs
 `restate-server.service` and `/etc/fuse/restate.env` (needs docker), points the
 orchestrator at it and registers the deployment after start. an env file
-without `TOKEN_ENCRYPTION_KEY` gets a generated one; nothing was encrypted
-with a key it never had, so adding one loses nothing. passing
-`FUSE_RESTATE_MODE=off` to the installer is refused.
+without `TOKEN_ENCRYPTION_KEY` gets a generated one. host tokens a keyless
+orchestrator stored in plaintext are still read with the new key and stored
+again encrypted on the first start, so hosts need no re-registration.
+passing `FUSE_RESTATE_MODE=off` to the installer is refused.
+
+before upgrading, let approved hitl actions finish (`fuse hitl list
+--state approved` shows none without a result). an in-process run stops with
+the old binary, and the new one hands every approved action without a result
+to restate, which runs it again: a non-idempotent exec would run twice.
+
+a co-located orchestrator updated by `fc-update.sh` is left on its release
+while its env has no `FUSE_RESTATE_MODE` or `TOKEN_ENCRYPTION_KEY` (the
+updater warns each run); run `fc-agent.sh install-orchestrator` once to add
+restate, and later updates go through. the updater also skips the swap while
+invocations are still pinned to the running deployment, and retries on its
+next run (`FUSE_RESTATE_FORCE_UPGRADE=1` swaps anyway).
 
 running environments are untouched: their rows in postgres are read back as
 before. what an old in-process run left half done is closed out:
@@ -357,9 +370,11 @@ what operators see when a step is missing:
 - at startup the orchestrator waits for it, then exits (see
   [startup](#startup)).
 - once running, the orchestrator keeps serving its api; `/ready` reports restate degraded.
-  operations that run on restate wait and resume once it is back; nothing
-  in flight is lost, it is in `/var/lib/restate`.
-- a `DELETE /v1/environments/{id}` fails with a 500 until restate is back.
+  invocations already in restate resume once it is back; nothing in flight
+  is lost, it is in `/var/lib/restate`.
+- a new mutating call (create, destroy, fork, snapshot, ...) that cannot
+  reach restate fails with a 503 `unavailable`; retry it once restate is
+  back.
   background teardowns (task completion, reconcile) stay `destroying` and
   are re-sent by reconcile once it answers.
 - `systemctl status restate-server`, `journalctl -u restate-server -n 200`.

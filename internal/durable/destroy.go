@@ -43,10 +43,10 @@ func destroy(ctx restate.ObjectContext, fleet destroyFleet, policy RetryPolicy, 
 	}
 	hostID := target.HostID
 	if !target.Tracked {
-		// a create cleanup is only sent for a vm that booted, so an empty
-		// host there is the default provider of a hostless fleet, not a vm
-		// that was never placed.
-		if req.HostID == "" && req.Reason != orchestrator.DestroyReasonCreateCleanup {
+		// a create cleanup or fork rollback is only sent for a vm that was
+		// created, so an empty host there is the default provider of a
+		// hostless fleet, not a vm that was never placed.
+		if req.HostID == "" && !orchestrator.CleanupOfCreatedVM(req.Reason) {
 			// neither tracked nor placed: an earlier destroy finished it.
 			// any checkpoint chain the object still keeps for it goes too.
 			return dropChain(ctx, fleet)

@@ -46,8 +46,8 @@ type ExpireRequest struct {
 }
 
 // expiryState is what the Environment object keeps between expiry checks.
-// it replaces the strike maps reconcile holds in memory in mode off, so a
-// restart neither resets a strike nor loses a timer.
+// it lives in restate, not orchestrator memory, so a restart neither resets
+// a strike nor loses a timer.
 type expiryState struct {
 	// Token is the pending timer's.
 	Token string `json:"token"`

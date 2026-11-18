@@ -1272,8 +1272,10 @@ can arrive more than once if the orchestrator dies mid-post, so dedupe on
 endpoint url and signing secret go in sealed with `TOKEN_ENCRYPTION_KEY`;
 the journal holds the notification's ids, gate, deadline and link. If
 handing a delivery to restate fails, the orchestrator retries the hand-off at
-once, then after 1s, 4s and 16s, then logs and drops it; the audit log stays
-the record, the webhook is a nudge.
+once, then after 1s, 4s and 16s, then keeps it and hands it over again on
+each reconcile until restate takes it. That backlog lives in the
+orchestrator's memory, so a restart during a restate outage loses it; the
+audit log stays the record, the webhook is a nudge.
 
 The signing secrets are stored sealed with `TOKEN_ENCRYPTION_KEY`.
 

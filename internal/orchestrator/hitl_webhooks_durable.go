@@ -99,8 +99,8 @@ func (fm *FleetManager) durableWebhooks() DurableWebhooks {
 
 // notifyWebhook delivers n to t: a one-way send to restate, off the caller's
 // goroutine, at most maxWebhookSends at a time. a send restate does not take
-// is retried on the webhook backoff, then logged and dropped: the audit row
-// stays the record.
+// is retried on the webhook backoff, then kept for the next reconcile to send
+// again (resendWebhooks), for as long as this process runs.
 func (fm *FleetManager) notifyWebhook(ctx context.Context, t webhookTarget, n hitl.Notification) {
 	hooks := fm.durableWebhooks()
 	d, err := fm.newWebhookDelivery(t, n)
@@ -131,9 +131,38 @@ func (fm *FleetManager) notifyWebhook(ctx context.Context, t webhookTarget, n hi
 				return
 			}
 		}
-		fm.logger.Error("send durable hitl webhook failed, dropping it", "endpoint", d.Endpoint, "event", n.Event, "intervention", n.InterventionID, "err", err)
-		fm.webhookPending(d, false)
+		fm.logger.Error("send durable hitl webhook failed, the next reconcile sends it again", "endpoint", d.Endpoint, "event", n.Event, "intervention", n.InterventionID, "err", err)
+		fm.webhookMu.Lock()
+		if fm.webhookUnsent == nil {
+			fm.webhookUnsent = map[string]WebhookDelivery{}
+		}
+		fm.webhookUnsent[d.ID] = d
+		fm.webhookMu.Unlock()
 	}()
+}
+
+// resendWebhooks sends restate the deliveries it would not take before, once
+// each, and keeps the ones it still refuses for the next cycle.
+func (fm *FleetManager) resendWebhooks(ctx context.Context) {
+	fm.webhookMu.Lock()
+	unsent := make([]WebhookDelivery, 0, len(fm.webhookUnsent))
+	for _, d := range fm.webhookUnsent {
+		unsent = append(unsent, d)
+	}
+	fm.webhookMu.Unlock()
+	hooks := fm.durableWebhooks()
+	for _, d := range unsent {
+		sctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		err := hooks.SendWebhook(sctx, d)
+		cancel()
+		if err != nil {
+			fm.logger.Warn("resend durable hitl webhook failed, retrying next cycle", "endpoint", d.Endpoint, "err", err)
+			return
+		}
+		fm.webhookMu.Lock()
+		delete(fm.webhookUnsent, d.ID)
+		fm.webhookMu.Unlock()
+	}
 }
 
 // newWebhookDelivery is the first attempt of n to t, with t sealed.

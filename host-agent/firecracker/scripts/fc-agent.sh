@@ -17,6 +17,13 @@ RESTATE_ENV=/etc/fuse/restate.env
 RESTATE_UNIT_SRC="$FC_DIR/../../ops/systemd/restate-server.service"
 RESTATE_REGISTER=/usr/local/lib/fuse/register-restate.sh
 
+# orch_mode: FUSE_RESTATE_MODE from the orchestrator defaults, unquoted, or
+# empty.
+orch_mode() {
+  sudo -n grep -E '^FUSE_RESTATE_MODE=' "$ORCH_DEFAULTS" 2>/dev/null | tail -n1 | cut -d= -f2- \
+    | tr -d '"'"'"' \t\r'
+}
+
 # >>> fuse release-asset checksum verification >>>
 # This block is embedded, not sourced: ops/install-orchestrator.sh is
 # documented as curl-able and run standalone on a fresh host, so a sibling
@@ -313,7 +320,11 @@ EOF
     # 3. restate. the orchestrator refuses to start without it, so a file
     #    from before restate was required gets its keys too. a file that
     #    already names a mode (self or cloud) is left as it is.
-    if ! sudo -n grep -qE '^FUSE_RESTATE_MODE=(self|cloud)$' "$ORCH_DEFAULTS"; then
+    case "$(orch_mode)" in
+      self|cloud) restate_mode_set=1 ;;
+      *) restate_mode_set=0 ;;
+    esac
+    if [ "$restate_mode_set" = 0 ]; then
       tmp=$(mktemp)
       sudo -n grep -vE '^(FUSE_RESTATE_MODE|FUSE_RESTATE_INGRESS_URL|ORCH_RESTATE_LISTEN)=' "$ORCH_DEFAULTS" > "$tmp" || true
       printf '\n# restate (required): restate-server runs beside the orchestrator.\nFUSE_RESTATE_MODE=self\nFUSE_RESTATE_INGRESS_URL=http://127.0.0.1:18080\nORCH_RESTATE_LISTEN=127.0.0.1:9080\n' >> "$tmp"
@@ -325,39 +336,72 @@ EOF
       sudo -n grep -vE '^TOKEN_ENCRYPTION_KEY=' "$ORCH_DEFAULTS" > "$tmp" || true
       echo "TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> "$tmp"
       sudo -n tee "$ORCH_DEFAULTS" < "$tmp" >/dev/null; rm -f "$tmp"
+      # host tokens a keyless orchestrator stored in plaintext are still
+      # read, and stored again encrypted, on the first start.
       echo "[orch] added a generated TOKEN_ENCRYPTION_KEY to $ORCH_DEFAULTS (now required)"
     fi
     register_line=""
-    if sudo -n grep -qx 'FUSE_RESTATE_MODE=self' "$ORCH_DEFAULTS"; then
+    if [ "$(orch_mode)" = self ]; then
       command -v docker >/dev/null 2>&1 || { echo "[orch] FUSE_RESTATE_MODE=self runs restate-server in docker; install docker first" >&2; exit 1; }
       [ -f "$RESTATE_UNIT_SRC" ] || { echo "[orch] $RESTATE_UNIT_SRC not found; run this from a fuse checkout" >&2; exit 1; }
-      if ! sudo -n test -f "$RESTATE_ENV"; then
+      # a restate already answering on the admin port that this unit did not
+      # start (ops/restate/compose.yaml, say) is used as it is: a second one
+      # would fight it for the ports and split the data.
+      own_unit=1
+      if curl -fsS -o /dev/null --max-time 2 http://127.0.0.1:9070/health 2>/dev/null \
+        && ! systemctl is-active --quiet restate-server.service; then
+        own_unit=0
+        echo "[orch] restate already answers on 127.0.0.1:9070; using it instead of installing restate-server.service"
+      fi
+      if [ "$own_unit" = 1 ] && ! sudo -n test -f "$RESTATE_ENV"; then
         sudo -n mkdir -p "$(dirname "$RESTATE_ENV")"
-        printf 'RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:18080\nRESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:9070\nRESTATE_BIND_ADDRESS=127.0.0.1:5122\n' \
-          | sudo -n tee "$RESTATE_ENV" >/dev/null
+        # the same file ops/install-orchestrator.sh writes.
+        sudo -n tee "$RESTATE_ENV" >/dev/null <<'RENV'
+# /etc/fuse/restate.env - restate-server config, passed into its container.
+# Edit, then: sudo systemctl restart restate-server
+# Every port stays on 127.0.0.1: the admin api has no auth, and ingress
+# invokes handlers directly. Keep them off the network.
+RESTATE_NODE_NAME=fuse-restate
+RESTATE_BASE_DIR=/restate-data
+RESTATE_LISTEN_MODE=tcp
+RESTATE_INGRESS__BIND_ADDRESS=127.0.0.1:18080
+RESTATE_ADMIN__BIND_ADDRESS=127.0.0.1:9070
+RESTATE_BIND_ADDRESS=127.0.0.1:5122
+
+# Keep step history of completed invocations (the default 0 drops it).
+RESTATE_DEFAULT_JOURNAL_RETENTION=7d
+RESTATE_DEFAULT_WORKFLOW_COMPLETION_RETENTION=7d
+RENV
         sudo -n chmod 600 "$RESTATE_ENV"
       fi
-      sudo -n install -m0644 "$RESTATE_UNIT_SRC" /etc/systemd/system/restate-server.service
+      if [ "$own_unit" = 1 ]; then
+        sudo -n install -m0644 "$RESTATE_UNIT_SRC" /etc/systemd/system/restate-server.service
+      fi
       # registers the handler endpoint once the orchestrator serves it; the
       # orchestrator waits for that before it opens its api.
       sudo -n mkdir -p "$(dirname "$RESTATE_REGISTER")"
       sudo -n tee "$RESTATE_REGISTER" >/dev/null <<'REG'
 #!/bin/sh
 # register-restate.sh: register the co-located orchestrator's restate handler
-# endpoint with restate-server. written by fc-agent.sh install-orchestrator,
-# run as the orchestrator unit's ExecStartPost.
-for i in $(seq 120); do
-  curl -fsS -o /dev/null --max-time 10 -X POST http://127.0.0.1:9070/deployments \
-    -H 'content-type: application/json' -d '{"uri":"http://127.0.0.1:9080","force":true}' && exit 0
+# endpoint (ORCH_RESTATE_LISTEN, from the unit's environment) with
+# restate-server. written by fc-agent.sh install-orchestrator, run as the
+# orchestrator unit's ExecStartPost. it gives up before systemd's start
+# timeout; Restart= runs it again.
+uri="http://${ORCH_RESTATE_LISTEN:-127.0.0.1:9080}"
+for i in $(seq 60); do
+  curl -fsS -o /dev/null --max-time 5 -X POST "${RESTATE_ADMIN_URL:-http://127.0.0.1:9070}/deployments" \
+    -H 'content-type: application/json' -d "{\"uri\":\"$uri\",\"force\":true}" && exit 0
   sleep 1
 done
-echo "register-restate: could not register http://127.0.0.1:9080 with restate" >&2
+echo "register-restate: could not register $uri with restate" >&2
 exit 1
 REG
       sudo -n chmod 0755 "$RESTATE_REGISTER"
       sudo -n systemctl daemon-reload
-      sudo -n systemctl enable --now restate-server.service
-      echo "[orch] restate-server running (ingress 127.0.0.1:18080, admin 127.0.0.1:9070)"
+      if [ "$own_unit" = 1 ]; then
+        sudo -n systemctl enable --now restate-server.service
+        echo "[orch] restate-server running (ingress 127.0.0.1:18080, admin 127.0.0.1:9070)"
+      fi
       register_line="ExecStartPost=$RESTATE_REGISTER"
     fi
 

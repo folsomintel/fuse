@@ -241,7 +241,8 @@ func TestConvertImageReadyStartsNoWatch(t *testing.T) {
 }
 
 // TestConvertImageRefusalKeepsSentinel: a refusal crosses restate as its
-// sentinel, so the api answers it as in mode off, and is not retried.
+// sentinel, so the api answers it with that sentinel's status, and is not
+// retried.
 func TestConvertImageRefusalKeepsSentinel(t *testing.T) {
 	for _, sentinel := range []error{orchestrator.ErrInvalidImage, orchestrator.ErrImageHostFailed, orchestrator.ErrNoCapacity} {
 		fleet := newImageFleet("ubuntu")

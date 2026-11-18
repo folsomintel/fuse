@@ -656,8 +656,8 @@ else
   log "$ENV_FILE exists - leaving it untouched"
   # the orchestrator refuses to start without a key: restate journals
   # create, fork and webhook inputs sealed with it. an env file from before
-  # it was required may lack one; nothing was encrypted with a key it never
-  # had, so adding one loses nothing.
+  # it was required may lack one. host tokens such an orchestrator stored in
+  # plaintext are still read, and stored again encrypted, on the first start.
   if [ -z "$(env_value TOKEN_ENCRYPTION_KEY)" ]; then
     set_env_key "$ENV_FILE" TOKEN_ENCRYPTION_KEY "$(openssl rand -hex 32)"
     log "added a generated TOKEN_ENCRYPTION_KEY to $ENV_FILE (now required)"

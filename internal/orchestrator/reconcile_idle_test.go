@@ -9,7 +9,7 @@ import (
 // back-dated by idleFor, so idle detection can be exercised without waiting.
 func idleFleet(t *testing.T, cfg FleetConfig, taskID string, idleFor time.Duration) (*FleetManager, string) {
 	t.Helper()
-	// A long stuck ceiling keeps the stuck detector out of the way; these
+	// A long stuck ceiling keeps the runtime ceiling out of the way; these
 	// tests are only about the idle predicate.
 	if cfg.TaskStuckTimeout == 0 {
 		cfg.TaskStuckTimeout = 24 * time.Hour

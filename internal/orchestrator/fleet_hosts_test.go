@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/folsomintel/fuse/internal/secrets"
 )
 
 func gpuFleetHost(id string, gpus int, kind string) Host {
@@ -402,5 +405,55 @@ func TestReconcileOrphan_destroysAndReclaimsHostAllocation(t *testing.T) {
 	stub.mu.Unlock()
 	if !orphanGone {
 		t.Errorf("orphan not destroyed: %d envs remain", len(stub.envs))
+	}
+}
+
+// TestRecoverHostTokenStoredBeforeTheKey: a host registered on an
+// orchestrator without a TOKEN_ENCRYPTION_KEY was stored with its token in
+// plaintext. once the key is required, recovery still reads that token, and
+// stores it again encrypted; a row the key cannot decrypt that is not such a
+// token still comes back empty.
+func TestRecoverHostTokenStoredBeforeTheKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStateStore()
+	now := time.Now()
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-old", URL: "http://h-old", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte("0123456789abcdef0123456789abcdef"), CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertHost(ctx, HostRecord{ID: "h-rekeyed", URL: "http://h-rekeyed", State: HostActive, Backend: BackendFirecracker,
+		TokenEncrypted: []byte{0x00, 0x9f, 0x10, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10},
+		CreatedAt:      now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), StateStore: store, Prefix: "fuse-"})
+	if err := fm.recoverState(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if h, ok := fm.GetHost("h-old"); !ok || h.Token != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("legacy host token = %q (found %v), want the plaintext token", h.Token, ok)
+	}
+	if h, ok := fm.GetHost("h-rekeyed"); !ok || h.Token != "" {
+		t.Fatalf("undecryptable host token = %q (found %v), want empty", h.Token, ok)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		recs, err := store.ListHosts(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range recs {
+			if r.ID != "h-old" {
+				continue
+			}
+			if plain, err := secrets.DecryptToken(r.TokenEncrypted, fm.tokenEncryptionKey); err == nil && plain == "0123456789abcdef0123456789abcdef" {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the legacy token was never stored again encrypted")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

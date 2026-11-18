@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -235,7 +236,13 @@ func TestMigrateVM_liveRefusalsLeaveTheSourceRunning(t *testing.T) {
 			fm := newLiveMigrateFleet(t, provider, mover)
 
 			_, err := fm.MigrateVM(context.Background(), "fuse-task-src", tc.opts)
-			if !errors.Is(err, tc.want) {
+			// a transfer failure is no refusal sentinel: it crosses restate
+			// as its message.
+			if tc.want == ErrArtifactTransferFailed {
+				if err == nil || !strings.Contains(err.Error(), tc.want.Error()) {
+					t.Fatalf("err = %v, want %v", err, tc.want)
+				}
+			} else if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
 			if info, ok := fm.GetVM("fuse-task-src"); !ok || info.State != VMStateRunning {

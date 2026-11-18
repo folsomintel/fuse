@@ -14,13 +14,20 @@ import (
 // fork sends for its new vm.
 const DestroyReasonForkRollback = "fork_rollback"
 
+// CleanupOfCreatedVM reports whether a destroy with reason is one a create
+// or fork sends for a vm it created and then gave up on. such a destroy names
+// the vm's host, and an empty one means the default provider of a fleet with
+// no registered hosts.
+func CleanupOfCreatedVM(reason string) bool {
+	return reason == DestroyReasonCreateCleanup || reason == DestroyReasonForkRollback
+}
+
 // forkTaskPrefix starts every fork's task id, and so its new vm's id.
 const forkTaskPrefix = "fork-"
 
 // ForkRefusals are the sentinel errors a fork refuses with besides
 // SnapshotFleetErrors. the durable handler carries each one across restate as
-// its own error code, so the api answers it with the same status as in mode
-// off.
+// its own error code, so the api answers it with that sentinel's status.
 var ForkRefusals = []error{
 	ErrSnapshotNotSeedable,
 }

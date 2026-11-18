@@ -84,16 +84,14 @@ func imageWatchKey(img orchestrator.Image) []restate.SendOption {
 	return []restate.SendOption{restate.WithIdempotencyKey("image-watch:" + img.HostID + ":" + img.Digest + ":" + img.CreatedAt)}
 }
 
-// imageTerminal marks every convert failure terminal: in mode off each one is
-// the api's answer at once, so here too, under the sentinel's code.
+// imageTerminal marks every convert failure terminal: each one is the api's
+// answer at once, not something a retry fixes, under the sentinel's code.
 func imageTerminal(err error) error {
 	if err == nil {
 		return nil
 	}
-	for i, s := range orchestrator.ImageFleetErrors {
-		if errors.Is(err, s) {
-			return restate.ToTerminalError(err, restate.WithErrorCode(imageErrorBase+restate.Code(i)))
-		}
+	if i := sentinelIndex(err, orchestrator.ImageFleetErrors); i >= 0 {
+		return restate.ToTerminalError(err, restate.WithErrorCode(imageErrorBase+restate.Code(i)))
 	}
 	return restate.ToTerminalError(err, restate.WithErrorCode(imageFailedCode))
 }
@@ -144,7 +142,8 @@ func (c *Client) ConvertImage(ctx context.Context, req orchestrator.ConvertImage
 }
 
 // imageError turns a convert's failure back into the fleet sentinel its code
-// names, or into its own message, so the api answers it as in mode off.
+// names, or into its own message, so the api answers it with that sentinel's
+// status.
 func imageError(err error) error {
 	var ierr ingress.Error
 	if !errors.As(err, &ierr) {

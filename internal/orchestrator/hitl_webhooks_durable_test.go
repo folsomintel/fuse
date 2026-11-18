@@ -155,8 +155,9 @@ func TestHitlWebhookDurableSend(t *testing.T) {
 }
 
 // TestHitlWebhookDurableSendRetries: a send restate does not take is tried
-// again on the webhook backoff, and one it never takes is dropped, never
-// posted from the orchestrator itself.
+// again on the webhook backoff, and one it never takes stays owed until a
+// reconcile after restate is back sends it. nothing is posted from the
+// orchestrator itself.
 func TestHitlWebhookDurableSendRetries(t *testing.T) {
 	rc := newReceiver(t)
 	hooks := &fakeWebhooks{fails: 2}
@@ -183,12 +184,35 @@ func TestHitlWebhookDurableSendRetries(t *testing.T) {
 	posted := len(rc2.got)
 	rc2.mu.Unlock()
 	if posted != 0 {
-		t.Fatalf("a dropped send was posted %d times in process", posted)
+		t.Fatalf("a refused send was posted %d times in process", posted)
 	}
 	metrics.mu.Lock()
-	defer metrics.mu.Unlock()
-	if n := len(metrics.backlog); n == 0 || metrics.backlog[n-1] != 0 {
-		t.Fatalf("backlog = %v, want the dropped delivery off it", metrics.backlog)
+	if n := len(metrics.backlog); n == 0 || metrics.backlog[n-1] != 1 {
+		t.Fatalf("backlog = %v, want the refused delivery still owed", metrics.backlog)
+	}
+	metrics.mu.Unlock()
+
+	// a reconcile while restate is still down keeps it; one after it is
+	// back sends it.
+	fm2.resendWebhooks(context.Background())
+	if len(down.sent) != 0 {
+		t.Fatalf("resent %d while restate is down", len(down.sent))
+	}
+	down.mu.Lock()
+	down.err = nil
+	down.mu.Unlock()
+	fm2.resendWebhooks(context.Background())
+	down.mu.Lock()
+	sent := len(down.sent)
+	down.mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("resent %d after restate came back, want 1", sent)
+	}
+	fm2.webhookMu.Lock()
+	left := len(fm2.webhookUnsent)
+	fm2.webhookMu.Unlock()
+	if left != 0 {
+		t.Fatalf("%d deliveries still owed after the resend", left)
 	}
 }
 

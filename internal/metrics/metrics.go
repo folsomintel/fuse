@@ -272,7 +272,7 @@ func NewPrometheusMetrics(reg prometheus.Registerer) *PrometheusMetrics {
 			Namespace: "orchestrator",
 			Subsystem: "step",
 			Name:      "duration_seconds",
-			Help:      "Lifecycle step latency by op and step, one sample per execution: durable (restate) steps, and a create's steps in mode off. Replayed steps are not counted.",
+			Help:      "Lifecycle step latency by op and step, one sample per execution of a durable (restate) step. Replayed steps are not counted.",
 			Buckets:   []float64{.01, .05, .1, .25, .5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600},
 		}, []string{"op", "step"}),
 		stepRetries: prometheus.NewCounterVec(prometheus.CounterOpts{

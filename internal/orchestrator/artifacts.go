@@ -102,7 +102,7 @@ type ArtifactMoved struct {
 	Kind SnapshotKind
 	// Files is what the receiving host reports about the copy it committed,
 	// file name to sha256. only a delta merge has digests of its own to
-	// report (see moveDeltaToHost); a full move commits the digests it was
+	// report (see planDeltaMove); a full move commits the digests it was
 	// given.
 	Files map[string]string
 }
@@ -489,7 +489,7 @@ func (fm *FleetManager) planArtifactMove(ctx context.Context, record SnapshotRec
 	// captured with it, so copying the disk half alone would plant something on
 	// the target that looks like a seed and cold-boots into a corrupt guest.
 	if parent := diffParent(record); parent != "" {
-		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (moveDeltaToHost)",
+		return ArtifactMoveJob{}, "", fmt.Errorf("%w: snapshot %s is a diff against %s; it only moves onto a copy of its parent (a delta move)",
 			ErrArtifactImmovable, record.SnapshotID, parent)
 	}
 	// a delta merged onto a version 2 base records the digests its host agent

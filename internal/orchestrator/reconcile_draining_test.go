@@ -54,7 +54,7 @@ func (p *hangingDestroyProvider) Destroy(ctx context.Context, name string) error
 // draining is back-dated by drainingFor.
 func drainingFleet(t *testing.T, cfg FleetConfig, taskID string, drainingFor time.Duration) (*FleetManager, string) {
 	t.Helper()
-	// keep the stuck-task detector out of the way; these tests are only
+	// keep the runtime ceiling out of the way; these tests are only
 	// about the draining bound.
 	if cfg.TaskStuckTimeout == 0 {
 		cfg.TaskStuckTimeout = 24 * time.Hour
