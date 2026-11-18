@@ -72,6 +72,10 @@ var (
 	// way that is not the caller's fault (registry unreachable, fused
 	// missing). maps to 503.
 	ErrImageHostFailed = errors.New("image host failed")
+	// ErrImageCacheFull is a convert the host has no room for: its converted
+	// images are at FC_IMAGE_CACHE_GB and every one a new bake could evict is
+	// converting or used by a vm or snapshot. maps to 507.
+	ErrImageCacheFull = errors.New("image cache full")
 )
 
 // imageDigestPattern is the form of Image.Digest: a bare hex sha256, the
@@ -335,6 +339,8 @@ func imageHostError(hostID string, err error) error {
 			return fmt.Errorf("%w: %s", ErrImageNotFound, body)
 		case http.StatusNotImplemented:
 			return fmt.Errorf("%w: host %s: %s", ErrImageUnsupported, hostID, body)
+		case http.StatusInsufficientStorage:
+			return fmt.Errorf("%w: host %s: %s", ErrImageCacheFull, hostID, body)
 		}
 	}
 	if errors.Is(err, ErrImageUnsupported) {

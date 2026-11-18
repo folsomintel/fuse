@@ -1159,13 +1159,25 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     resume = None
     if req.get("resume"):
         resume = resume_plan(req.get("seed_snapshot") or "")
+    # base_image names the image this vm descends from, so eviction leaves it
+    # alone: the image itself, or the one the snapshot it starts from records.
     if source_rootfs is None:
         image = req.get("image") or ""
+        base_image = image
         source_rootfs = BASE_ROOTFS
         if image:
             source_rootfs = resolve_image_path(image)
+            if not source_rootfs.exists() and image.startswith("oci-"):
+                # the orchestrator saw it ready, then a convert evicted it
+                # before this create took _create_lock. 404, so it reads as
+                # not ready rather than as a bad request.
+                raise HTTPError(404, f"image {image!r} is no longer converted on this host; convert it again")
             if not source_rootfs.exists():
                 raise HTTPError(400, f"base image {image!r} not found at {source_rootfs}; bake and place a rootfs there before use")
+            if image.startswith("oci-"):
+                image_touch(image)
+    else:
+        base_image = snapshot_base_image(source_rootfs)
 
     # a resumed guest keeps whatever page size its memory image was taken with.
     huge_pages = resume["huge_pages"] if resume else bool(req.get("huge_pages"))
@@ -1218,6 +1230,8 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "create_spec": create_spec_digest(req),
         "snapshots": [],
     }
+    if base_image:
+        meta["image"] = base_image
     save_meta(meta)
     try:
         if resume:
@@ -1411,6 +1425,14 @@ def snapshot_file(vm_id: str, snapshot_id: str, name: str, required: bool = True
 def snapshot_rootfs(vm_id: str, snapshot_id: str) -> Path:
     """Resolve a snapshot's rootfs. See snapshot_file for the containment rules."""
     return snapshot_file(vm_id, snapshot_id, "rootfs.ext4")
+
+
+def snapshot_base_image(rootfs: Path) -> str:
+    """the image recorded by the snapshot whose rootfs this is, or ""."""
+    try:
+        return json.loads((rootfs.parent / "meta.json").read_text()).get("image", "")
+    except (OSError, ValueError):
+        return ""
 
 
 def snapshot_kind(vm_id: str, snapshot_id: str) -> str:
@@ -2071,6 +2093,8 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         record["parent"] = parent
     if live and deferred:
         record["rootfs_digest_pending"] = True
+    if meta.get("image"):
+        record["image"] = meta["image"]
     (snap_dir / "meta.json").write_text(json.dumps(record))
     forget_artifacts()
     if live:
@@ -2992,7 +3016,12 @@ IMAGE_CONVERT_TIMEOUT = float(os.environ.get("FC_IMAGE_CONVERT_TIMEOUT", "1800")
 REGISTRY_TIMEOUT = float(os.environ.get("FC_REGISTRY_TIMEOUT", "10"))
 MAX_REGISTRY_BYTES = 4 << 20
 IMAGE_KEY_DOMAIN = "fuse-oci-image/v1"
+# lock order: _create_lock before IMAGES_LOCK. eviction takes both, so it
+# never removes an image while a create is copying it.
 IMAGES_LOCK = threading.Lock()
+# the disk converted oci images may hold on this host. only oci-* rootfs with
+# a record count and are evicted; the baked catalogue in IMAGES_DIR never is.
+IMAGE_CACHE_BYTES = int(float(os.environ.get("FC_IMAGE_CACHE_GB", "50")) * (1 << 30))
 DOCKER_HUB = "registry-1.docker.io"
 
 # the same grammar as fusefile.ValidImageRef. it never starts with a dash, so a
@@ -3227,6 +3256,126 @@ def image_public(rec: dict) -> dict:
     return {k: rec.get(k, "") for k in ("digest", "ref", "manifest_digest", "name", "state", "error")}
 
 
+def image_records() -> list[dict]:
+    if not IMAGE_STATE_DIR.is_dir():
+        return []
+    return [rec for p in IMAGE_STATE_DIR.glob("*.json") if (rec := image_record_load(p.stem))]
+
+
+def parse_size(s: str) -> int:
+    """a truncate(1) size in bytes: 4G and 4GiB are 1024 based, 4GB is 1000
+    based. 0 if unreadable."""
+    m = re.fullmatch(r"(\d+)(?:([KMGTPE])(iB|B)?)?", s.strip(), re.IGNORECASE)
+    if not m:
+        return 0
+    n, unit, suffix = int(m.group(1)), (m.group(2) or "").upper(), (m.group(3) or "").upper()
+    if not unit:
+        return n
+    return n * (1000 if suffix == "B" else 1024) ** ("KMGTPE".index(unit) + 1)
+
+
+def image_convert_estimate() -> int:
+    """the disk a new conversion may take. the bake writes a sparse ext4 of
+    FC_ROOTFS_SIZE, so its allocated size can never exceed that: an upper
+    bound, which keeps a finished bake under the cap. a size this cannot read
+    is refused rather than guessed, since the bake would still use it."""
+    raw = os.environ.get("FC_ROOTFS_SIZE", "").strip()
+    if not raw:
+        return 4 << 30
+    size = parse_size(raw)
+    if not size:
+        raise HTTPError(503, f"this host cannot convert images: FC_ROOTFS_SIZE={raw!r} is not a size "
+                             f"the image cache cap can account for; set a plain size such as 8G")
+    return size
+
+
+def image_disk_bytes(rec: dict) -> int:
+    """the disk an image's rootfs holds: allocated blocks, not the sparse size."""
+    try:
+        return os.stat(resolve_image_path(rec["name"])).st_blocks * 512
+    except OSError:
+        return 0
+
+
+def image_references() -> set[str]:
+    """the image names a vm or snapshot on this host was booted from. a vm's
+    rootfs is a full copy (or reflink) of the image and a snapshot copies the
+    vm's rootfs, so neither reads the image file again. they still pin it, to
+    stay conservative about anything that may boot from the name later."""
+    names = {m.get("image", "") for m in (list_vms() if VMS_DIR.is_dir() else [])}
+    for p in SNAPSHOTS_DIR.glob("*/meta.json"):
+        try:
+            names.add(json.loads(p.read_text()).get("image", ""))
+        except (OSError, ValueError):
+            continue
+    names.discard("")
+    return names
+
+
+def image_evict(rec: dict) -> None:
+    """remove an image's rootfs, then its record, so it reads as never
+    converted: GET answers 404 and a create naming it 409 until it is
+    converted again. the record stays if the file would not go."""
+    path = resolve_image_path(rec["name"])
+    try:
+        path.unlink(missing_ok=True)
+    except PermissionError:
+        sudo(["rm", "-f", str(path)], check=False)
+    if path.exists():
+        raise HTTPError(500, f"could not evict image {rec['digest']}: {path} would not delete")
+    image_record_path(rec["digest"]).unlink(missing_ok=True)
+    sys.stderr.write(f"[fc-agent] image {rec['digest']} ({rec.get('ref', '')}) evicted\n")
+
+
+def image_make_room(digest: str) -> None:
+    """evict least recently used images until a new conversion of digest fits
+    under IMAGE_CACHE_BYTES, or raise 507 having evicted nothing. a converting
+    image counts at the estimate and is never evicted, nor is one a vm or
+    snapshot references. callers hold _create_lock and IMAGES_LOCK."""
+    need = image_convert_estimate()
+    used, candidates = 0, []
+    refs = image_references()
+    for rec in image_records():
+        if rec.get("digest") == digest:
+            continue
+        if rec.get("state") == "converting":
+            used += need
+            continue
+        size = image_disk_bytes(rec)
+        used += size
+        if size and rec.get("name") not in refs:
+            candidates.append((rec.get("last_used", 0), size, rec))
+    victims = []
+    for _, size, rec in sorted(candidates, key=lambda c: c[0]):
+        if used + need <= IMAGE_CACHE_BYTES:
+            break
+        victims.append(rec)
+        used -= size
+    if used + need > IMAGE_CACHE_BYTES:
+        raise HTTPError(507, f"image cache full on this host: {used} bytes are held by converting images "
+                             f"or images a vm or snapshot uses, a new conversion needs up to {need} and the "
+                             f"cap is {IMAGE_CACHE_BYTES} (FC_IMAGE_CACHE_GB); destroy vms or snapshots "
+                             f"booted from oci images, or raise the cap")
+    for rec in victims:
+        image_evict(rec)
+
+
+def image_touch(name: str) -> None:
+    """mark the converted image called name as just used, so eviction takes
+    the least recently booted first. callers hold _create_lock."""
+    with IMAGES_LOCK:
+        for rec in image_records():
+            if rec.get("name") == name and rec.get("state") == "ready":
+                rec["last_used"] = time.time()
+                image_record_save(rec)
+
+
+def image_reusable(rec: dict | None) -> bool:
+    if not rec or rec.get("state") not in ("converting", "ready"):
+        return False
+    return rec["state"] == "converting" or resolve_image_path(rec["name"]).exists()
+
+
 def image_convert_start(ref: str) -> dict:
     """Resolve ref and start converting it, or return the record that already
     exists for the digest. A failed record is retried. The name is derived
@@ -3237,14 +3386,21 @@ def image_convert_start(ref: str) -> dict:
         raise HTTPError(503, f"this host cannot convert images: no fused binary at {FUSED_BIN}")
     if not DISTRO_BAKE_SCRIPT.exists():
         raise HTTPError(503, f"this host cannot convert images: {DISTRO_BAKE_SCRIPT} is missing")
+    image_convert_estimate()
     bake_name, manifest_digest = resolve_manifest_digest(ref, goarch())
     digest = image_key(manifest_digest, file_digest(FUSED_BIN))
     name = "oci-" + digest[:32]
     with IMAGES_LOCK:
         rec = image_record_load(digest)
-        if rec and rec.get("state") in ("converting", "ready"):
-            if rec["state"] == "converting" or resolve_image_path(rec["name"]).exists():
-                return rec
+        if image_reusable(rec):
+            return rec
+    # a new bake may have to evict, which must not race a create copying the
+    # image it removes, so this half also holds _create_lock (taken first).
+    with _create_lock, IMAGES_LOCK:
+        rec = image_record_load(digest)
+        if image_reusable(rec):
+            return rec
+        image_make_room(digest)
         rec = {
             "digest": digest,
             "ref": ref,
@@ -3302,6 +3458,7 @@ def image_convert_run(rec: dict) -> None:
         rec["error"] = error
         if not error:
             rec["size_bytes"] = target.stat().st_size
+            rec["last_used"] = time.time()
         image_record_save(rec)
     sys.stderr.write(f"[fc-agent] image {rec['digest']} ({rec['ref']}) {rec['state']} {error}\n")
 

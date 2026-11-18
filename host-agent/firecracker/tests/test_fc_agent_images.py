@@ -244,7 +244,7 @@ class ConvertBase(unittest.TestCase):
         self.bake(BAKE_OK)
 
     def tearDown(self):
-        for p in self.patches:
+        for p in reversed(self.patches):
             p.stop()
         self.tmp.cleanup()
 
@@ -334,6 +334,154 @@ class ConvertTest(ConvertBase):
         with self.assertRaises(fc_agent.HTTPError) as cm:
             fc_agent.image_convert_start("ubuntu")
         self.assertEqual(cm.exception.code, 503)
+
+
+BAKE_64K = """#!/bin/sh
+set -e
+head -c 65536 /dev/urandom > "$IMAGES_DIR/$2.ext4"
+"""
+KIB = 1024
+
+
+class EvictionTest(ConvertBase):
+    """lru eviction under FC_IMAGE_CACHE_GB. each bake allocates 64K and the
+    estimate (FC_ROOTFS_SIZE) is 128K, so a 200K cap holds two ready images
+    and has to evict one before a third convert starts."""
+
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tmp.name)
+        (root / "vms").mkdir()
+        (root / "snapshots").mkdir()
+        self.bake(BAKE_64K)
+        for p in (
+            mock.patch.object(fc_agent, "VMS_DIR", root / "vms"),
+            # list_vms lives in agentlib and reads its own copy.
+            mock.patch.object(fc_agent.agentlib, "VMS_DIR", root / "vms"),
+            mock.patch.object(fc_agent, "SNAPSHOTS_DIR", root / "snapshots"),
+            mock.patch.object(fc_agent, "IMAGE_CACHE_BYTES", 200 * KIB),
+            mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": "128K"}),
+            # a distinct manifest per ref, so each ref is its own image.
+            mock.patch.object(fc_agent, "resolve_manifest_digest", side_effect=lambda ref, arch: (
+                "docker.io/library/" + ref, "sha256:" + hashlib.sha256(ref.encode()).hexdigest())),
+        ):
+            p.start()
+            self.patches.append(p)
+        # a baked catalogue image: no record, so never counted or evicted.
+        (fc_agent.IMAGES_DIR / "base.ext4").write_bytes(os.urandom(256 * KIB))
+
+    def convert(self, ref):
+        rec = self.wait(fc_agent.image_convert_start(ref)["digest"])
+        self.assertEqual(rec["state"], "ready", rec)
+        return rec
+
+    def test_estimate_parses_the_bake_size(self):
+        self.assertEqual(fc_agent.image_convert_estimate(), 128 * KIB)
+        self.assertEqual(fc_agent.parse_size("4G"), 4 << 30)
+        # every unit truncate takes, so a valid size never slips under the cap.
+        self.assertEqual(fc_agent.parse_size("8GiB"), 8 << 30)
+        self.assertEqual(fc_agent.parse_size("8GB"), 8 * 10**9)
+        self.assertEqual(fc_agent.parse_size("2t"), 2 << 40)
+        self.assertEqual(fc_agent.parse_size("4096"), 4096)
+        with mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": ""}):
+            self.assertEqual(fc_agent.image_convert_estimate(), 4 << 30)
+
+    def test_an_unreadable_bake_size_refuses_the_convert(self):
+        with mock.patch.dict(os.environ, {"FC_ROOTFS_SIZE": "lots"}):
+            with self.assertRaises(fc_agent.HTTPError) as cm:
+                fc_agent.image_convert_start("alpine")
+        self.assertEqual(cm.exception.code, 503)
+        self.assertEqual(fc_agent.image_records(), [])
+
+    def test_evicts_the_least_recently_used(self):
+        a = self.convert("alpine")
+        b = self.convert("busybox")
+        # a create from a makes b the least recently used.
+        fc_agent.image_touch(a["name"])
+        c = self.convert("caddy")
+        self.assertIsNone(fc_agent.image_record_load(b["digest"]))
+        self.assertFalse(fc_agent.resolve_image_path(b["name"]).exists())
+        for kept in (a, c):
+            self.assertEqual(fc_agent.image_record_load(kept["digest"])["state"], "ready")
+            self.assertTrue(fc_agent.resolve_image_path(kept["name"]).exists())
+        self.assertTrue((fc_agent.IMAGES_DIR / "base.ext4").exists())
+        # converting b again bakes it back and evicts a, now the oldest.
+        self.convert("busybox")
+        self.assertIsNone(fc_agent.image_record_load(a["digest"]))
+
+    def test_referenced_images_are_kept_and_full_is_507(self):
+        a = self.convert("alpine")
+        b = self.convert("busybox")
+        vm = fc_agent.VMS_DIR / "vm-1"
+        vm.mkdir()
+        (vm / "meta.json").write_text(json.dumps({"vm_id": "vm-1", "name": "vm-1", "image": a["name"]}))
+        snap = fc_agent.SNAPSHOTS_DIR / "snap-1"
+        snap.mkdir()
+        (snap / "meta.json").write_text(json.dumps({"snapshot_id": "snap-1", "image": b["name"]}))
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            fc_agent.image_convert_start("caddy")
+        self.assertEqual(cm.exception.code, 507)
+        self.assertIn("FC_IMAGE_CACHE_GB", cm.exception.msg)
+        for kept in (a, b):
+            self.assertEqual(fc_agent.image_record_load(kept["digest"])["state"], "ready")
+        # once the snapshot is gone, b is evictable again.
+        (snap / "meta.json").unlink()
+        self.convert("caddy")
+        self.assertIsNone(fc_agent.image_record_load(b["digest"]))
+        self.assertIsNotNone(fc_agent.image_record_load(a["digest"]))
+
+    def test_a_converting_image_counts_and_is_never_evicted(self):
+        self.bake(BAKE_HANG)
+        with mock.patch.object(fc_agent, "IMAGE_CONVERT_TIMEOUT", 0.5):
+            first = fc_agent.image_convert_start("alpine")
+            with self.assertRaises(fc_agent.HTTPError) as cm:
+                fc_agent.image_convert_start("busybox")
+            self.assertEqual(cm.exception.code, 507)
+            self.assertEqual(fc_agent.image_record_load(first["digest"])["state"], "converting")
+            # a repeat of the converting image is not a new conversion.
+            self.assertEqual(fc_agent.image_convert_start("alpine")["digest"], first["digest"])
+            self.wait(first["digest"])
+
+    def test_create_records_and_touches_the_image(self):
+        a = self.convert("alpine")
+        before = fc_agent.image_record_load(a["digest"])["last_used"]
+        snap = fc_agent.SNAPSHOTS_DIR / "snap-3"
+        snap.mkdir()
+        (snap / "rootfs.ext4").write_bytes(b"rootfs")
+        (snap / "meta.json").write_text(json.dumps({"snapshot_id": "snap-3", "image": a["name"]}))
+        with mock.patch.object(fc_agent, "pick_index", side_effect=[1, 2]), \
+                mock.patch.object(fc_agent, "host_iface", return_value="eth0"), \
+                mock.patch.object(fc_agent, "setup_tap", return_value=("tap1", "10.0.0.1", "10.0.0.2")), \
+                mock.patch.object(fc_agent, "add_agent_forward"), \
+                mock.patch.object(fc_agent, "sudo"), \
+                mock.patch.object(fc_agent, "start_firecracker"), \
+                mock.patch.object(fc_agent, "wait_for_ssh", return_value=False):
+            vm = fc_agent.create_vm({"name": "from-image", "image": a["name"]})
+            # a fork or seed from a snapshot inherits the image it records.
+            forked = fc_agent.create_vm({"name": "from-snap"}, source_rootfs=snap / "rootfs.ext4")
+        self.assertEqual(vm["image"], a["name"])
+        self.assertEqual(forked["image"], a["name"])
+        self.assertGreater(fc_agent.image_record_load(a["digest"])["last_used"], before)
+        self.assertEqual(fc_agent.image_references(), {a["name"]})
+
+    def test_create_from_an_evicted_image_is_404(self):
+        a = self.convert("alpine")
+        fc_agent.image_evict(fc_agent.image_record_load(a["digest"]))
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            fc_agent.create_vm({"name": "late", "image": a["name"]})
+        self.assertEqual(cm.exception.code, 404)
+        self.assertFalse(fc_agent.vm_dir("late").exists())
+        # a baked catalogue name that is missing is still the operator's 400.
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            fc_agent.create_vm({"name": "late", "image": "nope"})
+        self.assertEqual(cm.exception.code, 400)
+
+    def test_snapshot_base_image(self):
+        snap = fc_agent.SNAPSHOTS_DIR / "snap-2"
+        snap.mkdir()
+        self.assertEqual(fc_agent.snapshot_base_image(snap / "rootfs.ext4"), "")
+        (snap / "meta.json").write_text(json.dumps({"image": "oci-abc"}))
+        self.assertEqual(fc_agent.snapshot_base_image(snap / "rootfs.ext4"), "oci-abc")
 
 
 class RoutesTest(ConvertBase):

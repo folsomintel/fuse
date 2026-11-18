@@ -25,7 +25,10 @@ process goes away. Converting a ref that is already converting or ready returns
 that image; one that failed is converted again. A malformed ref, a registry that
 needs credentials, or a `HostID` that runs the QEMU backend is an error
 `IsInvalidArgument` reports; a ref the registry does not have is one
-`IsNotFound` reports.
+`IsNotFound` reports. A host whose image cache is full evicts its least recently
+used images first; when every one is converting or used by a vm or snapshot the
+convert is a `507` that `IsUnavailable` reports. An evicted image reads as
+not found again until it is converted again.
 
 `Get` reads an image by digest. When more than one host holds it, the most
 usable record wins: ready, then converting, then failed. An unknown digest is an

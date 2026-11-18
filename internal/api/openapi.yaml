@@ -2455,6 +2455,13 @@ paths:
 
         Public registries only, and only apt and dnf based images convert.
         A qemu host cannot convert: pinning to one is a 400.
+
+        Each firecracker host caps the disk its converted images hold
+        (`FC_IMAGE_CACHE_GB`). A convert that would pass the cap first
+        evicts the least recently used ready images that no vm or
+        snapshot on the host was booted from; an evicted image reads as
+        404 again and a create naming it is a 409 until it is converted
+        again. When nothing can be evicted the convert is a 507.
       requestBody:
         required: true
         content:
@@ -2474,6 +2481,16 @@ paths:
           $ref: "#/components/responses/NotFound"
         "503":
           $ref: "#/components/responses/Unavailable"
+        "507":
+          description: |
+            The host's image cache is full: its converted images are at
+            `FC_IMAGE_CACHE_GB` and every one is converting or used by a
+            vm or snapshot (code `unavailable`). Destroy vms or snapshots
+            booted from oci images, or raise the cap, then retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /v1/images/{digest}:
     parameters:

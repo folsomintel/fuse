@@ -809,6 +809,12 @@ func restoreOrCreate(ctx context.Context, p Provider, spec Spec, reuse bool) (en
 		}
 	}
 	env, err = p.Create(ctx, spec)
+	if err != nil && spec.ImageDigest != "" && IsNotFound(err) {
+		// resolveImage saw the image ready, and a convert on the host evicted
+		// it before this create reached the agent.
+		err = fmt.Errorf("%w: %s was evicted from the host before the create reached it; convert it again: %w",
+			ErrImageNotReady, spec.ImageDigest, err)
+	}
 	return env, false, err
 }
 
