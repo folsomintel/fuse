@@ -668,10 +668,10 @@ func (fm *FleetManager) markExpiredVMDurable(ctx context.Context, vmID, taskID s
 	return true, nil
 }
 
+// writeExpired writes the task and the dead letter, then the vm. both upserts
+// are safe to repeat, and the vm row goes last, so a failure never leaves it
+// destroying behind a vm that unclaimExpired put back.
 func (fm *FleetManager) writeExpired(ctx context.Context, vmID, taskID string, e expiry, m expiredMark) error {
-	if err := fm.persistVMByID(ctx, vmID); err != nil {
-		return fmt.Errorf("persist expired vm %s: %w", vmID, err)
-	}
 	if fm.store == nil {
 		return nil
 	}
@@ -685,6 +685,9 @@ func (fm *FleetManager) writeExpired(ctx context.Context, vmID, taskID string, e
 	dl.LastSeenAt = dl.FirstSeenAt
 	if err := fm.store.UpsertDeadLetter(ctx, dl); err != nil {
 		return fmt.Errorf("record expiry dead letter %s: %w", vmID, err)
+	}
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
+		return fmt.Errorf("persist expired vm %s: %w", vmID, err)
 	}
 	return nil
 }

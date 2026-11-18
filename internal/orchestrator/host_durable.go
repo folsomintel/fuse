@@ -12,6 +12,7 @@ import (
 var HostRefusals = []error{
 	ErrHostNotFound,
 	ErrHostHasVMs,
+	ErrHostRecordInvalid,
 }
 
 // DurableHosts runs host registration, cordon and removal as handlers on the
@@ -54,7 +55,7 @@ func (fm *FleetManager) registersDurably() bool {
 func (fm *FleetManager) HostRegister(ctx context.Context, rec HostRecord) error {
 	h := fm.hostFromRecord(rec)
 	if h.Token == "" && len(rec.TokenEncrypted) > 0 {
-		return fmt.Errorf("host %s: agent token could not be decrypted", rec.ID)
+		return fmt.Errorf("%w: host %s: agent token could not be decrypted", ErrHostRecordInvalid, rec.ID)
 	}
 	return fm.registerHost(ctx, h, fm.hostProviderFactory(h.URL, h.Token, h.Backend))
 }
@@ -63,7 +64,7 @@ func (fm *FleetManager) HostRegister(ctx context.Context, rec HostRecord) error 
 // uncordon. setting the state it already has is a no-op write.
 func (fm *FleetManager) HostSetState(ctx context.Context, hostID string, state HostState) error {
 	if state != HostActive && state != HostCordoned {
-		return fmt.Errorf("host %s: cannot set state %q", hostID, state)
+		return fmt.Errorf("%w: host %s: cannot set state %q", ErrHostRecordInvalid, hostID, state)
 	}
 	return fm.setHostState(ctx, hostID, state)
 }

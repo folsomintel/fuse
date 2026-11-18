@@ -114,6 +114,10 @@ var (
 	// to the host. Callers should cordon/drain and wait for the VMs to
 	// leave before retrying.
 	ErrHostHasVMs = errors.New("host still has vms assigned")
+	// ErrHostRecordInvalid is a durable host op given a record or state it
+	// cannot act on, such as a token the key cannot decrypt. a retry cannot
+	// change it.
+	ErrHostRecordInvalid = errors.New("host record invalid")
 
 	// ErrStartupScriptTimeout is returned during boot when the caller's
 	// startup script did not finish within StartupScriptTimeout. The boot
@@ -1944,6 +1948,16 @@ func (fm *FleetManager) reapDestroyedVMs(ctx context.Context, providerVMs map[st
 	fm.mu.Unlock()
 	for i, id := range toRemove {
 		fm.deleteVMBackground(id)
+		// a vm that vanished from its host had no destroy release its
+		// egress; one that did is released again, which is a no-op.
+		if removed[i].egress.Mode == egress.ModeProxy {
+			v := removed[i]
+			fm.goBackground(func() {
+				releaseCtx, cancel := context.WithTimeout(context.Background(), destroyStepTimeout)
+				defer cancel()
+				fm.releaseEgress(releaseCtx, v)
+			})
+		}
 		fm.appendEventBackground("vm", id, "vm.removed", map[string]any{"reason": "destroyed"})
 		fm.publishTerminalEvent(id, VMStateDestroyed, "")
 		fm.cancelEnvInterventions(ctx, removed[i], id, "environment destroyed")
@@ -2522,15 +2536,14 @@ func (fm *FleetManager) releaseEgress(ctx context.Context, v *vm) {
 
 // restoreEgressLeases hands each recovered vm's egress lease back to its
 // backend, so state a backend keeps in memory (the wireguard one-host-per-key
-// reservation) holds across the restart. a vm tearing down is not restored: the reap of a
-// vm already gone from its host never releases egress, and a restored lease
-// would hold the key against every other host until the next restart.
+// reservation) holds across the restart. a vm tearing down keeps its lease
+// until its destroy, or its reap, releases it.
 func (fm *FleetManager) restoreEgressLeases(recovered map[string]*vm) {
 	if fm.egressRegistry == nil {
 		return
 	}
 	for id, v := range recovered {
-		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" || v.state.tearingDown() {
+		if v.egress.Mode != egress.ModeProxy || v.egress.Lease == "" {
 			continue
 		}
 		if err := fm.egressRegistry.Restore(v.egress.Provider, v.hostID, id, v.egress.Lease); err != nil {
