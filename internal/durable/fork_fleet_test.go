@@ -110,9 +110,15 @@ func TestForkFleetSurvivesRestart(t *testing.T) {
 	if env.Token() == "" || env.Token() == srcEnv.Token() {
 		t.Fatal("fork does not answer to a token of its own")
 	}
-	lineage, err := second.ListSnapshots(ctx, v.ID)
-	if err != nil {
-		t.Fatal(err)
+	// the lineage is the step after running, so it may land a moment later.
+	var lineage []orchestrator.SnapshotRecord
+	for len(lineage) == 0 && ctx.Err() == nil {
+		if lineage, err = second.ListSnapshots(ctx, v.ID); err != nil {
+			t.Fatal(err)
+		}
+		if len(lineage) == 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
 	}
 	seeds, _ := second.ListSnapshots(ctx, src)
 	if len(lineage) != 1 || len(seeds) != 1 || lineage[0].ParentSnapshotID != seeds[0].SnapshotID {

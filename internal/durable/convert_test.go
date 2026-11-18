@@ -92,7 +92,6 @@ func (f *imageFleet) ImageConvert(ctx context.Context, req orchestrator.ConvertI
 }
 
 func (f *imageFleet) ImagePoll(ctx context.Context, img orchestrator.Image) (orchestrator.Image, error) {
-	f.record("poll")
 	f.mu.Lock()
 	block := f.block
 	f.mu.Unlock()
@@ -107,6 +106,9 @@ func (f *imageFleet) ImagePoll(ctx context.Context, img orchestrator.Image) (orc
 			return img, ctx.Err()
 		}
 	}
+	// recorded once the poll is let through, so a poll that starts while a
+	// convert is still answering lands after it in the steps.
+	f.record("poll")
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	img.State = f.polls[0]
