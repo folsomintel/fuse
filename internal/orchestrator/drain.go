@@ -186,14 +186,14 @@ func (fm *FleetManager) drainBegin(ctx context.Context, vmID string, replay bool
 		}
 		fm.mu.Unlock()
 		fm.persistDrainVM(ctx, vmID)
-		fm.appendEvent(context.WithoutCancel(ctx), "vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_environment"})
+		fm.drainEvent(ctx, vmID, "vm.drain_skipped", map[string]any{"reason": "no_environment"})
 		return plan, nil
 	}
 
 	if !plan.Command {
 		// No drain command configured for this agent: leave the VM Draining
 		// for the caller to DELETE (back-compat). No graceful command runs.
-		fm.appendEvent(context.WithoutCancel(ctx), "vm", vmID, "vm.drain_skipped", map[string]any{"reason": "no_drain_command"})
+		fm.drainEvent(ctx, vmID, "vm.drain_skipped", map[string]any{"reason": "no_drain_command"})
 	}
 	return plan, nil
 }
@@ -241,7 +241,7 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 	if err := env.ExecStream(rpcCtx, io.Discard, io.Discard, "sh", "-lc", drainCmd); err != nil {
 		msg := fmt.Sprintf("drain command: %v", err)
 		fm.recordDrainError(ctx, vmID, msg)
-		fm.appendEvent(context.WithoutCancel(ctx), "vm", vmID, "vm.drain_failed", map[string]any{"reason": "exec", "error": err.Error()})
+		fm.drainEvent(ctx, vmID, "vm.drain_failed", map[string]any{"reason": "exec", "error": err.Error()})
 		fm.logger.Warn("drain command failed", "vm", vmID, "err", err)
 		// Stay in Draining: caller decides whether to retry or DELETE.
 		return msg
@@ -254,7 +254,7 @@ func (fm *FleetManager) DrainCommand(ctx context.Context, vmID string) string {
 	}
 	fm.mu.Unlock()
 	fm.persistDrainVM(ctx, vmID)
-	fm.appendEvent(context.WithoutCancel(ctx), "vm", vmID, "vm.drained", nil)
+	fm.drainEvent(ctx, vmID, "vm.drained", nil)
 	fm.logger.Info("vm drained", "vm", vmID)
 	return ""
 }
@@ -283,7 +283,25 @@ func (fm *FleetManager) recordDrainError(ctx context.Context, vmID, msg string) 
 // again for it. the write outlives a caller that gave up, since in mode off
 // ctx is the api request's.
 func (fm *FleetManager) persistDrainVM(ctx context.Context, vmID string) {
-	if err := fm.persistVMByID(context.WithoutCancel(ctx), vmID); err != nil {
+	ctx, cancel := drainWriteCtx(ctx)
+	defer cancel()
+	if err := fm.persistVMByID(ctx, vmID); err != nil {
 		fm.logger.Warn("persist drained vm failed", "vm", vmID, "err", err)
 	}
+}
+
+// drainEvent records a drain step's event, under the same bound as
+// persistDrainVM.
+func (fm *FleetManager) drainEvent(ctx context.Context, vmID, eventType string, payload map[string]any) {
+	ctx, cancel := drainWriteCtx(ctx)
+	defer cancel()
+	fm.appendEvent(ctx, "vm", vmID, eventType, payload)
+}
+
+// drainWriteCtx is the context of a drain step's store write: it outlives a
+// caller that gave up, since in mode off ctx is the api request's, and it is
+// bounded, so a hung store cannot hold the step, and the environment's other
+// queued ops, forever.
+func drainWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), destroyStepTimeout)
 }
