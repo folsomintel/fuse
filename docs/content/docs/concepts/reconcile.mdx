@@ -39,12 +39,14 @@ Each cycle, in order:
 8. **Garbage-collect snapshots** past the retention window.
 9. **Reap** destroyed VMs and return their capacity to the host.
 
-:::warning[Known limitation]
-A failure listing VMs from any host aborts the entire cycle, it does not isolate
-the bad host. One unreachable host agent therefore suppresses stuck-task
-detection and snapshot GC fleet-wide until it recovers, and the only outward sign
-is a flat cycle in the metrics.
-:::
+A host whose VM list fails is marked **unreachable** for that cycle. Its VMs are
+left alone: none is marked missing, reaped or retried, because absence from a
+list the host never returned says nothing. Every other host is reconciled as
+usual, and the passes that do not read the list (stuck-task and idle detection,
+hitl expiry, snapshot and artifact GC) run for the whole fleet. With no hosts
+registered, a failed list from the single provider skips only the passes that
+read it. `orchestrator_reconcile_hosts_unreachable` counts the hosts that failed
+in the last cycle.
 
 ## Orphans
 
@@ -57,17 +59,22 @@ delete (behind a long exec holding the VM's lock, for example) costs the cycle
 one bounded wait rather than stalling it until the HTTP header timeout. A call
 that hits the bound counts as a failed attempt.
 
-Destruction is retried up to five times. After that the orphan is recorded in the
-dead-letter queue and skipped permanently, so a VM that cannot be destroyed stops
-consuming the loop rather than blocking it forever. Retry counters live in
-memory, so restarting the orchestrator gives every dead-lettered orphan a fresh
-budget.
+Destruction is retried up to five times, one attempt per cycle. After that the
+orphan is recorded in the dead-letter queue and skipped permanently, so a VM that
+cannot be destroyed stops consuming the loop rather than blocking it forever.
+Without restate the retry counters live in memory, so restarting the
+orchestrator gives every dead-lettered orphan a fresh budget.
 
-:::warning[Known limitation]
-Destroying an orphan does not return its capacity to the host's allocated
-counters, unlike the normal reap path. The host stays over-counted until the
-orchestrator restarts, which recomputes allocations from live VMs.
-:::
+With restate (`FUSE_RESTATE_MODE` `self` or `cloud`), each orphan is a call to
+the `Environment/{vm_id}.DestroyOrphan` handler instead. It makes the one attempt
+and keeps the failed-attempt count in the object's state, so a restart mid-retry
+continues the count and the dead letter still fires at five. Reconcile sends at
+most one call per orphan at a time and stops sending once the handler reports it
+dead-lettered.
+
+After a cycle destroys an orphan, each host's allocated counters are recomputed
+from the live fleet (when no tracked VM is mid-teardown), since an orphan has no
+record of what it held.
 
 ## Stuck tasks
 
@@ -273,8 +280,8 @@ went wrong, not as a work queue.
 ## What the loop does not do
 
 - **It does not detect a dead host agent.** `last_seen` is never refreshed and
-  nothing sweeps for unreachable hosts. A dead agent surfaces only as the aborted
-  cycle described above.
+  nothing sweeps for unreachable hosts. A dead agent surfaces only as the
+  unreachable host described above, every cycle until it answers.
 - **It does not drain hosts.** The `draining` host state exists but no eviction
   logic backs it.
 - **It does not re-probe capacity.** Host capacity is fixed at registration.
@@ -283,8 +290,8 @@ went wrong, not as a work queue.
 
 ## Metrics
 
-Every cycle emits its results, including on the aborted path, so a stuck loop is
-visible rather than silent:
+Every cycle emits its results, including when hosts are unreachable, so a stuck
+loop is visible rather than silent:
 
 | Metric | Measures |
 | --- | --- |
@@ -292,6 +299,7 @@ visible rather than silent:
 | `orchestrator_reconcile_duration_seconds` | Cycle duration. |
 | `orchestrator_fleet_tracked_vms` | VMs Fuse believes exist. |
 | `orchestrator_fleet_provider_vms` | VMs the providers report. |
+| `orchestrator_reconcile_hosts_unreachable` | Hosts whose VM list failed in the last cycle. |
 | `orchestrator_reconcile_orphans_destroyed_total` | Orphans destroyed. |
 | `orchestrator_reconcile_orphans_failed_total` | Orphan destroy attempts that failed. |
 | `orchestrator_reconcile_orphans_dead_lettered_total` | Orphans that exhausted retries. |

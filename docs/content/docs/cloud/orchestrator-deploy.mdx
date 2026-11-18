@@ -94,6 +94,8 @@ A create on restate runs as `Environment/{vm_id}/Create`, one journaled step eac
 
 A fork on restate runs as `Environment/{new_vm_id}/Fork`, keyed by the fork's own VM id: begin, a provisioning placeholder row, the seed snapshot (a call to the source's `Environment/{vm_id}/Snapshot`, so only the snapshot waits behind the source's other operations), place, artifact (for an off-host fork), create, ingress, credentials, upload, start agent, running, task and lineage. An orchestrator restart mid-fork resumes at the first unfinished step. A step that fails for good before running rolls the fork back: ingress unpublished, the placeholder dropped, the new VM destroyed through `Environment/{new_vm_id}/Destroy` (reason `fork_rollback`) and a seed snapshot the fork took deleted. Like creates, forks stay in process without `TOKEN_ENCRYPTION_KEY`.
 
+Host register, cordon, uncordon and remove on restate run on the `Host/{host_id}` object, so the operations on one host run one at a time and each store write is a retried step. A remove takes the host out of the scheduler in one step and deletes its row in the next, so a database failure retries the delete instead of reporting the host missing. Registration carries the host's record with its agent token encrypted under `TOKEN_ENCRYPTION_KEY`; without that key registration stays in process, so the token never reaches the journal in the clear.
+
 ## Postgres is the source of truth
 
 Fuse doesn't ship any backup or disaster-recovery tooling of its own, no
