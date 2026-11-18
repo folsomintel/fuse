@@ -54,7 +54,7 @@ func hostError(err error) error {
 // written in one step, which re-registers on retry.
 func hostRegister(ctx restate.ObjectContext, fleet Hosts, rec orchestrator.HostRecord) error {
 	return runStep(ctx, opHost, "register", func(c context.Context) error {
-		return fleet.HostRegister(c, rec)
+		return hostRefusal(fleet.HostRegister(c, rec))
 	})
 }
 

@@ -30,7 +30,7 @@ type Orphans interface {
 // mid-retry neither resets the count nor loses the dead letter.
 type orphanState struct {
 	Retries int `json:"retries"`
-	// LastAttempt is when the last host attempt ran.
+	// LastAttempt is when the last failed host attempt ended.
 	LastAttempt time.Time `json:"last_attempt"`
 }
 
@@ -62,13 +62,15 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 		restate.Clear(ctx, orphanKey)
 		return orchestrator.OrphanDestroyResult{}, nil
 	}
-	now, err := Run(ctx, opOrphan, "clock", func(context.Context) (time.Time, error) {
-		return time.Now(), nil
-	})
+	now, err := clock(ctx, "clock")
 	if err != nil {
 		return orchestrator.OrphanDestroyResult{}, err
 	}
-	if !st.LastAttempt.IsZero() && now.Sub(st.LastAttempt) < req.Interval {
+	// LastAttempt is when the last attempt ended, so a send that queued
+	// behind a slow one starts inside the window however long it took. half
+	// an interval leaves room for one cycle's send arriving a little sooner
+	// than the last.
+	if !st.LastAttempt.IsZero() && now.Sub(st.LastAttempt) < req.Interval/2 {
 		// a send that queued behind the last attempt: the next cycle retries.
 		return orchestrator.OrphanDestroyResult{}, nil
 	}
@@ -92,8 +94,12 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 		return orchestrator.OrphanDestroyResult{}, err
 	}
 
+	ended, err := clock(ctx, "attempt_ended")
+	if err != nil {
+		return orchestrator.OrphanDestroyResult{}, err
+	}
 	st.Retries++
-	st.LastAttempt = now
+	st.LastAttempt = ended
 	restate.Set(ctx, orphanKey, st)
 	dead := st.Retries >= req.MaxRetries
 	if err := runStep(ctx, opOrphan, "failed", func(c context.Context) error {
@@ -102,6 +108,13 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 		return orchestrator.OrphanDestroyResult{}, err
 	}
 	return orchestrator.OrphanDestroyResult{DeadLettered: dead}, nil
+}
+
+// clock reads the time as a journaled step, so a replay sees the same value.
+func clock(ctx restate.Context, name string) (time.Time, error) {
+	return Run(ctx, opOrphan, name, func(context.Context) (time.Time, error) {
+		return time.Now(), nil
+	})
 }
 
 // DestroyOrphan runs Environment/{vmID}.DestroyOrphan and waits for it. the

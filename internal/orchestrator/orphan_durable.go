@@ -160,12 +160,10 @@ func (fm *FleetManager) OrphanFailed(ctx context.Context, vmID string, attempt i
 				return fmt.Errorf("record orphan dead letter: %w", err)
 			}
 		}
-		if err := fm.writeEvent(ctx, "vm", vmID, "vm.orphan_dead_lettered", map[string]any{
+		fm.appendEvent(ctx, "vm", vmID, "vm.orphan_dead_lettered", map[string]any{
 			"retries": attempt,
 			"error":   lastErr,
-		}); err != nil {
-			return err
-		}
+		})
 		fm.logger.Error("orphan dead-lettered after max retries", "vm", vmID, "retries", attempt, "err", lastErr)
 		fm.orphanResults.deadLettered.Add(1)
 	}

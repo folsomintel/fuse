@@ -21,8 +21,6 @@ func TestRecoverRestoresWireGuardReservation(t *testing.T) {
 	if err := store.UpsertVM(ctx, VMRecord{ID: "fuse-wg", State: VMStateDraining, HostID: "h-1", Egress: status, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	// a vm tearing down does not take its lease back: its reap never
-	// releases egress, so the key would stay held on h-3.
 	gone := status
 	gone.Lease = "0123456789ab"
 	if err := store.UpsertVM(ctx, VMRecord{ID: "fuse-gone", State: VMStateDestroying, HostID: "h-3", Egress: gone, CreatedAt: now, UpdatedAt: now}); err != nil {
@@ -44,8 +42,15 @@ func TestRecoverRestoresWireGuardReservation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "host h-1") {
 		t.Fatalf("same key on a second host after restart err = %v, want refused", err)
 	}
+	// a destroying vm keeps its lease until it goes, and its reap, which no
+	// destroy precedes when it vanished from its host, releases it.
+	if err := wg.Restore("h-2", "fuse-other", gone.Lease); err == nil {
+		t.Fatal("lease of a destroying vm not restored")
+	}
+	fm.reapDestroyedVMs(ctx, map[string]bool{}, vmListing{})
+	fm.bg.Wait()
 	if err := wg.Restore("h-2", "fuse-other", gone.Lease); err != nil {
-		t.Fatalf("lease of a destroying vm was restored: %v", err)
+		t.Fatalf("reaped vm still holds its key: %v", err)
 	}
 }
 
