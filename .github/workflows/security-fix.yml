@@ -7,9 +7,12 @@ name: Security fix
 #
 # needs two secrets:
 #   ANTHROPIC_API_KEY    claude api key
-#   SECURITY_BOT_TOKEN   classic pat with repo + security_events scope. the
-#                        default GITHUB_TOKEN cannot read dependabot alerts, and
-#                        prs it opens do not trigger ci.
+#   SECURITY_BOT_TOKEN   classic pat with repo + security_events + workflow
+#                        scope (workflow lets it push fixes under
+#                        .github/workflows). the default GITHUB_TOKEN cannot read
+#                        dependabot alerts, and prs it opens do not trigger ci.
+#                        no read:org, so the prompt keeps pr calls on rest: gh pr
+#                        list/create/edit go through graphql and need read:org.
 
 on:
   schedule:
@@ -73,8 +76,13 @@ jobs:
             1. collect alerts with gh (GH_TOKEN is set):
                - gh api 'repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100'
                - gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100'
-            2. skip an alert if an open pr already fixes it with green ci
-               (gh pr list --state open, check the dependabot/* and fix/security-* branches).
+            pr calls go through rest only (gh api). gh pr list/create/edit use
+            graphql, which needs read:org, and the token does not have it.
+
+            2. skip an alert if an open pr already fixes it with green ci. list
+               open prs with gh api --paginate 'repos/${{ github.repository }}/pulls?state=open&per_page=100',
+               check the dependabot/* and fix/security-* branches, and read ci with
+               gh api 'repos/${{ github.repository }}/commits/<head sha>/check-runs'.
                a dependabot pr with failing ci is yours to fix: work on a new branch
                from main, not on the dependabot branch.
             3. group what is left by area, keyed by manifest path:
@@ -99,7 +107,8 @@ jobs:
                - commit with a lowercase conventional message, e.g.
                  "fix(docs): bump hono and astro for security alerts". no
                  signatures, no co-authored-by lines.
-               - push and open the pr against main. body: one line per alert
+               - push and open the pr against main with
+                 gh api repos/${{ github.repository }}/pulls -f title=... -f head=<branch> -f base=main -f body=... . body: one line per alert
                  (link, package, severity, from -> to), the checks you ran, and
                  a "not fixed" section if any.
             5. never dismiss alerts, never merge prs, never push to main, never
