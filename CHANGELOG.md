@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.0.0](https://github.com/folsomintel/fuse/compare/v0.47.0...v1.0.0) (2026-11-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* make restate required and remove the in-process op paths ([#409](https://github.com/folsomintel/fuse/issues/409))
+
+### Features
+
+* destroy reconcile orphans through Environment/{vm}.DestroyOrphan with the retry count in object state ([60a6712](https://github.com/folsomintel/fuse/commit/60a671292092ac12a13008cd20271513ba88b30c))
+* make restate required and remove the in-process op paths ([#409](https://github.com/folsomintel/fuse/issues/409)) ([72eceb9](https://github.com/folsomintel/fuse/commit/72eceb9dcea6b7514c292c5888fd59896c8df95e))
+* run host register, cordon, uncordon and remove through the Host/{host_id} restate object ([b1133c0](https://github.com/folsomintel/fuse/commit/b1133c0635e0921ad5393d2afb3c195772ddde5e))
+
+
+### Bug Fixes
+
+* address review findings in durable reconcile (lease leak, remove replay, host snapshot race, stop tracker, orphan dedupe, unclaim guard, drain ctx) ([22723dc](https://github.com/folsomintel/fuse/commit/22723dce8e9750af138c6961625b28d0babe1482))
+* bound drain step writes, seal the host token explicitly before a durable register and pin the host sentinel statuses ([4869a22](https://github.com/folsomintel/fuse/commit/4869a22cb353818542aa841979d71c23ede47976))
+* default cpus/ram_mb/storage_gb left at 0 before scheduling so a bare fusefile boots instead of reaching firecracker as 0 vcpus ([991cacf](https://github.com/folsomintel/fuse/commit/991cacfd6fd026002bb706e23116a86deb68bb96))
+* drop a reaped vm's egress reservation before its id is free instead of releasing it in the background ([7ea1b39](https://github.com/folsomintel/fuse/commit/7ea1b39c71095d1ec9afc114a8bbf3aca7f0a8fc))
+* keep a host's live allocations when it is registered again ([d06e214](https://github.com/folsomintel/fuse/commit/d06e2140aaf11d10ffb126f89a832ed30f5cbb40))
+* mark a host whose vm list fails unreachable for the cycle instead of aborting reconcile ([e680f74](https://github.com/folsomintel/fuse/commit/e680f742842611a011222265e1b79b6adc43368a))
+* persist the wireguard config fingerprint with the vm so the one-host-per-key reservation survives a restart ([353b9ef](https://github.com/folsomintel/fuse/commit/353b9efb2b4abae7675fa600ba7b5dd28dbab3ae))
+* refresh the local appliance's stack files on every up and stage what oci image convert needs ([#413](https://github.com/folsomintel/fuse/issues/413)) ([26423fd](https://github.com/folsomintel/fuse/commit/26423fd49c511353ddbcd6ce3d420c403919d5da))
+* restore egress leases only for live vms and take a resend as queued only right after an attempt ([a3865ca](https://github.com/folsomintel/fuse/commit/a3865cab9aecb2675b7fa0acba4d072a7fd168aa))
+* stamp orphan attempts at their end, release egress on reap, write the expired vm row last and make bad host records terminal ([31e52ad](https://github.com/folsomintel/fuse/commit/31e52ad25766609fec642f9507730d4157064e4c))
+* write durable expiry and drain steps before they return, serialize host record writes and have Stop wait for background work ([62db313](https://github.com/folsomintel/fuse/commit/62db313e6a2125f62007b6f5b73fe2140a24dacb))
+
 ## [0.47.0](https://github.com/folsomintel/fuse/compare/v0.46.0...v0.47.0) (2026-11-18)
 
 
