@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -257,6 +258,161 @@ func TestOperationStore_refusesNewWorkAtCapacity(t *testing.T) {
 	op := &operation{id: newOperationID(), done: make(chan struct{})}
 	if _, err := s.begin(op); err != errOperationsFull {
 		t.Fatalf("begin at capacity: err = %v, want errOperationsFull", err)
+	}
+}
+
+// keyedRoute is a route run as an operation that records the restate key
+// each run saw and answers with the next status in statuses (the last one
+// repeats).
+type keyedRoute struct {
+	mu       sync.Mutex
+	keys     []string
+	statuses []int
+}
+
+func (k *keyedRoute) serve(w http.ResponseWriter, r *http.Request) {
+	k.mu.Lock()
+	k.keys = append(k.keys, orchestrator.IdempotencyKey(r.Context()))
+	status := k.statuses[0]
+	if len(k.statuses) > 1 {
+		k.statuses = k.statuses[1:]
+	}
+	k.mu.Unlock()
+	if status >= 400 {
+		writeError(w, status, CodeUnavailable, "refused", nil)
+		return
+	}
+	writeJSON(w, status, map[string]string{"ok": "yes"})
+}
+
+func (k *keyedRoute) seen() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.keys...)
+}
+
+func callKeyed(h http.HandlerFunc, key, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/environments", strings.NewReader(body))
+	req.Header.Set(HeaderIdempotencyKey, key)
+	rr := httptest.NewRecorder()
+	h(rr, req)
+	return rr
+}
+
+// TestOperation_5xxRetryRunsUnderANewRestateKey: a keyed call that answered
+// 5xx runs again on retry under the next generation of its restate key, so
+// restate starts a new invocation instead of replaying the failed one. the
+// run that succeeds is then replayed, and a different body is still a 409.
+func TestOperation_5xxRetryRunsUnderANewRestateKey(t *testing.T) {
+	h := &Handler{}
+	route := &keyedRoute{statuses: []int{http.StatusInsufficientStorage, http.StatusServiceUnavailable, http.StatusCreated}}
+	serve := h.asOperation(OpCreate, MaxJSONBodyBytes, route.serve)
+
+	for i, want := range []int{http.StatusInsufficientStorage, http.StatusServiceUnavailable, http.StatusCreated} {
+		if rr := callKeyed(serve, "k-1", `{"a":1}`); rr.Code != want {
+			t.Fatalf("call %d: status = %d, want %d", i, rr.Code, want)
+		}
+	}
+	replay := callKeyed(serve, "k-1", `{"a":1}`)
+	if replay.Code != http.StatusCreated || replay.Header().Get(HeaderIdempotentReplayed) != "true" {
+		t.Fatalf("after success: status = %d replayed %q, want a replayed 201", replay.Code, replay.Header().Get(HeaderIdempotentReplayed))
+	}
+	want := []string{"master:create:k-1", "master:create#1:k-1", "master:create#2:k-1"}
+	if got := route.seen(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("restate keys = %q, want %q", got, want)
+	}
+
+	rr := callKeyed(serve, "k-1", `{"a":2}`)
+	if rr.Code != http.StatusConflict || decodeError(t, rr.Body).Error.Details["reason"] != "idempotency_key_reused" {
+		t.Fatalf("different body: status = %d, want 409 idempotency_key_reused", rr.Code)
+	}
+	if n := len(route.seen()); n != 3 {
+		t.Fatalf("handler ran %d times, want 3", n)
+	}
+}
+
+// TestOperation_4xxRetryReplays: a keyed call that answered 4xx is kept, so
+// its retry replays the answer instead of running again.
+func TestOperation_4xxRetryReplays(t *testing.T) {
+	h := &Handler{}
+	route := &keyedRoute{statuses: []int{http.StatusNotFound, http.StatusCreated}}
+	serve := h.asOperation(OpDestroy, MaxJSONBodyBytes, route.serve)
+
+	callKeyed(serve, "k-1", `{}`)
+	rr := callKeyed(serve, "k-1", `{}`)
+	if rr.Code != http.StatusNotFound || rr.Header().Get(HeaderIdempotentReplayed) != "true" {
+		t.Fatalf("retry: status = %d replayed %q, want a replayed 404", rr.Code, rr.Header().Get(HeaderIdempotentReplayed))
+	}
+	if got := route.seen(); len(got) != 1 {
+		t.Fatalf("handler ran %d times, want 1", len(got))
+	}
+}
+
+// TestOperation_5xxAfterItsWaitEndedKeepsTheKey: a run that gave up because
+// its own timeout passed may still be running on restate, so its retry
+// keeps the restate key and attaches instead of starting a second run.
+func TestOperation_5xxAfterItsWaitEndedKeepsTheKey(t *testing.T) {
+	h := &Handler{OperationTimeout: 20 * time.Millisecond}
+	var mu sync.Mutex
+	var keys []string
+	serve := h.asOperation(OpFork, MaxJSONBodyBytes, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		keys = append(keys, orchestrator.IdempotencyKey(r.Context()))
+		first := len(keys) == 1
+		mu.Unlock()
+		if first {
+			<-r.Context().Done()
+		}
+		writeError(w, http.StatusInternalServerError, CodeInternal, "gave up", nil)
+	})
+
+	for range 3 {
+		if rr := callKeyed(serve, "k-1", `{}`); rr.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want 500", rr.Code)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"master:fork:k-1", "master:fork:k-1", "master:fork#1:k-1"}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Fatalf("restate keys = %q, want %q", keys, want)
+	}
+}
+
+// TestOperationStore_fullKeepsTheFailedGeneration: a retry refused at
+// capacity leaves the 5xx it would replace, so the next retry still moves
+// past the failed generation.
+func TestOperationStore_fullKeepsTheFailedGeneration(t *testing.T) {
+	s := newOperationStore()
+	failed := &operation{id: newOperationID(), owner: "master", key: "k-1", gen: 1, done: make(chan struct{}),
+		finishedAt: time.Now(), rec: &opRecorder{status: http.StatusInternalServerError}}
+	close(failed.done)
+	s.byID[failed.id] = failed
+	s.byKey["master\x00k-1"] = failed
+	for len(s.byID) < maxOperations+1 {
+		op := &operation{id: newOperationID(), done: make(chan struct{})}
+		s.byID[op.id] = op
+	}
+	retry := &operation{id: newOperationID(), owner: "master", key: "k-1", done: make(chan struct{})}
+	if _, err := s.begin(retry); err != errOperationsFull {
+		t.Fatalf("begin over capacity: err = %v, want errOperationsFull", err)
+	}
+	if s.byKey["master\x00k-1"] != failed {
+		t.Fatal("a refused retry dropped the failed operation")
+	}
+
+	// one slot frees: the retry replaces the failed run at the next generation.
+	for id, op := range s.byID {
+		if op != failed {
+			delete(s.byID, id)
+			break
+		}
+	}
+	if _, err := s.begin(retry); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if retry.gen != 2 || s.byKey["master\x00k-1"] != retry {
+		t.Fatalf("retry gen = %d, want 2 and registered under the key", retry.gen)
 	}
 }
 

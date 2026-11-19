@@ -263,6 +263,44 @@ func TestConvertImageRefusalKeepsSentinel(t *testing.T) {
 	}
 }
 
+// TestConvertImageKeyedFailureNeedsANewKey: restate answers a keyed convert
+// that failed with the same failure for as long as it keeps the key, without
+// reaching the fleet, and only a new key runs the convert again. the api's
+// operation store moves a key to its next generation after a 5xx for this.
+func TestConvertImageKeyedFailureNeedsANewKey(t *testing.T) {
+	fastImagePolls(t)
+	fleet := newImageFleet("ubuntu", orchestrator.ImageReady)
+	fleet.convertErr = fmt.Errorf("%w: no room", orchestrator.ErrImageCacheFull)
+	client, _, _ := serveBuildFleet(t, fleet, "")
+	key := fmt.Sprintf("master:image.convert:k-%d", time.Now().UnixNano())
+
+	convert := func(key string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := client.ConvertImage(orchestrator.WithIdempotencyKey(ctx, key), orchestrator.ConvertImageRequest{Ref: "ubuntu"})
+		return err
+	}
+	for i := range 2 {
+		if err := convert(key); !errors.Is(err, orchestrator.ErrImageCacheFull) {
+			t.Fatalf("call %d: error %v, want ErrImageCacheFull", i, err)
+		}
+	}
+	if got := fleet.steps(); got != "place,convert" {
+		t.Fatalf("steps %s, want place,convert: the retry under the same key should replay", got)
+	}
+
+	fleet.mu.Lock()
+	fleet.convertErr = nil
+	fleet.mu.Unlock()
+	if err := convert(strings.Replace(key, "image.convert:", "image.convert#1:", 1)); err != nil {
+		t.Fatalf("convert under the next generation: %v", err)
+	}
+	waitImageDone(t, fleet)
+	if got := fleet.steps(); !strings.HasPrefix(got, "place,convert,place,convert") {
+		t.Fatalf("steps %s, want a second place,convert", got)
+	}
+}
+
 // TestConvertImageWatchTimesOut: a host that never finishes ends the watch at
 // its bound, recorded as timed out rather than failed.
 func TestConvertImageWatchTimesOut(t *testing.T) {
