@@ -269,4 +269,9 @@ func TestRotateTokenUpload_reloadsAgent(t *testing.T) {
 	if env.Token() == old {
 		t.Fatal("handle kept the old token after the reload")
 	}
+	// on restate a retried step reuses its key, so the reload needs a part of
+	// its own per attempt or the first attempt's failed exit is replayed.
+	if len(env.execParts) != 2 || env.execParts[0] == "" || env.execParts[0] == env.execParts[1] {
+		t.Fatalf("reload idempotency parts %q, want a distinct one per attempt", env.execParts)
+	}
 }

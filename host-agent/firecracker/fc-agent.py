@@ -883,9 +883,9 @@ def resync_guest_clock(guest_ip: str) -> None:
     rootfs happens to carry, and the images are not uniform. `date -s` needs
     nothing but coreutils.
 
-    On an x86_64 host the load already moved kvmclock forward
-    (load_clock_fields), so this only trims what is left; on arm, or a host
-    kernel older than 5.16, it is the only correction the guest gets.
+    When the load could advance kvmclock (load_clock_fields) this only trims
+    what is left; on arm, an older host kernel, or a snapshot taken on a host
+    whose clocksource was not tsc, it is the only correction the guest gets.
 
     Best effort: a guest with a wrong clock is degraded, but a restore that
     already put the guest back is not worth failing over it. The warning is
@@ -1352,19 +1352,47 @@ DELTA_HEADER = struct.Struct(">QQ")
 LOAD_TRACK_DIRTY_FIELD = "track_dirty_pages"
 
 
-def load_clock_fields() -> dict:
+CLOCKSOURCE_PATH = Path("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+
+
+def kvm_clock_realtime() -> bool:
+    """whether kvm on this host has KVM_CLOCK_REALTIME: x86_64 and linux 5.16."""
+    if os.uname().machine != "x86_64":
+        return False
+    m = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (5, 16)
+
+
+def snapshot_clock_realtime() -> bool:
+    """whether a snapshot taken here records the realtime clock a later load
+    can advance from. kvm only reports it while the host clocksource is tsc,
+    and firecracker refuses clock_realtime on a snapshot without it, so this
+    is decided when the snapshot is taken and stored in its live manifest.
+    """
+    try:
+        source = CLOCKSOURCE_PATH.read_text().strip()
+    except OSError:
+        return False
+    return kvm_clock_realtime() and source == "tsc"
+
+
+def load_clock_fields(manifest_path: Path | None) -> dict:
     """the /snapshot/load fields that bring the guest clock forward on resume.
 
     clock_realtime has kvm advance kvmclock by the wall time since the
     snapshot was taken, so the guest wakes up at about now instead of at the
-    moment it was frozen, before anything in it gets to run. firecracker only
-    has it on x86_64 and kvm needs host linux 5.16 for it, so elsewhere the
-    guest keeps the stale clock until resync_guest_clock sets it over ssh.
+    moment it was frozen, before anything in it gets to run. it is sent only
+    when the snapshot recorded the realtime clock (snapshot_clock_realtime on
+    the host that took it) and this host's kvm has the flag. anywhere else
+    the guest keeps the stale clock until resync_guest_clock sets it over ssh.
     """
-    if os.uname().machine != "x86_64":
+    if manifest_path is None:
         return {}
-    m = re.match(r"(\d+)\.(\d+)", os.uname().release)
-    if not m or (int(m.group(1)), int(m.group(2))) < (5, 16):
+    try:
+        recorded = json.loads(Path(manifest_path).read_text()).get("clock_realtime")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if recorded is not True or not kvm_clock_realtime():
         return {}
     return {"clock_realtime": True}
 
@@ -2026,6 +2054,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             "index": meta["index"],
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
+            "clock_realtime": snapshot_clock_realtime(),
         }
         # one read of the rootfs for its digest and its block table. after the
         # resume, so the guest is not kept stopped for it, except under
@@ -2235,7 +2264,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
                 "mem_backend": backend,
                 "resume_vm": True,
                 LOAD_TRACK_DIRTY_FIELD: True,
-                **load_clock_fields(),
+                **load_clock_fields(snapshot_file(vm_id, snapshot_id, LIVE_MANIFEST, required=False)),
             },
             timeout=SNAPSHOT_API_TIMEOUT,
         )
@@ -2361,7 +2390,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
                 "mem_backend": backend,
                 "resume_vm": False,
                 LOAD_TRACK_DIRTY_FIELD: True,
-                **load_clock_fields(),
+                **load_clock_fields(resume["manifest"]),
             }),
             ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
         ]:

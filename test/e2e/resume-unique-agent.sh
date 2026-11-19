@@ -23,6 +23,9 @@ FC_URL="${FC_AGENT_URL:-}"
 FC_TOKEN="${FC_AGENT_TOKEN:-}"
 PREFIX="${E2E_PREFIX:-e2e}"
 SRC="${PREFIX}-uniq-src-$$"
+# how long the seed sits before the first resume. without it the clones wake
+# up seconds after the snapshot and the clock check cannot fail.
+AGE="${E2E_SNAPSHOT_AGE:-90}"
 VM=""
 SNAP=""
 
@@ -91,10 +94,13 @@ sleep 1
   && ok "source fused serves its token" \
   || bad "source fused does not answer with its token at $SRC_URL"
 
+UPTIME_AT_SNAP=$(guest_sh "$SRC" 'cut -d. -f1 /proc/uptime' | tr -d '\r\n')
 SNAP_JSON=$(api POST "/v1/vm/$SRC/snapshot" '{"comment":"e2e resume unique","live":true}')
 SNAP=$(echo "$SNAP_JSON" | jqr snapshot_id)
 [ "$(echo "$SNAP_JSON" | jqr kind)" = "live" ] && ok "live snapshot $SNAP" || { bad "live snapshot failed: $SNAP_JSON"; exit 1; }
 api DELETE "/v1/vm/$SRC" >/dev/null && SRC=""
+note "letting the seed age ${AGE}s"
+sleep "$AGE"
 
 RANDS=(); MACS=()
 for i in 1 2; do
@@ -129,7 +135,20 @@ for i in 1 2; do
   HOST_EPOCH=$(date -u +%s)
   GUEST_EPOCH=$(guest_sh "$VM" 'date -u +%s' | tr -d '\r\n')
   DRIFT=$(( HOST_EPOCH > ${GUEST_EPOCH:-0} ? HOST_EPOCH - ${GUEST_EPOCH:-0} : ${GUEST_EPOCH:-0} - HOST_EPOCH ))
-  [ "$DRIFT" -lt 60 ] && ok "clock within ${DRIFT}s of host" || bad "clock ${DRIFT}s off the host"
+  [ "$DRIFT" -lt 30 ] && ok "clock within ${DRIFT}s of host after a ${AGE}s-old seed" || bad "clock ${DRIFT}s off the host"
+
+  # clock_realtime moves kvmclock, and so uptime, forward by the seed's age.
+  # without it (arm, host kernel < 5.16, or a non-tsc host when the snapshot
+  # was taken) uptime continues from the snapshot and only the wall clock is
+  # set over ssh, so this is reported rather than asserted.
+  if [ "$i" = 1 ]; then
+    UPTIME_NOW=$(guest_sh "$VM" 'cut -d. -f1 /proc/uptime' | tr -d '\r\n')
+    if [ $(( ${UPTIME_NOW:-0} - ${UPTIME_AT_SNAP:-0} )) -ge "$AGE" ]; then
+      ok "uptime advanced by the seed's age (${UPTIME_AT_SNAP}s -> ${UPTIME_NOW}s), clock_realtime took effect"
+    else
+      note "uptime ${UPTIME_AT_SNAP}s -> ${UPTIME_NOW}s: clock_realtime not used on this host, resync_guest_clock alone set the clock"
+    fi
+  fi
 
   api DELETE "/v1/vm/$VM" >/dev/null && VM=""
 done

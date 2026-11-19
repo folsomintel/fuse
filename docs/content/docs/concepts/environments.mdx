@@ -186,5 +186,7 @@ the orchestrator's `TOKEN_ENCRYPTION_KEY`, which every orchestrator now starts w
 
 Rotation takes effect in the running guest: after the files are written the
 orchestrator sends `fused` a `SIGHUP`, and it rereads its token and TLS certificate
-in place. The old token is refused from the next request. Connections already open
-keep the old certificate until they reconnect.
+in place. The token is checked when a request starts, so new requests with the old
+token are refused, but a request already in progress (an open
+`/v1/computer/stream`, for example) keeps running until it ends. Connections already
+open keep the old certificate until they reconnect.

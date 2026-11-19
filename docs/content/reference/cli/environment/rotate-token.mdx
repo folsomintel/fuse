@@ -21,8 +21,10 @@ fuse environment rotate-token fuse-abc123
 ```
 
 The running agent picks the new credentials up in place: the orchestrator
-sends `fused` a `SIGHUP` after writing the files, and the old token is refused
-from the next request. A guest whose `fused` predates the reload handler exits
+sends `fused` a `SIGHUP` after writing the files, and new requests with the old
+token are refused. A request already in progress, such as an open desktop
+stream, keeps running until it ends, so close those too when revoking a leaked
+token. A guest whose `fused` predates the reload handler exits
 on the signal and is restarted onto the new files.
 
 ## Errors

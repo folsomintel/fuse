@@ -28,6 +28,7 @@ type credForkEnv struct {
 	// execCalls records every command run in the guest, and execExit is the
 	// exit code they report.
 	execCalls [][]string
+	execParts []string
 	execExit  int
 
 	// uploadedPaths records what was written into this guest over the wire,
@@ -54,10 +55,12 @@ func (e *credForkEnv) SetToken(token string) {
 	e.authToken = token
 }
 
-func (e *credForkEnv) Exec(_ context.Context, cmd []string, _ ExecOptions) (ExecResult, error) {
+func (e *credForkEnv) Exec(ctx context.Context, cmd []string, _ ExecOptions) (ExecResult, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.execCalls = append(e.execCalls, cmd)
+	part, _, _ := NextIdempotencyPart(ctx)
+	e.execParts = append(e.execParts, part)
 	return ExecResult{ExitCode: e.execExit}, nil
 }
 func (e *credForkEnv) ExecStream(context.Context, io.Writer, io.Writer, string, ...string) error {
