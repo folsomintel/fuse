@@ -74,6 +74,47 @@ describe("images", () => {
     expect(keys[1]).toBe("my-key");
   });
 
+  it("convert sends a different generated key on each unkeyed call", async () => {
+    const keys: (string | undefined)[] = [];
+    current = await serve((req, res) => {
+      keys.push(req.headers["idempotency-key"] as string | undefined);
+      json(res, 202, image("converting"));
+    });
+
+    await current.client.images.convert({ ref: "ubuntu:24.04" });
+    await current.client.images.convert({ ref: "ubuntu:24.04" });
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBeTruthy();
+    expect(keys[1]).toBeTruthy();
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it("convert follows a 202 operation to the image", async () => {
+    const op = {
+      id: "op_1",
+      kind: "image.convert",
+      started_at: "2026-11-15T00:00:00Z",
+    };
+    current = await serve((req, res) => {
+      if (req.method === "POST") {
+        json(res, 202, { operation_id: "op_1", operation: { ...op, state: "running" } });
+        return;
+      }
+      json(res, 200, {
+        ...op,
+        state: "succeeded",
+        status_code: 202,
+        result: image("converting"),
+      });
+    });
+
+    const img = await current.client.images.convert({ ref: "ubuntu:24.04" });
+
+    expect(img.digest).toBe(DIGEST);
+    expect(img.state).toBe(ImageState.Converting);
+  });
+
   it("convert requires a ref", async () => {
     current = await serve((_req, res) => json(res, 202, image("converting")));
     await expect(current.client.images.convert({ ref: "" })).rejects.toThrow(

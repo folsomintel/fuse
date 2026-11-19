@@ -3,6 +3,7 @@ use std::sync::Arc;
 use reqwest::Method;
 
 use crate::error::Error;
+use crate::gates::decode_body;
 use crate::operations::CallOptions;
 use crate::transport::{require, Transport};
 use crate::types::{ConvertImageRequest, Image};
@@ -29,7 +30,9 @@ impl Images {
     }
 
     /// Converts with per-call options such as an idempotency key, so a
-    /// retry attaches to the first convert instead of starting another.
+    /// retry attaches to the first convert instead of starting another. The
+    /// convert runs as an operation: one the server answers with a 202
+    /// operation is followed until it finishes.
     pub async fn convert_with_options(
         &self,
         request: ConvertImageRequest,
@@ -40,7 +43,8 @@ impl Images {
             .t
             .request(Method::POST, &["v1", "images"])
             .json(&request);
-        self.t.send_json(options.apply(builder)).await
+        let (_, body) = self.t.send_operation(options.apply(builder)).await?;
+        decode_body(&body)
     }
 
     /// Reports an image's conversion state by digest.

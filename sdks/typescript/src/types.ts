@@ -1175,12 +1175,13 @@ export interface OperationError {
 
 /**
  * Operation is one run of a mutating call (create, destroy, fork, migrate,
- * snapshot, restore or drain). Once it finished, status_code with result (on
- * a 2xx) or error (otherwise) is what the call itself would have answered.
+ * snapshot, restore, drain or image.convert). Once it finished, status_code
+ * with result (on a 2xx) or error (otherwise) is what the call itself would
+ * have answered.
  */
 export interface Operation {
   id: string;
-  /** create, destroy, fork, migrate, snapshot, restore or drain. */
+  /** create, destroy, fork, migrate, snapshot, restore, drain or image.convert. */
   kind: string;
   /** One of OperationState. */
   state: string;
@@ -1194,8 +1195,9 @@ export interface Operation {
   /** The http status the call answered with. */
   status_code?: number;
   /** The call's response body on success: an EnvironmentInfo for create,
-   * fork, migrate and drain, a Snapshot for snapshot, absent for destroy and
-   * restore, and a held response when a hitl gate held the action. */
+   * fork, migrate and drain, a Snapshot for snapshot, an Image for
+   * image.convert, absent for destroy and restore, and a held response when
+   * a hitl gate held the action. */
   result?: unknown;
   error?: OperationError;
 }

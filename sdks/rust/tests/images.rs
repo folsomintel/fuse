@@ -2,7 +2,7 @@
 // body, get's path escaping and failed-image decoding, a 404 on get, and
 // the spec's image_digest field.
 
-use fuse::{CallOptions, Client, ConvertImageRequest, ImageState, Spec};
+use fuse::{CallOptions, Client, ConvertImageRequest, ImageState, OperationKind, Spec};
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -172,4 +172,119 @@ async fn convert_sends_an_idempotency_key() {
         .collect();
     assert_eq!(keys[0].len(), 36);
     assert_eq!(keys[1], "img-42");
+}
+
+#[tokio::test]
+async fn unkeyed_converts_send_different_keys() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/images"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(json!({
+            "digest": DIGEST,
+            "ref": "python:3.12",
+            "state": "converting",
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    for _ in 0..2 {
+        client
+            .images()
+            .convert(ConvertImageRequest::new("python:3.12"))
+            .await
+            .unwrap();
+    }
+
+    let requests = server.received_requests().await.unwrap();
+    let keys: Vec<&str> = requests
+        .iter()
+        .map(|r| r.headers.get("idempotency-key").unwrap().to_str().unwrap())
+        .collect();
+    assert_eq!(keys.len(), 2);
+    assert!(!keys[0].is_empty());
+    assert_ne!(keys[0], keys[1]);
+}
+
+fn image_operation(state: &str, extra: Value) -> Value {
+    let mut body = json!({
+        "id": "op_1",
+        "kind": "image.convert",
+        "state": state,
+        "started_at": "2026-01-02T03:04:05Z",
+    });
+    for (key, value) in extra.as_object().unwrap() {
+        body[key] = value.clone();
+    }
+    body
+}
+
+async fn mount_accepted_convert(server: &MockServer, finished: Value) {
+    Mock::given(method("POST"))
+        .and(path("/v1/images"))
+        .respond_with(ResponseTemplate::new(202).set_body_json(json!({
+            "operation_id": "op_1",
+            "operation": image_operation("running", json!({})),
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/operations/op_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(finished))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn convert_follows_an_accepted_operation() {
+    let server = MockServer::start().await;
+    mount_accepted_convert(
+        &server,
+        image_operation(
+            "succeeded",
+            json!({
+                "status_code": 202,
+                "result": {"digest": DIGEST, "ref": "python:3.12", "host_id": "fc-1", "state": "converting"},
+            }),
+        ),
+    )
+    .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    let image = client
+        .images()
+        .convert(ConvertImageRequest::new("python:3.12"))
+        .await
+        .unwrap();
+    assert_eq!(image.digest, DIGEST);
+    assert_eq!(image.host_id, "fc-1");
+    assert_eq!(image.state, ImageState::Converting);
+
+    let operation = client.operations().get("op_1", None).await.unwrap();
+    assert_eq!(operation.kind, OperationKind::ImageConvert);
+}
+
+#[tokio::test]
+async fn convert_followed_failure_is_an_api_error() {
+    let server = MockServer::start().await;
+    mount_accepted_convert(
+        &server,
+        image_operation(
+            "failed",
+            json!({
+                "status_code": 507,
+                "error": {"code": "unavailable", "message": "image cache full"},
+            }),
+        ),
+    )
+    .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    let err = client
+        .images()
+        .convert(ConvertImageRequest::new("python:3.12"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.status(), Some(507));
 }

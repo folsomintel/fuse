@@ -6,9 +6,8 @@ use serde::Deserialize;
 
 use crate::error::Error;
 use crate::interventions::wait_intervention;
-use crate::operations::{operation_answer, wait_operation};
 use crate::transport::Transport;
-use crate::types::{Intervention, OperationAccepted};
+use crate::types::Intervention;
 
 /// A callback told about the pending intervention whenever a hitl gate
 /// holds a call, before the call waits on it. Set it per exec with
@@ -59,34 +58,13 @@ struct HeldResponse {
     intervention: Intervention,
 }
 
-// the 202 body of a call whose operation outlasted the server's wait. it is
-// told apart from a held response by its operation_id.
-#[derive(Deserialize)]
-struct Accepted {
-    #[serde(default)]
-    operation_id: String,
-}
-
 impl Transport {
     /// Sends a gated call. A 202 decodes as the held intervention; any other
     /// success body is returned for the caller to read. A 202 naming an
     /// operation is followed until the operation finishes, and its answer
     /// is handled as if the call had answered with it.
     pub(crate) async fn send_gated(&self, builder: RequestBuilder) -> Result<Gated, Error> {
-        let response = Self::check(builder.send().await?).await?;
-        let mut status = response.status().as_u16();
-        let mut body = response.bytes().await?.to_vec();
-        if status == StatusCode::ACCEPTED.as_u16() {
-            let accepted: Accepted = serde_json::from_slice(&body)?;
-            if !accepted.operation_id.is_empty() {
-                let accepted: OperationAccepted = serde_json::from_slice(&body)?;
-                if let Some(callback) = &self.on_operation {
-                    (callback.0)(&accepted);
-                }
-                let operation = wait_operation(self, &accepted.operation_id, None).await?;
-                (status, body) = operation_answer(operation)?;
-            }
-        }
+        let (status, body) = self.send_operation(builder).await?;
         if status != StatusCode::ACCEPTED.as_u16() {
             return Ok(Gated::Done(body));
         }

@@ -1086,8 +1086,9 @@ class ErrorBody(_Model):
 
 class Operation(_Model):
     # one run of a mutating call (create, destroy, fork, migrate, snapshot,
-    # restore or drain). once it finished, status_code with result (on a
-    # 2xx) or error (otherwise) is what the call itself would have answered.
+    # restore, drain or image.convert). once it finished, status_code with
+    # result (on a 2xx) or error (otherwise) is what the call itself would
+    # have answered.
     id: str = ""
     kind: str = ""
     state: str = ""
@@ -1096,8 +1097,9 @@ class Operation(_Model):
     finished_at: Optional[datetime] = None
     status_code: int = 0
     # the call's raw response body on success: an environment for create,
-    # fork, migrate and drain, a snapshot for snapshot, none for destroy and
-    # restore, and a held response when a hitl gate held the action (202).
+    # fork, migrate and drain, a snapshot for snapshot, an image for
+    # image.convert, none for destroy and restore, and a held response when a
+    # hitl gate held the action (202).
     result: Optional[Any] = None
     error: Optional[ErrorBody] = None
 

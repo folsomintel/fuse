@@ -2377,6 +2377,7 @@ string_enum! {
         Snapshot => "snapshot",
         Restore => "restore",
         Drain => "drain",
+        ImageConvert => "image.convert",
     }
 }
 
@@ -2409,7 +2410,7 @@ pub struct OperationError {
 }
 
 /// One run of a mutating call (create, destroy, fork, migrate, drain,
-/// snapshot, restore), from
+/// snapshot, restore, image.convert), from
 /// [`Operations::get`](crate::Operations::get). Once it finished,
 /// `status_code` with `result` (2xx) or `error` (otherwise) are what the
 /// call itself would have answered.
@@ -2429,9 +2430,9 @@ pub struct Operation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_code: Option<u16>,
     /// The call's response body on success: an environment for create,
-    /// fork, migrate and drain, a snapshot for snapshot, absent for destroy
-    /// and restore, and a held response when a hitl gate held the action
-    /// (status 202).
+    /// fork, migrate and drain, a snapshot for snapshot, an image for
+    /// image.convert, absent for destroy and restore, and a held response
+    /// when a hitl gate held the action (status 202).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     /// The call's error body on failure.
