@@ -2600,12 +2600,15 @@ components:
         different request is 409 `conflict`, `details.reason`
         `idempotency_key_reused`. Keys are scoped to the credential and
         kept 24h after the operation finishes; a finished 5xx is not kept,
-        so its retry runs again, as a new restate invocation rather than
-        a replay of the failed one. The key also names the operation's
-        restate invocation, so a retry after an orchestrator restart
-        attaches to the same invocation, except a destroy that already
-        finished: its vm is gone, so that retry answers 404. 1-255 visible
-        ascii characters. Every answer carries the operation's id in
+        so its retry runs again. A failure restate recorded reruns as a new
+        restate invocation; one from before restate answered (a timeout, a
+        dropped connection) attaches to the first invocation. The key also
+        names the operation's restate invocation, so a retry after an
+        orchestrator restart attaches to the same invocation, except a
+        destroy that already finished: its vm is gone, so that retry answers
+        404. After a restart, a key whose earlier try failed with a 5xx may
+        replay that failure for up to restate's idempotency retention (24h);
+        retry with a fresh key. 1-255 visible ascii characters. Every answer carries the operation's id in
         `Fuse-Operation-Id`. On POST /v1/environments/{vmId} only `drain`,
         `fork` and `migrate` honor it. POST /v1/images (`image.convert`)
         honors it too.

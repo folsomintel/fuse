@@ -51,12 +51,16 @@ API keys never collide. The same key with a different request (another
 method, path, action or body) is a `409` `conflict` whose
 `details["reason"]` is `idempotency_key_reused`, with the first call's id in
 `details["operation_id"]`. A finished operation is kept for 24 hours; one
-that finished with a 5xx is not kept at all, so its retry runs again, as a
-new restate invocation rather than a replay of the failed one. Keys live in
-the orchestrator's memory and an orchestrator restart forgets them, except
-that the key also names the operation's restate invocation, so a retry after
-a restart attaches to the same invocation. A destroy that already finished is
-the exception: its vm is gone, so that retry answers 404.
+that finished with a 5xx is not kept at all, so its retry runs again. A
+failure restate recorded reruns as a new restate invocation; one from before
+restate answered (a timeout, a dropped connection) attaches to the first
+invocation. Keys live in the orchestrator's memory and an orchestrator
+restart forgets them, except that the key also names the operation's restate
+invocation, so a retry after a restart attaches to the same invocation. A
+destroy that already finished is the exception: its vm is gone, so that retry
+answers 404. After a restart, a key whose earlier try failed with a 5xx may
+replay that failure for up to restate's idempotency retention (24 hours);
+retry with a fresh key.
 
 ## Following an accepted operation
 

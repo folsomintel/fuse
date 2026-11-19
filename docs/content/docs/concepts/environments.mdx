@@ -124,13 +124,16 @@ call that cannot provision a second environment. The rules:
 - The same key with a different request is a `409` `conflict`,
   `details.reason` `idempotency_key_reused`.
 - A finished operation and its key are kept for 24 hours. One that finished
-  with a 5xx is not kept, so its retry runs again, as a new restate invocation
-  rather than a replay of the failed one.
+  with a 5xx is not kept, so its retry runs again. A failure restate recorded
+  reruns as a new restate invocation; one from before restate answered (a
+  timeout, a dropped connection) attaches to the first invocation.
 - Operations and keys live in the orchestrator's memory, and a restart forgets
   them. Every operation also hands the key to restate as its invocation's
   idempotency key, so a retry after a restart still attaches to the same
   invocation. A destroy or migrate that already finished is the exception: the
-  vm it acted on is gone, so that retry answers `404`.
+  vm it acted on is gone, so that retry answers `404`. After a restart, a key
+  whose earlier try failed with a 5xx may replay that failure for up to
+  restate's idempotency retention (24 hours); retry with a fresh key.
 
 The SDKs send a random key on every call and take your own for retries:
 `WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in
