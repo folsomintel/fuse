@@ -25,9 +25,14 @@ def get_on_host(self, host_id: str, digest: str) -> Image: ...
 `convert` sends `POST /v1/images` and returns the image at once (the server
 answers `202`), usually still `converting`. The bake keeps running on the host
 if your process goes away. Converting a ref that is already converting or ready
-returns that image; one that failed is converted again. Each call sends an
-`Idempotency-Key`, a fresh one unless you pass `idempotency_key`; a retry under
-the same key attaches to the first convert. A malformed ref, a
+returns that image; one that failed is converted again. The convert runs as an
+[operation](/reference/python/operations): each call sends an
+`Idempotency-Key`, a fresh one unless you pass `idempotency_key`, and a retry
+of the same request under the same key attaches to the first convert. The same
+key with another ref raises a `409` whose `details["reason"]` is
+`idempotency_key_reused`. A convert that answered 5xx, such as the `507` below,
+runs again when retried under its key. One that outlasts the server's wait is
+followed until it answers. A malformed ref, a
 registry that needs credentials, or a `host_id` that runs the QEMU backend
 raises `fuse.ApiError` with `code == "invalid_argument"`; a ref the registry
 does not have raises it with `code == "not_found"`. A host whose image cache is

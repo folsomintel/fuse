@@ -23,9 +23,14 @@ getOnHost(hostId: string, digest: string, opts?: CallOptions): Promise<Image>
 `convert` sends `POST /v1/images` and resolves at once with the image (a
 `202`), usually still `converting`. The bake keeps running on the host if your
 process goes away. Converting a ref that is already converting or ready returns
-that image; one that failed is converted again. Each call sends an
-`Idempotency-Key`, a fresh one unless you pass `opts.idempotencyKey`; a retry
-under the same key attaches to the first convert. A malformed ref, a registry
+that image; one that failed is converted again. The convert runs as an
+[operation](/reference/typescript/operations): each call sends an
+`Idempotency-Key`, a fresh one unless you pass `opts.idempotencyKey`, and a
+retry of the same request under the same key attaches to the first convert.
+The same key with another ref rejects with a `409` whose `details.reason` is
+`idempotency_key_reused`. A convert that answered 5xx, such as the `507` below,
+runs again when retried under its key. One that outlasts the server's wait is
+followed until it answers. A malformed ref, a registry
 that needs credentials, or a `host_id` that runs the QEMU backend rejects with
 a `FuseApiError` whose `code` is `invalid_argument`; a ref the registry does
 not have rejects with `not_found`. A host whose image cache is full evicts its

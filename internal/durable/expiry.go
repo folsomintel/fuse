@@ -156,13 +156,14 @@ func scheduleExpiry(ctx restate.ObjectContext, vmID string, st expiryState, dela
 // a long snapshot on the same vm, so it goes through the client with no
 // request timeout of its own; ctx bounds the wait.
 func (c *Client) Drain(ctx context.Context, vmID string) error {
+	ctx, a := watchAnswer(ctx)
 	_, err := ingress.Object[restate.Void, restate.Void](c.longIngress, EnvironmentObject, vmID, "Drain").
 		Request(ctx, restate.Void{}, callerKey(ctx)...)
 	var ierr ingress.Error
 	if errors.As(err, &ierr) && ierr.Code() == drainFailedCode {
-		return errors.New(ierr.Message())
+		return settled(a, err, errors.New(ierr.Message()))
 	}
-	return fleetError(err)
+	return settled(a, err, fleetError(err))
 }
 
 // SendArmExpiry enqueues Environment/{vmID}.Expire with no token: a check

@@ -13,13 +13,20 @@ import (
 	"github.com/folsomintel/fuse/internal/orchestrator/orchestratortest"
 )
 
-// imageFakeProvider is a fakeProvider whose host can convert images.
+// imageFakeProvider is a fakeProvider whose host can convert images. its
+// first full converts answer 507, a host with no room left.
 type imageFakeProvider struct {
 	*fakeProvider
-	images map[string]orchestrator.Image
+	images   map[string]orchestrator.Image
+	full     int
+	converts int
 }
 
 func (p *imageFakeProvider) ConvertImage(_ context.Context, ref string) (orchestrator.Image, error) {
+	p.converts++
+	if p.converts <= p.full {
+		return orchestrator.Image{}, &orchestrator.HTTPStatusError{Code: http.StatusInsufficientStorage, Body: "image cache full"}
+	}
 	if ref == "private/app" {
 		return orchestrator.Image{}, &orchestrator.HTTPStatusError{Code: http.StatusBadRequest, Body: "private registries are not supported"}
 	}
@@ -36,6 +43,12 @@ func (p *imageFakeProvider) GetImage(_ context.Context, digest string) (orchestr
 
 func newImageHandler(t *testing.T, images ...orchestrator.Image) http.Handler {
 	t.Helper()
+	h, _ := newImageHandlerWith(t, images...)
+	return h
+}
+
+func newImageHandlerWith(t *testing.T, images ...orchestrator.Image) (http.Handler, *imageFakeProvider) {
+	t.Helper()
 	p := &imageFakeProvider{fakeProvider: newFakeProvider(), images: map[string]orchestrator.Image{}}
 	for _, img := range images {
 		p.images[img.Digest] = img
@@ -49,7 +62,48 @@ func newImageHandler(t *testing.T, images ...orchestrator.Image) http.Handler {
 	if err := fm.RegisterHost(context.Background(), gpu, newFakeProvider()); err != nil {
 		t.Fatal(err)
 	}
-	return mustRouter(t, &Handler{Fleet: fm})
+	return mustRouter(t, &Handler{Fleet: fm}), p
+}
+
+// TestConvertImageKeyReusedForAnotherRef: a convert runs as an operation, so
+// the same key with a different ref is a 409, not the first ref's image.
+func TestConvertImageKeyReusedForAnotherRef(t *testing.T) {
+	h, p := newImageHandlerWith(t)
+	if rr := doKeyed(t, h, http.MethodPost, "/v1/images", "k-1", ConvertImageRequest{Ref: "ubuntu:24.04"}); rr.Code != http.StatusAccepted {
+		t.Fatalf("first: status = %d, body %s", rr.Code, rr.Body.String())
+	}
+	rr := doKeyed(t, h, http.MethodPost, "/v1/images", "k-1", ConvertImageRequest{Ref: "debian:12"})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("other ref: status = %d, want 409. body %s", rr.Code, rr.Body.String())
+	}
+	if env := decodeError(t, rr.Body); env.Error.Details["reason"] != "idempotency_key_reused" {
+		t.Fatalf("reason = %q, want idempotency_key_reused", env.Error.Details["reason"])
+	}
+	same := doKeyed(t, h, http.MethodPost, "/v1/images", "k-1", ConvertImageRequest{Ref: "ubuntu:24.04"})
+	if same.Code != http.StatusAccepted || same.Header().Get(HeaderIdempotentReplayed) != "true" || same.Header().Get(HeaderOperationID) == "" {
+		t.Fatalf("same ref: status = %d replayed %q, want a replayed 202 with an operation id", same.Code, same.Header().Get(HeaderIdempotentReplayed))
+	}
+	if p.converts != 1 {
+		t.Fatalf("host converted %d times, want 1", p.converts)
+	}
+}
+
+// TestConvertImageKeyedFailureRunsAgain: a keyed convert that answered 507
+// reaches the host again when retried with the same key, instead of getting
+// the durable fake's (and restate's) recorded failure back.
+func TestConvertImageKeyedFailureRunsAgain(t *testing.T) {
+	h, p := newImageHandlerWith(t)
+	p.full = 1
+	if rr := doKeyed(t, h, http.MethodPost, "/v1/images", "k-1", ConvertImageRequest{Ref: "ubuntu:24.04"}); rr.Code != http.StatusInsufficientStorage {
+		t.Fatalf("first: status = %d, want 507. body %s", rr.Code, rr.Body.String())
+	}
+	rr := doKeyed(t, h, http.MethodPost, "/v1/images", "k-1", ConvertImageRequest{Ref: "ubuntu:24.04"})
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("retry: status = %d, want 202. body %s", rr.Code, rr.Body.String())
+	}
+	if p.converts != 2 {
+		t.Fatalf("host converted %d times, want 2", p.converts)
+	}
 }
 
 func TestConvertImage(t *testing.T) {

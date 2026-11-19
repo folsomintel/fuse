@@ -107,6 +107,7 @@ func writeFleetError(w http.ResponseWriter, err error) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	markSettled(w, err)
 	status, code := classifyFleetError(err)
 	var details map[string]string
 	var locked *orchestrator.LockedError
@@ -126,6 +127,7 @@ func writeFleetErrorRedacted(w http.ResponseWriter, err error, secretMap map[str
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+	markSettled(w, err)
 	status, code := classifyFleetError(err)
 	msg := secrets.RedactSecretValues(err.Error(), secretMap)
 	writeError(w, status, code, msg, nil)

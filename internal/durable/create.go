@@ -243,9 +243,10 @@ func createStep(ctx restate.Context, name string, retry []restate.RunOption, fn 
 // request timeout of its own; ctx bounds the wait, and the create keeps
 // running if ctx ends first.
 func (c *Client) Create(ctx context.Context, vmID string, req orchestrator.CreateRequest) error {
+	ctx, a := watchAnswer(ctx)
 	_, err := ingress.Object[orchestrator.CreateRequest, restate.Void](c.longIngress, EnvironmentObject, vmID, "Create").
 		Request(ctx, req, callerKey(ctx)...)
-	return createError(err)
+	return settled(a, err, createError(err))
 }
 
 // createError turns a create's failure back into the fleet sentinel its code

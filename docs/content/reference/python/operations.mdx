@@ -5,9 +5,9 @@ sidebar:
 description: Idempotency keys, long-running calls, and the operations service
 ---
 
-Seven calls run on the orchestrator as operations: `environments.create`,
-`destroy`, `fork`, `migrate` and `drain`, and `snapshots.create` and
-`restore`. The server waits for the operation up to its attach bound (10
+Eight calls run on the orchestrator as operations: `environments.create`,
+`destroy`, `fork`, `migrate` and `drain`, `snapshots.create` and `restore`,
+and `images.convert`. The server waits for the operation up to its attach bound (10
 seconds below its `-write-timeout`, so 50s by default) and answers as it
 always has. One that outlasts the bound is answered with a `202` and an
 operation id, and the SDK follows it until it finishes. Either way the method
@@ -16,7 +16,7 @@ changes.
 
 ## Idempotency keys
 
-Each of those seven methods takes a keyword-only `idempotency_key`:
+Each of those eight methods takes a keyword-only `idempotency_key`:
 
 ```python
 def create(self, request: CreateRequest, *, idempotency_key: Optional[str] = None) -> EnvironmentInfo: ...
@@ -51,12 +51,16 @@ API keys never collide. The same key with a different request (another
 method, path, action or body) is a `409` `conflict` whose
 `details["reason"]` is `idempotency_key_reused`, with the first call's id in
 `details["operation_id"]`. A finished operation is kept for 24 hours; one
-that finished with a 5xx is not kept at all, so its retry runs again. Keys
-live in the orchestrator's memory and an orchestrator restart forgets them,
-except that the key of a destroy, snapshot or restore is also the restate invocation's
-idempotency key, so a retry after a restart attaches to the same invocation.
-A destroy that already finished is the exception: its vm is gone, so that
-retry answers 404.
+that finished with a 5xx is not kept at all, so its retry runs again. A
+failure restate recorded reruns as a new restate invocation; one from before
+restate answered (a timeout, a dropped connection) attaches to the first
+invocation. Keys live in the orchestrator's memory and an orchestrator
+restart forgets them, except that the key also names the operation's restate
+invocation, so a retry after a restart attaches to the same invocation. A
+destroy that already finished is the exception: its vm is gone, so that retry
+answers 404. After a restart, a key whose earlier try failed with a 5xx may
+replay that failure for up to restate's idempotency retention (24 hours);
+retry with a fresh key.
 
 ## Following an accepted operation
 
@@ -129,8 +133,8 @@ OPERATION_SUCCEEDED = "succeeded"
 OPERATION_FAILED = "failed"
 ```
 
-- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
-  `drain`.
+- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore`,
+  `drain` or `image.convert`.
 - `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
   `done` reports whether it is anything but `running`.
 - `step` is the step the operation last reported starting. No operation
@@ -139,6 +143,7 @@ OPERATION_FAILED = "failed"
 - `status_code`, with `result` on success or `error` on failure, is what the
   call itself would have answered. `result` is the decoded response body: an
   environment for create, fork, migrate and drain, a snapshot for snapshot,
-  and `None` for destroy and restore.
+  an image for image.convert (with `status_code` 202), and `None` for destroy
+  and restore.
 
 `Operation`, `OperationAccepted`, `ErrorBody` and the three state constants are exported from `fuse`.

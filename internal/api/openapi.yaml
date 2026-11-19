@@ -55,7 +55,7 @@ tags:
   - name: auth
     description: Session-cookie login/logout for browser callers
   - name: operations
-    description: Mutating calls (create, destroy, fork, migrate, snapshot, restore, drain) run past their own request
+    description: Mutating calls (create, destroy, fork, migrate, snapshot, restore, drain, image.convert) run past their own request
   - name: builds
     description: Fusefile setup phases run on the orchestrator, with the setup layer cache
   - name: images
@@ -2502,11 +2502,14 @@ paths:
         404 again and a create naming it is a 409 until it is converted
         again. When nothing can be evicted the convert is a 507.
 
-        A retry that carries the first call's
-        `Idempotency-Key` attaches to the first convert instead of
-        starting another.
+        The convert runs as an operation of kind `image.convert`: a retry
+        that carries the first call's `Idempotency-Key` with the same
+        request attaches to the first convert instead of starting another,
+        and the same key with a different request is a 409. A convert that
+        answered 5xx (a 507 cache full, a 503) runs again on its retry.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
       requestBody:
         required: true
         content:
@@ -2515,15 +2518,29 @@ paths:
               $ref: "#/components/schemas/ConvertImageRequest"
       responses:
         "202":
-          description: The image, converting, ready or failed.
+          description: |
+            The image, converting, ready or failed. When the convert's
+            operation outlasts `?wait=` (or `wait=false`) the body is an
+            OperationAccepted instead, told apart by its `operation_id`,
+            and `Location` points at /v1/operations/{operationId}, whose
+            `result` is then the image.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/operations/{operationId}, on an OperationAccepted
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Image"
+                oneOf:
+                  - $ref: "#/components/schemas/Image"
+                  - $ref: "#/components/schemas/OperationAccepted"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "503":
           $ref: "#/components/responses/Unavailable"
         "507":
@@ -2620,13 +2637,18 @@ components:
         different request is 409 `conflict`, `details.reason`
         `idempotency_key_reused`. Keys are scoped to the credential and
         kept 24h after the operation finishes; a finished 5xx is not kept,
-        so its retry runs again. The key is also the
-        restate ingress idempotency key of a destroy, snapshot or restore,
-        so a retry after an orchestrator restart attaches to the same
-        invocation, except a destroy that already finished: its vm is gone,
-        so that retry answers 404. 1-255 visible ascii characters. Every answer carries
-        the operation's id in `Fuse-Operation-Id`. On POST
-        /v1/environments/{vmId} only `drain`, `fork` and `migrate` honor it.
+        so its retry runs again. A failure restate recorded reruns as a new
+        restate invocation; one from before restate answered (a timeout, a
+        dropped connection) attaches to the first invocation. The key also
+        names the operation's restate invocation, so a retry after an
+        orchestrator restart attaches to the same invocation, except a
+        destroy that already finished: its vm is gone, so that retry answers
+        404. After a restart, a key whose earlier try failed with a 5xx may
+        replay that failure for up to restate's idempotency retention (24h);
+        retry with a fresh key. 1-255 visible ascii characters. Every answer carries the operation's id in
+        `Fuse-Operation-Id`. On POST /v1/environments/{vmId} only `drain`,
+        `fork` and `migrate` honor it. POST /v1/images (`image.convert`)
+        honors it too.
     Wait:
       name: wait
       in: query
@@ -4538,7 +4560,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [create, destroy, fork, migrate, snapshot, restore, drain]
+          enum: [create, destroy, fork, migrate, snapshot, restore, drain, image.convert]
         state:
           type: string
           enum: [running, succeeded, failed]
@@ -4559,9 +4581,10 @@ components:
           type: object
           description: |
             The call's response body on success: an Environment for create,
-            fork, migrate and drain, a Snapshot for snapshot, absent for
-            destroy and restore (204), and a HeldResponse when a hitl gate
-            held the action (status_code 202).
+            fork, migrate and drain, a Snapshot for snapshot, an Image for
+            image.convert (status_code 202), absent for destroy and restore
+            (204), and a HeldResponse when a hitl gate held the action
+            (status_code 202).
         error:
           type: object
           description: The call's error body (the `error` member of an Error) on failure.

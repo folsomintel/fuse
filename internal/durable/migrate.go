@@ -509,9 +509,10 @@ func watchMemory(ctx restate.ObjectContext, fleet Migrator, w orchestrator.Memor
 // client with no request timeout of its own; ctx bounds the wait, and the
 // migrate keeps running if ctx ends first.
 func (c *Client) Migrate(ctx context.Context, vmID string, req orchestrator.MigrateRequest) (string, error) {
+	ctx, a := watchAnswer(ctx)
 	id, err := ingress.Object[orchestrator.MigrateRequest, string](c.longIngress, EnvironmentObject, vmID, "Migrate").
 		Request(ctx, req, callerKey(ctx)...)
-	return id, migrateError(err)
+	return id, settled(a, err, migrateError(err))
 }
 
 var _ orchestrator.DurableMigrator = (*Client)(nil)

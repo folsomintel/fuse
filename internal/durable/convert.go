@@ -139,9 +139,10 @@ func watchImage(ctx restate.Context, fleet Images, policy RetryPolicy, img orche
 // resolves the ref against its registry, so it goes through the client with
 // no request timeout of its own; ctx bounds the wait.
 func (c *Client) ConvertImage(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error) {
+	ctx, a := watchAnswer(ctx)
 	img, err := ingress.Service[orchestrator.ConvertImageRequest, orchestrator.Image](c.longIngress, ImagesService, "Convert").
 		Request(ctx, req, callerKey(ctx)...)
-	return img, imageError(err)
+	return img, settled(a, err, imageError(err))
 }
 
 // imageError turns a convert's failure back into the fleet sentinel its code

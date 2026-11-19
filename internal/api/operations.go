@@ -42,6 +42,9 @@ const (
 	OpSnapshot = "snapshot"
 	OpRestore  = "restore"
 	OpDrain    = "drain"
+	// OpImageConvert is the name convert keyed restate with before it ran as
+	// an operation, so a convert in flight across an upgrade keeps its key.
+	OpImageConvert = "image.convert"
 )
 
 // operation states.
@@ -79,10 +82,25 @@ type operation struct {
 	fingerprint string
 	startedAt   time.Time
 	done        chan struct{}
+	// gen counts the earlier runs under key whose 5xx restate recorded, so
+	// this run gets a restate key of its own instead of attaching to their
+	// failed invocation. begin carries it over from the run it replaces.
+	gen int
 
 	mu         sync.Mutex
 	finishedAt time.Time
 	rec        *opRecorder
+}
+
+// restateKey is the idempotency key op's restate invocation runs under. a
+// first run keeps the plain owner:kind:key. a rerun after a recorded failure
+// marks its generation on the kind, where no caller key can reach, so it
+// never names the invocation of another key.
+func (op *operation) restateKey() string {
+	if op.gen == 0 {
+		return op.owner + ":" + op.kind + ":" + op.key
+	}
+	return op.owner + ":" + op.kind + "#" + strconv.Itoa(op.gen) + ":" + op.key
 }
 
 // finished reports whether the handler returned.
@@ -140,10 +158,22 @@ func (op *operation) view() Operation {
 }
 
 // opRecorder is the ResponseWriter an operation's handler writes into.
+// settled is set when the handler answered with a failure restate recorded
+// for the op's invocation (orchestrator.SettledError).
 type opRecorder struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header  http.Header
+	status  int
+	body    bytes.Buffer
+	settled bool
+}
+
+// markSettled notes on an operation's recorder that err is a failure restate
+// recorded, so a retry of the op needs a new restate key to run again. any
+// other writer, or any other error, is left alone.
+func markSettled(w http.ResponseWriter, err error) {
+	if rec, ok := w.(*opRecorder); ok && orchestrator.IsSettled(err) {
+		rec.settled = true
+	}
 }
 
 func (r *opRecorder) Header() http.Header { return r.header }
@@ -176,23 +206,41 @@ func newOperationStore() *operationStore {
 var errOperationsFull = errors.New("too many operations in flight")
 
 // begin returns the live operation owner's key names, or registers op. a
-// finished operation whose answer was a 5xx is dropped so a retry runs again.
-// new work is refused once the registry holds maxOperations.
+// finished operation whose answer was a 5xx is replaced so a retry runs
+// again. when restate recorded that failure the retry moves to the next
+// generation of the key, since the old key would hand back the same failure.
+// any other 5xx (restate unreachable, a client timeout, a dropped connection)
+// keeps the generation, since restate may still be running the invocation and
+// the retry should attach to it. new work is refused once the registry holds
+// maxOperations; the 5xx it would replace then stays, so its generation is
+// not lost.
 func (s *operationStore) begin(op *operation) (existing *operation, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweepLocked(time.Now())
 	scoped := op.owner + "\x00" + op.key
+	var failed *operation
 	if op.key != "" {
 		if prev, ok := s.byKey[scoped]; ok {
 			if !prev.finished() || prev.rec.status < 500 {
 				return prev, nil
 			}
-			s.dropLocked(prev)
+			failed = prev
 		}
 	}
-	if len(s.byID) >= maxOperations {
+	n := len(s.byID)
+	if failed != nil {
+		n--
+	}
+	if n >= maxOperations {
 		return nil, errOperationsFull
+	}
+	if failed != nil {
+		s.dropLocked(failed)
+		op.gen = failed.gen
+		if failed.rec.settled {
+			op.gen++
+		}
 	}
 	if op.key != "" {
 		s.byKey[scoped] = op
@@ -398,7 +446,7 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 		ctx = context.WithValue(ctx, chi.RouteCtxKey, cp)
 	}
 	if op.key != "" {
-		ctx = orchestrator.WithIdempotencyKey(ctx, op.owner+":"+op.kind+":"+op.key)
+		ctx = orchestrator.WithIdempotencyKey(ctx, op.restateKey())
 	}
 	ctx, cancel := context.WithTimeout(ctx, h.operationTimeout())
 
@@ -418,6 +466,7 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 						"panic", p, "stack", string(debug.Stack()))
 				}
 				op.rec.status = 0
+				op.rec.settled = false
 				op.rec.body.Reset()
 				writeError(op.rec, http.StatusInternalServerError, CodeInternal, "operation panicked", nil)
 			}

@@ -285,7 +285,7 @@ func (h *Handler) register(r chi.Router) {
 
 	// Images are oci images converted to a rootfs on a firecracker host. The
 	// convert is async: POST starts it and GET polls it. See images.go.
-	r.Post("/v1/images", h.convertImage)
+	r.Post("/v1/images", h.asOperation(OpImageConvert, MaxJSONBodyBytes, h.convertImage))
 	r.Get("/v1/images/{digest}", h.getImage)
 }
 

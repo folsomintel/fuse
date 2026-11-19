@@ -5,8 +5,9 @@ sidebar:
 description: Idempotency keys, long-running calls, and the operations service
 ---
 
-Seven calls run on the orchestrator as operations: `Environments.Create`,
-`Destroy`, `Fork`, `Migrate` and `Drain`, and `Snapshots.Create` and `Restore`.
+Eight calls run on the orchestrator as operations: `Environments.Create`,
+`Destroy`, `Fork`, `Migrate` and `Drain`, `Snapshots.Create` and `Restore`, and
+`Images.Convert`.
 The server waits for the operation up to its attach bound (10 seconds below
 its `-write-timeout`, so 50s by default) and answers as it always has. One that
 outlasts the bound is answered with a `202` and an operation id, and the SDK
@@ -15,7 +16,7 @@ direct answer would have given, so callers need no changes.
 
 ## Idempotency keys
 
-Every one of those seven methods takes trailing `...CallOption`:
+Every one of those eight methods takes trailing `...CallOption`:
 
 ```go
 func WithIdempotencyKey(key string) CallOption
@@ -46,11 +47,15 @@ API keys never collide. The same key with a different request (another
 method, path, action or body) is a `409` `conflict` whose `Details["reason"]`
 is `idempotency_key_reused`, with the first call's id in
 `Details["operation_id"]`. A finished operation is kept for 24 hours; one that
-finished with a 5xx is not kept at all, so its retry runs again. Keys live in
-the orchestrator's memory and an orchestrator restart forgets them, except
-that the key of a destroy, snapshot or restore is also the restate invocation's idempotency key, so a retry after a
-restart attaches to the same invocation. A destroy that already finished is
-the exception: its vm is gone, so that retry answers 404.
+finished with a 5xx is not kept at all, so its retry runs again. A failure
+restate recorded reruns as a new restate invocation; one from before restate
+answered (a timeout, a dropped connection) attaches to the first invocation.
+Keys live in the orchestrator's memory and an orchestrator restart forgets
+them, except that the key also names the operation's restate invocation, so a
+retry after a restart attaches to the same invocation. A destroy that already
+finished is the exception: its vm is gone, so that retry answers 404. After a
+restart, a key whose earlier try failed with a 5xx may replay that failure for
+up to restate's idempotency retention (24 hours); retry with a fresh key.
 
 ## Following an accepted operation
 
@@ -119,8 +124,8 @@ const (
 func (o *Operation) Done() bool
 ```
 
-- `Kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
-  `drain`.
+- `Kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore`,
+  `drain` or `image.convert`.
 - `State` is `succeeded` when the call answered 2xx and `failed` otherwise.
   `Done` reports whether it is anything but `running`.
 - `Step` is the step the operation last reported starting. No operation
@@ -129,6 +134,7 @@ func (o *Operation) Done() bool
 - `StatusCode`, with `Result` on success or `Error` on failure, is what the
   call itself would have answered. `Result` is the raw response body: an
   `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
-  snapshot, and empty for destroy and restore.
+  snapshot, an `Image` for image.convert (with `StatusCode` 202), and empty for
+  destroy and restore.
 - `ErrorBody` is the `error` member of the API's error envelope: `Code`,
   `Message` and `Details`.

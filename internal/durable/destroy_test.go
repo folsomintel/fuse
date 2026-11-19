@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/restatedev/sdk-go/ingress"
 
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
@@ -19,6 +22,8 @@ import (
 type scriptedFleet struct {
 	fakeFleet
 	hostFails int
+	// hostBlock, when set, holds every host destroy until it is closed.
+	hostBlock chan struct{}
 
 	mu       sync.Mutex
 	tracked  map[string]bool
@@ -65,8 +70,15 @@ func (f *scriptedFleet) DestroyReleaseEgress(_ context.Context, vm string) error
 	return nil
 }
 
-func (f *scriptedFleet) DestroyOnHost(_ context.Context, vm, _ string) error {
+func (f *scriptedFleet) DestroyOnHost(ctx context.Context, vm, _ string) error {
 	f.record(vm, "host")
+	if f.hostBlock != nil {
+		select {
+		case <-f.hostBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts[vm]++
@@ -182,6 +194,9 @@ func TestDestroyDeadLettersThroughRestate(t *testing.T) {
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("destroy never finished: %v", err)
 	}
+	if !orchestrator.IsSettled(err) {
+		t.Fatalf("dead letter %v is not marked settled, so a keyed retry would replay it", err)
+	}
 	want := "begin,egress," + strings.Repeat("host,", fastPolicy.MaxAttempts) + "dead_letter"
 	if got := fleet.steps(vm); got != want {
 		t.Fatalf("steps %s, want %s", got, want)
@@ -191,6 +206,59 @@ func TestDestroyDeadLettersThroughRestate(t *testing.T) {
 	fleet.mu.Unlock()
 	if !strings.Contains(lastErr, "host down") {
 		t.Fatalf("dead letter reason %q, want the host error", lastErr)
+	}
+}
+
+// TestDestroyPastTheClientTimeoutKeepsItsKey: Destroy runs on the ingress
+// client with a 30s timeout, so a long destroy fails at the caller while
+// restate goes on running it. that failure is not settled, so the api keeps
+// the key, and a retry under it attaches to the running destroy instead of
+// queueing a second one.
+func TestDestroyPastTheClientTimeoutKeepsItsKey(t *testing.T) {
+	vm := fmt.Sprintf("fuse-slow-%d", time.Now().UnixNano())
+	fleet := newScriptedFleet(0, vm)
+	fleet.hostBlock = make(chan struct{})
+	client := serveFleet(t, fleet, fastPolicy)
+	// a short client timeout stands in for the 30s one.
+	short := *client
+	short.ingress = ingress.NewClient(client.url, ingress.WithHttpClient(
+		&http.Client{Timeout: 300 * time.Millisecond, Transport: unavailable{http.DefaultTransport}}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	ctx = orchestrator.WithIdempotencyKey(ctx, "master:destroy:k-"+vm)
+	req := orchestrator.DestroyRequest{Reason: "manual_destroy"}
+	err := short.Destroy(ctx, vm, req)
+	if err == nil {
+		t.Fatal("destroy answered before the host was released")
+	}
+	if orchestrator.IsSettled(err) || errors.Is(err, orchestrator.ErrRestateUnavailable) {
+		t.Fatalf("client timeout %v is marked settled or unavailable; want neither", err)
+	}
+
+	close(fleet.hostBlock)
+	if err := client.Destroy(ctx, vm, req); err != nil {
+		t.Fatalf("retry under the same key: %v", err)
+	}
+	if got, want := fleet.steps(vm), "begin,egress,host,ingress,finish"; got != want {
+		t.Fatalf("steps %s, want %s: the retry should attach, not destroy again", got, want)
+	}
+}
+
+// TestIngressOwnErrorIsNotSettled: an error restate's ingress makes itself,
+// with no invocation behind it, is not marked settled.
+func TestIngressOwnErrorIsNotSettled(t *testing.T) {
+	client := serveFleet(t, newScriptedFleet(0), fastPolicy)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ctx, a := watchAnswer(ctx)
+	_, err := ingress.Object[string, string](client.ingress, "NoSuchObject", "k", "Nope").Request(ctx, "x")
+	var ierr ingress.Error
+	if !errors.As(err, &ierr) {
+		t.Fatalf("err %v, want an ingress error", err)
+	}
+	if orchestrator.IsSettled(settled(a, err, err)) {
+		t.Fatalf("ingress error %v marked settled", err)
 	}
 }
 

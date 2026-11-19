@@ -55,6 +55,66 @@ func TestImagesConvert_sendsAnIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestImagesConvert_unkeyedCallsSendDifferentKeys(t *testing.T) {
+	var keys []string
+	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		keys = append(keys, r.Header.Get("Idempotency-Key"))
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"digest":"` + strings.Repeat("a", 64) + `","ref":"ubuntu","state":"converting"}`))
+	})
+	defer done()
+
+	for range 2 {
+		if _, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(keys) != 2 || keys[0] == "" || keys[0] == keys[1] {
+		t.Fatalf("keys = %q, want two different generated keys", keys)
+	}
+}
+
+func TestImagesConvert_followsAcceptedOperation(t *testing.T) {
+	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/images":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"operation_id":"op_1","operation":{"id":"op_1","kind":"image.convert","state":"running","started_at":"2026-11-15T00:00:00Z"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/operations/op_1":
+			_, _ = w.Write([]byte(`{"id":"op_1","kind":"image.convert","state":"succeeded","started_at":"2026-11-15T00:00:00Z","finished_at":"2026-11-15T00:01:00Z","status_code":202,"result":{"digest":"` + strings.Repeat("a", 64) + `","ref":"ubuntu","host_id":"fc-1","state":"converting"}}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	defer done()
+
+	img, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if img.Digest != strings.Repeat("a", 64) || img.State != ImageConverting || img.HostID != "fc-1" {
+		t.Fatalf("image %+v, want the operation's result", img)
+	}
+}
+
+func TestImagesConvert_followedFailureIsAPIError(t *testing.T) {
+	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"operation_id":"op_1","operation":{"id":"op_1","kind":"image.convert","state":"running","started_at":"2026-11-15T00:00:00Z"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"op_1","kind":"image.convert","state":"failed","started_at":"2026-11-15T00:00:00Z","finished_at":"2026-11-15T00:01:00Z","status_code":507,"error":{"code":"unavailable","message":"image cache full"}}`))
+	})
+	defer done()
+
+	_, err := c.Images.Convert(context.Background(), ConvertImageRequest{Ref: "ubuntu"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != http.StatusInsufficientStorage {
+		t.Fatalf("err = %v, want a 507 APIError", err)
+	}
+}
+
 func TestImagesGet_decodesFailureAndNotFound(t *testing.T) {
 	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/images/missing" {

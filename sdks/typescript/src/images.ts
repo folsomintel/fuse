@@ -16,7 +16,9 @@ export class ImagesService {
    * Start converting req.ref and return the image at once, usually still
    * converting. Poll get until it is ready. Converting a ref that is already
    * converting or ready returns that image; one that failed is retried.
-   * The same idempotency key makes a retry attach to the first convert.
+   * The convert runs as an operation: the same idempotency key makes a retry
+   * attach to the first convert, and one the server answers with a 202
+   * operation is followed until it finishes.
    */
   async convert(
     req: ConvertImageRequest,

@@ -109,9 +109,10 @@ func step(ctx restate.Context, name string, fn func(context.Context) error, opts
 // Destroy runs Environment/{vmID}.Destroy and waits for it. the invocation
 // keeps running if ctx ends first.
 func (c *Client) Destroy(ctx context.Context, vmID string, req orchestrator.DestroyRequest) error {
+	ctx, a := watchAnswer(ctx)
 	_, err := ingress.Object[orchestrator.DestroyRequest, restate.Void](c.ingress, EnvironmentObject, vmID, "Destroy").
 		Request(ctx, req, callerKey(ctx)...)
-	return err
+	return settled(a, err, err)
 }
 
 // callerKey forwards the api caller's idempotency key on ctx as the ingress

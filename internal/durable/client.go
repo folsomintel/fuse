@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,7 +68,46 @@ func (u unavailable) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil && !written.Load() {
 		return nil, fmt.Errorf("%w: %w", orchestrator.ErrRestateUnavailable, err)
 	}
+	if a, ok := req.Context().Value(answerKey{}).(*answer); ok && res != nil && res.Header.Get(restateIDHeader) != "" {
+		a.invocation.Store(true)
+	}
 	return res, err
+}
+
+// restateIDHeader names the invocation on every answer restate gives for
+// one, a recorded failure or a replay of it included. an error the ingress
+// makes itself (an unknown service, overload) carries none.
+const restateIDHeader = "X-Restate-Id"
+
+type answerKey struct{}
+
+// answer notes whether the response to a call came from its invocation.
+type answer struct{ invocation atomic.Bool }
+
+// watchAnswer returns ctx whose ingress call notes on the answer whether
+// restate answered it from the invocation.
+func watchAnswer(ctx context.Context) (context.Context, *answer) {
+	a := &answer{}
+	return context.WithValue(ctx, answerKey{}, a), a
+}
+
+// settled marks out, the fleet error a call's failure err was turned into,
+// as orchestrator.SettledError when restate recorded err for the invocation:
+// the handler ran and failed for good, now or on an earlier call under the
+// same key. a failure before restate answered (unreachable, a client
+// timeout, a dropped connection, ctx) or one its ingress made itself stays
+// as it is, so the api keeps the call's key and a retry attaches to the
+// invocation. a restate-server that discloses the error's source says so
+// itself; an older one is known by the invocation id on its answer.
+func settled(a *answer, err, out error) error {
+	var ierr ingress.Error
+	if out == nil || !errors.As(err, &ierr) {
+		return out
+	}
+	if !ierr.IsInvocationError() && !a.invocation.Load() {
+		return out
+	}
+	return orchestrator.Settled(out)
 }
 
 func ingressOptions(cfg Config, hc *http.Client) []ingress.ClientOption {

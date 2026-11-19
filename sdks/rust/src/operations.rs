@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::{Method, RequestBuilder, StatusCode};
+use serde::Deserialize;
 
 use crate::error::{parse_api_error, Error};
 use crate::interventions::{WAIT_HTTP_OVERHEAD, WAIT_POLL};
@@ -12,8 +13,8 @@ use crate::types::{Operation, OperationAccepted, OperationState};
 pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
 /// Per-call options for the mutating calls that run as operations:
-/// environments create, destroy, fork, migrate and drain, and snapshots
-/// create and restore.
+/// environments create, destroy, fork, migrate and drain, snapshots create
+/// and restore, and images convert.
 ///
 /// ```
 /// use fuse::CallOptions;
@@ -149,6 +150,43 @@ pub(crate) async fn wait_operation(
         if operation.is_terminal() || expired {
             return Ok(operation);
         }
+    }
+}
+
+// the 202 body of a call whose operation outlasted the server's wait. it is
+// told apart from a held response, or a 202 the call answers itself, by its
+// operation_id.
+#[derive(Deserialize)]
+struct Accepted {
+    #[serde(default)]
+    operation_id: String,
+}
+
+impl Transport {
+    /// Sends a mutating call and returns the status and body it answered
+    /// with. A 202 naming an operation is followed until the operation
+    /// finishes, and its answer is returned as if the call had answered
+    /// with it; any other 202 is returned as it came.
+    pub(crate) async fn send_operation(
+        &self,
+        builder: RequestBuilder,
+    ) -> Result<(u16, Vec<u8>), Error> {
+        let response = Self::check(builder.send().await?).await?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await?.to_vec();
+        if status != StatusCode::ACCEPTED.as_u16() {
+            return Ok((status, body));
+        }
+        let accepted: Accepted = serde_json::from_slice(&body)?;
+        if accepted.operation_id.is_empty() {
+            return Ok((status, body));
+        }
+        let accepted: OperationAccepted = serde_json::from_slice(&body)?;
+        if let Some(callback) = &self.on_operation {
+            (callback.0)(&accepted);
+        }
+        let operation = wait_operation(self, &accepted.operation_id, None).await?;
+        operation_answer(operation)
     }
 }
 

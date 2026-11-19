@@ -223,16 +223,18 @@ func runStep(ctx restate.Context, op, name string, fn func(context.Context) erro
 // snapshot writes the whole memory image, so it goes through the client with
 // no request timeout of its own; ctx bounds the wait.
 func (c *Client) Snapshot(ctx context.Context, vmID string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotRecord, error) {
+	ctx, a := watchAnswer(ctx)
 	rec, err := ingress.Object[orchestrator.SnapshotOptions, orchestrator.SnapshotRecord](c.longIngress, EnvironmentObject, vmID, "Snapshot").
 		Request(ctx, opts, callerKey(ctx)...)
-	return rec, fleetError(err)
+	return rec, settled(a, err, fleetError(err))
 }
 
 // Restore runs Environment/{vmID}.Restore and waits for it.
 func (c *Client) Restore(ctx context.Context, vmID, snapshotID string) error {
+	ctx, a := watchAnswer(ctx)
 	_, err := ingress.Object[string, restate.Void](c.longIngress, EnvironmentObject, vmID, "Restore").
 		Request(ctx, snapshotID, callerKey(ctx)...)
-	return fleetError(err)
+	return settled(a, err, fleetError(err))
 }
 
 // SendCollectSnapshot enqueues Environment/{vmID}.CollectSnapshot. restate

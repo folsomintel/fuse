@@ -99,3 +99,71 @@ def test_convert_sends_an_idempotency_key() -> None:
     keys = [call.request.headers.get("Idempotency-Key") for call in route.calls]
     assert keys[0]
     assert keys[1] == "my-key"
+
+
+@respx.mock
+def test_convert_unkeyed_calls_send_different_keys() -> None:
+    route = respx.post(f"{BASE_URL}/v1/images").mock(
+        return_value=httpx.Response(202, json=converting_image())
+    )
+    with fuse.Client(BASE_URL, "tok") as client:
+        client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"))
+        client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"))
+
+    keys = [call.request.headers.get("Idempotency-Key") for call in route.calls]
+    assert len(keys) == 2
+    assert keys[0] and keys[1]
+    assert keys[0] != keys[1]
+
+
+def image_op(state: str, **extra: object) -> dict[str, object]:
+    op: dict[str, object] = {
+        "id": "op_1",
+        "kind": "image.convert",
+        "state": state,
+        "started_at": "2026-11-15T00:00:00Z",
+    }
+    op.update(extra)
+    return op
+
+
+@respx.mock
+def test_convert_follows_accepted_operation() -> None:
+    respx.post(f"{BASE_URL}/v1/images").mock(
+        return_value=httpx.Response(
+            202, json={"operation_id": "op_1", "operation": image_op("running")}
+        )
+    )
+    respx.get(f"{BASE_URL}/v1/operations/op_1").mock(
+        return_value=httpx.Response(
+            200, json=image_op("succeeded", status_code=202, result=converting_image())
+        )
+    )
+    with fuse.Client(BASE_URL, "tok") as client:
+        img = client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"))
+
+    assert img.digest == DIGEST
+    assert img.state == fuse.IMAGE_CONVERTING
+
+
+@respx.mock
+def test_convert_followed_failure_raises() -> None:
+    respx.post(f"{BASE_URL}/v1/images").mock(
+        return_value=httpx.Response(
+            202, json={"operation_id": "op_1", "operation": image_op("running")}
+        )
+    )
+    respx.get(f"{BASE_URL}/v1/operations/op_1").mock(
+        return_value=httpx.Response(
+            200,
+            json=image_op(
+                "failed",
+                status_code=507,
+                error={"code": "unavailable", "message": "image cache full"},
+            ),
+        )
+    )
+    with fuse.Client(BASE_URL, "tok") as client, pytest.raises(fuse.ApiError) as err:
+        client.images.convert(fuse.ConvertImageRequest(ref="python:3.12"))
+
+    assert err.value.status == 507

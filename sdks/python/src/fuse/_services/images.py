@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import uuid
 from typing import Optional
 from urllib.parse import quote
 
 from .._transport import Transport
 from ..types import ConvertImageRequest, Image
-from .operations import IDEMPOTENCY_KEY_HEADER
+from .operations import call_operation
 
 
 class ImagesService:
@@ -20,16 +19,13 @@ class ImagesService:
         # starts converting request.ref and returns the image at once, usually
         # still converting. poll get until it is ready. converting a ref that
         # is already converting or ready returns that image; a failed one is
-        # retried. without a key the call sends a fresh random one; pass your
-        # own so a retry attaches to the first convert.
+        # retried. the convert runs as an operation: without a key the call
+        # sends a fresh random one; pass your own so a retry attaches to the
+        # first convert. a 202 operation is followed until it finishes.
         if not request.ref:
             raise ValueError("image ref is required")
-        key = idempotency_key or str(uuid.uuid4())
-        resp = self._t.request(
-            "POST",
-            "/v1/images",
-            body=request,
-            headers={IDEMPOTENCY_KEY_HEADER: key},
+        resp = call_operation(
+            self._t, "POST", "/v1/images", body=request, idempotency_key=idempotency_key
         )
         return Image.model_validate(resp.json())
 
