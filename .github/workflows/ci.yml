@@ -176,23 +176,24 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: sdks/typescript/package-lock.json
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       - name: Lint
-        run: npm run lint
+        run: bun run lint
 
       - name: Typecheck
-        run: npm run typecheck
+        run: bun run typecheck
 
       - name: Test
-        run: npm run test
+        run: bun run test
 
       - name: Build
-        run: npm run build
+        run: bun run build
 
   # Python SDK (sdks/python): lint, typecheck, test via uv. Independent of the
   # Go and TS jobs.
