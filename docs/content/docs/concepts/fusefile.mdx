@@ -649,7 +649,10 @@ Firecracker host picked by the Fusefile's `placement` and `resources.region` res
 manifest for its own arch and bakes that into an ext4 rootfs. The CLI waits
 until the image is `ready`, failing with the host's reason if it ends `failed`,
 then creates with `spec.image_digest`, which pins the environment to a host
-where that image is ready. [`fuse image convert`](/reference/cli/image/convert)
+where that image is ready. A convert pinned by `placement` or
+`resources.region` waits on the host the convert landed on
+(`GET /v1/hosts/{hostId}/images/{digest}`), so the same image ready on another
+host does not end the wait early. [`fuse image convert`](/reference/cli/image/convert)
 runs the conversion on its own.
 
 The image's digest covers the arch's manifest digest and the `fused` binary
@@ -659,11 +662,14 @@ one that failed is converted again.
 
 The convert is a durable [restate](/docs/cloud/orchestrator-deploy#restate)
 operation: the host call runs as a restate step, and an `Images.Watch`
-invocation, keyed by the host, the digest and the conversion attempt, polls
-the host until the image is `ready` or `failed` (for at most an hour) and
-records an `image.ready` or `image.failed` event. A duplicate convert of the
-same conversion joins that watch, and an orchestrator restart mid-bake resumes
-polling instead of converting again. The bake itself runs on the host, and a
+invocation polls the host until the image is `ready` or `failed` (for at most
+an hour) and records one `image.ready` or `image.failed` event, written once
+even when restate retries the step that writes it. The watch is keyed by the
+host, the digest and the conversion attempt's start time, which the host agent
+records to the microsecond, so a duplicate convert of the same conversion
+joins that watch and a retry of a failed image gets one of its own. A host
+agent too old to report the attempt time gets an unkeyed watch per convert.
+An orchestrator restart mid-bake resumes polling instead of converting again. The bake itself runs on the host, and a
 bake that fails or times out leaves no partial rootfs behind.
 
 The limits:

@@ -17,6 +17,7 @@ convert.
 ```go
 func (s *ImagesService) Convert(ctx context.Context, req ConvertImageRequest, opts ...CallOption) (*Image, error)
 func (s *ImagesService) Get(ctx context.Context, digest string) (*Image, error)
+func (s *ImagesService) GetOnHost(ctx context.Context, hostID, digest string) (*Image, error)
 ```
 
 `Convert` sends `POST /v1/images` and returns the image at once (a `202`),
@@ -36,6 +37,13 @@ not found again until it is converted again.
 usable record wins: ready, then converting, then failed. An unknown digest is an
 error `IsNotFound` reports. There is no `Wait`: poll `Get` until `State` is no
 longer `ImageConverting`.
+
+`GetOnHost` reads one host's record (`GET /v1/hosts/{hostId}/images/{digest}`).
+To wait on a convert pinned with `HostID`, `Region` or `Labels`, poll it with
+the `HostID` the convert returned: `Get` could answer with another host's ready
+record while the pinned host is still converting. An unknown host, or a host
+without the digest, is an error `IsNotFound` reports; a QEMU host is one
+`IsInvalidArgument` reports.
 
 ```go
 img, err := client.Images.Convert(ctx, fuse.ConvertImageRequest{Ref: "ubuntu:24.04"})

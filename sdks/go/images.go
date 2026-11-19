@@ -95,6 +95,31 @@ func (s *ImagesService) Get(ctx context.Context, digest string) (*Image, error) 
 	return decodeImage(resp)
 }
 
+// GetOnHost reports one host's record of an image. Get answers with the best
+// record of any host, so to wait on a convert pinned to a host (HostID,
+// Region or Labels), poll GetOnHost with the HostID the convert returned:
+// another host's ready record says nothing about the pinned one.
+func (s *ImagesService) GetOnHost(ctx context.Context, hostID, digest string) (*Image, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("images service is not configured")
+	}
+	if hostID == "" {
+		return nil, errors.New("host id is required")
+	}
+	if digest == "" {
+		return nil, errors.New("image digest is required")
+	}
+	req, err := s.t.newRequest(ctx, http.MethodGet, "/v1/hosts/"+url.PathEscape(hostID)+"/images/"+url.PathEscape(digest), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.t.do(req)
+	if err != nil {
+		return nil, err
+	}
+	return decodeImage(resp)
+}
+
 func decodeImage(resp *http.Response) (*Image, error) {
 	if err := CheckResponse(resp); err != nil {
 		return nil, err

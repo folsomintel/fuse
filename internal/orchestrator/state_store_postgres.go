@@ -1052,11 +1052,14 @@ func (s *PostgresStateStore) AppendEvent(ctx context.Context, event EventRecord)
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now()
 	}
-	if err := s.db.QueryRowContext(ctx, `
-		INSERT INTO orchestrator_events (entity_type, entity_id, event_type, payload_json, created_at)
-		VALUES ($1,$2,$3,$4,$5)
+	// a keyed event already stored inserts nothing, and so returns no row.
+	err := s.db.QueryRowContext(ctx, `
+		INSERT INTO orchestrator_events (entity_type, entity_id, event_type, payload_json, created_at, dedupe_key)
+		VALUES ($1,$2,$3,$4,$5,NULLIF($6,''))
+		ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING
 		RETURNING id
-	`, event.EntityType, event.EntityID, event.EventType, []byte(event.Payload), event.CreatedAt.UTC()).Scan(&event.ID); err != nil {
+	`, event.EntityType, event.EntityID, event.EventType, []byte(event.Payload), event.CreatedAt.UTC(), event.DedupeKey).Scan(&event.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("append event: %w", err)
 	}
 	return nil

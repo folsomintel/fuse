@@ -19,6 +19,7 @@ def convert(
     self, request: ConvertImageRequest, *, idempotency_key: Optional[str] = None
 ) -> Image: ...
 def get(self, digest: str) -> Image: ...
+def get_on_host(self, host_id: str, digest: str) -> Image: ...
 ```
 
 `convert` sends `POST /v1/images` and returns the image at once (the server
@@ -39,6 +40,13 @@ converted again.
 usable record wins: ready, then converting, then failed. An unknown digest
 raises `fuse.ApiError` with `code == "not_found"`. There is no `wait`: poll
 `get` until `state` is no longer `converting`.
+
+`get_on_host` reads one host's record (`GET /v1/hosts/{hostId}/images/{digest}`).
+To wait on a convert pinned with `host_id`, `region` or `labels`, poll it with
+the `host_id` the convert returned: `get` could return another host's ready
+record while the pinned host is still converting. An unknown host, or a host
+without the digest, raises `fuse.ApiError` with `code == "not_found"`; a QEMU
+host raises it with `code == "invalid_argument"`.
 
 ```python
 import time

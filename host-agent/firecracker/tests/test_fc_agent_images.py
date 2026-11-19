@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
@@ -296,6 +297,28 @@ class ConvertTest(ConvertBase):
         self.bake(BAKE_OK)
         retry = fc_agent.image_convert_start("busybox")
         self.assertEqual(retry["state"], "converting")
+        self.assertEqual(self.wait(retry["digest"])["state"], "ready")
+
+    def test_a_retry_in_the_same_second_is_a_new_attempt(self):
+        # created_at keys the orchestrator's watch of an attempt, so a bake that
+        # fails and is retried within one second still gets a time of its own.
+        times = [datetime(2026, 11, 16, 10, 0, 0, 100000, tzinfo=timezone.utc),
+                 datetime(2026, 11, 16, 10, 0, 0, 900000, tzinfo=timezone.utc)]
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return times.pop(0)
+
+        self.bake(BAKE_FAIL)
+        with mock.patch.object(fc_agent, "datetime", Clock):
+            first = fc_agent.image_convert_start("busybox")
+            self.wait(first["digest"])
+            self.bake(BAKE_OK)
+            retry = fc_agent.image_convert_start("busybox")
+        self.assertEqual(first["created_at"], "2026-11-16T10:00:00.100000Z")
+        self.assertEqual(retry["created_at"], "2026-11-16T10:00:00.900000Z")
+        self.assertEqual(fc_agent.image_public(retry)["created_at"], retry["created_at"])
         self.assertEqual(self.wait(retry["digest"])["state"], "ready")
 
     def test_timeout_kills_the_bake(self):

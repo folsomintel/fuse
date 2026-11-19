@@ -91,7 +91,7 @@ func TestKeyedRetryIsBounded(t *testing.T) {
 }
 
 func TestKeyedNotRetriedOnFinalAnswers(t *testing.T) {
-	for _, code := range []int{200, 409, 501} {
+	for _, code := range []int{200, 409, 501, 507} {
 		f := &fakeAgent{script: []func() (*http.Response, error){status(code)}}
 		tr := &idempotencyTransport{Base: f, delay: 1}
 		if _, err := send(t, tr, WithIdempotencyKey(context.Background(), "k"), http.MethodPost, "{}"); err != nil {

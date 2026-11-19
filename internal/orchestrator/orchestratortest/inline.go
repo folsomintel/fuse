@@ -1606,8 +1606,10 @@ func (d *Inline) convertImage(ctx context.Context, req orchestrator.ConvertImage
 }
 
 // watchImage mirrors Images.Watch: polls until the conversion is ready or
-// failed, or ImageWatchTimeout passes, then records the outcome.
+// failed, or ImageWatchTimeout passes, then records the outcome, keyed on an
+// id of the watch's own as restate keys it on the watch's invocation id.
 func (d *Inline) watchImage(ctx context.Context, img orchestrator.Image) error {
+	watchID := "inline_" + orchestrator.NewEventID()
 	deadline := time.Now().Add(orchestrator.ImageWatchTimeout)
 	wait := imagePollFirst
 	for {
@@ -1618,7 +1620,7 @@ func (d *Inline) watchImage(ctx context.Context, img orchestrator.Image) error {
 		}
 		finished := polled.State != orchestrator.ImageConverting
 		if finished || !time.Now().Before(deadline) {
-			return bounded(d.fm.ImageConvertDone(ctx, polled, !finished))
+			return bounded(d.fm.ImageConvertDone(ctx, polled, !finished, watchID))
 		}
 		wait = min(wait*2, imagePollMax)
 	}

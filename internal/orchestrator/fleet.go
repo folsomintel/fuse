@@ -1901,14 +1901,16 @@ func (fm *FleetManager) AuditEvent(ctx context.Context, entityType, entityID, ev
 }
 
 func (fm *FleetManager) appendEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) {
-	if err := fm.writeEvent(ctx, entityType, entityID, eventType, payload); err != nil {
+	if err := fm.writeEvent(ctx, "", entityType, entityID, eventType, payload); err != nil {
 		fm.logger.Warn("append event failed", "entity_type", entityType, "entity_id", entityID, "event_type", eventType, "err", err)
 	}
 }
 
 // writeEvent is appendEvent for a caller that has to know the row landed,
 // such as a durable step that must retry rather than journal a lost event.
-func (fm *FleetManager) writeEvent(ctx context.Context, entityType, entityID, eventType string, payload map[string]any) error {
+// a non-empty dedupeKey writes the event at most once (EventRecord.DedupeKey),
+// so that retry cannot write a second row.
+func (fm *FleetManager) writeEvent(ctx context.Context, dedupeKey, entityType, entityID, eventType string, payload map[string]any) error {
 	if fm.store == nil {
 		return nil
 	}
@@ -1938,6 +1940,7 @@ func (fm *FleetManager) writeEvent(ctx context.Context, entityType, entityID, ev
 		EventType:  eventType,
 		Payload:    raw,
 		CreatedAt:  time.Now(),
+		DedupeKey:  dedupeKey,
 	})
 }
 
