@@ -32,11 +32,13 @@ if [ "$FC_HAVE" != "$FC_PIN" ]; then
   rm -rf "$TMP"
 fi
 
-# opt-in: FC_GUEST_KERNEL=6.1 installs the 6.1 ci kernel, which has the
-# virtio-mem driver memory hotplug (FC_MEM_HOTPLUG=1 on the agent) needs; 5.10
-# does not. an existing vmlinux.bin is kept either way, so switching a host
-# means removing it first.
-if [ "${FC_GUEST_KERNEL:-5.10}" = "6.1" ]; then
+# the 6.1 ci kernel is the default: it has the vmgenid driver (on arm too,
+# via the device tree backport), so a guest resumed from a snapshot reseeds
+# its csprng instead of repeating its siblings' randomness, and the virtio-mem
+# driver memory hotplug (FC_MEM_HOTPLUG=1 on the agent) needs. 5.10 has
+# neither; FC_GUEST_KERNEL=5.10 still installs it. an existing vmlinux.bin is
+# kept either way, so switching a host means removing it first.
+if [ "${FC_GUEST_KERNEL:-6.1}" = "6.1" ]; then
   KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/${ARCH}/vmlinux-6.1.155"
 else
   KERNEL_URL="$CI_BASE/vmlinux-5.10.223"

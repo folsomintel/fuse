@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,7 +23,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -63,6 +63,10 @@ type config struct {
 	// orchestrator on every boot. reported on /v1/info; fused never acts on
 	// it, because enforcement lives on the host's tap and not in the guest.
 	egress string
+
+	// reloadStatus is where each SIGHUP's outcome is written, "ok" or
+	// "error: ...", for the orchestrator's reload command to read back.
+	reloadStatus string
 }
 
 func parseFlags() config {
@@ -80,6 +84,7 @@ func parseFlags() config {
 	flag.StringVar(&c.healthState, "health-state", "/fuse/health.json", "path to write the healthcheck verdict for the orchestrator to read")
 	flag.StringVar(&c.display, "display", ":1", "X display the computer routes drive (desktop images only)")
 	flag.StringVar(&c.desktop, "desktop", "/fuse/desktop.json", "path to the declared desktop geometry (absent means the image default)")
+	flag.StringVar(&c.reloadStatus, "reload-status", "/run/fused-reload", "path to write each credential reload's outcome to")
 	flag.StringVar(&c.egress, "egress", "/etc/fuse/egress.json", "path to the environment's egress policy (absent means an orchestrator that predates it)")
 	flag.BoolVar(&c.insecure, "insecure", false, "run without TLS/auth (dev only)")
 	flag.BoolVar(&c.showVersion, "version", false, "print version and exit")
@@ -107,15 +112,6 @@ func main() {
 	manifestBytes := readIfSet(c.manifestPath, "manifest")
 	secretCount := countSecrets(c.secretsPath)
 
-	var authToken string
-	if c.authTokenFile != "" {
-		b, err := os.ReadFile(c.authTokenFile)
-		if err != nil {
-			log.Fatalf("read auth token file %s: %v", c.authTokenFile, err)
-		}
-		authToken = strings.TrimSpace(string(b))
-	}
-
 	// Decide TLS. The Fuse host agent always passes --tls-cert/--tls-key on the
 	// frozen wire, but the cert/key files are only uploaded when the orchestrator
 	// has a TOKEN_ENCRYPTION_KEY (per-VM creds). So enable TLS only when the
@@ -125,6 +121,10 @@ func main() {
 	if useTLS && (!fileNonEmpty(c.tlsCert) || !fileNonEmpty(c.tlsKey)) {
 		log.Printf("WARNING: --tls-cert/--tls-key given but files missing/empty (%s, %s); serving plaintext", c.tlsCert, c.tlsKey)
 		useTLS = false
+	}
+	creds, err := loadCredentials(c.authTokenFile, c.tlsCert, c.tlsKey, useTLS)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	// Load the environment-level probe. A missing config file is the ordinary
@@ -139,9 +139,30 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              c.listen,
-		Handler:           newHandler(c, authToken, manifestBytes, secretCount, useTLS, probe),
+		Handler:           newHandler(c, creds, manifestBytes, secretCount, useTLS, probe),
 		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         &tls.Config{GetCertificate: creds.getCertificate},
 	}
+
+	// SIGHUP rereads the token and certificate files: the orchestrator
+	// signals instead of restarting after it uploads new ones (token
+	// rotation). registered before serving, because go's default for an
+	// unhandled SIGHUP is to exit.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	go func() {
+		for range hup {
+			err := creds.reload()
+			if err != nil {
+				log.Printf("reload credentials, keeping the old ones: %v", err)
+			} else {
+				log.Print("credentials reloaded")
+			}
+			if werr := writeReloadStatus(c.reloadStatus, err); werr != nil {
+				log.Printf("write reload status: %v", werr)
+			}
+		}
+	}()
 
 	// Graceful shutdown: systemd `stop` (the Fuse drain command) delivers
 	// SIGTERM; quiesce and exit 0 so Drain records a clean stop.
@@ -160,9 +181,9 @@ func main() {
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("listening on %s (vm=%s tls=%t auth=%t manifest=%dB secrets=%d gateway=%t)",
-			c.listen, c.vmID, useTLS, authToken != "", len(manifestBytes), secretCount, c.gateway != "")
+			c.listen, c.vmID, useTLS, creds.authToken() != "", len(manifestBytes), secretCount, c.gateway != "")
 		if useTLS {
-			errCh <- srv.ListenAndServeTLS(c.tlsCert, c.tlsKey)
+			errCh <- srv.ListenAndServeTLS("", "")
 		} else {
 			errCh <- srv.ListenAndServe()
 		}
@@ -194,7 +215,7 @@ func main() {
 // which is a different question from "is the workload healthy", and anything
 // already treating a non-200 here as a dead agent must keep working. Callers
 // that want the verdict read the field.
-func newHandler(c config, authToken string, manifestBytes []byte, secretCount int, useTLS bool, probe *prober) http.Handler {
+func newHandler(c config, creds *credentials, manifestBytes []byte, secretCount int, useTLS bool, probe *prober) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{"status": "ok", "vm_id": c.vmID}
@@ -203,7 +224,7 @@ func newHandler(c config, authToken string, manifestBytes []byte, secretCount in
 		}
 		writeJSON(w, http.StatusOK, body)
 	})
-	mux.HandleFunc("/v1/info", protect(authToken, func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/v1/info", protect(creds, func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{
 			"vm_id":          c.vmID,
 			"manifest_bytes": len(manifestBytes),
@@ -224,10 +245,10 @@ func newHandler(c config, authToken string, manifestBytes []byte, secretCount in
 	// image with no display the routes answer 503 with a reason, so
 	// registering them unconditionally is safe. See computer.go.
 	comp := newComputer(c.display)
-	mux.HandleFunc("/v1/computer/action", protect(authToken, comp.handleAction))
-	mux.HandleFunc("/v1/computer/screenshot", protect(authToken, comp.handleScreenshot))
-	mux.HandleFunc("/v1/computer/display", protect(authToken, comp.handleDisplay))
-	mux.HandleFunc("/v1/computer/stream", protect(authToken, comp.handleStream))
+	mux.HandleFunc("/v1/computer/action", protect(creds, comp.handleAction))
+	mux.HandleFunc("/v1/computer/screenshot", protect(creds, comp.handleScreenshot))
+	mux.HandleFunc("/v1/computer/display", protect(creds, comp.handleDisplay))
+	mux.HandleFunc("/v1/computer/stream", protect(creds, comp.handleStream))
 	return mux
 }
 
@@ -250,19 +271,39 @@ func readEgress(path string) map[string]any {
 	return doc
 }
 
+// writeReloadStatus records a reload's outcome at path, renamed into place so
+// a reader never sees half of it.
+func writeReloadStatus(path string, reloadErr error) error {
+	if path == "" {
+		return nil
+	}
+	body := "ok\n"
+	if reloadErr != nil {
+		body = "error: " + reloadErr.Error() + "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // fileNonEmpty reports whether path exists and has non-zero size.
 func fileNonEmpty(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && !fi.IsDir() && fi.Size() > 0
 }
 
-// protect wraps h with a constant-time bearer check when token is non-empty.
-func protect(token string, h http.HandlerFunc) http.HandlerFunc {
-	if token == "" {
-		return h
-	}
-	want := "Bearer " + token
+// protect wraps h with a constant-time bearer check when there is a token.
+// the token is read per request, so a reload takes effect on the next one.
+func protect(creds *credentials, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		token := creds.authToken()
+		if token == "" {
+			h(w, r)
+			return
+		}
+		want := "Bearer " + token
 		got := r.Header.Get("Authorization")
 		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

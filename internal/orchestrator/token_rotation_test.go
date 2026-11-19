@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -233,5 +234,53 @@ func TestRotateTokenUpload_stableOrder(t *testing.T) {
 		if !slices.IsSorted(got) || len(got) != 3 || !slices.Equal(got, attempts[0]) {
 			t.Fatalf("upload orders %v, want the same sorted three files each attempt", attempts)
 		}
+	}
+}
+
+// TestRotateTokenUpload_reloadsAgent: the upload ends by signalling fused to
+// reread the files, and a guest where that fails fails the step, so the
+// handle never moves to a token the agent does not serve.
+func TestRotateTokenUpload_reloadsAgent(t *testing.T) {
+	fm, provider, _, vmID := newRotateTestFleet(t)
+	env := provider.envs[vmID]
+	ctx := context.Background()
+	rotated, err := fm.RotateTokenGenerate(ctx, vmID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := env.Token()
+
+	env.execExit = 1
+	if err := fm.RotateTokenUpload(ctx, vmID, rotated); err == nil {
+		t.Fatal("upload succeeded with a reload that failed")
+	}
+	if env.Token() != old {
+		t.Fatal("handle moved to the new token although the agent was not reloaded")
+	}
+
+	env.execCalls = nil
+	env.execExit = 0
+	if err := fm.RotateTokenUpload(ctx, vmID, rotated); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"sh", "-c", fusedReloadCommand}
+	if len(env.execCalls) != 1 || !slices.Equal(env.execCalls[0], want) {
+		t.Fatalf("exec calls %v, want one reload", env.execCalls)
+	}
+	if env.Token() == old {
+		t.Fatal("handle kept the old token after the reload")
+	}
+	// on restate a retried step reuses its key, so the reload needs a part of
+	// its own per attempt or the first attempt's failed exit is replayed.
+	if len(env.execParts) != 2 || env.execParts[0] == "" || env.execParts[0] == env.execParts[1] {
+		t.Fatalf("reload idempotency parts %q, want a distinct one per attempt", env.execParts)
+	}
+}
+
+// TestFusedReloadCommand_parses: the reload runs through sh -c in the guest,
+// so a syntax slip would fail every rotation.
+func TestFusedReloadCommand_parses(t *testing.T) {
+	if out, err := exec.Command("sh", "-n", "-c", fusedReloadCommand).CombinedOutput(); err != nil {
+		t.Fatalf("sh -n: %v: %s", err, out)
 	}
 }

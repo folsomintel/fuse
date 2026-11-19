@@ -883,6 +883,10 @@ def resync_guest_clock(guest_ip: str) -> None:
     rootfs happens to carry, and the images are not uniform. `date -s` needs
     nothing but coreutils.
 
+    When the load could advance kvmclock (load_clock_fields) this only trims
+    what is left; on arm, an older host kernel, or a snapshot taken on a host
+    whose clocksource was not tsc, it is the only correction the guest gets.
+
     Best effort: a guest with a wrong clock is degraded, but a restore that
     already put the guest back is not worth failing over it. The warning is
     the deliverable when this cannot be done.
@@ -1346,6 +1350,51 @@ DELTA_HEADER = struct.Struct(">QQ")
 # resumed guest. without it a migrated vm can never take a diff again. older
 # firecracker releases spelled it enable_diff_snapshots and reject this name.
 LOAD_TRACK_DIRTY_FIELD = "track_dirty_pages"
+
+
+CLOCKSOURCE_PATH = Path("/sys/devices/system/clocksource/clocksource0/current_clocksource")
+
+
+def kvm_clock_realtime() -> bool:
+    """whether kvm on this host has KVM_CLOCK_REALTIME: x86_64 and linux 5.16."""
+    if os.uname().machine != "x86_64":
+        return False
+    m = re.match(r"(\d+)\.(\d+)", os.uname().release)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (5, 16)
+
+
+def snapshot_clock_realtime() -> bool:
+    """whether a snapshot taken here records the realtime clock a later load
+    can advance from. kvm only reports it while the host clocksource is tsc,
+    and firecracker refuses clock_realtime on a snapshot without it, so this
+    is decided when the snapshot is taken and stored in its live manifest.
+    """
+    try:
+        source = CLOCKSOURCE_PATH.read_text().strip()
+    except OSError:
+        return False
+    return kvm_clock_realtime() and source == "tsc"
+
+
+def load_clock_fields(manifest_path: Path | None) -> dict:
+    """the /snapshot/load fields that bring the guest clock forward on resume.
+
+    clock_realtime has kvm advance kvmclock by the wall time since the
+    snapshot was taken, so the guest wakes up at about now instead of at the
+    moment it was frozen, before anything in it gets to run. it is sent only
+    when the snapshot recorded the realtime clock (snapshot_clock_realtime on
+    the host that took it) and this host's kvm has the flag. anywhere else
+    the guest keeps the stale clock until resync_guest_clock sets it over ssh.
+    """
+    if manifest_path is None:
+        return {}
+    try:
+        recorded = json.loads(Path(manifest_path).read_text()).get("clock_realtime")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if recorded is not True or not kvm_clock_realtime():
+        return {}
+    return {"clock_realtime": True}
 
 
 def host_fingerprint() -> dict:
@@ -2005,6 +2054,7 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
             "index": meta["index"],
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
+            "clock_realtime": snapshot_clock_realtime(),
         }
         # one read of the rootfs for its digest and its block table. after the
         # resume, so the guest is not kept stopped for it, except under
@@ -2214,6 +2264,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
                 "mem_backend": backend,
                 "resume_vm": True,
                 LOAD_TRACK_DIRTY_FIELD: True,
+                **load_clock_fields(snapshot_file(vm_id, snapshot_id, LIVE_MANIFEST, required=False)),
             },
             timeout=SNAPSHOT_API_TIMEOUT,
         )
@@ -2304,6 +2355,11 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
     host when the image was taken. the network needs nothing said about it:
     resume_plan only lets this run when the vm got the source's slot, so the
     tap, ips and mac setup_tap built are the ones the guest remembers. the
+    entropy needs nothing said either: firecracker writes a fresh vmgenid on
+    every load, and a guest kernel with the driver (the 6.1 default
+    fc-install.sh fetches) reseeds its csprng from it, so two vms resumed from
+    one seed do not share randomness. the clock is moved forward at the load
+    (load_clock_fields) and set again once ssh is up (resync_guest_clock). the
     drive is the part that does not line up. firecracker reopens the rootfs by
     the path recorded in vmstate, which is the SOURCE vm's directory, so that
     path exists as a symlink for exactly as long as the load takes and the
@@ -2334,6 +2390,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
                 "mem_backend": backend,
                 "resume_vm": False,
                 LOAD_TRACK_DIRTY_FIELD: True,
+                **load_clock_fields(resume["manifest"]),
             }),
             ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
         ]:

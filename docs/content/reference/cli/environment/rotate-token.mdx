@@ -20,15 +20,12 @@ fuse environment rotate-token fuse-abc123
 # rotated token for environment "fuse-abc123"
 ```
 
-:::warning[Known limitation]
-Rotation does not take effect in the running guest. `fused` reads its
-`--auth-token-file` exactly once at process start and has no credential
-poller, so a live agent keeps serving the **old** token until it is restarted.
-Rotation is therefore not a remedy for a leaked token: destroy and recreate
-the environment, or [fork](/reference/cli/environment/fork) it (a fork
-mints its own credentials and restarts the agent), if a token has actually
-leaked.
-:::
+The running agent picks the new credentials up in place: the orchestrator
+sends `fused` a `SIGHUP` after writing the files, and new requests with the old
+token are refused. A request already in progress, such as an open desktop
+stream, keeps running until it ends, so close those too when revoking a leaked
+token. A guest whose `fused` predates the reload handler exits
+on the signal and is restarted onto the new files.
 
 ## Errors
 

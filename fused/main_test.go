@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestHandler_HealthIsUnauthenticated(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "secret-token", []byte("{}"), 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials("secret-token"), []byte("{}"), 0, false, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/health")
@@ -30,7 +31,7 @@ func TestHandler_HealthIsUnauthenticated(t *testing.T) {
 
 func TestHandler_InfoRequiresToken(t *testing.T) {
 	manifest := []byte(`{"version":"1"}`)
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "secret-token", manifest, 3, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials("secret-token"), manifest, 3, false, nil))
 	defer srv.Close()
 
 	// No token -> 401.
@@ -70,7 +71,7 @@ func TestHandler_InfoReportsEgress(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"mode":"proxy","provider":"mock","endpoint":"socks5h://10.200.3.1:1080"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", egress: path}, "", nil, 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", egress: path}, newCredentials(""), nil, 0, false, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/v1/info")
@@ -86,7 +87,7 @@ func TestHandler_InfoReportsEgress(t *testing.T) {
 	}
 
 	// no file: no field, not a default.
-	srv2 := httptest.NewServer(newHandler(config{vmID: "fuse-1", egress: filepath.Join(dir, "missing.json")}, "", nil, 0, false, nil))
+	srv2 := httptest.NewServer(newHandler(config{vmID: "fuse-1", egress: filepath.Join(dir, "missing.json")}, newCredentials(""), nil, 0, false, nil))
 	defer srv2.Close()
 	resp2, err := http.Get(srv2.URL + "/v1/info")
 	if err != nil {
@@ -103,7 +104,7 @@ func TestHandler_InfoReportsEgress(t *testing.T) {
 // TestHandler_InfoOpenWhenNoToken verifies that with no auth token configured
 // (dev/insecure), /v1/info is reachable without a header.
 func TestHandler_InfoOpenWhenNoToken(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "", nil, 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials(""), nil, 0, false, nil))
 	defer srv.Close()
 	resp, err := http.Get(srv.URL + "/v1/info")
 	if err != nil {
@@ -112,5 +113,21 @@ func TestHandler_InfoOpenWhenNoToken(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/v1/info (no auth configured) = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWriteReloadStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fused-reload")
+	if err := writeReloadStatus(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "ok\n" {
+		t.Fatalf("status after a good reload = %q, want ok", b)
+	}
+	if err := writeReloadStatus(path, errors.New("auth token file is empty")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "error: auth token file is empty\n" {
+		t.Fatalf("status after a failed reload = %q", b)
 	}
 }

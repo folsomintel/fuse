@@ -2,11 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -77,17 +79,11 @@ func (fm *FleetManager) durableTokenRotator() DurableTokenRotator {
 // Environment/{vm_id}.RotateToken handler, so a crash between the upload and
 // the persist resumes at the persist with the same token.
 //
-// KNOWN GAP: fused reads --auth-token-file exactly once at process start
-// (fused/main.go) and has no credential poller, so a live fused keeps
-// serving the OLD token until it is restarted. Rotation therefore updates the
-// orchestrator's copy and the guest's files but does not yet take effect in the
-// running guest; it needs a StartAgent call (which restarts fused) the way
-// ForkEnvironment does.
-//
 // Rotation is a server-side operation: the orchestrator updates its
 // own encrypted copy and the guest agent's credential files (paths owned
-// by the agent profile). New inbound connections use the rotated
-// credentials; existing connections retain the old cert until they reconnect.
+// by the agent profile), then signals fused to reread them. New requests and
+// connections use the rotated credentials; a connection already open keeps
+// the old cert until it reconnects.
 func (fm *FleetManager) RotateToken(ctx context.Context, vmID string) error {
 	ctx, end := fm.startOperation(ctx, "rotate_token", vmID)
 	err := fm.rotateToken(ctx, vmID)
@@ -157,8 +153,8 @@ func (fm *FleetManager) RotateTokenGenerate(_ context.Context, vmID string) (Rot
 
 // RotateTokenUpload writes the credential files (cert, key, auth token) into
 // the guest, at the paths the agent profile owns (fusedCredentialFiles). the
-// same files are written in the same order on every attempt, so a retry is
-// harmless.
+// same files are written in the same order on every attempt, then fused is
+// signalled to reread them, so a retry is harmless.
 func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rotated RotatedCredentials) error {
 	env, err := fm.rotateTarget(vmID)
 	if err != nil {
@@ -182,6 +178,18 @@ func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rota
 		if err := env.Upload(ctx, files[path], path); err != nil {
 			return fmt.Errorf("upload credentials: upload %s: %w", path, err)
 		}
+	}
+	// fused holds its credentials in memory, so the files only take effect
+	// once it rereads them. the reload is keyed apart on every attempt: a
+	// repeat is harmless, and under the step's own key a retry would get the
+	// first attempt's failed exit replayed instead of running again.
+	reloadCtx := WithIdempotencyPart(ctx, "reload-agent-"+rand.Text())
+	res, err := env.Exec(reloadCtx, []string{"sh", "-c", fusedReloadCommand}, ExecOptions{Timeout: 30 * time.Second})
+	if err != nil {
+		return fmt.Errorf("reload guest agent credentials: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("reload guest agent credentials: exit %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
 	setTokenIfSupported(env, creds)
 	return nil

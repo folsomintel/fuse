@@ -174,7 +174,10 @@ cd ~/fuse/host-agent/firecracker
 # 0. Install host dependencies (podman, python3, e2fsprogs, ...) and verify them.
 ./scripts/fc-deps.sh
 
-# 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key.
+# 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key. The guest kernel
+#    is 6.1, which reseeds its random number generator when a vm is resumed from a
+#    snapshot; FC_GUEST_KERNEL=5.10 installs the older one. An existing vmlinux.bin
+#    is kept, so delete it first to switch.
 ./scripts/fc-install.sh
 
 # 2. Build the reference in-guest agent (produces host-agent/firecracker/fused). Needs Go
