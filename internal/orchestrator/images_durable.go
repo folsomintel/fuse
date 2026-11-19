@@ -98,8 +98,11 @@ func (fm *FleetManager) ImagePoll(ctx context.Context, img Image) (Image, error)
 // ImageConvertDone records how a durable convert ended: logged, and an
 // image.ready or image.failed event. timedOut is a watch that hit
 // ImageWatchTimeout with the host still converting; the host keeps the
-// record and ends the bake itself.
-func (fm *FleetManager) ImageConvertDone(ctx context.Context, img Image, timedOut bool) error {
+// record and ends the bake itself. watchID names the watch (its restate
+// invocation), and the event is written once per watch, so a retry of a
+// done step whose event landed but whose result was lost writes no second
+// one. "" leaves the event unkeyed.
+func (fm *FleetManager) ImageConvertDone(ctx context.Context, img Image, timedOut bool, watchID string) error {
 	attrs := []any{"digest", img.Digest, "ref", img.Ref, "host", img.HostID}
 	event := "image." + string(img.State)
 	switch {
@@ -113,7 +116,11 @@ func (fm *FleetManager) ImageConvertDone(ctx context.Context, img Image, timedOu
 	}
 	// the error goes back so the durable step retries instead of journaling
 	// a done whose event never landed.
-	return fm.writeEvent(ctx, "image", img.Digest, event, map[string]any{
+	key := ""
+	if watchID != "" {
+		key = "image-watch:" + watchID
+	}
+	return fm.writeEvent(ctx, key, "image", img.Digest, event, map[string]any{
 		"ref":     img.Ref,
 		"host_id": img.HostID,
 		"error":   img.Error,

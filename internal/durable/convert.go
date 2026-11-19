@@ -37,7 +37,7 @@ type Images interface {
 	ImageHost(ctx context.Context, req orchestrator.ConvertImageRequest) (string, error)
 	ImageConvert(ctx context.Context, req orchestrator.ConvertImageRequest) (orchestrator.Image, error)
 	ImagePoll(ctx context.Context, img orchestrator.Image) (orchestrator.Image, error)
-	ImageConvertDone(ctx context.Context, img orchestrator.Image, timedOut bool) error
+	ImageConvertDone(ctx context.Context, img orchestrator.Image, timedOut bool, watchID string) error
 }
 
 // convertImage is Images.Convert: a step that picks the host, then the agent
@@ -100,8 +100,11 @@ func imageTerminal(err error) error {
 // conversion is ready or failed, or imageWatchBound passes, then record the
 // outcome. a restart replays the journal and resumes polling; nothing is
 // converted again. the agent removes a failed bake's partial rootfs itself,
-// so a failure has nothing to undo here.
+// so a failure has nothing to undo here. the outcome is keyed on the watch's
+// invocation id, the same on every attempt of the done step, so a retry of a
+// done whose event landed writes no second event.
 func watchImage(ctx restate.Context, fleet Images, policy RetryPolicy, img orchestrator.Image) error {
+	watchID := ctx.Request().ID
 	start, err := nowMillis(ctx)
 	if err != nil {
 		return err
@@ -125,7 +128,7 @@ func watchImage(ctx restate.Context, fleet Images, policy RetryPolicy, img orche
 		finished := polled.State != orchestrator.ImageConverting
 		if finished || now >= deadline {
 			return runStep(ctx, opImage, "done", func(c context.Context) error {
-				return fleet.ImageConvertDone(c, polled, !finished)
+				return fleet.ImageConvertDone(c, polled, !finished, watchID)
 			}, retryUnder(policy)...)
 		}
 		wait = min(wait*2, imagePollMax)

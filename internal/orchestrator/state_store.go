@@ -203,6 +203,10 @@ type SnapshotRecord struct {
 }
 
 // EventRecord stores an audit event for critical lifecycle transitions.
+//
+// DedupeKey, when set, makes the write idempotent: AppendEvent drops an
+// event whose key is already stored, so a durable step that wrote its event
+// and then lost its result writes it once when restate runs it again.
 type EventRecord struct {
 	ID         int64
 	EntityType string
@@ -210,6 +214,7 @@ type EventRecord struct {
 	EventType  string
 	Payload    json.RawMessage
 	CreatedAt  time.Time
+	DedupeKey  string
 }
 
 // DeadLetterKind identifies the kind of failure a dead-letter entry represents.
@@ -709,6 +714,13 @@ func (s *MemoryStateStore) AppendEvent(_ context.Context, event EventRecord) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if event.DedupeKey != "" {
+		for _, e := range s.events {
+			if e.DedupeKey == event.DedupeKey {
+				return nil
+			}
+		}
+	}
 	s.nextID++
 	event.ID = s.nextID
 	if event.CreatedAt.IsZero() {

@@ -297,7 +297,9 @@ func (fakeFleet) ImageConvert(_ context.Context, req orchestrator.ConvertImageRe
 func (fakeFleet) ImagePoll(_ context.Context, img orchestrator.Image) (orchestrator.Image, error) {
 	return img, nil
 }
-func (fakeFleet) ImageConvertDone(context.Context, orchestrator.Image, bool) error { return nil }
+func (fakeFleet) ImageConvertDone(context.Context, orchestrator.Image, bool, string) error {
+	return nil
+}
 
 var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 

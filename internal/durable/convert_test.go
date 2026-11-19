@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/folsomintel/fuse/internal/hostwire"
 	"github.com/folsomintel/fuse/internal/orchestrator"
 )
 
 // imageFleet scripts a convert: the agent call answers with one record, and
 // each poll answers with the next state in polls (the last one repeats). a
-// poll can block until released. done gets the record the watch ended with.
+// poll can block until released, from poll number blockAt on (every poll when
+// blockAt is 0). done gets the record the watch ended with, and fails its
+// first doneErrs calls. agent, when set, makes the convert a real agent call.
 type imageFleet struct {
 	fakeFleet
 
@@ -27,9 +32,14 @@ type imageFleet struct {
 	img          orchestrator.Image
 	convertErr   error
 	polls        []orchestrator.ImageState
+	polled       int
+	blockAt      int
 	block        chan struct{}
 	entered      chan struct{}
 	done         chan imageDone
+	doneErrs     int
+	watchIDs     []string
+	agent        *convertAgent
 }
 
 type imageDone struct {
@@ -77,6 +87,16 @@ func (f *imageFleet) ImageConvert(ctx context.Context, req orchestrator.ConvertI
 	f.convertReqs = append(f.convertReqs, req)
 	block := f.convertBlock
 	f.mu.Unlock()
+	if f.agent != nil {
+		if err := f.agent.convert(ctx); err != nil {
+			return orchestrator.Image{}, err
+		}
+		// the agent started the bake, then the orchestrator died before
+		// restate journaled the step.
+		if f.agent.calls() == 1 {
+			panic("orchestrator crashed during the convert step")
+		}
+	}
 	if block != nil {
 		select {
 		case f.entered <- struct{}{}:
@@ -93,7 +113,11 @@ func (f *imageFleet) ImageConvert(ctx context.Context, req orchestrator.ConvertI
 
 func (f *imageFleet) ImagePoll(ctx context.Context, img orchestrator.Image) (orchestrator.Image, error) {
 	f.mu.Lock()
+	f.polled++
 	block := f.block
+	if f.polled < f.blockAt {
+		block = nil
+	}
 	f.mu.Unlock()
 	if block != nil {
 		select {
@@ -121,10 +145,66 @@ func (f *imageFleet) ImagePoll(ctx context.Context, img orchestrator.Image) (orc
 	return img, nil
 }
 
-func (f *imageFleet) ImageConvertDone(_ context.Context, img orchestrator.Image, timedOut bool) error {
+func (f *imageFleet) ImageConvertDone(_ context.Context, img orchestrator.Image, timedOut bool, watchID string) error {
 	f.record("done")
+	f.mu.Lock()
+	f.watchIDs = append(f.watchIDs, watchID)
+	fail := f.doneErrs > 0
+	if fail {
+		f.doneErrs--
+	}
+	f.mu.Unlock()
+	if fail {
+		return errors.New("event row committed, step result lost")
+	}
 	f.done <- imageDone{img: img, timedOut: timedOut}
 	return nil
+}
+
+// convertAgent stands in for fc-agent's POST /v1/images, reached through the
+// orchestrator's real host-agent client, and records the Idempotency-Key of
+// every convert it gets.
+type convertAgent struct {
+	srv    *httptest.Server
+	client *http.Client
+	mu     sync.Mutex
+	keys   []string
+}
+
+func newConvertAgent(t *testing.T) *convertAgent {
+	a := &convertAgent{client: hostwire.NewClient()}
+	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		a.mu.Lock()
+		a.keys = append(a.keys, r.Header.Get(hostwire.IdempotencyHeader))
+		a.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(a.srv.Close)
+	return a
+}
+
+func (a *convertAgent) convert(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.srv.URL+"/v1/images", strings.NewReader(`{"ref":"ubuntu"}`))
+	if err != nil {
+		return err
+	}
+	res, err := a.client.Do(req)
+	if err != nil {
+		return err
+	}
+	return res.Body.Close()
+}
+
+func (a *convertAgent) calls() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.keys)
+}
+
+func (a *convertAgent) seen() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]string(nil), a.keys...)
 }
 
 // fastImagePolls shortens the watch's sleeps for the test.
@@ -222,6 +302,55 @@ func TestConvertImageRetryWithoutAttemptGetsAWatch(t *testing.T) {
 	}
 }
 
+// TestConvertImageSameSecondRetryGetsAWatch: a bake that fails and is retried
+// within one second is two attempts. the agent writes their times to the
+// microsecond, so the retry's watch is keyed apart from the first one's
+// finished watch and records an outcome of its own.
+func TestConvertImageSameSecondRetryGetsAWatch(t *testing.T) {
+	fastImagePolls(t)
+	fleet := newImageFleet("busybox", orchestrator.ImageFailed)
+	client, _, _ := serveBuildFleet(t, fleet, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i, attempt := range []string{"2026-11-16T10:00:00.100000Z", "2026-11-16T10:00:00.900000Z"} {
+		fleet.mu.Lock()
+		fleet.img.CreatedAt = attempt
+		fleet.mu.Unlock()
+		if _, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "busybox"}); err != nil {
+			t.Fatalf("convert %d: %v", i, err)
+		}
+		if d := waitImageDone(t, fleet); d.img.State != orchestrator.ImageFailed || d.img.CreatedAt != attempt {
+			t.Fatalf("watch %d ended with %+v", i, d)
+		}
+	}
+}
+
+// TestConvertImageDoneRetryKeepsItsWatchID: a done step that fails after its
+// event committed runs again with the same watch id, which is what makes the
+// event write once.
+func TestConvertImageDoneRetryKeepsItsWatchID(t *testing.T) {
+	fastImagePolls(t)
+	fleet := newImageFleet("ubuntu", orchestrator.ImageReady)
+	fleet.doneErrs = 1
+	client, _, _ := serveBuildFleet(t, fleet, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "ubuntu"}); err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if d := waitImageDone(t, fleet); d.img.State != orchestrator.ImageReady {
+		t.Fatalf("watch ended with %+v", d)
+	}
+	fleet.mu.Lock()
+	ids := append([]string(nil), fleet.watchIDs...)
+	fleet.mu.Unlock()
+	if len(ids) != 2 || ids[0] == "" || ids[0] != ids[1] {
+		t.Fatalf("done ran with watch ids %q, want the same non-empty id twice", ids)
+	}
+}
+
 // TestConvertImageReadyStartsNoWatch: an image the host already has ready
 // answers at once and starts no watch.
 func TestConvertImageReadyStartsNoWatch(t *testing.T) {
@@ -246,7 +375,7 @@ func TestConvertImageReadyStartsNoWatch(t *testing.T) {
 // sentinel, so the api answers it with that sentinel's status, and is not
 // retried.
 func TestConvertImageRefusalKeepsSentinel(t *testing.T) {
-	for _, sentinel := range []error{orchestrator.ErrInvalidImage, orchestrator.ErrImageHostFailed, orchestrator.ErrNoCapacity} {
+	for _, sentinel := range []error{orchestrator.ErrInvalidImage, orchestrator.ErrImageHostFailed, orchestrator.ErrNoCapacity, orchestrator.ErrImageCacheFull} {
 		fleet := newImageFleet("ubuntu")
 		fleet.convertErr = fmt.Errorf("%w: refused", sentinel)
 		client, _, _ := serveBuildFleet(t, fleet, "")
@@ -357,5 +486,69 @@ func TestConvertImageKeepsHostAcrossRestart(t *testing.T) {
 	}
 	if len(second.convertReqs) != 1 || second.convertReqs[0].HostID != "fc-1" {
 		t.Fatalf("retried agent call went to %+v, want host fc-1", second.convertReqs)
+	}
+}
+
+// TestConvertImageAgentCallKeepsItsKeyAcrossARetry stands in for a crash
+// after the agent started the bake and before restate journaled the convert
+// step: the step's retry reaches the agent with the first try's
+// Idempotency-Key, so the agent answers it with its first response instead of
+// starting a second bake. an agent call outside its journaled step carries no
+// key at all.
+func TestConvertImageAgentCallKeepsItsKeyAcrossARetry(t *testing.T) {
+	fleet := newImageFleet("ubuntu", orchestrator.ImageReady)
+	fleet.img.State = orchestrator.ImageReady
+	fleet.agent = newConvertAgent(t)
+	client, _, _ := serveBuildFleet(t, fleet, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "ubuntu"}); err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	keys := fleet.agent.seen()
+	if len(keys) != 2 || keys[0] != keys[1] ||
+		!strings.HasPrefix(keys[0], "inv_") || !strings.HasSuffix(keys[0], ":image_convert.convert/1") {
+		t.Fatalf("agent got keys %q, want the same inv_...:image_convert.convert/1 key twice", keys)
+	}
+	if got, want := fleet.steps(), "place,convert,convert"; got != want {
+		t.Fatalf("steps %s, want %s", got, want)
+	}
+}
+
+// TestConvertImageWatchReplayKeepsJournaledPolls stands in for kill -9 of the
+// orchestrator on a watch's third poll: the two polls restate journaled are
+// replayed from the journal, so the restarted orchestrator runs only the
+// third poll and the done step.
+func TestConvertImageWatchReplayKeepsJournaledPolls(t *testing.T) {
+	fastImagePolls(t)
+	first := newImageFleet("ubuntu", orchestrator.ImageConverting)
+	first.blockAt = 3
+	first.block = make(chan struct{})
+	defer close(first.block)
+	client, addr, stop := serveBuildFleet(t, first, "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := client.ConvertImage(ctx, orchestrator.ConvertImageRequest{Ref: "ubuntu"}); err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	select {
+	case <-first.entered:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("third poll never started; steps %s", first.steps())
+	}
+	if got, want := first.steps(), "place,convert,poll,poll"; got != want {
+		t.Fatalf("steps before the restart %s, want %s", got, want)
+	}
+	stop()
+
+	second := newImageFleet("ubuntu", orchestrator.ImageReady)
+	_, _, _ = serveBuildFleet(t, second, addr)
+	if d := waitImageDone(t, second); d.img.State != orchestrator.ImageReady || d.img.Digest != first.img.Digest {
+		t.Fatalf("watch ended with %+v", d)
+	}
+	if got, want := second.steps(), "poll,done"; got != want {
+		t.Fatalf("steps after the restart %s, want %s", got, want)
 	}
 }

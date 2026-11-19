@@ -3252,6 +3252,14 @@ def image_record_save(rec: dict) -> None:
     os.replace(tmp, path)
 
 
+def image_attempt_time() -> str:
+    """When a conversion attempt starts, to the microsecond. it keys the
+    orchestrator's durable watch of the attempt, so a retry of a bake that
+    failed within the same second still needs a time of its own; now_iso's
+    seconds would hand the retry the first attempt's finished watch."""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def image_public(rec: dict) -> dict:
     """The record as the orchestrator sees it. created_at marks the attempt: a
     retry of a failed image writes a new one, which keys a durable watch."""
@@ -3411,7 +3419,7 @@ def image_convert_start(ref: str) -> dict:
             "name": name,
             "state": "converting",
             "error": "",
-            "created_at": now_iso(),
+            "created_at": image_attempt_time(),
         }
         image_record_save(rec)
     threading.Thread(target=image_convert_run, args=(dict(rec),), daemon=True).start()

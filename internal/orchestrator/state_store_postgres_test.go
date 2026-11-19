@@ -357,3 +357,30 @@ func TestPostgresStateStore_InterventionsAndHitlSpec(t *testing.T) {
 		t.Fatalf("missing id: err = %v", err)
 	}
 }
+
+// TestPostgresStateStore_EventDedupeKey: a keyed event is stored once however
+// often it is appended, and unkeyed events never conflict with each other.
+func TestPostgresStateStore_EventDedupeKey(t *testing.T) {
+	store := openTestPostgres(t)
+	ctx := context.Background()
+	entity := "dedupe-" + time.Now().Format("150405.000000000")
+	t.Cleanup(func() {
+		_, _ = store.db.ExecContext(ctx, `DELETE FROM orchestrator_events WHERE entity_id=$1`, entity)
+	})
+
+	for _, key := range []string{"image-watch:" + entity, "image-watch:" + entity, "", ""} {
+		if err := store.AppendEvent(ctx, EventRecord{EntityType: "image", EntityID: entity, EventType: "image.ready", DedupeKey: key}); err != nil {
+			t.Fatalf("append event (key %q): %v", key, err)
+		}
+	}
+	var keyed, unkeyed int
+	if err := store.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FILTER (WHERE dedupe_key IS NOT NULL), COUNT(*) FILTER (WHERE dedupe_key IS NULL)
+		FROM orchestrator_events WHERE entity_id=$1
+	`, entity).Scan(&keyed, &unkeyed); err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if keyed != 1 || unkeyed != 2 {
+		t.Fatalf("stored %d keyed and %d unkeyed events, want 1 and 2", keyed, unkeyed)
+	}
+}

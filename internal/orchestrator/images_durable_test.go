@@ -102,6 +102,15 @@ func TestImagePollSupersededAttempt(t *testing.T) {
 		t.Fatalf("superseded poll = %+v, %v; want the old attempt failed", got, err)
 	}
 
+	// a retry within the same second is still a later attempt: the agent
+	// writes the attempt time to the microsecond.
+	fc.images[d] = Image{Digest: d, State: ImageConverting, CreatedAt: "2026-11-16T10:00:00.900000Z"}
+	sameSecond := Image{Digest: d, HostID: "fc-1", State: ImageConverting, CreatedAt: "2026-11-16T10:00:00.100000Z"}
+	if got, err := fm.ImagePoll(context.Background(), sameSecond); err != nil || got.State != ImageFailed || !strings.Contains(got.Error, "retried") {
+		t.Fatalf("same second superseded poll = %+v, %v; want the old attempt failed", got, err)
+	}
+	fc.images[d] = Image{Digest: d, State: ImageConverting, CreatedAt: "2026-11-16T10:05:00Z"}
+
 	// the current attempt's watch, and one without an attempt, follow the record.
 	for _, w := range []Image{{Digest: d, HostID: "fc-1", State: ImageConverting, CreatedAt: "2026-11-16T10:05:00Z"}, {Digest: d, HostID: "fc-1", State: ImageConverting}} {
 		if got, err := fm.ImagePoll(context.Background(), w); err != nil || got.State != ImageConverting {
@@ -123,12 +132,36 @@ func (failEventStore) AppendEvent(context.Context, EventRecord) error {
 func TestImageConvertDoneReturnsAFailedEventWrite(t *testing.T) {
 	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: failEventStore{NewMemoryStateStore()}})
 	img := Image{Digest: digestOf("d"), Ref: "ubuntu", HostID: "fc-1", State: ImageReady}
-	if err := fm.ImageConvertDone(context.Background(), img, false); err == nil || !strings.Contains(err.Error(), "db down") {
+	if err := fm.ImageConvertDone(context.Background(), img, false, "inv_1"); err == nil || !strings.Contains(err.Error(), "db down") {
 		t.Fatalf("ImageConvertDone = %v, want the event write error", err)
 	}
 
 	fm = newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: NewMemoryStateStore()})
-	if err := fm.ImageConvertDone(context.Background(), img, false); err != nil {
+	if err := fm.ImageConvertDone(context.Background(), img, false, "inv_1"); err != nil {
 		t.Fatalf("ImageConvertDone with a working store: %v", err)
+	}
+}
+
+// TestImageConvertDoneWritesOneEventPerWatch: restate runs a done step again
+// when its result was lost after the event committed. the replay writes no
+// second event, while another watch of the same image (a retry's) writes its
+// own, and a done with no watch id stays unkeyed.
+func TestImageConvertDoneWritesOneEventPerWatch(t *testing.T) {
+	store := NewMemoryStateStore()
+	fm := newInlineFleet(FleetConfig{Provider: &buildProvider{}, Prefix: "fuse-", StateStore: store})
+	img := Image{Digest: digestOf("d"), Ref: "ubuntu", HostID: "fc-1", State: ImageReady}
+	for _, watchID := range []string{"inv_1", "inv_1", "inv_2", "", ""} {
+		if err := fm.ImageConvertDone(context.Background(), img, false, watchID); err != nil {
+			t.Fatalf("ImageConvertDone(%q): %v", watchID, err)
+		}
+	}
+	var keys []string
+	for _, e := range store.events {
+		if e.EventType == "image.ready" {
+			keys = append(keys, e.DedupeKey)
+		}
+	}
+	if got, want := strings.Join(keys, ","), "image-watch:inv_1,image-watch:inv_2,,"; got != want {
+		t.Fatalf("image.ready events keyed %q, want %q", got, want)
 	}
 }
