@@ -82,23 +82,20 @@ type operation struct {
 	fingerprint string
 	startedAt   time.Time
 	done        chan struct{}
-	// gen counts the earlier runs under key that answered 5xx, so this run
-	// gets a restate key of its own instead of attaching to their failed
-	// invocation. begin carries it over from the run it replaces.
+	// gen counts the earlier runs under key whose 5xx restate recorded, so
+	// this run gets a restate key of its own instead of attaching to their
+	// failed invocation. begin carries it over from the run it replaces.
 	gen int
 
 	mu         sync.Mutex
 	finishedAt time.Time
 	rec        *opRecorder
-	// waitEnded is set when the handler returned after the operation's own
-	// timeout passed: its restate invocation may still be running.
-	waitEnded bool
 }
 
 // restateKey is the idempotency key op's restate invocation runs under. a
-// first run keeps the plain owner:kind:key. a rerun after a 5xx marks its
-// generation on the kind, where no caller key can reach, so it never names
-// the invocation of another key.
+// first run keeps the plain owner:kind:key. a rerun after a recorded failure
+// marks its generation on the kind, where no caller key can reach, so it
+// never names the invocation of another key.
 func (op *operation) restateKey() string {
 	if op.gen == 0 {
 		return op.owner + ":" + op.kind + ":" + op.key
@@ -161,10 +158,22 @@ func (op *operation) view() Operation {
 }
 
 // opRecorder is the ResponseWriter an operation's handler writes into.
+// settled is set when the handler answered with a failure restate recorded
+// for the op's invocation (orchestrator.SettledError).
 type opRecorder struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
+	header  http.Header
+	status  int
+	body    bytes.Buffer
+	settled bool
+}
+
+// markSettled notes on an operation's recorder that err is a failure restate
+// recorded, so a retry of the op needs a new restate key to run again. any
+// other writer, or any other error, is left alone.
+func markSettled(w http.ResponseWriter, err error) {
+	if rec, ok := w.(*opRecorder); ok && orchestrator.IsSettled(err) {
+		rec.settled = true
+	}
 }
 
 func (r *opRecorder) Header() http.Header { return r.header }
@@ -198,10 +207,11 @@ var errOperationsFull = errors.New("too many operations in flight")
 
 // begin returns the live operation owner's key names, or registers op. a
 // finished operation whose answer was a 5xx is replaced so a retry runs
-// again, under the next generation of the key: restate keeps a finished
-// invocation's answer, so the old key would hand back the same failure. one
-// whose wait ran out keeps its generation, since restate may still be running
-// it and the retry should attach. new work is refused once the registry holds
+// again. when restate recorded that failure the retry moves to the next
+// generation of the key, since the old key would hand back the same failure.
+// any other 5xx (restate unreachable, a client timeout, a dropped connection)
+// keeps the generation, since restate may still be running the invocation and
+// the retry should attach to it. new work is refused once the registry holds
 // maxOperations; the 5xx it would replace then stays, so its generation is
 // not lost.
 func (s *operationStore) begin(op *operation) (existing *operation, err error) {
@@ -228,7 +238,7 @@ func (s *operationStore) begin(op *operation) (existing *operation, err error) {
 	if failed != nil {
 		s.dropLocked(failed)
 		op.gen = failed.gen
-		if !failed.waitEnded {
+		if failed.rec.settled {
 			op.gen++
 		}
 	}
@@ -456,6 +466,7 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 						"panic", p, "stack", string(debug.Stack()))
 				}
 				op.rec.status = 0
+				op.rec.settled = false
 				op.rec.body.Reset()
 				writeError(op.rec, http.StatusInternalServerError, CodeInternal, "operation panicked", nil)
 			}
@@ -464,7 +475,6 @@ func (h *Handler) startOperation(r *http.Request, op *operation, body []byte, ne
 			}
 			op.mu.Lock()
 			op.finishedAt = time.Now().UTC()
-			op.waitEnded = req.Context().Err() != nil
 			op.mu.Unlock()
 			close(op.done)
 		}()

@@ -72,21 +72,29 @@ func terminal(err error) bool {
 // crossed is a handler's failure as the durable client hands it back: a
 // terminal error keeps its identity only when it is one of the sentinels
 // tables lists (the handler carries those across restate as error codes),
-// and is otherwise its message alone. an error restate would still be
-// retrying, or the caller's own cancellation, is returned as it is.
+// and is otherwise its message alone. either way it is marked
+// orchestrator.SettledError, since restate recorded it for the invocation.
+// an error restate would still be retrying, or the caller's own
+// cancellation, is returned as it is.
 func crossed(err error, tables ...[]error) error {
-	if err == nil || !terminal(err) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !recorded(err) {
 		return err
 	}
 	// the last match in a table wins, as internal/durable's sentinelIndex.
 	for _, table := range tables {
 		for i := len(table) - 1; i >= 0; i-- {
 			if errors.Is(err, table[i]) {
-				return &sentinelError{msg: err.Error(), sentinel: table[i]}
+				return orchestrator.Settled(&sentinelError{msg: err.Error(), sentinel: table[i]})
 			}
 		}
 	}
-	return errors.New(err.Error())
+	return orchestrator.Settled(errors.New(err.Error()))
+}
+
+// recorded reports whether err is a handler's terminal failure, the kind
+// restate records for the invocation and replays to its key.
+func recorded(err error) bool {
+	return err != nil && terminal(err) && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // sentinelError is a sentinel brought back across restate with the
@@ -333,6 +341,9 @@ func (d *Inline) Destroy(ctx context.Context, vmID string, req orchestrator.Dest
 	_, err := request(d, ctx, "Environment/"+vmID+"/Destroy", func(c context.Context) (struct{}, error) {
 		return struct{}{}, d.destroyLocked(c, vmID, req)
 	})
+	if recorded(err) {
+		return orchestrator.Settled(err)
+	}
 	return err
 }
 

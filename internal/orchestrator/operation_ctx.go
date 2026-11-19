@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 )
 
@@ -22,6 +23,32 @@ func WithIdempotencyKey(ctx context.Context, key string) context.Context {
 func IdempotencyKey(ctx context.Context) string {
 	key, _ := ctx.Value(idempotencyKeyCtx{}).(string)
 	return key
+}
+
+// SettledError is a lifecycle op's failure that restate recorded for its
+// invocation: the handler ran and failed for good, so restate answers the
+// invocation's idempotency key with this failure until the key's retention
+// ends, and a retry that should run again needs a new key. a failure before
+// restate answered (unreachable, a client timeout, a dropped connection, a
+// context error) is not one: the invocation may still be running, and a
+// retry under the same key attaches to it.
+type SettledError struct{ Err error }
+
+func (e *SettledError) Error() string { return e.Err.Error() }
+func (e *SettledError) Unwrap() error { return e.Err }
+
+// Settled wraps err as a SettledError. nil stays nil.
+func Settled(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &SettledError{Err: err}
+}
+
+// IsSettled reports whether err carries a SettledError.
+func IsSettled(err error) bool {
+	var s *SettledError
+	return errors.As(err, &s)
 }
 
 type idempotencyPartCtx struct{}

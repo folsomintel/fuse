@@ -281,8 +281,13 @@ func TestConvertImageKeyedFailureNeedsANewKey(t *testing.T) {
 		return err
 	}
 	for i := range 2 {
-		if err := convert(key); !errors.Is(err, orchestrator.ErrImageCacheFull) {
+		err := convert(key)
+		if !errors.Is(err, orchestrator.ErrImageCacheFull) {
 			t.Fatalf("call %d: error %v, want ErrImageCacheFull", i, err)
+		}
+		// the replay is settled too, so the api moves the key on either way.
+		if !orchestrator.IsSettled(err) {
+			t.Fatalf("call %d: error %v is not marked settled", i, err)
 		}
 	}
 	if got := fleet.steps(); got != "place,convert" {

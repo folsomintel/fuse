@@ -319,9 +319,10 @@ func (f *forking) compensate(cause error) error {
 // request timeout of its own; ctx bounds the wait, and the fork keeps running
 // if ctx ends first.
 func (c *Client) Fork(ctx context.Context, vmID string, req orchestrator.ForkRequest) error {
+	ctx, a := watchAnswer(ctx)
 	_, err := ingress.Object[orchestrator.ForkRequest, restate.Void](c.longIngress, EnvironmentObject, vmID, "Fork").
 		Request(ctx, req, callerKey(ctx)...)
-	return forkError(err)
+	return settled(a, err, forkError(err))
 }
 
 // forkError turns a fork's failure back into the fleet error its code names,

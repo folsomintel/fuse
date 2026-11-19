@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -262,27 +265,27 @@ func TestOperationStore_refusesNewWorkAtCapacity(t *testing.T) {
 }
 
 // keyedRoute is a route run as an operation that records the restate key
-// each run saw and answers with the next status in statuses (the last one
-// repeats).
+// each run saw and answers with the next fleet error in answers (the last one
+// repeats), or 201 for a nil one.
 type keyedRoute struct {
-	mu       sync.Mutex
-	keys     []string
-	statuses []int
+	mu      sync.Mutex
+	keys    []string
+	answers []error
 }
 
 func (k *keyedRoute) serve(w http.ResponseWriter, r *http.Request) {
 	k.mu.Lock()
 	k.keys = append(k.keys, orchestrator.IdempotencyKey(r.Context()))
-	status := k.statuses[0]
-	if len(k.statuses) > 1 {
-		k.statuses = k.statuses[1:]
+	err := k.answers[0]
+	if len(k.answers) > 1 {
+		k.answers = k.answers[1:]
 	}
 	k.mu.Unlock()
-	if status >= 400 {
-		writeError(w, status, CodeUnavailable, "refused", nil)
+	if err != nil {
+		writeFleetError(w, err)
 		return
 	}
-	writeJSON(w, status, map[string]string{"ok": "yes"})
+	writeJSON(w, http.StatusCreated, map[string]string{"ok": "yes"})
 }
 
 func (k *keyedRoute) seen() []string {
@@ -299,13 +302,18 @@ func callKeyed(h http.HandlerFunc, key, body string) *httptest.ResponseRecorder 
 	return rr
 }
 
-// TestOperation_5xxRetryRunsUnderANewRestateKey: a keyed call that answered
-// 5xx runs again on retry under the next generation of its restate key, so
-// restate starts a new invocation instead of replaying the failed one. the
-// run that succeeds is then replayed, and a different body is still a 409.
-func TestOperation_5xxRetryRunsUnderANewRestateKey(t *testing.T) {
+// TestOperation_settled5xxRetryRunsUnderANewRestateKey: a keyed call whose
+// 5xx restate recorded runs again on retry under the next generation of its
+// restate key, so restate starts a new invocation instead of replaying the
+// failed one. the run that succeeds is then replayed, and a different body
+// is still a 409.
+func TestOperation_settled5xxRetryRunsUnderANewRestateKey(t *testing.T) {
 	h := &Handler{}
-	route := &keyedRoute{statuses: []int{http.StatusInsufficientStorage, http.StatusServiceUnavailable, http.StatusCreated}}
+	route := &keyedRoute{answers: []error{
+		orchestrator.Settled(fmt.Errorf("%w: host fc-1", orchestrator.ErrImageCacheFull)),
+		orchestrator.Settled(orchestrator.ErrNoCapacity),
+		nil,
+	}}
 	serve := h.asOperation(OpCreate, MaxJSONBodyBytes, route.serve)
 
 	for i, want := range []int{http.StatusInsufficientStorage, http.StatusServiceUnavailable, http.StatusCreated} {
@@ -335,7 +343,7 @@ func TestOperation_5xxRetryRunsUnderANewRestateKey(t *testing.T) {
 // its retry replays the answer instead of running again.
 func TestOperation_4xxRetryReplays(t *testing.T) {
 	h := &Handler{}
-	route := &keyedRoute{statuses: []int{http.StatusNotFound, http.StatusCreated}}
+	route := &keyedRoute{answers: []error{orchestrator.Settled(orchestrator.ErrVMNotFound), nil}}
 	serve := h.asOperation(OpDestroy, MaxJSONBodyBytes, route.serve)
 
 	callKeyed(serve, "k-1", `{}`)
@@ -348,32 +356,61 @@ func TestOperation_4xxRetryReplays(t *testing.T) {
 	}
 }
 
-// TestOperation_5xxAfterItsWaitEndedKeepsTheKey: a run that gave up because
-// its own timeout passed may still be running on restate, so its retry
-// keeps the restate key and attaches instead of starting a second run.
-func TestOperation_5xxAfterItsWaitEndedKeepsTheKey(t *testing.T) {
-	h := &Handler{OperationTimeout: 20 * time.Millisecond}
+// TestOperation_unsettled5xxRetryKeepsTheKey: a 5xx from before restate
+// answered (restate unreachable, the client's own 30s timeout on a long
+// destroy, a dropped connection, the operation's own timeout) may leave the
+// invocation running, so its retry keeps the restate key and attaches. only
+// a failure restate recorded moves the key on.
+func TestOperation_unsettled5xxRetryKeepsTheKey(t *testing.T) {
+	h := &Handler{}
+	route := &keyedRoute{answers: []error{
+		fmt.Errorf("%w: dial tcp: connection refused", orchestrator.ErrRestateUnavailable),
+		fmt.Errorf("destroy vm fuse-a: %w", &url.Error{Op: "Post", URL: "http://restate/Environment/fuse-a/Destroy", Err: context.DeadlineExceeded}),
+		errors.New("read tcp: connection reset by peer"),
+		context.DeadlineExceeded,
+		orchestrator.Settled(errors.New("destroy failed")),
+		nil,
+	}}
+	serve := h.asOperation(OpDestroy, MaxJSONBodyBytes, route.serve)
+
+	for i, want := range []int{503, 500, 500, 500, 500, 201} {
+		if rr := callKeyed(serve, "k-1", `{}`); rr.Code != want {
+			t.Fatalf("call %d: status = %d, want %d", i, rr.Code, want)
+		}
+	}
+	k := "master:destroy:k-1"
+	want := []string{k, k, k, k, k, "master:destroy#1:k-1"}
+	if got := route.seen(); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("restate keys = %q, want %q", got, want)
+	}
+}
+
+// TestOperation_settledOnlyThroughTheFleetErrorWriters: a 5xx the handler
+// writes itself names no restate failure, so it keeps the key.
+func TestOperation_settledOnlyThroughTheFleetErrorWriters(t *testing.T) {
+	h := &Handler{}
 	var mu sync.Mutex
 	var keys []string
-	serve := h.asOperation(OpFork, MaxJSONBodyBytes, func(w http.ResponseWriter, r *http.Request) {
+	serve := h.asOperation(OpCreate, MaxJSONBodyBytes, func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		keys = append(keys, orchestrator.IdempotencyKey(r.Context()))
-		first := len(keys) == 1
+		n := len(keys)
 		mu.Unlock()
-		if first {
-			<-r.Context().Done()
+		switch n {
+		case 1:
+			writeError(w, http.StatusInternalServerError, CodeInternal, "encode", nil)
+		case 2:
+			writeFleetErrorRedacted(w, orchestrator.Settled(errors.New("boot failed")), nil)
+		default:
+			w.WriteHeader(http.StatusCreated)
 		}
-		writeError(w, http.StatusInternalServerError, CodeInternal, "gave up", nil)
 	})
-
 	for range 3 {
-		if rr := callKeyed(serve, "k-1", `{}`); rr.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want 500", rr.Code)
-		}
+		callKeyed(serve, "k-1", `{}`)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"master:fork:k-1", "master:fork:k-1", "master:fork#1:k-1"}
+	want := []string{"master:create:k-1", "master:create:k-1", "master:create#1:k-1"}
 	if strings.Join(keys, ",") != strings.Join(want, ",") {
 		t.Fatalf("restate keys = %q, want %q", keys, want)
 	}
@@ -385,7 +422,7 @@ func TestOperation_5xxAfterItsWaitEndedKeepsTheKey(t *testing.T) {
 func TestOperationStore_fullKeepsTheFailedGeneration(t *testing.T) {
 	s := newOperationStore()
 	failed := &operation{id: newOperationID(), owner: "master", key: "k-1", gen: 1, done: make(chan struct{}),
-		finishedAt: time.Now(), rec: &opRecorder{status: http.StatusInternalServerError}}
+		finishedAt: time.Now(), rec: &opRecorder{status: http.StatusInternalServerError, settled: true}}
 	close(failed.done)
 	s.byID[failed.id] = failed
 	s.byKey["master\x00k-1"] = failed
