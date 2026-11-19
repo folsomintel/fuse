@@ -1,8 +1,9 @@
 package main
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,6 +74,9 @@ func localUpDarwin(ctx context.Context, s *localState, cpus, memMB, diskGB int) 
 	}
 	infof("appliance is up at %s", ip)
 
+	if err := pushApplianceFiles(s, ip); err != nil {
+		return err
+	}
 	if err := injectDevOrchestratorAppliance(s, ip); err != nil {
 		return err
 	}
@@ -156,30 +160,15 @@ func findRaw(dir string) (string, error) {
 }
 
 // writeCloudInit renders user-data/meta-data. cloud-init only applies on the
-// appliance's first boot; it creates the ssh user and writes the stack files
-// (fc-agent.py and its agentlib.py, the setup script, the env file). install/start themselves run
-// over ssh so first boot and every later boot share one code path.
+// appliance's first boot, so it only creates the ssh user. the stack files
+// are pushed over ssh by pushApplianceFiles on every up instead, so a cli
+// upgrade reaches an appliance that booted long ago. install/start run over
+// ssh too, so first boot and every later boot share one code path.
 func writeCloudInit(s *localState) error {
 	pub, err := os.ReadFile(s.sshKey + ".pub")
 	if err != nil {
 		return err
 	}
-	fcAgent, err := os.ReadFile(s.fcAgentScript)
-	if err != nil {
-		return err
-	}
-	agentLib, err := os.ReadFile(s.agentLibScript)
-	if err != nil {
-		return err
-	}
-	setup, err := os.ReadFile(s.setupScript)
-	if err != nil {
-		return err
-	}
-	env := fmt.Sprintf(
-		"FUSE_LOCAL_DIR=%s\nFC_AGENT_TOKEN=%s\nORCH_AUTH_TOKEN=%s\nFUSE_VERSION=%s\nORCH_PORT=%d\nFC_AGENT_PORT=%d\nPUBLIC_HOST=auto\n",
-		applianceDir, s.fcAgentToken, s.orchAuthToken, localReleaseVersion(), localOrchPort, localAgentPort)
-
 	userData := fmt.Sprintf(`#cloud-config
 hostname: fuse-local
 users:
@@ -188,36 +177,62 @@ users:
     shell: /bin/bash
     ssh_authorized_keys:
       - %s
-write_files:
-  - path: %s/fc-agent.py
-    encoding: b64
-    content: %s
-    permissions: "0644"
-  - path: %s/agentlib.py
-    encoding: b64
-    content: %s
-    permissions: "0644"
-  - path: %s/fuse-local-setup.sh
-    encoding: b64
-    content: %s
-    permissions: "0755"
-  - path: %s/env
-    encoding: b64
-    content: %s
-    permissions: "0600"
 `,
 		applianceSSHUser,
 		strings.TrimSpace(string(pub)),
-		applianceDir, base64.StdEncoding.EncodeToString(fcAgent),
-		applianceDir, base64.StdEncoding.EncodeToString(agentLib),
-		applianceDir, base64.StdEncoding.EncodeToString(setup),
-		applianceDir, base64.StdEncoding.EncodeToString([]byte(env)),
 	)
 	if err := os.WriteFile(filepath.Join(s.dir, "user-data"), []byte(userData), 0o600); err != nil {
 		return err
 	}
 	metaData := "instance-id: fuse-local\nlocal-hostname: fuse-local\n"
 	return os.WriteFile(filepath.Join(s.dir, "meta-data"), []byte(metaData), 0o600)
+}
+
+// applianceEnv is the env file the setup script runs with inside the
+// appliance.
+func applianceEnv(s *localState) string {
+	return fmt.Sprintf(
+		"FUSE_LOCAL_DIR=%s\nFC_AGENT_TOKEN=%s\nORCH_AUTH_TOKEN=%s\nFUSE_VERSION=%s\nORCH_PORT=%d\nFC_AGENT_PORT=%d\nPUBLIC_HOST=auto\n",
+		applianceDir, s.fcAgentToken, s.orchAuthToken, localReleaseVersion(), localOrchPort, localAgentPort)
+}
+
+// applianceTar packs the embedded stack files and the env file into one tar,
+// so a single ssh call refreshes them all.
+func applianceTar(s *localState) ([]byte, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	files := append(localAssets(), localAsset{"env", []byte(applianceEnv(s)), 0o600})
+	for _, f := range files {
+		hdr := &tar.Header{Name: f.name, Mode: int64(f.mode), Size: int64(len(f.data)), ModTime: time.Now()}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return nil, err
+		}
+		if _, err := tw.Write(f.data); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// pushApplianceFiles writes the stack files into the appliance. it runs on
+// every up, before install and start, so the appliance always runs what this
+// cli embeds; start then restarts an fc-agent whose code changed.
+func pushApplianceFiles(s *localState, ip string) error {
+	data, err := applianceTar(s)
+	if err != nil {
+		return err
+	}
+	push := append(applianceSSHArgs(s, ip),
+		"sudo mkdir -p "+applianceDir+" && sudo tar -xf - -C "+applianceDir)
+	cmd := exec.Command("ssh", push...)
+	cmd.Stdin = bytes.NewReader(data)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("push stack files into the appliance: %w: %s", err, out)
+	}
+	return nil
 }
 
 func vfkitRunning(s *localState) bool {
@@ -504,8 +519,8 @@ func applianceSSHArgs(s *localState, ip string) []string {
 }
 
 // applianceSetup runs the embedded setup script inside the appliance with the
-// env file cloud-init wrote, streaming output through so downloads are
-// visible.
+// env file pushApplianceFiles wrote, streaming output through so downloads
+// are visible.
 func applianceSetup(s *localState, ip, subcommand string) error {
 	remote := fmt.Sprintf(
 		"sudo bash -c 'set -a; . %s/env; set +a; bash %s/fuse-local-setup.sh %s'",
