@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/folsomintel/fuse/compare/v1.0.0...v1.1.0) (2026-11-19)
+
+
+### Features
+
+* make vms resumed from one snapshot unique with the 6.1 guest kernel, clock_realtime and live token reload ([#428](https://github.com/folsomintel/fuse/issues/428)) ([74a1dc1](https://github.com/folsomintel/fuse/commit/74a1dc1fe475caf614cb03dee85c3c473388cebf))
+
+
+### Bug Fixes
+
+* give each image convert attempt its own watch, write its outcome event once and wait on the pinned host ([#430](https://github.com/folsomintel/fuse/issues/430)) ([006b108](https://github.com/folsomintel/fuse/commit/006b108ccd051d5ca1d2b7f0b273224efeac0254))
+* run image convert as a keyed operation and let a failed keyed call run again ([#429](https://github.com/folsomintel/fuse/issues/429)) ([91f9326](https://github.com/folsomintel/fuse/commit/91f93265155a5fe4d7365de20b5377fc193ea361))
+
 ## [1.0.0](https://github.com/folsomintel/fuse/compare/v0.47.0...v1.0.0) (2026-11-19)
 
 
