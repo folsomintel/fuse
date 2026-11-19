@@ -74,8 +74,8 @@ jobs:
             open one pull request per area. if $FOCUS is set, only handle that area.
 
             1. collect alerts with gh (GH_TOKEN is set):
-               - gh api 'repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100'
-               - gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100'
+               - gh api --paginate 'repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100'
+               - gh api --paginate 'repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100'
             pr calls go through rest only (gh api). gh pr list/create/edit use
             graphql, which needs read:org, and the token does not have it.
 
