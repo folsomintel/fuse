@@ -63,6 +63,10 @@ type config struct {
 	// orchestrator on every boot. reported on /v1/info; fused never acts on
 	// it, because enforcement lives on the host's tap and not in the guest.
 	egress string
+
+	// reloadStatus is where each SIGHUP's outcome is written, "ok" or
+	// "error: ...", for the orchestrator's reload command to read back.
+	reloadStatus string
 }
 
 func parseFlags() config {
@@ -80,6 +84,7 @@ func parseFlags() config {
 	flag.StringVar(&c.healthState, "health-state", "/fuse/health.json", "path to write the healthcheck verdict for the orchestrator to read")
 	flag.StringVar(&c.display, "display", ":1", "X display the computer routes drive (desktop images only)")
 	flag.StringVar(&c.desktop, "desktop", "/fuse/desktop.json", "path to the declared desktop geometry (absent means the image default)")
+	flag.StringVar(&c.reloadStatus, "reload-status", "/run/fused-reload", "path to write each credential reload's outcome to")
 	flag.StringVar(&c.egress, "egress", "/etc/fuse/egress.json", "path to the environment's egress policy (absent means an orchestrator that predates it)")
 	flag.BoolVar(&c.insecure, "insecure", false, "run without TLS/auth (dev only)")
 	flag.BoolVar(&c.showVersion, "version", false, "print version and exit")
@@ -147,11 +152,15 @@ func main() {
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
-			if err := creds.reload(); err != nil {
+			err := creds.reload()
+			if err != nil {
 				log.Printf("reload credentials, keeping the old ones: %v", err)
-				continue
+			} else {
+				log.Print("credentials reloaded")
 			}
-			log.Print("credentials reloaded")
+			if werr := writeReloadStatus(c.reloadStatus, err); werr != nil {
+				log.Printf("write reload status: %v", werr)
+			}
 		}
 	}()
 
@@ -260,6 +269,23 @@ func readEgress(path string) map[string]any {
 		return map[string]any{"error": "egress policy file is not valid json"}
 	}
 	return doc
+}
+
+// writeReloadStatus records a reload's outcome at path, renamed into place so
+// a reader never sees half of it.
+func writeReloadStatus(path string, reloadErr error) error {
+	if path == "" {
+		return nil
+	}
+	body := "ok\n"
+	if reloadErr != nil {
+		body = "error: " + reloadErr.Error() + "\n"
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // fileNonEmpty reports whether path exists and has non-zero size.

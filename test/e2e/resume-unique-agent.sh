@@ -30,7 +30,17 @@ VM=""
 SNAP=""
 
 # keep in step with fusedReloadCommand in internal/orchestrator/agent_profile.go.
-RELOAD='systemctl kill -s HUP --kill-whom=main fused; sleep 0.5; systemctl is-active -q fused || systemctl restart fused'
+RELOAD='rm -f /run/fused-reload
+systemctl kill -s HUP --kill-whom=main fused || exit 1
+i=0
+while [ ! -e /run/fused-reload ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+if [ -e /run/fused-reload ]; then
+  grep -qx ok /run/fused-reload && exit 0
+  cat /run/fused-reload >&2
+  exit 1
+fi
+if systemctl is-active -q fused; then echo "fused did not report the reload" >&2; exit 1; fi
+systemctl restart fused && sleep 0.5 && systemctl is-active -q fused'
 
 PASS=0; FAIL=0
 FAILED_CASES=()

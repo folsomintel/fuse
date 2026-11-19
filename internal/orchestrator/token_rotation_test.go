@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -273,5 +274,13 @@ func TestRotateTokenUpload_reloadsAgent(t *testing.T) {
 	// its own per attempt or the first attempt's failed exit is replayed.
 	if len(env.execParts) != 2 || env.execParts[0] == "" || env.execParts[0] == env.execParts[1] {
 		t.Fatalf("reload idempotency parts %q, want a distinct one per attempt", env.execParts)
+	}
+}
+
+// TestFusedReloadCommand_parses: the reload runs through sh -c in the guest,
+// so a syntax slip would fail every rotation.
+func TestFusedReloadCommand_parses(t *testing.T) {
+	if out, err := exec.Command("sh", "-n", "-c", fusedReloadCommand).CombinedOutput(); err != nil {
+		t.Fatalf("sh -n: %v: %s", err, out)
 	}
 }

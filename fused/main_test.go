@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -112,5 +113,21 @@ func TestHandler_InfoOpenWhenNoToken(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("/v1/info (no auth configured) = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestWriteReloadStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fused-reload")
+	if err := writeReloadStatus(path, nil); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "ok\n" {
+		t.Fatalf("status after a good reload = %q, want ok", b)
+	}
+	if err := writeReloadStatus(path, errors.New("auth token file is empty")); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(path); string(b) != "error: auth token file is empty\n" {
+		t.Fatalf("status after a failed reload = %q", b)
 	}
 }
