@@ -5,9 +5,9 @@ sidebar:
 description: Idempotency keys, long-running calls, and the operations service
 ---
 
-Seven calls run on the orchestrator as operations: `environments.create`,
-`destroy`, `fork`, `migrate` and `drain`, and `snapshots.create` and
-`restore`. The server waits for the operation up to its attach bound (10
+Eight calls run on the orchestrator as operations: `environments.create`,
+`destroy`, `fork`, `migrate` and `drain`, `snapshots.create` and `restore`,
+and `images.convert`. The server waits for the operation up to its attach bound (10
 seconds below its `-write-timeout`, so 50s by default) and answers as it
 always has. One that outlasts the bound is answered with a `202` and an
 operation id, and the SDK follows it until it finishes. Either way the method
@@ -16,7 +16,7 @@ changes.
 
 ## Idempotency keys
 
-The trailing options of those seven methods are `MutatingCallOptions`:
+The trailing options of those eight methods are `MutatingCallOptions`:
 
 ```ts
 interface MutatingCallOptions extends CallOptions {
@@ -53,12 +53,12 @@ API keys never collide. The same key with a different request (another
 method, path, action or body) is a `409` `conflict` whose
 `details.reason` is `idempotency_key_reused`, with the first call's id in
 `details.operation_id`. A finished operation is kept for 24 hours; one that
-finished with a 5xx is not kept at all, so its retry runs again. Keys live in
-the orchestrator's memory and an orchestrator restart forgets them, except
-that the key of a destroy, snapshot or restore is also the restate invocation's idempotency
-key, so a retry after a restart attaches to the same invocation. A destroy
-that already finished is the exception: its vm is gone, so that retry answers
-404.
+finished with a 5xx is not kept at all, so its retry runs again, as a new
+restate invocation rather than a replay of the failed one. Keys live in the
+orchestrator's memory and an orchestrator restart forgets them, except that the
+key also names the operation's restate invocation, so a retry after a restart
+attaches to the same invocation. A destroy that already finished is the
+exception: its vm is gone, so that retry answers 404.
 
 ## Following an accepted operation
 
@@ -139,8 +139,8 @@ const OperationState = {
 } as const;
 ```
 
-- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore` or
-  `drain`.
+- `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore`,
+  `drain` or `image.convert`.
 - `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
 - `step` is the step the operation last reported starting. No operation
   reports one now (every operation runs on restate, whose steps show in the
@@ -148,4 +148,5 @@ const OperationState = {
 - `status_code`, with `result` on success or `error` on failure, is what the
   call itself would have answered. `result` is the response body: an
   `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
-  snapshot, and absent for destroy and restore.
+  snapshot, an `Image` for image.convert (with `status_code` 202), and absent
+  for destroy and restore.

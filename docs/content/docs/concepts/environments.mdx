@@ -91,8 +91,9 @@ fuse environment destroy <id>    # tear down (phase 2, or from any state)
 
 ## Long operations and retries
 
-Create, destroy, fork, migrate, drain, snapshot create and snapshot restore
-run on the orchestrator as **operations**, off the request that started them.
+Create, destroy, fork, migrate, drain, snapshot create, snapshot restore and
+image convert run on the orchestrator as **operations**, off the request that
+started them.
 The request waits for its operation up to the server's attach bound, 10
 seconds below its `-write-timeout` (50s by default), and answers as it always
 has when the operation finishes in time. One that takes longer, a cold boot
@@ -123,13 +124,13 @@ call that cannot provision a second environment. The rules:
 - The same key with a different request is a `409` `conflict`,
   `details.reason` `idempotency_key_reused`.
 - A finished operation and its key are kept for 24 hours. One that finished
-  with a 5xx is not kept, so its retry runs again.
+  with a 5xx is not kept, so its retry runs again, as a new restate invocation
+  rather than a replay of the failed one.
 - Operations and keys live in the orchestrator's memory, and a restart forgets
-  them. A create, destroy, snapshot, restore or migrate also hands the key to restate as the
-  invocation's idempotency key, so a retry after a restart still attaches to
-  the same invocation. A destroy or migrate that already finished is the
-  exception: the vm it acted on is gone, so that retry answers `404`. Fork and
-  drain have no such fallback.
+  them. Every operation also hands the key to restate as its invocation's
+  idempotency key, so a retry after a restart still attaches to the same
+  invocation. A destroy or migrate that already finished is the exception: the
+  vm it acted on is gone, so that retry answers `404`.
 
 The SDKs send a random key on every call and take your own for retries:
 `WithIdempotencyKey` in [Go](/reference/go/operations), `idempotencyKey` in
