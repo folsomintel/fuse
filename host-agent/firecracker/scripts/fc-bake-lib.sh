@@ -156,9 +156,12 @@ bake_inject_common() {
   fi
 
   log "download podman-static $PODMAN_STATIC_VERSION (cached)"
-  bake_fetch "$PODMAN_STATIC_URL" "$work/podman-static.tgz"
+  # the cache name carries version and arch, so a work dir left by an older
+  # or other-arch bake never hands this one the wrong binaries.
+  local podman_tgz="$work/podman-static-$PODMAN_STATIC_VERSION-$PODMAN_STATIC_ARCH.tgz"
+  bake_fetch "$PODMAN_STATIC_URL" "$podman_tgz"
   log "inject podman-static"
-  bake_untar "$root" "$work/podman-static.tgz" "$work/podman-static.stage" 1
+  bake_untar "$root" "$podman_tgz" "$work/podman-static.stage" 1
 
   log "enable podman.socket (docker-compose needs the API)"
   bake_mkdir "$root" /etc/systemd/system/sockets.target.wants
@@ -166,10 +169,11 @@ bake_inject_common() {
     /etc/systemd/system/sockets.target.wants/podman.socket
 
   log "download docker-compose $DOCKER_COMPOSE_VERSION (cached)"
-  bake_fetch "$DOCKER_COMPOSE_URL" "$work/docker-compose"
+  local compose_bin="$work/docker-compose-$DOCKER_COMPOSE_VERSION-$DOCKER_COMPOSE_ARCH"
+  bake_fetch "$DOCKER_COMPOSE_URL" "$compose_bin"
   log "inject docker-compose as podman compose provider"
   bake_mkdir "$root" /usr/libexec/docker/cli-plugins
-  sudo -n install -m 0755 "$work/docker-compose" \
+  sudo -n install -m 0755 "$compose_bin" \
     "$(bake_path "$root" /usr/libexec/docker/cli-plugins/docker-compose)"
   bake_ln "$root" /usr/libexec/docker/cli-plugins/docker-compose \
     /usr/local/bin/docker-compose
