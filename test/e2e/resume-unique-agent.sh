@@ -3,7 +3,8 @@
 #
 # like live-snapshot-agent.sh this talks to fc-agent directly, not through
 # the orchestrator, and needs a host on the 6.1 guest kernel (fc-install.sh's
-# default; a host that still has the 5.10 vmlinux.bin fails the vmgenid case).
+# default). 5.10 only reseeds from vmgenid in kernels from 5.18 on, so a host
+# still on the 5.10 vmlinux.bin can fail the urandom case.
 #
 #   FC_AGENT_URL=http://<host>:9000 FC_AGENT_TOKEN=<token> ./test/e2e/resume-unique-agent.sh
 #

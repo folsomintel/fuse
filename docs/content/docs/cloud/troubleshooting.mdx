@@ -73,7 +73,8 @@ for exactly what should be present afterward.
 Symptom: the bake or an in-guest `podman run` fails with a netavark error
 referencing nftables or `-m comment`.
 
-Cause: the Firecracker CI kernel (`vmlinux-5.10.223`) ships without
+Cause: the Firecracker CI kernels (`vmlinux-6.1.155`, the default, and
+`vmlinux-5.10.223`) ship without
 `CONFIG_NETFILTER_XT_MATCH_COMMENT`, `CONFIG_FUSE_FS`, or `CONFIG_NF_TABLES`.
 Netavark unconditionally emits `-m comment` rules and fails without them.
 

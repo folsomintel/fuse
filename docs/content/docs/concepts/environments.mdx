@@ -184,9 +184,7 @@ orchestrator, all without recreating the VM.
 Rotation requires the environment to be **running**. The new token is sealed with
 the orchestrator's `TOKEN_ENCRYPTION_KEY`, which every orchestrator now starts with.
 
-:::warning[Known limitation]
-Rotation does **not** take effect inside a running guest. `fused` reads its auth
-token exactly once at process start and has no credential poller, so it keeps serving
-the old token until it is restarted. Treat rotate-token as updating the stored and
-on-disk copies, not as a way to revoke a leaked token.
-:::
+Rotation takes effect in the running guest: after the files are written the
+orchestrator sends `fused` a `SIGHUP`, and it rereads its token and TLS certificate
+in place. The old token is refused from the next request. Connections already open
+keep the old certificate until they reconnect.
