@@ -235,3 +235,38 @@ func TestRotateTokenUpload_stableOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestRotateTokenUpload_reloadsAgent: the upload ends by signalling fused to
+// reread the files, and a guest where that fails fails the step, so the
+// handle never moves to a token the agent does not serve.
+func TestRotateTokenUpload_reloadsAgent(t *testing.T) {
+	fm, provider, _, vmID := newRotateTestFleet(t)
+	env := provider.envs[vmID]
+	ctx := context.Background()
+	rotated, err := fm.RotateTokenGenerate(ctx, vmID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := env.Token()
+
+	env.execExit = 1
+	if err := fm.RotateTokenUpload(ctx, vmID, rotated); err == nil {
+		t.Fatal("upload succeeded with a reload that failed")
+	}
+	if env.Token() != old {
+		t.Fatal("handle moved to the new token although the agent was not reloaded")
+	}
+
+	env.execCalls = nil
+	env.execExit = 0
+	if err := fm.RotateTokenUpload(ctx, vmID, rotated); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"sh", "-c", fusedReloadCommand}
+	if len(env.execCalls) != 1 || !slices.Equal(env.execCalls[0], want) {
+		t.Fatalf("exec calls %v, want one reload", env.execCalls)
+	}
+	if env.Token() == old {
+		t.Fatal("handle kept the old token after the reload")
+	}
+}

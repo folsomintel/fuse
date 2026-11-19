@@ -154,7 +154,7 @@ func TestStreamSplicesBothDirections(t *testing.T) {
 }
 
 func TestStreamRouteRequiresToken(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", display: ":1"}, "secret-token", nil, 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", display: ":1"}, newCredentials("secret-token"), nil, 0, false, nil))
 	defer srv.Close()
 	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/computer/stream", nil)
 	if err != nil {

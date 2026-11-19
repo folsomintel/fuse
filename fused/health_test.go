@@ -273,7 +273,7 @@ func TestHealthRouteCarriesVerdict(t *testing.T) {
 	p := newProber(t, 1, 0)
 	p.record(time.Now(), errors.New("connection refused"))
 
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "", nil, 0, false, p))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials(""), nil, 0, false, p))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/health")
@@ -302,7 +302,7 @@ func TestHealthRouteCarriesVerdict(t *testing.T) {
 // with no probe declared the field is absent, so a client can tell "no
 // healthcheck" from "a healthcheck that has not reported yet".
 func TestHealthRouteOmitsVerdictWithoutAProbe(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, "", nil, 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials(""), nil, 0, false, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/health")

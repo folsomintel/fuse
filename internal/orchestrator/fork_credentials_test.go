@@ -25,6 +25,11 @@ type credForkEnv struct {
 	authToken       string
 	startAgentCalls []AgentSpec
 
+	// execCalls records every command run in the guest, and execExit is the
+	// exit code they report.
+	execCalls [][]string
+	execExit  int
+
 	// uploadedPaths records what was written into this guest over the wire,
 	// as opposed to what it inherited from the source's disk. The two are
 	// indistinguishable in files, since CreateFromCheckpoint seeds it.
@@ -49,8 +54,11 @@ func (e *credForkEnv) SetToken(token string) {
 	e.authToken = token
 }
 
-func (e *credForkEnv) Exec(context.Context, []string, ExecOptions) (ExecResult, error) {
-	return ExecResult{}, nil
+func (e *credForkEnv) Exec(_ context.Context, cmd []string, _ ExecOptions) (ExecResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.execCalls = append(e.execCalls, cmd)
+	return ExecResult{ExitCode: e.execExit}, nil
 }
 func (e *credForkEnv) ExecStream(context.Context, io.Writer, io.Writer, string, ...string) error {
 	return nil

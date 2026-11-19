@@ -581,8 +581,8 @@ func (fm *FleetManager) MigrateStartAgent(ctx context.Context, plan MigratePlan,
 }
 
 // restartCloneAgent restarts a clone's guest agent with its own credentials
-// and tunnel: fused reads its token once at start, so the uploaded files only
-// take effect on a restart. on a fleet with no encryption key it only
+// and tunnel. fused rereads its token and certificate on SIGHUP, but a clone
+// also needs its own --vm-id and tunnel unit, which only a restart applies. on a fleet with no encryption key it only
 // restarts it onto the vm's own tunnel (see retunnelWithoutCredentials), and
 // leaves an unpublished vm's agent alone.
 func (fm *FleetManager) restartCloneAgent(ctx context.Context, env Environment, vmID, what string, started MigrateStarted) error {

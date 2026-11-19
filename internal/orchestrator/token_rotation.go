@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -157,8 +158,8 @@ func (fm *FleetManager) RotateTokenGenerate(_ context.Context, vmID string) (Rot
 
 // RotateTokenUpload writes the credential files (cert, key, auth token) into
 // the guest, at the paths the agent profile owns (fusedCredentialFiles). the
-// same files are written in the same order on every attempt, so a retry is
-// harmless.
+// same files are written in the same order on every attempt, then fused is
+// signalled to reread them, so a retry is harmless.
 func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rotated RotatedCredentials) error {
 	env, err := fm.rotateTarget(vmID)
 	if err != nil {
@@ -182,6 +183,15 @@ func (fm *FleetManager) RotateTokenUpload(ctx context.Context, vmID string, rota
 		if err := env.Upload(ctx, files[path], path); err != nil {
 			return fmt.Errorf("upload credentials: upload %s: %w", path, err)
 		}
+	}
+	// fused holds its credentials in memory, so the files only take effect
+	// once it rereads them.
+	res, err := env.Exec(ctx, []string{"sh", "-c", fusedReloadCommand}, ExecOptions{Timeout: 30 * time.Second})
+	if err != nil {
+		return fmt.Errorf("reload guest agent credentials: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("reload guest agent credentials: exit %d: %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
 	setTokenIfSupported(env, creds)
 	return nil

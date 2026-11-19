@@ -65,6 +65,13 @@ const fuseAgentBinaryPath = "/usr/local/bin/fused"
 // helper hidden behind `|| true`) would defeat that.
 const DefaultFusedDrainCommand = "systemctl stop fused 2>/dev/null || pkill -TERM fused"
 
+// fusedReloadCommand makes fused reread its credential files (SIGHUP) after
+// new ones were uploaded. a fused that predates the handler exits on the
+// signal instead, and systemd counts SIGHUP as a clean stop and does not
+// restart it, so an agent that is no longer active is restarted onto the
+// same files.
+const fusedReloadCommand = "systemctl kill -s HUP --kill-whom=main fused; sleep 0.5; systemctl is-active -q fused || systemctl restart fused"
+
 // DefaultFusedManifest is the fused profile's default compiled manifest, used
 // by the API when a caller omits an inline manifest. It encodes the fused
 // manifest schema and is profile data, not a generic core default.

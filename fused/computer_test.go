@@ -356,7 +356,7 @@ func TestComputerDisplayRouteReportsGeometry(t *testing.T) {
 }
 
 func TestComputerRoutesRequireToken(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", display: ":1"}, "secret-token", nil, 0, false, nil))
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", display: ":1"}, newCredentials("secret-token"), nil, 0, false, nil))
 	defer srv.Close()
 	for _, path := range []string{"/v1/computer/action", "/v1/computer/screenshot", "/v1/computer/display"} {
 		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(`{}`))
