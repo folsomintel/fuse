@@ -17,6 +17,7 @@ convert.
 ```ts
 convert(req: ConvertImageRequest, opts?: MutatingCallOptions): Promise<Image>
 get(digest: string, opts?: CallOptions): Promise<Image>
+getOnHost(hostId: string, digest: string, opts?: CallOptions): Promise<Image>
 ```
 
 `convert` sends `POST /v1/images` and resolves at once with the image (a
@@ -36,6 +37,13 @@ evicted image reads as not found again until it is converted again.
 usable record wins: ready, then converting, then failed. An unknown digest
 rejects with a `FuseApiError` whose `code` is `not_found`. There is no `wait`:
 poll `get` until `state` is no longer `converting`.
+
+`getOnHost` reads one host's record (`GET /v1/hosts/{hostId}/images/{digest}`).
+To wait on a convert pinned with `host_id`, `region` or `labels`, poll it with
+the `host_id` the convert returned: `get` could resolve with another host's
+ready record while the pinned host is still converting. An unknown host, or a
+host without the digest, rejects with `not_found`; a QEMU host rejects with
+`invalid_argument`.
 
 ```ts
 import { ImageState } from "@folsom/fuse";

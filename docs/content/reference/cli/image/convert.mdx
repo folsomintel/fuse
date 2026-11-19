@@ -14,7 +14,13 @@ Sends [`POST /v1/images`](/reference/api) for `<ref>`. The orchestrator picks
 an active Firecracker host (the one `--host` names, or one in `--region`
 matching every `--label`), which resolves the ref to the manifest for its arch and bakes it
 into a rootfs in the background. The command then polls the image every 2
-seconds until it leaves `converting`, and prints it.
+seconds until it leaves `converting`, and prints it. With `--host`, `--region`
+or `--label` it polls the record on the host the convert landed on
+(`GET /v1/hosts/{hostId}/images/{digest}`), so the same image ready on another
+host does not end the wait while this one is still converting. Without them it
+polls `GET /v1/images/{digest}`, which answers with the best record of any
+host. Against an orchestrator older than the host-scoped route, a pinned
+convert falls back to that fleet-wide read.
 
 `<ref>` is an OCI reference: an optional registry host (with port), a
 lowercase repository path, an optional tag and an optional `@sha256:` digest,
