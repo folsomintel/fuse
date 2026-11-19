@@ -55,23 +55,34 @@ func loadCredentials(tokenFile, certFile, keyFile string, useTLS bool) (*credent
 // reload rereads the files fused started with. a file that cannot be read,
 // or a token file that is now empty, keeps the old value: a half-written
 // upload must not drop the agent to unauthenticated or kill tls.
+//
+// every file is read and checked before either value is swapped, so a
+// failure keeps the token and certificate as a matching pair.
 func (c *credentials) reload() error {
+	var token *string
 	if c.tokenFile != "" {
-		token, err := readToken(c.tokenFile)
+		t, err := readToken(c.tokenFile)
 		if err != nil {
 			return err
 		}
-		if token == "" {
+		if t == "" {
 			return fmt.Errorf("auth token file %s is empty", c.tokenFile)
 		}
-		c.token.Store(&token)
+		token = &t
 	}
+	var cert *tls.Certificate
 	if c.certFile != "" {
-		cert, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
+		pair, err := tls.LoadX509KeyPair(c.certFile, c.keyFile)
 		if err != nil {
 			return fmt.Errorf("load tls key pair: %w", err)
 		}
-		c.cert.Store(&cert)
+		cert = &pair
+	}
+	if token != nil {
+		c.token.Store(token)
+	}
+	if cert != nil {
+		c.cert.Store(cert)
 	}
 	return nil
 }

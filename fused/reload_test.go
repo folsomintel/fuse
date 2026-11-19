@@ -89,6 +89,18 @@ func TestCredentialsReloadKeepsOldOnBadFiles(t *testing.T) {
 	if cert, _ := c.getCertificate(nil); cert == nil {
 		t.Fatal("certificate dropped on a failed reload")
 	}
+
+	// a new token beside a broken key is not taken either: the old token and
+	// certificate stay together.
+	if err := os.WriteFile(tokenFile, []byte("new-token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.reload(); err == nil {
+		t.Fatal("reload with a new token and a bad key succeeded")
+	}
+	if c.authToken() != creds.AuthToken {
+		t.Fatalf("token = %q after a reload that failed on the key, want the old one", c.authToken())
+	}
 }
 
 func TestProtectReadsTokenPerRequest(t *testing.T) {
