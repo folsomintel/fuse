@@ -155,6 +155,40 @@ func (fm *FleetManager) GetImage(ctx context.Context, digest string) (Image, err
 	return found[0], nil
 }
 
+// GetHostImage returns hostID's own record of digest. GetImage answers with
+// the best record of any host, so a wait on a convert pinned to one host
+// reads this instead: another host's ready record says nothing about the
+// pinned one. a cordoned or draining host is still asked, since its bake
+// keeps running.
+func (fm *FleetManager) GetHostImage(ctx context.Context, hostID, digest string) (Image, error) {
+	if !ValidImageDigest(digest) {
+		return Image{}, fmt.Errorf("%w: digest %q is not a hex sha256", ErrInvalidImage, digest)
+	}
+	fm.mu.RLock()
+	h, registered := fm.hosts[hostID]
+	firecracker := registered && isFirecracker(h)
+	p, hasProvider := fm.providerForHost(hostID)
+	fm.mu.RUnlock()
+	if !registered {
+		return Image{}, fmt.Errorf("%w: host %q is not registered", ErrHostNotFound, hostID)
+	}
+	conv, isConv := p.(ImageConverter)
+	if !firecracker || !hasProvider || !isConv {
+		return Image{}, fmt.Errorf("%w: host %s cannot convert oci images; only firecracker hosts hold them", ErrImageUnsupported, hostID)
+	}
+	cctx, cancel := context.WithTimeout(ctx, imageGetTimeout)
+	defer cancel()
+	img, err := conv.GetImage(cctx, digest)
+	switch {
+	case IsNotFound(err):
+		return Image{}, fmt.Errorf("%w: %s on host %s", ErrImageNotFound, digest, hostID)
+	case err != nil:
+		return Image{}, fmt.Errorf("%w: host %s: %v", ErrImageHostFailed, hostID, err)
+	}
+	img.HostID = hostID
+	return img, nil
+}
+
 // resolveImage turns a create's spec.ImageDigest into the rootfs to boot and
 // the host to boot it on: a host where the image is ready. a spec pinned
 // with HostID only looks there. it is a no-op for a spec without a digest,

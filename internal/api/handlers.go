@@ -271,6 +271,9 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/hosts/{hostId}", h.getHost)
 	r.Post("/v1/hosts/{hostId}", h.hostAction)
 	r.Delete("/v1/hosts/{hostId}", h.removeHost)
+	// one host's record of an image, for a convert pinned to that host. see
+	// host_images.go.
+	r.Get("/v1/hosts/{hostId}/images/{digest}", h.getHostImage)
 
 	// Operations are the mutating routes above run past their own request:
 	// create, destroy, fork, migrate, snapshot, restore and drain. See

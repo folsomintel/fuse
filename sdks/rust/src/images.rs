@@ -50,4 +50,20 @@ impl Images {
             .send_json(self.t.request(Method::GET, &["v1", "images", digest]))
             .await
     }
+
+    /// Reports one host's record of an image. [`get`](Self::get) answers
+    /// with the best record of any host, so to wait on a convert pinned to a
+    /// host (`host_id`, `region` or `labels`), poll this with the `host_id`
+    /// the convert returned: another host's ready record says nothing about
+    /// the pinned one.
+    pub async fn get_on_host(&self, host_id: &str, digest: &str) -> Result<Image, Error> {
+        require(host_id, "host id")?;
+        require(digest, "image digest")?;
+        self.t
+            .send_json(
+                self.t
+                    .request(Method::GET, &["v1", "hosts", host_id, "images", digest]),
+            )
+            .await
+    }
 }

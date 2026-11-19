@@ -37,4 +37,24 @@ export class ImagesService {
       signal: opts.signal,
     });
   }
+
+  /**
+   * Report one host's record of an image. get answers with the best record
+   * of any host, so to wait on a convert pinned to a host (hostId, region or
+   * labels), poll getOnHost with the host_id the convert returned: another
+   * host's ready record says nothing about the pinned one.
+   */
+  async getOnHost(
+    hostId: string,
+    digest: string,
+    opts: CallOptions = {},
+  ): Promise<Image> {
+    requireArg(hostId, "host id");
+    requireArg(digest, "image digest");
+    return this.t.json<Image>(
+      "GET",
+      `/v1/hosts/${encodeURIComponent(hostId)}/images/${encodeURIComponent(digest)}`,
+      { signal: opts.signal },
+    );
+  }
 }

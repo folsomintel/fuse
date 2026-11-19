@@ -178,6 +178,52 @@ func TestGetImagePrefersReady(t *testing.T) {
 	}
 }
 
+// TestGetHostImage: a host-scoped read answers with that host's own record,
+// not the best one in the fleet, so a convert pinned to a host that is still
+// converting does not read as ready because another host has it.
+func TestGetHostImage(t *testing.T) {
+	d := digestOf("a")
+	fc2 := newImageProvider(Image{Digest: d, State: ImageConverting})
+	fm := imageFleet(t, map[string]Provider{
+		"fc-1":   newImageProvider(Image{Digest: d, State: ImageReady, Name: "oci-a"}),
+		"fc-2":   fc2,
+		"qemu-1": newImageProvider(),
+	}, map[string]HostBackend{"qemu-1": BackendQEMU})
+	ctx := context.Background()
+
+	if img, err := fm.GetImage(ctx, d); err != nil || img.HostID != "fc-1" || img.State != ImageReady {
+		t.Fatalf("GetImage = %+v, %v; want ready on fc-1", img, err)
+	}
+	img, err := fm.GetHostImage(ctx, "fc-2", d)
+	if err != nil || img.HostID != "fc-2" || img.State != ImageConverting {
+		t.Fatalf("GetHostImage(fc-2) = %+v, %v; want converting on fc-2", img, err)
+	}
+	if err := fm.CordonHost(ctx, "fc-2"); err != nil {
+		t.Fatal(err)
+	}
+	if img, err := fm.GetHostImage(ctx, "fc-2", d); err != nil || img.State != ImageConverting {
+		t.Fatalf("GetHostImage on a cordoned host = %+v, %v; want its record", img, err)
+	}
+
+	for _, c := range []struct {
+		host, digest string
+		want         error
+	}{
+		{"fc-1", digestOf("b"), ErrImageNotFound},
+		{"fc-1", "sha256:x", ErrInvalidImage},
+		{"gone", d, ErrHostNotFound},
+		{"qemu-1", d, ErrImageUnsupported},
+	} {
+		if _, err := fm.GetHostImage(ctx, c.host, c.digest); !errors.Is(err, c.want) {
+			t.Fatalf("GetHostImage(%s, %s) = %v, want %v", c.host, c.digest, err, c.want)
+		}
+	}
+	fc2.getErr = errors.New("connection refused")
+	if _, err := fm.GetHostImage(ctx, "fc-2", d); !errors.Is(err, ErrImageHostFailed) {
+		t.Fatalf("unreachable host: err = %v, want ErrImageHostFailed", err)
+	}
+}
+
 // create boots the converted rootfs on the host it is ready on, and refuses
 // a digest that is not ready anywhere it could land.
 func TestCreateFromImageDigest(t *testing.T) {

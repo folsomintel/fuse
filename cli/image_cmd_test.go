@@ -37,7 +37,9 @@ func (s *imageServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&s.convert)
 		w.WriteHeader(http.StatusAccepted)
 		fmt.Fprint(w, image("converting", ""))
-	case r.Method == http.MethodGet && r.URL.Path == "/v1/images/"+testImageDigest:
+	// the Fusefile pins the convert to fc-1, so the wait reads that host's
+	// record.
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/hosts/fc-1/images/"+testImageDigest:
 		s.polls++
 		switch {
 		case s.polls < 2:

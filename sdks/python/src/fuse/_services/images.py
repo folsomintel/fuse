@@ -39,3 +39,19 @@ class ImagesService:
             raise ValueError("image digest is required")
         resp = self._t.request("GET", f"/v1/images/{quote(digest, safe='')}")
         return Image.model_validate(resp.json())
+
+    def get_on_host(self, host_id: str, digest: str) -> Image:
+        # reports one host's record of an image. get answers with the best
+        # record of any host, so to wait on a convert pinned to a host
+        # (host_id, region or labels), poll get_on_host with the host_id the
+        # convert returned: another host's ready record says nothing about
+        # the pinned one.
+        if not host_id:
+            raise ValueError("host id is required")
+        if not digest:
+            raise ValueError("image digest is required")
+        resp = self._t.request(
+            "GET",
+            f"/v1/hosts/{quote(host_id, safe='')}/images/{quote(digest, safe='')}",
+        )
+        return Image.model_validate(resp.json())

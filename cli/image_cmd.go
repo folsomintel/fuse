@@ -123,13 +123,14 @@ func convertImage(ctx context.Context, cl *fuse.Client, req fuse.ConvertImageReq
 	if img.State == fuse.ImageConverting {
 		infof("converting %s on host %s (image %s)", req.Ref, img.HostID, img.Digest)
 	}
+	pinned := req.HostID != "" || req.Region != "" || len(req.Labels) > 0
 	for img.State == fuse.ImageConverting {
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("stopped waiting for image %s; it keeps converting on host %s (fuse image get %s)", img.Digest, img.HostID, img.Digest)
 		case <-time.After(imagePollInterval):
 		}
-		if img, err = cl.Images.Get(ctx, img.Digest); err != nil {
+		if img, err = pollImage(ctx, cl, img, pinned); err != nil {
 			return nil, friendly(err)
 		}
 	}
@@ -138,4 +139,19 @@ func convertImage(ctx context.Context, cl *fuse.Client, req fuse.ConvertImageReq
 	}
 	successf("image %s ready on host %s", req.Ref, img.HostID)
 	return img, nil
+}
+
+// pollImage reads img again. a convert pinned by host, region or labels is
+// read on the host its 202 named, since the fleet-wide read answers with the
+// best record of any host and another host's ready image says nothing about
+// the pinned one. an orchestrator older than the host-scoped route answers
+// route_not_found and gets the fleet-wide read.
+func pollImage(ctx context.Context, cl *fuse.Client, img *fuse.Image, pinned bool) (*fuse.Image, error) {
+	if pinned && img.HostID != "" {
+		got, err := cl.Images.GetOnHost(ctx, img.HostID, img.Digest)
+		if apiErr, ok := fuse.AsAPIError(err); !ok || apiErr.Code != fuse.CodeRouteNotFound {
+			return got, err
+		}
+	}
+	return cl.Images.Get(ctx, img.Digest)
 }
