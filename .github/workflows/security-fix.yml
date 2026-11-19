@@ -1,0 +1,107 @@
+name: Security fix
+
+# weekly sweep of the security tab for what dependabot security updates cannot
+# fix on their own: alerts with no patched version, major bumps that need code
+# changes, dependabot prs whose ci failed, and codeql findings. claude fixes
+# them per area and opens one pr each. it never dismisses alerts.
+#
+# needs two secrets:
+#   ANTHROPIC_API_KEY    claude api key
+#   SECURITY_BOT_TOKEN   classic pat with repo + security_events scope. the
+#                        default GITHUB_TOKEN cannot read dependabot alerts, and
+#                        prs it opens do not trigger ci.
+
+on:
+  schedule:
+    - cron: "0 14 * * 1" # mondays 14:00 utc
+  workflow_dispatch:
+    inputs:
+      focus:
+        description: "optional: limit to one area (go, docs, ts-sdk, py-sdk, rust-sdk, codeql)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-fix
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    name: Fix security alerts
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SECURITY_BOT_TOKEN }}
+
+      # every toolchain the sdks and docs need, so claude can rebuild lockfiles
+      # and run each area's checks before opening a pr.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - uses: astral-sh/setup-uv@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Run claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.SECURITY_BOT_TOKEN }}
+          FOCUS: ${{ inputs.focus }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.SECURITY_BOT_TOKEN }}
+          claude_args: >-
+            --max-turns 150
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(gh:*),Bash(git:*),Bash(go:*),Bash(gofmt:*),Bash(bun:*),Bash(bunx:*),Bash(npm:*),Bash(node:*),Bash(uv:*),Bash(cargo:*),Bash(ls:*),Bash(cat:*),Bash(jq:*)"
+          prompt: |
+            you are the security fix bot for ${{ github.repository }}. fix open
+            security alerts that dependabot security updates did not fix, then
+            open one pull request per area. if $FOCUS is set, only handle that area.
+
+            1. collect alerts with gh (GH_TOKEN is set):
+               - gh api 'repos/${{ github.repository }}/dependabot/alerts?state=open&per_page=100'
+               - gh api 'repos/${{ github.repository }}/code-scanning/alerts?state=open&per_page=100'
+            2. skip an alert if an open pr already fixes it with green ci
+               (gh pr list --state open, check the dependabot/* and fix/security-* branches).
+               a dependabot pr with failing ci is yours to fix: work on a new branch
+               from main, not on the dependabot branch.
+            3. group what is left by area, keyed by manifest path:
+               go       go.mod, sdks/go/go.mod    checks: go build ./... && go vet ./... && go test ./... (root and sdks/go)
+               docs     docs/package-lock.json    checks: cd docs && npm ci && npm run build
+               ts-sdk   sdks/typescript           checks: bun install --frozen-lockfile && bun run lint && bun run test && bun run build
+               py-sdk   sdks/python/uv.lock       checks: uv sync && uv run ruff check src tests && uv run mypy && uv run pytest
+               rust-sdk sdks/rust/Cargo.lock      checks: cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+               codeql   the alert's file          checks: the checks of the area that file belongs to
+               go tests that need a restate-server may fail here; note that in the
+               pr body instead of skipping the area.
+            4. for each area, on branch fix/security-<area> from origin/main:
+               - bump to the lowest version that fixes every alert in the area. for a
+                 transitive dep, bump the direct parent or use the ecosystem's
+                 override (npm overrides, uv constraint-dependencies, go.mod require).
+               - if the bump breaks the build or tests, fix the code. keep changes
+                 minimal and in the style of the surrounding code (lowercase comments).
+               - an alert with no patched version: do not fake a fix. if a
+                 maintained replacement exists and the swap is small, do it;
+                 otherwise list it in the pr body under "not fixed" with why.
+               - run the area's checks. only open a pr if they pass.
+               - commit with a lowercase conventional message, e.g.
+                 "fix(docs): bump hono and astro for security alerts". no
+                 signatures, no co-authored-by lines.
+               - push and open the pr against main. body: one line per alert
+                 (link, package, severity, from -> to), the checks you ran, and
+                 a "not fixed" section if any.
+            5. never dismiss alerts, never merge prs, never push to main, never
+               touch an area with no open alerts.
+            6. end with a short summary: prs opened, alerts left and why.

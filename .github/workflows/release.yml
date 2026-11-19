@@ -168,15 +168,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-          cache-dependency-path: sdks/typescript/package-lock.json
+      - uses: oven-sh/setup-bun@v2
       - name: TS SDK checks
         working-directory: sdks/typescript
         run: |
-          npm ci
-          npm run lint
-          npm run test
-          npm run build
+          bun install --frozen-lockfile
+          bun run lint
+          bun run test
+          bun run build
       - name: Go SDK module checks
         working-directory: sdks/go
         env:
@@ -241,11 +240,13 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
       - run: npm install -g npm@latest
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run test
-      - run: npm run build
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run test
+      - run: bun run build
+      # npm publish stays on npm for oidc trusted publishing + provenance.
       # the tagged commit already carries the right version in package.json.
       - run: npm publish
         env:

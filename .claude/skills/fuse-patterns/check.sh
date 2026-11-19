@@ -42,7 +42,7 @@ fi
 langs_touched=()
 langs_missing=()
 for l in go typescript python rust; do
-  if grep -E "^sdks/$l/" <<<"$CHANGED" | grep -Evq '(CHANGELOG|README|version\.ts|package-lock|Cargo\.lock|uv\.lock|go\.sum)'; then
+  if grep -E "^sdks/$l/" <<<"$CHANGED" | grep -Evq '(CHANGELOG|README|version\.ts|package-lock|bun\.lock|Cargo\.lock|uv\.lock|go\.sum)'; then
     langs_touched+=("$l")
   else
     langs_missing+=("$l")

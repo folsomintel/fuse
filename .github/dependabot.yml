@@ -1,0 +1,85 @@
+# security fixes only. open-pull-requests-limit: 0 turns off routine version
+# bumps; dependabot security updates (enabled in repo settings) still open prs
+# and use the groups below, so each directory gets one pr per run instead of one
+# per alert. alerts dependabot cannot fix (no patched version, breaking major,
+# code changes needed) are picked up by .github/workflows/security-fix.yml.
+version: 2
+
+updates:
+  - package-ecosystem: gomod
+    directories: ["/", "/sdks/go"]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      go-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      docs-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: bun
+    directory: /sdks/typescript
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      ts-sdk-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: uv
+    directory: /sdks/python
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      py-sdk-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /sdks/rust
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      rust-sdk-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: fix
+      include: scope
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
