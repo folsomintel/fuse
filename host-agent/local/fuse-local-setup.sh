@@ -408,7 +408,13 @@ start_stack() {
     log "orchestrator started on :$ORCH_PORT (pid $!)"
   fi
 
-  if running_current fc-agent "fc-agent.py" "$DIR/fc-agent.py" "$DIR/agentlib.py"; then
+  # an image bake runs as fc-agent's child, and a restarted agent marks it
+  # failed while the orphaned bake still holds the image's lock. while any
+  # conversion is in flight, keep the running fc-agent even on old code.
+  if pid_running "$DIR/fc-agent.pid" "fc-agent.py" \
+      && grep -qs '"state": "converting"' "$DIR"/fc/agent-state/images/*.json; then
+    log "fc-agent already running (pid $(cat "$DIR/fc-agent.pid")); not restarting it during an image conversion, run up again once it finishes to load new code"
+  elif running_current fc-agent "fc-agent.py" "$DIR/fc-agent.py" "$DIR/agentlib.py"; then
     log "fc-agent already running (pid $(cat "$DIR/fc-agent.pid"))"
   else
     FC_AGENT_TOKEN="${FC_AGENT_TOKEN:?FC_AGENT_TOKEN is required}" \
