@@ -15,7 +15,8 @@
 #   FUSEFILE=/path/to/Fusefile bash vm-bench.sh
 #   FROM_BUILD=snap-...  bash vm-bench.sh # also benchmark warm boot from this build snapshot
 set -uo pipefail
-export PATH="$PATH:/usr/local/bin"
+# shellcheck source=benchmark/lib.sh
+. "$(dirname "$0")/lib.sh"
 
 N="${N:-10}"
 HOST="${HOST:-fc-1}"
@@ -34,28 +35,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-now()   { date +%s.%N; }
-dt()    { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.3f", b-a}'; }
-
-# extract an env id from `-o json` output, tolerant of field name
-id_of() { jq -r '.id // .environment.id // .vmId // .vm_id // .vm.id // empty' 2>/dev/null; }
-
-# poll until the env reports a running/ready/active state (bounded)
-wait_running() {
-  local id="$1" deadline=$(( $(date +%s) + 180 ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    local s
-    s=$(fuse environment get "$id" -o json 2>/dev/null | jq -r '.state // .status // empty' 2>/dev/null)
-    case "$s" in running|ready|active|RUNNING|READY|ACTIVE) return 0;; esac
-    sleep 0.2
-  done
-  return 1
-}
-
-pct() { # pct <p> <sorted-file>
-  awk -v p="$1" '{a[NR]=$1} END{if(NR==0){print "NA";exit}
-    idx=int((p/100)*NR+0.9999); if(idx<1)idx=1; if(idx>NR)idx=NR; printf "%.3f", a[idx]}' "$2"
-}
 report_row() { # report_row <label> <file>
   local f="$2"; [ -s "$f" ] || { printf "| %-12s | no samples |\n" "$1"; return; }
   sort -n "$f" -o "$f"
