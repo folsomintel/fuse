@@ -371,8 +371,9 @@ the agent's environment.
 ## Networking model
 
 - One network namespace per VM (`fcns<N>`), where `N` is the VM's slot (1 up to
-  `32767 - FUSE_HOST_PORT_BASE`, 13217 with the default base, so agent ports stay
-  below the kernel's ephemeral range that exposed ports are drawn from). Inside it the guest
+  the port below the start of `net.ipv4.ip_local_port_range`, minus
+  `FUSE_HOST_PORT_BASE`: 13217 with the defaults, so agent ports stay below the
+  ephemeral range that exposed ports are drawn from). Inside it the guest
   network is the same for every VM: a TAP `tap0` at `172.16.0.1/30`, the guest at
   `172.16.0.2`, one MAC. That is what lets a live snapshot resume into any free slot,
   and two VMs resume from one snapshot on the same host.

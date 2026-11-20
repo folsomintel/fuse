@@ -140,8 +140,15 @@ class SlotTest(unittest.TestCase):
     def test_the_agent_port_of_the_last_slot_is_a_port(self):
         # below the ephemeral range expose ports are drawn from, so an agent
         # port and an expose dnat can never be handed the same number.
-        self.assertLess(fc_agent.HOST_PORT_BASE + fc_agent.SLOT_MAX, 32768)
-        self.assertEqual(fc_agent.SLOT_MAX, 13217)
+        start = fc_agent._ephemeral_start()
+        self.assertLess(fc_agent.HOST_PORT_BASE + fc_agent.SLOT_MAX, start)
+        if start == 32768:
+            self.assertEqual(fc_agent.SLOT_MAX, 13217)
+
+    def test_a_legacy_guest_network_names_its_own_slot(self):
+        self.assertEqual(fc_agent.legacy_slot(fc_agent.legacy_guest_net(5)), 5)
+        self.assertEqual(fc_agent.legacy_slot(fc_agent.GUEST_NET), 0)
+        self.assertEqual(fc_agent.legacy_slot({**fc_agent.legacy_guest_net(5), "mac": "06:00:AC:10:0c:02"}), 0)
 
 
 class PickIndexTest(unittest.TestCase):

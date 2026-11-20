@@ -377,10 +377,22 @@ def hotplug_regrow(meta: dict) -> None:
 
 NETNS_PREFIX = "fcns"
 GUEST_NET = {"tap": "tap0", "ip": "172.16.0.2", "gw": "172.16.0.1", "mac": "06:00:AC:10:00:02"}
+def _ephemeral_start() -> int:
+    """the first port of the kernel's ephemeral range, which _free_host_port's
+    expose ports come out of. 32768 is the linux default."""
+    try:
+        return int(Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return 32768
+
+
 # slots are 16 bits, but each vm's agent forward listens on HOST_PORT_BASE +
-# slot, and expose ports come out of the kernel's ephemeral range (32768 up,
-# see _free_host_port). the agent ports stop below it, so the two never meet.
-_PORT_CEILING = 32767 if HOST_PORT_BASE < 32767 else 65535
+# slot, and expose ports come out of the ephemeral range. the agent ports
+# stop below it, so the two never meet. a base already inside the range is
+# the operator's choice, and only the port space bounds it.
+_PORT_CEILING = _ephemeral_start() - 1
+if HOST_PORT_BASE >= _PORT_CEILING:
+    _PORT_CEILING = 65535
 SLOT_MAX = min(0xFFFF, _PORT_CEILING - HOST_PORT_BASE)
 
 
@@ -428,6 +440,16 @@ def legacy_guest_net(idx: int) -> dict:
 
 def guest_net_of(meta: dict) -> dict:
     return meta.get("guest_net") or legacy_guest_net(meta["index"])
+
+
+def legacy_slot(guest_net: dict) -> int:
+    """the slot a legacy guest network derives from, or 0 when it is not one.
+    a vm resumed from a pre-namespace snapshot carries its source's slot in
+    its guest network, not in its own index."""
+    m = re.fullmatch(r"10\.200\.([0-9]{1,3})\.2", guest_net.get("ip", ""))
+    if m and 1 <= int(m.group(1)) < 250 and guest_net == legacy_guest_net(int(m.group(1))):
+        return int(m.group(1))
+    return 0
 
 
 GUEST_TAP_RE = re.compile(r"[a-z0-9]{1,15}")
@@ -2236,10 +2258,12 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         guest_net = guest_net_of(meta)
         live_manifest = {
             "snapshot_id": snap_id,
-            # an agent from before namespaces resumes by this slot alone. 0
-            # makes it refuse a guest network it cannot build, rather than
+            # an agent from before namespaces resumes by this slot alone, so it
+            # is the slot the guest network derives from (not this vm's own,
+            # which a resume can have moved), and 0 for any other guest
+            # network: that makes it refuse one it cannot build, rather than
             # resume a guest into a network it does not remember.
-            "index": meta["index"] if guest_net != GUEST_NET else 0,
+            "index": legacy_slot(guest_net),
             "guest_net": guest_net,
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
