@@ -45,15 +45,15 @@ type GuestEgress struct {
 	Endpoint string `json:"endpoint,omitempty"`
 	// NoProxy is the bypass set the variables carry, as bare ips: the vm's
 	// loopback (compose publishes every service port there), the guest's own
-	// tap address and the host side of the tap. many clients silently
+	// address and the vm's host address. many clients silently
 	// ignore cidr in NO_PROXY, so a /16 can look like coverage and provide
 	// none.
 	NoProxy []string `json:"no_proxy,omitempty"`
 }
 
 // egressGuestFiles renders the three guest files for a resolved policy.
-// listenIP and guestIP are the two ends of the tap, empty when the
-// environment could not report them.
+// listenIP and guestIP are the vm's host address and the guest's own address,
+// empty when the environment could not report them.
 func egressGuestFiles(status egress.Status, listenIP, guestIP string) map[string][]byte {
 	mode := status.Mode
 	if mode == "" {
@@ -92,7 +92,8 @@ func egressGuestFiles(status egress.Status, listenIP, guestIP string) map[string
 }
 
 // egressNoProxy is the bypass set: loopback in every spelling, then the
-// tap's two ends when known, deduplicated and sorted so the file is stable.
+// vm's host address and the guest's own address when known, deduplicated and
+// sorted so the file is stable.
 func egressNoProxy(listenIP, guestIP string) []string {
 	set := map[string]struct{}{"localhost": {}, "127.0.0.1": {}, "::1": {}}
 	for _, ip := range []string{listenIP, guestIP} {

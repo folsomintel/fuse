@@ -371,7 +371,8 @@ the agent's environment.
 ## Networking model
 
 - One network namespace per VM (`fcns<N>`), where `N` is the VM's slot (1 up to
-  `65535 - FUSE_HOST_PORT_BASE`, 45985 with the default base). Inside it the guest
+  `32767 - FUSE_HOST_PORT_BASE`, 13217 with the default base, so agent ports stay
+  below the kernel's ephemeral range that exposed ports are drawn from). Inside it the guest
   network is the same for every VM: a TAP `tap0` at `172.16.0.1/30`, the guest at
   `172.16.0.2`, one MAC. That is what lets a live snapshot resume into any free slot,
   and two VMs resume from one snapshot on the same host.
@@ -386,10 +387,11 @@ the agent's environment.
   rules keyed on its veth and deletes the namespace, which takes the veth and TAP
   with it. At startup the agent deletes any `fcns<N>` namespace no VM holds.
 - `10.208.0.0/16` and `10.209.0.0/16` must not be in use on the host's own networks.
-- A VM created before per-VM namespaces keeps running untouched. The next time its
-  network is rebuilt (a restore, or a relaunch after a reboot) it moves into a
-  namespace with its old `10.200.<N>` guest network inside, and an egress backend it
-  had is released.
+- A VM created before per-VM namespaces keeps its old layout (a TAP `fcv<N>` in the
+  host namespace at `10.200.<N>.0/30`) until it is destroyed, including across a
+  restore or a relaunch after a reboot, so its guest addresses and egress proxy keep
+  working. Its live snapshots resume into new VMs with that `10.200.<N>` guest
+  network inside the new VM's namespace.
 - Open at your cloud / external firewall: `8090/tcp` (the agent's HTTP API) and
   `19551–<19550 + N>/tcp` (the per-VM guest-agent DNAT range, `N` the most VMs the
   host runs; `19551-19799` covers 249).

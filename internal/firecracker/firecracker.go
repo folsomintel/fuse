@@ -339,8 +339,8 @@ type remoteEnv struct {
 	url    string
 	client *Provider
 
-	// hostIP and guestIP are the two ends of the vm's tap as the agent
-	// reported them, or empty from an agent that predates the fields. they
+	// hostIP and guestIP are the host end of the vm's veth and the guest's
+	// own address, as the agent reported them, or empty from an agent that predates the fields. they
 	// are what an in-process egress backend binds and what the guest is told
 	// not to proxy.
 	hostIP  string
@@ -708,7 +708,8 @@ func egressWireFor(spec orchestrator.Spec) *egressWire {
 }
 
 // createVMResponse is what the agent reports for a vm. host_ip and guest_ip
-// are the two ends of the vm's tap, absent from an agent that predates them.
+// are the host end of the vm's veth (where an egress backend listens) and the
+// guest's own address, absent from an agent that predates them.
 type createVMResponse struct {
 	VMID    string `json:"vm_id"`
 	URL     string `json:"url"`

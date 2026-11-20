@@ -46,8 +46,8 @@ The two DNAT ranges differ because each agent has its own
 `FUSE_HOST_PORT_BASE` default, `19550` for `fc-agent` and `19650` for
 `qemu-agent`, and each allocates one port per VM slot, lowest free first.
 `qemu-agent` slots run from 1 to 249. `fc-agent` slots run from 1 up to
-`65535 - FUSE_HOST_PORT_BASE`, so open as far as the most VMs the host runs
-(`19551-19799` covers 249). Open the range that matches the backend the host
+`32767 - FUSE_HOST_PORT_BASE` (13217 at the default), so open as far as the
+most VMs the host runs (`19551-19799` covers 249). Open the range that matches the backend the host
 actually runs, rather than assuming one range covers the fleet.
 
 ## Configuration

@@ -9,8 +9,8 @@ import (
 
 // ErrLiveMigrateRefused is returned when a live migrate cannot be done as
 // asked: no distinct target host, or the target host agent declined to resume
-// the guest (different cpu or firecracker build, or the guest's network slot is
-// taken there). the source vm is untouched and still running, which is what
+// the guest (different cpu or firecracker build, or an agent from before per-vm
+// network namespaces). the source vm is untouched and still running, which is what
 // makes this a conflict to report rather than a failure to clean up after.
 var ErrLiveMigrateRefused = errors.New("live migrate refused")
 
@@ -29,9 +29,9 @@ type MigrateOptions struct {
 	// there is nothing to fall back onto; and a caller who asked for processes
 	// to survive should hear that they would not, while the source is still
 	// running, rather than find out afterwards. it needs a target other than
-	// the source's host, the same cpu and firecracker build on both, and the
-	// source's network slot free on the target (the frozen guest keeps its
-	// addresses and nothing remaps them yet).
+	// the source's host and the same cpu and firecracker build on both. the
+	// frozen guest keeps its addresses, which the target agent gives it inside
+	// the vm's own network namespace in whatever slot is free.
 	Live bool
 
 	// Lazy resumes the guest on the target before its memory has arrived and

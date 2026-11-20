@@ -199,7 +199,7 @@ QEMU VM. Without `FUSE_GPU_E2E=1` and a reachable GPU agent, it reports `SKIP`.
 Open these at your cloud / external firewall:
 
 - `8090/tcp` — the agent's HTTP API
-- `19551–19799/tcp` — the per-VM guest-agent DNAT range
+- `19551–<19550 + max VMs>/tcp` — the per-VM guest-agent DNAT range (`19551–19799` covers 249)
 
 ## Contract
 
