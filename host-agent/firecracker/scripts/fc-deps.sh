@@ -61,7 +61,7 @@ if command -v docker >/dev/null 2>&1; then
   ok "docker already installed"
 elif command -v apt-get >/dev/null 2>&1; then
   log "apt: installing docker.io"
-  $SUDO apt-get install -y --no-install-recommends docker.io \
+  $SUDO apt-get install -y --no-install-recommends --no-remove docker.io \
     || warn "docker.io install failed; install docker by hand if this host runs the orchestrator in self mode"
 elif command -v dnf >/dev/null 2>&1; then
   # moby-engine is fedora-only; rhel/rocky/alma need docker-ce from docker's repo
