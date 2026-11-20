@@ -32,8 +32,9 @@ The server also needs:
   own dependencies
 - `sudo`, and `git` to clone the repo
 - docker, which runs `restate-server` for the orchestrator. `fc-deps.sh`
-  installs it (`docker.io` on apt, `moby-engine` on dnf) and starts it if it
-  isn't already there
+  installs it if missing (`docker.io` on apt, `moby-engine` on Fedora) and
+  makes sure the daemon is running. On RHEL, Rocky or Alma, install `docker-ce`
+  from [Docker's repo](https://docs.docker.com/engine/install/) first
 
 ## 2. Run bootstrap
 

@@ -55,17 +55,33 @@ ok "packages installed"
 # fc-agent.sh install-orchestrator runs restate-server as a docker container.
 # skipped when docker is already on the host: installing docker.io over a
 # docker-ce from docker's own repo would conflict on containerd.
+# failures only warn: agent-only hosts and FUSE_RESTATE_MODE=cloud never use
+# docker, and install-orchestrator checks for it itself in self mode.
 if command -v docker >/dev/null 2>&1; then
   ok "docker already installed"
 elif command -v apt-get >/dev/null 2>&1; then
   log "apt: installing docker.io"
-  $SUDO apt-get install -y --no-install-recommends docker.io
+  $SUDO apt-get install -y --no-install-recommends docker.io \
+    || warn "docker.io install failed; install docker by hand if this host runs the orchestrator in self mode"
 elif command -v dnf >/dev/null 2>&1; then
+  # moby-engine is fedora-only; rhel/rocky/alma need docker-ce from docker's repo
   log "dnf: installing moby-engine"
-  $SUDO dnf install -y moby-engine
+  $SUDO dnf install -y moby-engine \
+    || warn "moby-engine not available (rhel?); install docker-ce from https://docs.docker.com/engine/install/ if this host runs the orchestrator in self mode"
 fi
-$SUDO systemctl enable --now docker.service
-ok "docker running"
+# a podman-docker shim, snap or rootless docker has a docker cli but no
+# docker.service; restate-server.service needs the system daemon.
+if command -v docker >/dev/null 2>&1; then
+  if $SUDO systemctl cat docker.service >/dev/null 2>&1; then
+    if $SUDO systemctl enable --now docker.service; then
+      ok "docker running"
+    else
+      warn "docker.service failed to start; see journalctl -u docker"
+    fi
+  else
+    warn "docker cli found but no docker.service; restate-server.service needs the system docker daemon"
+  fi
+fi
 
 # --- cloudflare warp (optional egress backend) --------------------------------
 # Only installed when asked: it pulls in gtk/webkit as hard dependencies, and
@@ -121,7 +137,7 @@ fi
 # --- verify the tools the scripts actually shell out to ----------------------
 log "verifying required tools"
 missing=0
-for t in podman docker python3 curl tar iptables nft ip e2fsck resize2fs truncate mount umount setsid ssh pgrep openssl awk; do
+for t in podman python3 curl tar iptables nft ip e2fsck resize2fs truncate mount umount setsid ssh pgrep openssl awk; do
   if command -v "$t" >/dev/null 2>&1; then
     ok "$t"
   else
