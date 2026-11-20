@@ -4617,6 +4617,12 @@ components:
               type: object
               additionalProperties:
                 type: string
+        retry_after:
+          type: integer
+          description: |
+            Seconds the call's `Retry-After` asked for. Set on a failed
+            operation that answered a retry-later 503, so a caller that
+            polled waits as long as one answered directly.
 
     OperationAccepted:
       type: object

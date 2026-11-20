@@ -142,6 +142,7 @@ interface Operation {
   status_code?: number;
   result?: unknown;
   error?: OperationError;
+  retry_after?: number;
 }
 
 interface OperationAccepted {
@@ -173,3 +174,6 @@ const OperationState = {
   `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
   snapshot, an `Image` for image.convert (with `status_code` 202), and absent
   for destroy and restore.
+- `retry_after` is the seconds the call's `Retry-After` asked for, set on a
+  failed operation that answered a retry-later `503`. The retry waits at
+  least that long, as it would for a `503` answered directly.

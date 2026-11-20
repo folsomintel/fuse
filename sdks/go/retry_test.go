@@ -131,3 +131,40 @@ func TestRetryStopsWhenContextEnds(t *testing.T) {
 		t.Fatalf("err = %v, want the context's deadline", err)
 	}
 }
+
+// a create that answers 202 and whose operation then fails 503 waits at least
+// the failed answer's Retry-After, carried on the operation, before it is
+// sent again.
+func TestCreate_polledUnavailableHonorsRetryAfter(t *testing.T) {
+	posts := 0
+	c, done := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/environments":
+			posts++
+			if posts == 1 {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(`{"operation_id":"op_1","operation":{"id":"op_1","kind":"create","state":"running","started_at":"2026-11-15T00:00:00Z"}}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"vm-1","state":"running"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/operations/op_1":
+			_, _ = w.Write([]byte(`{"id":"op_1","kind":"create","state":"failed","started_at":"2026-11-15T00:00:00Z","finished_at":"2026-11-15T00:01:00Z","status_code":503,"retry_after":5,"error":{"code":"unavailable","message":"no host has sufficient capacity"}}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	})
+	defer done()
+	delays := recordSleeps(c)
+
+	env, err := c.Environments.Create(context.Background(), CreateRequest{TaskID: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.ID != "vm-1" || posts != 2 {
+		t.Fatalf("env %+v after %d sends, want vm-1 after 2", env, posts)
+	}
+	if len(*delays) != 1 || (*delays)[0] < 5*time.Second || (*delays)[0] > 7500*time.Millisecond {
+		t.Errorf("delays = %v, want one of Retry-After 5s plus at most half again", *delays)
+	}
+}

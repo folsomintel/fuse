@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -46,6 +47,9 @@ type Operation struct {
 	// for image.convert, empty for destroy and restore.
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *ErrorBody      `json:"error,omitempty"`
+	// RetryAfter is the seconds the call's Retry-After asked for, set on a
+	// failed operation that answered a retry-later 503.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // ErrorBody is a failed operation's error: the error member of the api's
@@ -149,10 +153,15 @@ func operationResponse(op *Operation, header http.Header) *http.Response {
 	if status == 0 {
 		status = http.StatusInternalServerError
 	}
+	header = header.Clone()
+	// the 202's headers carry no Retry-After; the failed answer's does.
+	if op.RetryAfter > 0 {
+		header.Set("Retry-After", strconv.Itoa(op.RetryAfter))
+	}
 	return &http.Response{
 		StatusCode: status,
 		Status:     http.StatusText(status),
-		Header:     header.Clone(),
+		Header:     header,
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
 }

@@ -163,4 +163,7 @@ def operation_response(op: Operation, headers: httpx.Headers) -> httpx.Response:
         value = headers.get(name)
         if value:
             out_headers[name] = value
+    # the 202's headers carry no Retry-After; the failed answer's does.
+    if op.retry_after > 0:
+        out_headers["Retry-After"] = str(op.retry_after)
     return httpx.Response(status, headers=out_headers, content=content)

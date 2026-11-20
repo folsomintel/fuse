@@ -281,6 +281,8 @@ export class Transport {
     }
     // a 204 cannot carry a body.
     if (status === 204) body = null;
+    // the 202's headers carry no Retry-After; the failed answer's does.
+    if (op.retry_after) headers.set("Retry-After", String(op.retry_after));
     return new Response(body, { status, headers });
   }
 

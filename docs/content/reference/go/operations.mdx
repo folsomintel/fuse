@@ -127,6 +127,7 @@ type Operation struct {
 	StatusCode int             `json:"status_code,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
 	Error      *ErrorBody      `json:"error,omitempty"`
+	RetryAfter int             `json:"retry_after,omitempty"`
 }
 
 type OperationAccepted struct {
@@ -155,5 +156,8 @@ func (o *Operation) Done() bool
   `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
   snapshot, an `Image` for image.convert (with `StatusCode` 202), and empty for
   destroy and restore.
+- `RetryAfter` is the seconds the call's `Retry-After` asked for, set on a
+  failed operation that answered a retry-later `503`. The retry waits at
+  least that long, as it would for a `503` answered directly.
 - `ErrorBody` is the `error` member of the API's error envelope: `Code`,
   `Message` and `Details`.

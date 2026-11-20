@@ -1151,6 +1151,10 @@ type Operation struct {
 	Result json.RawMessage `json:"result,omitempty" swaggertype:"object"`
 	// Error is the route's error body on failure.
 	Error *ErrorBody `json:"error,omitempty"`
+	// RetryAfter is the seconds the route's Retry-After header asked for,
+	// set on a failed retry-later 503 so a caller that polled waits as long
+	// as one answered directly.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // OperationAccepted is the 202 a mutating route answers with when its

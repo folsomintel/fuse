@@ -142,3 +142,55 @@ async fn unkeyed_call_is_not_retried() {
     let err = client.environments().get("vm-1").await.unwrap_err();
     assert_unavailable(err);
 }
+
+// a create that answers 202 and whose operation then fails 503 waits the
+// failed answer's Retry-After, carried on the operation, before it is sent
+// again. without it the first backoff is at most 1.5s.
+#[tokio::test]
+async fn polled_unavailable_waits_the_operations_retry_after() {
+    let server = MockServer::start().await;
+    let running = json!({"id": "op_1", "kind": "create", "state": "running", "started_at": "2026-11-15T00:00:00Z"});
+    Mock::given(method("POST"))
+        .and(path("/v1/environments"))
+        .respond_with(
+            ResponseTemplate::new(202)
+                .set_body_json(json!({"operation_id": "op_1", "operation": running})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(env_body("vm-1")))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/operations/op_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "op_1",
+            "kind": "create",
+            "state": "failed",
+            "started_at": "2026-11-15T00:00:00Z",
+            "finished_at": "2026-11-15T00:01:00Z",
+            "status_code": 503,
+            "retry_after": 2,
+            "error": {"code": "unavailable", "message": "no host has sufficient capacity"},
+        })))
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    let start = std::time::Instant::now();
+    let env = client
+        .environments()
+        .create(CreateRequest::new("t-1"))
+        .await
+        .unwrap();
+
+    assert_eq!(env.id, "vm-1");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_secs(2),
+        "retried after {:?}, want at least the operation's retry_after",
+        start.elapsed()
+    );
+}

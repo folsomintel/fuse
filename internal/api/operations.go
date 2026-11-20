@@ -148,6 +148,9 @@ func (op *operation) view() Operation {
 		return out
 	}
 	out.State = OpFailed
+	if secs, err := strconv.Atoi(op.rec.header.Get("Retry-After")); err == nil && secs > 0 {
+		out.RetryAfter = secs
+	}
 	var env Error
 	if json.Unmarshal(body, &env) == nil && env.Error.Code != "" {
 		out.Error = &env.Error

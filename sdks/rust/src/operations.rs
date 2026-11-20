@@ -231,6 +231,11 @@ impl Transport {
             (callback.0)(&accepted);
         }
         let operation = wait_operation(self, &accepted.operation_id, None).await?;
+        // the 202 carried no Retry-After; the failed answer's rides on the
+        // operation.
+        if let Some(secs) = operation.retry_after {
+            *retry_after = Some(secs.to_string());
+        }
         operation_answer(operation)
     }
 }

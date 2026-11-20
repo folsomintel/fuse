@@ -134,6 +134,7 @@ class Operation(BaseModel):
     status_code: int = 0
     result: Optional[Any] = None
     error: Optional[ErrorBody] = None
+    retry_after: int = 0
 
     @property
     def done(self) -> bool: ...
@@ -164,5 +165,8 @@ OPERATION_FAILED = "failed"
   environment for create, fork, migrate and drain, a snapshot for snapshot,
   an image for image.convert (with `status_code` 202), and `None` for destroy
   and restore.
+- `retry_after` is the seconds the call's `Retry-After` asked for, set on a
+  failed operation that answered a retry-later `503`. The retry waits at
+  least that long, as it would for a `503` answered directly.
 
 `Operation`, `OperationAccepted`, `ErrorBody` and the three state constants are exported from `fuse`.

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from typing import Optional
+
 import httpx
 import pytest
 import respx
 
 import fuse
+import fuse._retry
 from fuse._retry import retry_delay
 
 BASE_URL = "https://fuse.test"
@@ -78,3 +81,49 @@ def test_retry_delay_backs_off_without_retry_after() -> None:
     assert retry_delay(None, 0, lambda: 0.0) == 1.0
     assert retry_delay(None, 2, lambda: 0.0) == 4.0
     assert retry_delay(None, 20, lambda: 0.0) == 30.0
+
+
+@respx.mock
+def test_polled_unavailable_waits_the_operations_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a create that answers 202 and whose operation then fails 503 waits the
+    # failed answer's Retry-After, carried on the operation.
+    asked: list[Optional[str]] = []
+
+    def record(retry_after: Optional[str], attempt: int) -> float:
+        asked.append(retry_after)
+        return 0.0
+
+    monkeypatch.setattr(fuse._retry, "retry_delay", record)
+    running = {
+        "id": "op_1",
+        "kind": "create",
+        "state": "running",
+        "started_at": "2026-11-15T00:00:00Z",
+    }
+    route = respx.post(f"{BASE_URL}/v1/environments").mock(
+        side_effect=[
+            httpx.Response(202, json={"operation_id": "op_1", "operation": running}),
+            httpx.Response(201, json=ENV),
+        ]
+    )
+    respx.get(f"{BASE_URL}/v1/operations/op_1").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **running,
+                "state": "failed",
+                "finished_at": "2026-11-15T00:01:00Z",
+                "status_code": 503,
+                "retry_after": 5,
+                "error": {"code": "unavailable", "message": "no host has sufficient capacity"},
+            },
+        )
+    )
+    with fuse.Client(BASE_URL, "tok") as client:
+        env = client.environments.create(fuse.CreateRequest(task_id="task-1"))
+
+    assert env.id == "vm-1"
+    assert route.call_count == 2
+    assert asked == ["5"]

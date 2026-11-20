@@ -93,6 +93,59 @@ describe("503 retry", () => {
   });
 });
 
+describe("503 retry of a polled operation", () => {
+  it("waits the failed operation's retry_after before sending again", async () => {
+    let posts = 0;
+    let firstFailedAt = 0;
+    let retriedAt = 0;
+    current = await serve((req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      if (req.method === "POST") {
+        posts++;
+        if (posts === 1) {
+          res.statusCode = 202;
+          res.end(
+            JSON.stringify({
+              operation_id: "op_1",
+              operation: {
+                id: "op_1",
+                kind: "create",
+                state: "running",
+                started_at: "2026-11-15T00:00:00Z",
+              },
+            }),
+          );
+          return;
+        }
+        retriedAt = Date.now();
+        res.statusCode = 201;
+        res.end(JSON.stringify({ id: "vm-1", state: "running" }));
+        return;
+      }
+      firstFailedAt = Date.now();
+      res.end(
+        JSON.stringify({
+          id: "op_1",
+          kind: "create",
+          state: "failed",
+          started_at: "2026-11-15T00:00:00Z",
+          finished_at: "2026-11-15T00:01:00Z",
+          status_code: 503,
+          retry_after: 2,
+          error: { code: "unavailable", message: "no host has sufficient capacity" },
+        }),
+      );
+    });
+
+    const env = await current.client.environments.create({ task_id: "t" });
+
+    expect(env.id).toBe("vm-1");
+    expect(posts).toBe(2);
+    // without retry_after the first backoff is at most 1.5s.
+    expect(retriedAt - firstFailedAt).toBeGreaterThanOrEqual(2000);
+  }, 10_000);
+});
+
 describe("retryDelayMs", () => {
   it("waits at least Retry-After, plus at most half again", () => {
     expect(retryDelayMs("2", 0, () => 0)).toBe(2000);
