@@ -107,6 +107,27 @@ async fn retries_zero_returns_the_first_503() {
     assert_unavailable(err);
 }
 
+// a computer action goes through the same gated path as the keyed calls but
+// sends no key, so its 503 (no display) is not resent.
+#[tokio::test]
+async fn unkeyed_computer_action_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/environments/vm-1/computer"))
+        .respond_with(unavailable())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = Client::new(server.uri(), "secret").unwrap();
+
+    let result = client
+        .environments()
+        .computer_tool_result("vm-1", &json!({"action": "screenshot"}))
+        .await
+        .unwrap();
+    assert!(result.is_error);
+}
+
 #[tokio::test]
 async fn unkeyed_call_is_not_retried() {
     let server = MockServer::start().await;

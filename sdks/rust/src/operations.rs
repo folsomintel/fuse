@@ -167,18 +167,24 @@ impl Transport {
     /// Sends a mutating call and returns the status and body it answered
     /// with. A 202 naming an operation is followed until the operation
     /// finishes, and its answer is returned as if the call had answered
-    /// with it; any other 202 is returned as it came. A 503 (no capacity,
-    /// restate down) is sent again under the same idempotency key, up to the
-    /// client's retries, waiting at least the server's Retry-After plus
-    /// jitter between sends.
+    /// with it; any other 202 is returned as it came. A keyed call answered
+    /// 503 (no capacity, restate down) is sent again under the same
+    /// idempotency key, up to the client's retries, waiting at least the
+    /// server's Retry-After plus jitter between sends.
     pub(crate) async fn send_operation(
         &self,
         mut builder: RequestBuilder,
     ) -> Result<(u16, Vec<u8>), Error> {
+        // only a keyed call is safe to send twice; exec and computer actions
+        // come through here without a key and are never retried.
+        let keyed = builder
+            .try_clone()
+            .and_then(|b| b.build().ok())
+            .is_some_and(|r| r.headers().contains_key(IDEMPOTENCY_KEY_HEADER));
         let mut attempt = 0;
         loop {
             // a body that cannot be cloned cannot be sent twice.
-            let next = if attempt < self.retries {
+            let next = if keyed && attempt < self.retries {
                 builder.try_clone()
             } else {
                 None
