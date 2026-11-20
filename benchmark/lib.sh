@@ -110,7 +110,9 @@ bench_start() {
     '. + {suite:$suite, smoke:$smoke}' "$BENCH_OUT/env.json" > "$BENCH_OUT/env.json.tmp" \
     && mv "$BENCH_OUT/env.json.tmp" "$BENCH_OUT/env.json"
   bench_py leak_audit.py snapshot --out "$BENCH_OUT/leak-before.json" || return 1
-  bench_py sampler.py --out "$BENCH_OUT/samples.jsonl" --interval "${SAMPLE_INTERVAL:-1}" &
+  # python3 directly, not bench_py: a backgrounded function is a subshell, so
+  # $! would be that wrapper and killing it would leave the sampler running.
+  python3 "$BENCH_LIB_DIR/sampler.py" --out "$BENCH_OUT/samples.jsonl" --interval "${SAMPLE_INTERVAL:-1}" &
   SAMPLER_PID=$!
 }
 
