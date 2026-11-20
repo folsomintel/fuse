@@ -142,6 +142,11 @@ class LeakAuditTest(unittest.TestCase):
         finally:
             leak_audit.run = orig
 
+    def test_pg_env_keeps_password_out_of_argv(self):
+        env = leak_audit.pg_env("postgres://fuse:p%40ss@db.local:5433/fuse_orchestrator?sslmode=require")
+        self.assertEqual((env["PGHOST"], env["PGPORT"], env["PGUSER"], env["PGPASSWORD"], env["PGDATABASE"], env["PGSSLMODE"]),
+                         ("db.local", "5433", "fuse", "p@ss", "fuse_orchestrator", "require"))
+
     def test_missing_tool_is_null(self):
         self.assertIsNone(leak_audit.run(["definitely-not-a-tool-xyz"]))
 

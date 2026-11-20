@@ -15,7 +15,7 @@ ln -s "$HERE/fake-fuse" "$TMP/bin/fuse"
 export PATH="$TMP/bin:$PATH"
 export FC_STATE_DIR="$TMP/agent-state" SNAPSHOTS_DIR="$TMP/agent-state/snapshots"
 export BENCH_NETNS_DIR="$TMP/netns" RESTATE_ADMIN_URL="http://127.0.0.1:1" BENCH_ORCH_DEFAULTS="$TMP/none"
-export SMOKE=1 AUDIT_SETTLE=2 FAKE_DELAY=0.05 HOST=fake
+export SMOKE=1 AUDIT_SETTLE=2 FAKE_DELAY=0.05
 unset DATABASE_URL
 
 fails=0
@@ -74,6 +74,21 @@ has "leak audit: FAILED" "$TMP/leak/summary.md" "summary reports the leak"
 # exec failures stop the ramp after the first batch
 run_suite exec-fail density/ramp.sh 0 FAKE_FAIL_EXEC=1
 has "stop: errors" "$TMP/exec-fail/summary.md" "ramp stops on errors"
+
+# vm-bench.sh (the setup.sh smoke and baseline): every env it times is destroyed
+echo "== vm-bench"
+vms_before=$(find "$FC_STATE_DIR/vms" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')
+if N=1 FUSEFILE="$BENCH/Fusefile.bench" OUT="$TMP/vm-bench" bash "$BENCH/vm-bench.sh" > "$TMP/vm-bench.log" 2>&1; then
+  pass "exit 0"
+else
+  fail "vm-bench exit (log: $(cat "$TMP/vm-bench.log"))"
+fi
+for f in cold_create fork destroy; do is "$(wc -l < "$TMP/vm-bench/$f.txt" | tr -d ' ')" 1 "vm-bench $f sample"; done
+is "$(find "$FC_STATE_DIR/vms" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "$vms_before" "vm-bench destroyed its envs"
+
+# the fake rejects what the real cli rejects
+is "$(fuse up x --host h 2>&1)" "fake-fuse: unknown flag: --host" "fake rejects an unknown flag"
+is "$(fuse environment destroy vm-x 2>&1)" "fake-fuse: aborted (use --yes to skip the confirmation prompt)" "fake destroy needs --yes"
 
 echo
 if [ "$fails" = 0 ]; then echo "all smoke checks passed"; else echo "$fails smoke check(s) failed"; exit 1; fi
