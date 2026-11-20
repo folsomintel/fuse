@@ -44,6 +44,8 @@ IDS="$OUT/ids.txt"
 
 finish() {
   trap - EXIT INT TERM
+  # a create still in flight appends its id after this point otherwise
+  wait_jobs
   echo "destroying $(wc -l < "$IDS" | tr -d ' ') vm(s)..."
   destroy_all "$IDS"
   bench_finish
