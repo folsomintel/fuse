@@ -150,15 +150,10 @@ That has two consequences:
   the host keeps one copy of the image in page cache however many VMs read
   it, and each VM costs only the pages it has changed.
 
-The scheduler accounts for it the same way. The first VM on a host resumed from
-a snapshot is charged the image's full size plus a private share of 25% of
-its memory. Each further VM from the same snapshot on that host is charged
-only its private share. The image stays charged until the last of those VMs is
-destroyed. The private share is headroom for the pages a guest dirties, not
-a limit, so a fleet of clones that each rewrite most of their memory can
-use more than the scheduler counted.
+The scheduler does not count on the sharing yet: every VM, a live migrate's
+target included, is charged its full memory size.
 
-Two cases do not share and are charged in full:
+Two cases do not share:
 
 - **2M hugepage VMs.** These are filled by `fc-uffd` into their own
   hugepages, so each one holds a private copy.
@@ -166,7 +161,10 @@ Two cases do not share and are charged in full:
   when the snapshot store and the VM directories are on different mounts the
   agent copies the image instead. The guest is just as safe from a delete,
   but the VMs no longer share page cache. Keep `SNAPSHOTS_DIR` on the same
-  filesystem as the VM state (the default, both live under `/var/lib/fuse`).
+  filesystem as the VM state. The default puts both under the agent's state
+  directory; a store on
+  [a shared filesystem](/docs/concepts/layer-cache#a-shared-filesystem-is-a-supported-alternative)
+  is always another mount.
 
 ## Limitations of live snapshots
 
