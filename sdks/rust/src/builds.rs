@@ -37,7 +37,10 @@ impl Builds {
             .t
             .request(Method::POST, &["v1", "builds"])
             .json(&request);
-        self.t.send_json(options.apply(builder)).await
+        // send_operation retries a 503; a build's own 202 carries no
+        // operation_id, so it comes back as it came.
+        let (_, body) = self.t.send_operation(options.apply(builder)).await?;
+        Ok(serde_json::from_slice(&body)?)
     }
 
     /// Returns one build. With `wait` the server holds the call until the

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .._retry import retry_unavailable
 from .._transport import Transport
 from ..errors import REQUEST_ID_HEADER, check_response
 from ..types import Operation, OperationAccepted
@@ -105,10 +106,33 @@ def call_operation(
     # answers 202 with an operation, follows it until it finishes. it returns
     # a response standing in for the one the call would have given directly,
     # so callers handle it exactly as before. without a key the call sends a
-    # fresh random one.
+    # fresh random one. a 503 (no capacity, restate down) is sent again under
+    # the same key, up to the client's retries.
     key = idempotency_key or str(uuid.uuid4())
+    resp = retry_unavailable(
+        t.retries, lambda: _call_operation_once(t, method, path, params, body, key)
+    )
+    check_response(resp)
+    return resp
+
+
+def _call_operation_once(
+    t: Transport,
+    method: str,
+    path: str,
+    params: Optional[dict[str, Any]],
+    body: Any,
+    key: str,
+) -> httpx.Response:
+    # one send of call_operation, following a 202 to its end. an error
+    # answer is returned, not raised, so call_operation can retry a 503.
     resp = t.request(
-        method, path, params=params, body=body, headers={IDEMPOTENCY_KEY_HEADER: key}
+        method,
+        path,
+        params=params,
+        body=body,
+        headers={IDEMPOTENCY_KEY_HEADER: key},
+        check=False,
     )
     if resp.status_code != 202:
         return resp
@@ -120,9 +144,7 @@ def call_operation(
     if t.on_operation is not None:
         t.on_operation(acc)
     op = wait_operation(t, acc.operation_id)
-    out = operation_response(op, resp.headers)
-    check_response(out)
-    return out
+    return operation_response(op, resp.headers)
 
 
 def operation_response(op: Operation, headers: httpx.Headers) -> httpx.Response:
@@ -141,4 +163,7 @@ def operation_response(op: Operation, headers: httpx.Headers) -> httpx.Response:
         value = headers.get(name)
         if value:
             out_headers[name] = value
+    # the 202's headers carry no Retry-After; the failed answer's does.
+    if op.retry_after > 0:
+        out_headers["Retry-After"] = str(op.retry_after)
     return httpx.Response(status, headers=out_headers, content=content)

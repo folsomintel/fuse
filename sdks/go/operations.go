@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -46,6 +47,9 @@ type Operation struct {
 	// for image.convert, empty for destroy and restore.
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *ErrorBody      `json:"error,omitempty"`
+	// RetryAfter is the seconds the call's Retry-After asked for, set on a
+	// failed operation that answered a retry-later 503.
+	RetryAfter int `json:"retry_after,omitempty"`
 }
 
 // ErrorBody is a failed operation's error: the error member of the api's
@@ -89,7 +93,8 @@ func newIdempotencyKey() string {
 // doOperation sends a mutating call with its Idempotency-Key and, when the
 // server answers 202 with an operation, follows it until it finishes. it
 // returns a response standing in for the one the call would have given
-// directly, so callers handle it exactly as before.
+// directly, so callers handle it exactly as before. a 503 (no capacity,
+// restate down) is sent again under the same key, see WithRetry.
 func (t *transport) doOperation(ctx context.Context, req *http.Request, opts []CallOption) (*http.Response, error) {
 	var o callOptions
 	for _, opt := range opts {
@@ -101,6 +106,13 @@ func (t *transport) doOperation(ctx context.Context, req *http.Request, opts []C
 		o.idempotencyKey = newIdempotencyKey()
 	}
 	req.Header.Set(idempotencyKeyHeader, o.idempotencyKey)
+	return t.retryUnavailable(ctx, req, func(req *http.Request) (*http.Response, error) {
+		return t.doOperationOnce(ctx, req)
+	})
+}
+
+// doOperationOnce is one send of doOperation, following a 202 to its end.
+func (t *transport) doOperationOnce(ctx context.Context, req *http.Request) (*http.Response, error) {
 	resp, err := t.do(req)
 	if err != nil {
 		return nil, err
@@ -141,10 +153,15 @@ func operationResponse(op *Operation, header http.Header) *http.Response {
 	if status == 0 {
 		status = http.StatusInternalServerError
 	}
+	header = header.Clone()
+	// the 202's headers carry no Retry-After; the failed answer's does.
+	if op.RetryAfter > 0 {
+		header.Set("Retry-After", strconv.Itoa(op.RetryAfter))
+	}
 	return &http.Response{
 		StatusCode: status,
 		Status:     http.StatusText(status),
-		Header:     header.Clone(),
+		Header:     header,
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
 }

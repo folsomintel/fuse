@@ -13,6 +13,7 @@ from ._core import (
     iter_sse_data,
     serialize_body,
 )
+from ._retry import DEFAULT_RETRIES
 from .errors import REQUEST_ID_HEADER, check_response
 from .types import ActorLabel, Intervention, OperationAccepted
 
@@ -46,6 +47,7 @@ class Transport:
         hitl_wait: bool = True,
         on_held: Optional[Callable[[Intervention], None]] = None,
         on_operation: Optional[Callable[[OperationAccepted], None]] = None,
+        retries: int = DEFAULT_RETRIES,
     ) -> None:
         if actor is not None:
             check_actor(actor)
@@ -55,6 +57,8 @@ class Transport:
         self.on_held = on_held
         # called when a mutating call answers 202 with an operation.
         self.on_operation = on_operation
+        # how many times a keyed call answered 503 is sent again.
+        self.retries = max(retries, 0)
         self._bearer = token
         self._user_agent = user_agent
         self._request_id = request_id
@@ -101,10 +105,12 @@ class Transport:
         body: Any = None,
         timeout: Optional[float] = None,
         headers: Optional[dict[str, str]] = None,
+        check: bool = True,
     ) -> httpx.Response:
         # timeout overrides the client's default for this one request; a
         # long-poll uses it so a short client timeout cannot cut the hold.
-        # headers are added to the client's own for this one request.
+        # headers are added to the client's own for this one request. check
+        # false hands back an error answer instead of raising it.
         json_body = serialize_body(body)
         all_headers = self._headers(has_body=json_body is not None)
         if headers:
@@ -117,7 +123,8 @@ class Transport:
             headers=all_headers,
             timeout=timeout if timeout is not None else httpx.USE_CLIENT_DEFAULT,
         )
-        check_response(resp)
+        if check:
+            check_response(resp)
         return resp
 
     def stream_sse(

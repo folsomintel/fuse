@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::error::{parse_api_error, Error};
 use crate::interventions::{WAIT_HTTP_OVERHEAD, WAIT_POLL};
+use crate::retry::{jitter, retry_delay};
 use crate::transport::{require, Transport};
 use crate::types::{Operation, OperationAccepted, OperationState};
 
@@ -166,12 +167,56 @@ impl Transport {
     /// Sends a mutating call and returns the status and body it answered
     /// with. A 202 naming an operation is followed until the operation
     /// finishes, and its answer is returned as if the call had answered
-    /// with it; any other 202 is returned as it came.
+    /// with it; any other 202 is returned as it came. A keyed call answered
+    /// 503 (no capacity, restate down) is sent again under the same
+    /// idempotency key, up to the client's retries, waiting at least the
+    /// server's Retry-After plus jitter between sends.
     pub(crate) async fn send_operation(
         &self,
-        builder: RequestBuilder,
+        mut builder: RequestBuilder,
     ) -> Result<(u16, Vec<u8>), Error> {
-        let response = Self::check(builder.send().await?).await?;
+        // only a keyed call is safe to send twice; exec and computer actions
+        // come through here without a key and are never retried.
+        let keyed = builder
+            .try_clone()
+            .and_then(|b| b.build().ok())
+            .is_some_and(|r| r.headers().contains_key(IDEMPOTENCY_KEY_HEADER));
+        let mut attempt = 0;
+        loop {
+            // a body that cannot be cloned cannot be sent twice.
+            let next = if keyed && attempt < self.retries {
+                builder.try_clone()
+            } else {
+                None
+            };
+            let mut retry_after = None;
+            let result = self.send_operation_once(builder, &mut retry_after).await;
+            match (result, next) {
+                (Err(Error::Api(e)), Some(next)) if e.status == 503 => {
+                    tokio::time::sleep(retry_delay(retry_after.as_deref(), attempt, jitter()))
+                        .await;
+                    builder = next;
+                    attempt += 1;
+                }
+                (result, _) => return result,
+            }
+        }
+    }
+
+    // send_operation_once is one send of send_operation. retry_after is set
+    // to the answer's Retry-After header.
+    async fn send_operation_once(
+        &self,
+        builder: RequestBuilder,
+        retry_after: &mut Option<String>,
+    ) -> Result<(u16, Vec<u8>), Error> {
+        let response = builder.send().await?;
+        *retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let response = Self::check(response).await?;
         let status = response.status().as_u16();
         let body = response.bytes().await?.to_vec();
         if status != StatusCode::ACCEPTED.as_u16() {
@@ -186,6 +231,11 @@ impl Transport {
             (callback.0)(&accepted);
         }
         let operation = wait_operation(self, &accepted.operation_id, None).await?;
+        // the 202 carried no Retry-After; the failed answer's rides on the
+        // operation.
+        if let Some(secs) = operation.retry_after {
+            *retry_after = Some(secs.to_string());
+        }
         operation_answer(operation)
     }
 }

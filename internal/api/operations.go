@@ -148,6 +148,9 @@ func (op *operation) view() Operation {
 		return out
 	}
 	out.State = OpFailed
+	if secs, err := strconv.Atoi(op.rec.header.Get("Retry-After")); err == nil && secs > 0 {
+		out.RetryAfter = secs
+	}
 	var env Error
 	if json.Unmarshal(body, &env) == nil && env.Error.Code != "" {
 		out.Error = &env.Error
@@ -394,7 +397,7 @@ func (h *Handler) asOperation(kind string, limit int64, next http.HandlerFunc) h
 		}
 		prev, err := h.operationStore().begin(op)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error(), nil)
+			writeRetryLater(w, CodeUnavailable, err.Error(), nil)
 			return
 		}
 		if prev != nil {

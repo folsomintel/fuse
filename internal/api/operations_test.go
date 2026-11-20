@@ -487,3 +487,25 @@ func TestOperation_waitOperationsBlocksUntilDone(t *testing.T) {
 		t.Fatalf("WaitOperations after release: %v", err)
 	}
 }
+
+// TestOperation_retryLaterCarriesRetryAfter: a failed operation that answered
+// a retry-later 503 reports that answer's Retry-After, so a caller that
+// polled it waits as long as one answered directly. other failures carry none.
+func TestOperation_retryLaterCarriesRetryAfter(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{orchestrator.ErrNoCapacity, RetryAfterSeconds},
+		{orchestrator.ErrVMNotFound, 0},
+	} {
+		rec := &opRecorder{header: http.Header{}}
+		writeFleetError(rec, tc.err)
+		op := &operation{id: newOperationID(), done: make(chan struct{}), rec: rec}
+		close(op.done)
+		op.finishedAt = time.Now()
+		if got := op.view(); got.State != OpFailed || got.RetryAfter != tc.want {
+			t.Errorf("%v: operation = %+v, want failed with retry_after %d", tc.err, got, tc.want)
+		}
+	}
+}

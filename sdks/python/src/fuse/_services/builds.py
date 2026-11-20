@@ -7,7 +7,9 @@ from urllib.parse import quote
 
 import httpx
 
+from .._retry import retry_unavailable
 from .._transport import Transport
+from ..errors import check_response
 from ..types import Build, CreateBuildRequest
 from .operations import _POLL_HTTP_HEADROOM, _POLL_WAIT_SECONDS, IDEMPOTENCY_KEY_HEADER
 
@@ -23,12 +25,17 @@ class BuildsService:
         # starts a build and returns it still running. without a key the call
         # sends a fresh random one; pass your own to retry safely.
         key = idempotency_key or str(uuid.uuid4())
-        resp = self._t.request(
-            "POST",
-            "/v1/builds",
-            body=request,
-            headers={IDEMPOTENCY_KEY_HEADER: key},
+        resp = retry_unavailable(
+            self._t.retries,
+            lambda: self._t.request(
+                "POST",
+                "/v1/builds",
+                body=request,
+                headers={IDEMPOTENCY_KEY_HEADER: key},
+                check=False,
+            ),
         )
+        check_response(resp)
         return Build.model_validate(resp.json())
 
     def get(self, build_id: str, wait: Optional[float] = None) -> Build:

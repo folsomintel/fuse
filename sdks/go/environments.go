@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type transport struct {
@@ -30,6 +31,10 @@ type transport struct {
 	// onOperation is called when a mutating call is accepted as an
 	// operation.
 	onOperation func(*OperationAccepted)
+	// retries is how many times a mutating call answered 503 is sent again
+	// (WithRetry). sleep waits between them; nil is a real, ctx-bound sleep.
+	retries int
+	sleep   func(context.Context, time.Duration) error
 }
 
 // setActorHeaders adds the Fuse-Actor headers when the transport has an actor.

@@ -62,6 +62,25 @@ answers 404. After a restart, a key whose earlier try failed with a 5xx may
 replay that failure for up to restate's idempotency retention (24 hours);
 retry with a fresh key.
 
+## Retrying unavailable
+
+```python
+fuse.Client(base_url, token, retries=3)
+```
+
+A `503` `unavailable` from one of those calls means the orchestrator could
+not take it right now: no host has room, no host is registered, or restate is
+down. Nothing was started, so the SDK sends the call again, 3 times by
+default. `retries=0` turns that off. The wait blocks the calling thread.
+Each retry reuses the call's idempotency key, so a create that the server
+did run is attached to rather than run twice. It waits at least the
+server's `Retry-After` (seconds, capped at a minute), or a backoff doubling
+from 1s up to 30s when there is none, plus up to half again as random jitter,
+so a burst of refused callers spreads out instead of coming back at once.
+Builds' create is retried the same way. A `503` from any other call (a
+computer action on an environment with no display) is never retried. Once
+the retries run out the `503` comes back as an `unavailable` error.
+
 ## Following an accepted operation
 
 ```python
@@ -115,6 +134,7 @@ class Operation(BaseModel):
     status_code: int = 0
     result: Optional[Any] = None
     error: Optional[ErrorBody] = None
+    retry_after: int = 0
 
     @property
     def done(self) -> bool: ...
@@ -145,5 +165,8 @@ OPERATION_FAILED = "failed"
   environment for create, fork, migrate and drain, a snapshot for snapshot,
   an image for image.convert (with `status_code` 202), and `None` for destroy
   and restore.
+- `retry_after` is the seconds the call's `Retry-After` asked for, set on a
+  failed operation that answered a retry-later `503`. The retry waits at
+  least that long, as it would for a `503` answered directly.
 
 `Operation`, `OperationAccepted`, `ErrorBody` and the three state constants are exported from `fuse`.

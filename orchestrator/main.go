@@ -536,9 +536,13 @@ func run() error {
 		Prefix:              prefix,
 		TokenEncryptionKey:  tokenEncKey,
 		HostProviderFactory: hostProviderFactory,
-		EgressRegistry:      egressRegistry,
-		Metrics:             promMetrics,
-		Logger:              logger,
+		// with no host registered, the first create registers this agent so
+		// it is admitted by capacity. empty in stub mode.
+		DefaultHostURL:   fcBaseURL,
+		DefaultHostToken: fcToken,
+		EgressRegistry:   egressRegistry,
+		Metrics:          promMetrics,
+		Logger:           logger,
 
 		StartupScriptTimeout:    startupScriptTimeout,
 		MaxStartupScriptTimeout: maxStartupScriptTimeout,

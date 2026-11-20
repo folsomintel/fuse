@@ -166,8 +166,19 @@ existing environments stay put until you move them yourself.
 ## When nothing fits
 
 A request that clears no host fails with `no host has sufficient capacity`,
-surfaced as a `503`. Fuse does not queue the request or wait for room to appear,
-a placement either succeeds now or is rejected now.
+surfaced as a `503` with a `Retry-After` header. Fuse does not queue the
+request or wait for room to appear, a placement either succeeds now or is
+rejected now. Forks are admitted the same way (see
+[Environments](/docs/concepts/environments)). The CLI and the SDKs retry the
+`503` a few times under the same idempotency key, waiting at least
+`Retry-After` plus jitter (see the [Go SDK's operations page](/reference/go/operations)).
+
+An orchestrator with `FIRECRACKER_BASE_URL` set and no host registered
+registers that agent as host `local-fc` on the first create, with the cpu, ram
+and disk the agent reports and 4 vm slots per cpu, so a single-agent setup is
+scheduled and admitted like any other. If the agent cannot report its
+capacity, the create fails `503` instead of booting unchecked. Only the
+in-memory stub (no `FIRECRACKER_BASE_URL`) still places without a host.
 
 :::warning[Known limitation]
 The capacity rejection message reports only the CPU, RAM, and storage that were
@@ -192,9 +203,9 @@ Placement failures are reported distinctly rather than as capacity shortfalls:
 
 A GPU request made when no GPU host is registered at all fails differently, with
 `gpu workloads require a registered gpu host`, rather than reporting a capacity
-shortfall on hosts that could never have served it. A placement request with no
-hosts registered at all fails with `placement requires registered hosts`, because
-the legacy single-provider path is not a scheduled host.
+shortfall on hosts that could never have served it. A placement request on the
+in-memory stub, which never has a host, fails with
+`placement requires registered hosts`, because the stub is not a scheduled host.
 
 ## Read next
 

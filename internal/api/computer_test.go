@@ -121,6 +121,10 @@ func TestComputerActionGuestErrorRewrapped(t *testing.T) {
 	if !strings.Contains(e.Error.Message, "display :1 is not up") {
 		t.Fatalf("message = %q, want the guest's reason", e.Error.Message)
 	}
+	// no display is not something a retry fixes, so it names no retry time.
+	if got := rr.Header().Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After = %q, want none", got)
+	}
 }
 
 func TestComputerActionValidatesShape(t *testing.T) {

@@ -2438,6 +2438,10 @@ pub struct Operation {
     /// The call's error body on failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<OperationError>,
+    /// Seconds the call's Retry-After asked for, set on a failed operation
+    /// that answered a retry-later 503.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<u64>,
 }
 
 impl Operation {

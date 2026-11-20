@@ -109,7 +109,7 @@ func (s *BuildsService) Create(ctx context.Context, req CreateBuildRequest, opts
 		return nil, err
 	}
 	hreq.Header.Set(idempotencyKeyHeader, o.idempotencyKey)
-	resp, err := s.t.do(hreq)
+	resp, err := s.t.retryUnavailable(ctx, hreq, s.t.do)
 	if err != nil {
 		return nil, err
 	}

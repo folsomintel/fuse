@@ -159,12 +159,13 @@ creation, so the two environments never share a secret.
 
 The source must be **running**; forking an environment in any other state fails.
 
-A fork always lands on the **same host** as its source (the seed snapshot lives on
-that host's disk), and it is charged against that host's capacity like any other
-environment. It does **not** go through the scheduler, though, and no capacity check
-runs on that host: forking onto a host with nothing left succeeds and overcommits it,
-so keep an eye on the source host's headroom rather than relying on admission
-control to stop you.
+A fork lands on the **same host** as its source when that host has room for it
+(the seed snapshot already lives on that host's disk), and it is charged against
+that host's capacity like any other environment. When the source's host is full,
+the scheduler places the fork on another host of the same backend and copies the
+seed snapshot there, as long as the snapshot can be copied. When no host has room,
+the fork is refused with `503` `unavailable` and a `Retry-After`, and nothing is
+created; the CLI and the SDKs retry it a few times before giving up.
 
 A fork cold-boots the snapshot's disk rather than resuming the source's memory:
 expect a normal boot, not a sub-second resume. That is true of

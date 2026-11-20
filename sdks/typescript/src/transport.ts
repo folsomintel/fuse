@@ -5,6 +5,7 @@
 // no timeout (the Go SDK uses a separate Timeout:0 client for events).
 
 import { FuseError, errorFromResponse } from "./errors.js";
+import { DEFAULT_RETRIES, retryDelayMs, sleep } from "./retry.js";
 import {
   OperationState,
   type ActorLabel,
@@ -52,6 +53,7 @@ export interface TransportConfig {
   hitlNoWait?: boolean;
   onHeld?: (held: Intervention) => void;
   onOperation?: (accepted: OperationAccepted) => void;
+  retries?: number;
 }
 
 /** Gated is the answer to a call a hitl gate may hold: the action's own
@@ -123,6 +125,7 @@ export class Transport {
   readonly hitlNoWait: boolean;
   readonly onHeld?: (held: Intervention) => void;
   private readonly onOperation?: (accepted: OperationAccepted) => void;
+  private readonly retries: number;
 
   constructor(cfg: TransportConfig) {
     if (!cfg.baseUrl) {
@@ -144,6 +147,7 @@ export class Transport {
     this.hitlNoWait = cfg.hitlNoWait ?? false;
     this.onHeld = cfg.onHeld;
     this.onOperation = cfg.onOperation;
+    this.retries = Math.max(cfg.retries ?? DEFAULT_RETRIES, 0);
 
     const provided = cfg.fetch;
     if (provided) {
@@ -163,10 +167,7 @@ export class Transport {
       ? { signal: spec.signal, cleanup: () => {} }
       : this.withTimeout(spec.signal);
     try {
-      const res = await this.follow(
-        await this.execute(method, path, spec, combined),
-        spec,
-      );
+      const res = await this.send(method, path, spec, combined);
       if (!res.ok) throw await errorFromResponse(res);
       return await this.decodeJson<T>(res);
     } finally {
@@ -186,10 +187,7 @@ export class Transport {
   ): Promise<Gated<T>> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.follow(
-        await this.execute(method, path, spec, combined),
-        spec,
-      );
+      const res = await this.send(method, path, spec, combined);
       if (!res.ok) throw await errorFromResponse(res);
       if (res.status === 202) return { held: await this.decodeHeld(res) };
       return { value: await this.decodeJson<T>(res) };
@@ -207,10 +205,7 @@ export class Transport {
   ): Promise<Intervention | undefined> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.follow(
-        await this.execute(method, path, spec, combined),
-        spec,
-      );
+      const res = await this.send(method, path, spec, combined);
       if (!res.ok) throw await errorFromResponse(res);
       if (res.status === 202) return await this.decodeHeld(res);
       await res.body?.cancel().catch(() => {});
@@ -229,6 +224,28 @@ export class Transport {
       return await res.text();
     } finally {
       cleanup();
+    }
+  }
+
+  /**
+   * send performs a call and follows its 202 operation. A keyed call (one
+   * with an idempotency key) answered 503 is sent again under the same key,
+   * up to the client's retries, waiting at least the server's Retry-After
+   * plus jitter between sends.
+   */
+  private async send(
+    method: string,
+    path: string,
+    spec: RequestSpec,
+    signal: AbortSignal | undefined,
+  ): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      const res = await this.follow(await this.execute(method, path, spec, signal), spec);
+      if (!spec.idempotencyKey || res.status !== 503 || attempt >= this.retries)
+        return res;
+      const delay = retryDelayMs(res.headers.get("Retry-After"), attempt);
+      await res.body?.cancel().catch(() => {});
+      await sleep(delay, signal);
     }
   }
 
@@ -264,6 +281,8 @@ export class Transport {
     }
     // a 204 cannot carry a body.
     if (status === 204) body = null;
+    // the 202's headers carry no Retry-After; the failed answer's does.
+    if (op.retry_after) headers.set("Retry-After", String(op.retry_after));
     return new Response(body, { status, headers });
   }
 
@@ -299,10 +318,7 @@ export class Transport {
   async noContent(method: string, path: string, spec: RequestSpec = {}): Promise<void> {
     const { signal: combined, cleanup } = this.withTimeout(spec.signal);
     try {
-      const res = await this.follow(
-        await this.execute(method, path, spec, combined),
-        spec,
-      );
+      const res = await this.send(method, path, spec, combined);
       if (!res.ok) throw await errorFromResponse(res);
       // Release the connection even if the server sent a body.
       await res.body?.cancel().catch(() => {});

@@ -39,6 +39,13 @@ export interface FuseClientOptions {
   /** Called once when a mutating call's operation outlasts the server's
    * attach bound (a 202 OperationAccepted), before the call follows it. */
   onOperation?: (accepted: OperationAccepted) => void;
+  /** How many times a call that sends an Idempotency-Key (create, fork,
+   * migrate, drain, destroy, snapshot create and restore, image convert,
+   * build create) and is answered 503 is sent again under the same key
+   * before the 503 is thrown. Each retry waits at least the server's
+   * Retry-After, or a backoff doubling from 1s without one, plus up to half
+   * again as jitter. Defaults to 3; 0 turns retrying off. */
+  retries?: number;
 }
 
 /**
@@ -74,6 +81,7 @@ export class FuseClient {
       hitlNoWait: options.hitlNoWait,
       onHeld: options.onHeld,
       onOperation: options.onOperation,
+      retries: options.retries,
     });
     this.environments = new EnvironmentsService(transport);
     this.snapshots = new SnapshotsService(transport);

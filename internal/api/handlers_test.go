@@ -1773,6 +1773,11 @@ func TestCreateEnvironment_GPUWithoutHostReturnsUnavailable(t *testing.T) {
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503. body: %s", rr.Code, rr.Body.String())
 	}
+	// a capacity refusal tells the sdks when to retry, through the create
+	// operation's recorder.
+	if got := rr.Header().Get("Retry-After"); got != "5" {
+		t.Errorf("Retry-After = %q, want 5", got)
+	}
 }
 
 func TestCreateEnvironment_GPUFieldsAbsentDefaultToZero(t *testing.T) {

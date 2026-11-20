@@ -2,16 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
 // placeFork picks the host a fork lands on, and the provider that owns it.
 //
-// It is a preference ladder, never a gate, and it CANNOT fail. That is the
-// whole contract: forking has always charged the fork to the source's host
-// without consulting capacity, and turning that into a hard admission check
-// would fail forks that work today for a reason the caller never asked about.
-// So every rung falls back to the source's host.
+// It is a preference ladder that ends in a refusal: a fork that fits nowhere
+// fails with ErrNoCapacity (503) instead of being charged to a host that
+// cannot take it, so a burst of forks waits and retries rather than
+// overcommitting the source's host.
 //
 //  1. the source's host, when it can still take a vm of this shape. this is the
 //     cheapest by far: CreateFromCheckpoint copies the rootfs within one
@@ -20,12 +20,14 @@ import (
 //     scheduler picks -- preferring hosts that already hold those bytes, and
 //     restricted to the source's backend, since a rootfs prepared for one
 //     backend is not a thing another backend can boot.
-//  3. otherwise the source's host anyway, exactly as before.
-func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID string, srcProvider Provider, seed SnapshotRecord) (string, Provider) {
+//  3. otherwise refuse: ErrSeedUnplaceable (which wraps ErrNoCapacity) when the
+//     seed cannot leave the source's host, ErrNoCapacity when no other host
+//     has room.
+func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID string, srcProvider Provider, seed SnapshotRecord) (string, Provider, error) {
 	// single-provider mode: there is no scheduler and no host registry to
 	// consult, so there is nothing to choose between.
 	if srcHostID == "" {
-		return "", srcProvider
+		return "", srcProvider, nil
 	}
 
 	fm.mu.RLock()
@@ -36,15 +38,18 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 	}
 	fm.mu.RUnlock()
 
-	if src := hostByID(hosts, srcHostID); src != nil && hostRejection(src, spec) == "" {
-		return srcHostID, srcProvider
+	why := "is not active"
+	if src := hostByID(hosts, srcHostID); src != nil {
+		why = hostRejection(src, spec)
+		if why == "" {
+			return srcHostID, srcProvider, nil
+		}
 	}
 
 	plan := fm.planSeedPlacement(ctx, Spec{SeedSnapshotID: seed.SnapshotID})
 	if !plan.movable {
-		fm.logger.Warn("fork stays on a host that cannot fit it: its seed artifact cannot be copied",
-			"host", srcHostID, "snapshot", seed.SnapshotID, "reason", plan.whyImmovable())
-		return srcHostID, srcProvider
+		return "", nil, fmt.Errorf("%w: source host %s %s, and the seed cannot be copied (%s)",
+			ErrSeedUnplaceable, srcHostID, why, plan.whyImmovable())
 	}
 
 	eligible := make([]*Host, 0, len(hosts))
@@ -59,20 +64,48 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 	selected, _, err := SchedulePreferring(spec, eligible, fm.placementPolicy,
 		PlacementHints{ArtifactHosts: plan.hostPreference()})
 	if err != nil {
-		fm.logger.Warn("fork stays on a host that cannot fit it: no other host can take it",
-			"host", srcHostID, "err", err)
-		return srcHostID, srcProvider
+		// a label or pin miss is still "nowhere to put it" for a fork, so every
+		// scheduling refusal reaches the caller as ErrNoCapacity.
+		if errors.Is(err, ErrNoCapacity) {
+			return "", nil, fmt.Errorf("fork: source host %s %s: %w", srcHostID, why, err)
+		}
+		return "", nil, fmt.Errorf("%w: source host %s %s: %v", ErrNoCapacity, srcHostID, why, err)
 	}
 
 	fm.mu.RLock()
 	targetProvider, ok := fm.providerForHost(selected.ID)
 	fm.mu.RUnlock()
 	if !ok {
-		fm.logger.Warn("fork stays on its source host: no provider for the scheduled host",
-			"host", srcHostID, "scheduled", selected.ID)
-		return srcHostID, srcProvider
+		// the host left between scheduling and here: retry-later, not a 500.
+		return "", nil, fmt.Errorf("%w: host %s was removed while the fork was placed", ErrNoCapacity, selected.ID)
 	}
-	return selected.ID, targetProvider
+	return selected.ID, targetProvider, nil
+}
+
+// forkFitsSomewhere is the cheap half of placeFork's gate, run before the
+// seed snapshot: ErrNoCapacity when no active host of the source's backend
+// could take a vm of the source's shape. a single-provider source has no
+// host to check.
+func (fm *FleetManager) forkFitsSomewhere(src forkSource) error {
+	if src.hostID == "" {
+		return nil
+	}
+	// the fork's shape, without the source's placement (see ForkPlaceholder).
+	spec := src.spec
+	spec.SeedSnapshotID, spec.PinnedHostID, spec.HostID, spec.Labels = "", "", "", nil
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	backend := HostBackend("")
+	if h, ok := fm.hosts[src.hostID]; ok {
+		backend = h.Backend
+	}
+	for _, h := range fm.activeHostsLocked() {
+		if h.Backend == backend && hostRejection(h, spec) == "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: no %s host has room for a %dCPU/%dMB/%dGB fork",
+		ErrNoCapacity, backend, spec.CPUs, spec.RamMB, spec.StorageGB)
 }
 
 // ForkOptions tunes a ForkEnvironment call. All fields are optional.

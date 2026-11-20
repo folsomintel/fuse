@@ -27,9 +27,12 @@ const forkTaskPrefix = "fork-"
 
 // ForkRefusals are the sentinel errors a fork refuses with besides
 // SnapshotFleetErrors. the durable handler carries each one across restate as
-// its own error code, so the api answers it with that sentinel's status.
+// its own error code, so the api answers it with that sentinel's status. a
+// code is its index, so new sentinels go at the end.
 var ForkRefusals = []error{
 	ErrSnapshotNotSeedable,
+	// placement found no host with room (ErrSeedUnplaceable wraps it).
+	ErrNoCapacity,
 }
 
 // ForkRequest is the input of the durable Environment/{vm_id}.Fork handler,
@@ -166,6 +169,12 @@ func (fm *FleetManager) ForkBegin(ctx context.Context, vmID string, req ForkRequ
 	if err != nil {
 		return ForkPlan{}, err
 	}
+	// a fork no host has room for is refused here, before the seed snapshot
+	// pauses the source, so a retried burst does not snapshot it each time.
+	// place still runs the full check (it also knows whether the seed moves).
+	if err := fm.forkFitsSomewhere(src); err != nil {
+		return ForkPlan{}, err
+	}
 	return ForkPlan{
 		SourceVMID:   req.SourceVMID,
 		SourceHostID: src.hostID,
@@ -217,9 +226,9 @@ func (fm *FleetManager) ForkPlaceholder(ctx context.Context, plan ForkPlan) erro
 	return nil
 }
 
-// ForkPlace picks the fork's host (see placeFork, which cannot fail), charges
-// it there and persists the placement, so a restart re-derives the charge. a
-// fork already placed keeps its host.
+// ForkPlace picks the fork's host (see placeFork), charges it there and
+// persists the placement, so a restart re-derives the charge. a fork already
+// placed keeps its host. a fork that fits nowhere fails with ErrNoCapacity.
 func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed SnapshotRecord) (string, error) {
 	v, err := fm.forkTarget(plan)
 	if err != nil {
@@ -235,12 +244,27 @@ func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed Snaps
 	if err != nil {
 		return "", err
 	}
-	hostID, _ = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed)
+	hostID, _, err = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed)
+	if err != nil {
+		return "", err
+	}
 	if hostID == "" {
 		// single-provider mode: there is no host to charge.
 		return "", nil
 	}
+	// placeFork judged a copy of the host; re-check the live one in the
+	// section that charges it, so a concurrent fork or create that took the
+	// last slot meanwhile turns this one into a retry-later refusal.
 	fm.mu.Lock()
+	h, ok := fm.hosts[hostID]
+	if !ok {
+		fm.mu.Unlock()
+		return "", fmt.Errorf("%w: host %s was removed while the fork was placed", ErrNoCapacity, hostID)
+	}
+	if why := hostRejection(h, spec); why != "" {
+		fm.mu.Unlock()
+		return "", fmt.Errorf("%w: host %s %s", ErrNoCapacity, hostID, why)
+	}
 	v.hostID = hostID
 	fm.allocateOnHost(hostID, v)
 	fm.mu.Unlock()

@@ -1200,6 +1200,9 @@ export interface Operation {
    * a hitl gate held the action. */
   result?: unknown;
   error?: OperationError;
+  /** Seconds the call's Retry-After asked for, set on a failed operation
+   * that answered a retry-later 503. */
+  retry_after?: number;
 }
 
 /** OperationAccepted is the 202 body of a mutating call whose operation

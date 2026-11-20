@@ -1102,6 +1102,9 @@ class Operation(_Model):
     # hitl gate held the action (202).
     result: Optional[Any] = None
     error: Optional[ErrorBody] = None
+    # seconds the call's Retry-After asked for, set on a failed operation
+    # that answered a retry-later 503.
+    retry_after: int = 0
 
     @property
     def done(self) -> bool:
