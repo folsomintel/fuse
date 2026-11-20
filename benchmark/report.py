@@ -203,8 +203,9 @@ def report_ramp(out):
     stop = load_jsonl(os.path.join(out, "stop.jsonl"))
     last = rows[-1] if rows else {}
     per_vm = None
-    if last.get("fc_pss_kb") and last.get("fc_count"):
-        per_vm = last["fc_pss_kb"] / last["fc_count"] / 1024
+    read_vms = (last.get("fc_count") or 0) - (last.get("fc_pss_missing") or 0)
+    if last.get("fc_pss_kb") and read_vms > 0:
+        per_vm = last["fc_pss_kb"] / read_vms / 1024
     md = ["## density ramp", "",
           f"max live: {last.get('live', 0)}, stop: {stop[-1]['reason'] if stop else 'NA'}, "
           f"firecracker pss per vm at the top: {fmt(per_vm, 1)} MB", "",

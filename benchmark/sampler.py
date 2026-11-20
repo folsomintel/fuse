@@ -80,10 +80,13 @@ def ksm_sharing(sys_root):
 def sample(proc="/proc", sys_root="/sys", with_pss=True, now=None):
     m = meminfo(proc)
     pids = fc_pids(proc)
-    pss = None
+    pss = pss_missing = None
     if with_pss and m:
         vals = [v for v in (pss_kb(proc, p) for p in pids) if v is not None]
-        pss = sum(vals)
+        # a pid can exit between listdir and the read, so a few misses are
+        # normal; none readable at all (e.g. not root) means unknown, not 0.
+        pss_missing = len(pids) - len(vals)
+        pss = sum(vals) if vals or not pids else None
     load = read(os.path.join(proc, "loadavg"))
     swap_used = None
     if "SwapTotal" in m and "SwapFree" in m:
@@ -103,6 +106,7 @@ def sample(proc="/proc", sys_root="/sys", with_pss=True, now=None):
         "load1": float(load.split()[0]) if load else None,
         "fc_count": len(pids),
         "fc_pss_kb": pss,
+        "fc_pss_missing": pss_missing,
         "ksm_pages_sharing": ksm_sharing(sys_root),
     }
 

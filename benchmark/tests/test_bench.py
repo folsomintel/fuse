@@ -71,7 +71,16 @@ class SamplerTest(unittest.TestCase):
         self.assertEqual(s["load1"], 3.25)
         self.assertEqual(s["fc_count"], 3)
         self.assertEqual(s["fc_pss_kb"], 3500)  # the exited one is skipped
+        self.assertEqual(s["fc_pss_missing"], 1)
         self.assertEqual(s["t"], 10.0)
+
+    def test_unreadable_pss_is_unknown(self):
+        for pid in (100, 101):
+            os.remove(os.path.join(self.proc, str(pid), "smaps_rollup"))
+        s = sampler.sample(self.proc, self.proc)
+        self.assertEqual(s["fc_count"], 3)
+        self.assertIsNone(s["fc_pss_kb"])
+        self.assertEqual(s["fc_pss_missing"], 3)
 
     def test_without_pss(self):
         self.assertIsNone(sampler.sample(self.proc, self.proc, with_pss=False)["fc_pss_kb"])
