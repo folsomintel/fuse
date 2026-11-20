@@ -523,6 +523,12 @@ def setup_tap(idx: int, iface: str, egress_mode: str = "direct",
          "-j", "DNAT", "--to-destination", g["ip"]],
         ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", g["ip"],
          "-j", "SNAT", "--to-source", guest_ip],
+        # the guest reaches its egress proxy at its own gateway, which is the
+        # same in every slot, and the namespace forwards it to this slot's
+        # host address. a guest resumed into another slot keeps the proxy url
+        # its running processes were started with.
+        ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", g["tap"], "-d", g["gw"], "-p", "tcp",
+         "-j", "DNAT", "--to-destination", host_ip],
     ]:
         sudo(in_ns + cmd)
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
@@ -646,6 +652,14 @@ def guest_network_fixup(gateway: str, egress_mode: str) -> str:
         return route + "echo nameserver 127.0.0.1 > /etc/resolv.conf"
     return route + "grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || echo nameserver 1.1.1.1 > /etc/resolv.conf"
 
+def proxy_url(meta: dict, scheme: str, port: int) -> str:
+    """the egress proxy url as the guest dials it: its gateway, which
+    setup_tap forwards to the backend at the vm's host address. a vm from
+    before namespaces has the host address as its gateway."""
+    g = meta.get("guest_net")
+    return f"{scheme}://{g['gw'] if g else meta['host_ip']}:{port}"
+
+
 def provision_egress(vm_id: str, body: dict) -> dict:
     meta = load_meta(vm_id)
     if not meta:
@@ -744,7 +758,7 @@ def warp_provision(meta: dict, body: dict) -> dict:
     WARP_REFS_DIR.mkdir(parents=True, exist_ok=True)
     (WARP_REFS_DIR / meta["vm_id"]).touch()
     scheme = "socks5h" if protocol == "socks5" else "http"
-    return {"url": f"{scheme}://{meta['host_ip']}:{WARP_GUEST_PORT}", "protocol": protocol}
+    return {"url": proxy_url(meta, scheme, WARP_GUEST_PORT), "protocol": protocol}
 
 
 def warp_destroy(meta: dict) -> None:
@@ -980,7 +994,7 @@ def wg_provision(meta: dict, body: dict) -> dict:
         # the ref records the protocol too, so destroy removes the dnat it added.
         (WG_DIR / fp / "refs" / meta["vm_id"]).write_text(f"{protocol}\n")
     scheme = "socks5h" if protocol == "socks5" else "http"
-    return {"url": f"{scheme}://{meta['host_ip']}:{WG_GUEST_PORT}", "protocol": protocol}
+    return {"url": proxy_url(meta, scheme, WG_GUEST_PORT), "protocol": protocol}
 
 
 def wg_destroy(meta: dict) -> None:

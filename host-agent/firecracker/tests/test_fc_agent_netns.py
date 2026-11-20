@@ -204,6 +204,13 @@ class SetupTeardownTest(FakeHostCase):
         self.assertIn(["PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"], nat)
         self.assertIn(["POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"], nat)
 
+    def test_the_guest_gateway_forwards_to_the_slots_host_address(self):
+        # a guest resumed from slot 3 into slot 4 still dials its proxy at
+        # 172.16.0.1, which now lands on slot 4's backend.
+        fc_agent.setup_tap(4, "eth0", "proxy")
+        self.assertIn(["PREROUTING", "-i", "tap0", "-d", "172.16.0.1", "-p", "tcp", "-j", "DNAT",
+                       "--to-destination", "10.208.0.4"], self.host.rules[("fcns4", "nat")])
+
     def test_two_slots_share_the_guest_network_and_nothing_else(self):
         fc_agent.setup_tap(3, "eth0")
         fc_agent.setup_tap(4, "eth0")
@@ -421,7 +428,8 @@ class VMPublicTest(unittest.TestCase):
 
 class EgressFollowsTheVethTest(unittest.TestCase):
     def test_warp_and_wireguard_attach_to_the_veth_and_its_host_address(self):
-        meta = {"vm_id": "vm-a", "tap": "fcv300", "host_ip": "10.208.1.44", "guest_ip": "10.209.1.44"}
+        meta = {"vm_id": "vm-a", "tap": "fcv300", "host_ip": "10.208.1.44", "guest_ip": "10.209.1.44",
+                "netns": "fcns300", "guest_net": dict(fc_agent.GUEST_NET)}
         sudos = []
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -429,7 +437,9 @@ class EgressFollowsTheVethTest(unittest.TestCase):
                 mock.patch.object(fc_agent, "run", return_value=subprocess.CompletedProcess([], 0, stdout=b"", stderr=b"")), \
                 mock.patch.object(fc_agent, "sudo", side_effect=lambda c, check=True: sudos.append(c)):
             ep = fc_agent.warp_provision(meta, {"protocol": "socks5", "config": {"WARP_LICENSE": "lic-0123456789"}})
-        self.assertEqual(ep["url"], "socks5h://10.208.1.44:1080")
+        # the guest dials its gateway, the same in every slot, so a resume
+        # into another slot keeps the url.
+        self.assertEqual(ep["url"], "socks5h://172.16.0.1:1080")
         self.assertIn(["bash", str(fc_agent.WARP_SCRIPT), "attach", "fcv300", "10.208.1.44", "1080"], sudos)
 
 

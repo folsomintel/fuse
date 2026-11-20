@@ -76,6 +76,7 @@ DIRECT_SEQUENCE = [
     IN_NS + ["sysctl", "-w", "net.ipv4.ip_forward=1"],
     IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"],
     IN_NS + ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"],
+    IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "tap0", "-d", "172.16.0.1", "-p", "tcp", "-j", "DNAT", "--to-destination", "10.208.0.3"],
     ["sysctl", "-w", "net.ipv4.ip_forward=1"],
     # whatever an earlier holder of the slot left on the veth goes first.
     ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
