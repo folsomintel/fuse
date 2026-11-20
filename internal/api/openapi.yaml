@@ -3649,8 +3649,9 @@ components:
             Carry the guest's memory to the target and resume it there, so
             processes survive the move, instead of cold-booting a disk
             snapshot. Requires the same cpu and firecracker build on both
-            hosts, and the environment's network slot free on
-            the target. It never falls back to a cold migration: a target
+            hosts, and a target agent with per-vm network namespaces (one
+            from before them answers 409). It never falls back to a cold
+            migration: a target
             that cannot resume the guest answers 409 and the source keeps
             running.
         lazy:

@@ -121,7 +121,7 @@ type Spec struct {
 	// ResumeSeed asks the provider to resume the guest from the seed's memory
 	// image instead of cold-booting its rootfs. only a live migration sets it,
 	// and only with a live SeedSnapshotID already copied to PinnedHostID. it is
-	// a request the host may refuse (wrong cpu, network slot taken), never a
+	// a request the host may refuse (wrong cpu or firecracker build), never a
 	// hint it may ignore: a live snapshot's rootfs is not bootable on its own.
 	ResumeSeed bool
 
@@ -657,7 +657,7 @@ func egressContext(p Provider, env Environment, in bootInputs) egress.Context {
 }
 
 // provisionEgress brings up the backend a proxy spec asks for. it runs
-// after Create, because the endpoint binds to the vm's tap, and before any
+// after Create, because the endpoint binds to the vm's host address, and before any
 // upload, because the guest files that carry the endpoint have to go up in
 // the same pass as the manifest. a direct spec returns a direct status and
 // makes no other call into the egress package.

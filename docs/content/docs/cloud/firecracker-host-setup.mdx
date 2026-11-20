@@ -162,7 +162,9 @@ fuse host register fc-east-2 \
 ```
 
 Here the orchestrator reaches the agent over the network, so open `8090/tcp` and
-the per-VM range `19551-19799/tcp` from the orchestrator to this host. See
+the per-VM range `19551-<19550 + max VMs>/tcp` from the orchestrator to this
+host (slots are handed out lowest first, so `--max-vms 20` needs
+`19551-19570`). See
 [Deploying the orchestrator](/docs/cloud/orchestrator-deploy) for the token and
 port reference.
 
@@ -368,9 +370,30 @@ the agent's environment.
 
 ## Networking model
 
-- One TAP per VM (`fcv<N>`), a `/30` subnet `10.200.<N>.0/30`, host `.1`, guest `.2`.
-- Host iptables: `MASQUERADE` for egress, `FORWARD` accept for the TAP, and a per-VM
-  `PREROUTING` DNAT rule `<public_host>:<port> -> <guest>:9550`.
+- One network namespace per VM (`fcns<N>`), where `N` is the VM's slot (1 up to
+  the port below the start of `net.ipv4.ip_local_port_range`, minus
+  `FUSE_HOST_PORT_BASE`: 13217 with the defaults, so agent ports stay below the
+  ephemeral range that exposed ports are drawn from). Inside it the guest
+  network is the same for every VM: a TAP `tap0` at `172.16.0.1/30`, the guest at
+  `172.16.0.2`, one MAC. That is what lets a live snapshot resume into any free slot,
+  and two VMs resume from one snapshot on the same host.
+- A veth pair joins the namespace to the host: `fcv<N>` on the host at
+  `10.208.<hi>.<lo>`, `veth0` in the namespace at `10.209.<hi>.<lo>`, where `hi` and
+  `lo` are the slot's two bytes. The namespace NATs between `10.209.<hi>.<lo>` and the
+  guest, so the agent reaches the guest (SSH, the guest agent, exposed ports) on
+  `10.209.<hi>.<lo>`.
+- Host iptables: `MASQUERADE` for egress, `FORWARD` accept for the veth (a `DROP` for
+  proxy egress), and a per-VM `PREROUTING` DNAT rule
+  `<public_host>:<port> -> 10.209.<hi>.<lo>:9550`. Destroying the VM removes the
+  rules keyed on its veth and deletes the namespace, which takes the veth and TAP
+  with it. At startup the agent deletes any `fcns<N>` namespace no VM holds.
+- `10.208.0.0/16` and `10.209.0.0/16` must not be in use on the host's own networks.
+- A VM created before per-VM namespaces keeps its old layout (a TAP `fcv<N>` in the
+  host namespace at `10.200.<N>.0/30`) until it is destroyed, including across a
+  restore or a relaunch after a reboot, so its guest addresses and egress proxy keep
+  working. Its live snapshots resume into new VMs with that `10.200.<N>` guest
+  network inside the new VM's namespace.
 - Open at your cloud / external firewall: `8090/tcp` (the agent's HTTP API) and
-  `19551–19799/tcp` (the per-VM guest-agent DNAT range).
+  `19551–<19550 + N>/tcp` (the per-VM guest-agent DNAT range, `N` the most VMs the
+  host runs; `19551-19799` covers 249).
 

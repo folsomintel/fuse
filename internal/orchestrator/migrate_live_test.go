@@ -51,7 +51,7 @@ func (p *liveMigrateProvider) Create(_ context.Context, spec Spec) (Environment,
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if spec.ResumeSeed && p.refuseResume {
-		return nil, &HTTPStatusError{Code: http.StatusConflict, Body: "network slot 3 is in use on this host"}
+		return nil, &HTTPStatusError{Code: http.StatusConflict, Body: "snapshot s was taken on {cpu: a} and cannot resume on {cpu: b}"}
 	}
 	p.created = append(p.created, spec)
 	env := &liveMigrateEnv{

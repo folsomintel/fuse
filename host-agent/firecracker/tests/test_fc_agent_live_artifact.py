@@ -20,6 +20,7 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 
 _import_root = tempfile.TemporaryDirectory()
@@ -295,9 +296,67 @@ class ResumePlanTest(unittest.TestCase):
         self.assertIn(fragment, caught.exception.msg)
 
     def test_accepts_a_snapshot_this_host_can_resume(self):
-        plan = fc_agent.resume_plan(self.snapshot())
-        self.assertEqual(plan["index"], 7)
+        plan = fc_agent.resume_plan(self.snapshot(index=0, guest_net=fc_agent.GUEST_NET))
+        self.assertEqual(plan["guest_net"], fc_agent.GUEST_NET)
         self.assertEqual(plan["mem"].name, "mem")
+
+    def test_a_snapshot_from_before_namespaces_keeps_its_guest_network(self):
+        # its manifest names only the slot, and the guest remembers the
+        # 10.200.<idx> network that slot had.
+        plan = fc_agent.resume_plan(self.snapshot(index=7))
+        self.assertEqual(plan["guest_net"], {"tap": "fcv7", "ip": "10.200.7.2", "gw": "10.200.7.1",
+                                             "mac": "06:00:AC:10:07:02"})
+
+    def test_refuses_a_manifest_with_no_guest_network(self):
+        for i, extra in enumerate([
+            {"index": 0},
+            {"index": 300},
+            {"guest_net": {**fc_agent.GUEST_NET, "tap": "veth0"}},
+            {"guest_net": {**fc_agent.GUEST_NET, "tap": "tap0; reboot"}},
+            {"guest_net": {**fc_agent.GUEST_NET, "ip": "not-an-ip"}},
+            {"guest_net": {**fc_agent.GUEST_NET, "mac": "zz"}},
+            {"guest_net": {"tap": "tap0"}},
+            {"guest_net": "tap0"},
+        ]):
+            self.name = f"{self.name}-{i}"
+            self.assertRefused(self.snapshot(**extra), "no usable resume manifest")
+
+    def test_a_taken_slot_no_longer_refuses(self):
+        # the guest network lives in the namespace, so the source's slot being
+        # held here is no reason to refuse; the vm gets any free one.
+        d = fc_agent.VMS_DIR / f"holder-{self.name}"
+        d.mkdir()
+        (d / "meta.json").write_text(json.dumps({"index": 9}))
+        plan = fc_agent.resume_plan(self.snapshot(index=9))
+        self.assertEqual(plan["guest_net"]["ip"], "10.200.9.2")
+
+    def test_two_resumes_of_one_snapshot_on_one_host(self):
+        sid = self.snapshot(index=0, guest_net=fc_agent.GUEST_NET)
+        built = []
+
+        def setup_tap(idx, iface, egress_mode="direct", guest_net=None):
+            built.append((idx, guest_net))
+            host_ip, guest_ip = fc_agent.slot_addrs(idx)
+            return fc_agent.tap_name(idx), host_ip, guest_ip
+
+        with mock.patch.object(fc_agent, "setup_tap", side_effect=setup_tap), \
+                mock.patch.object(fc_agent, "host_iface", return_value="eth0"), \
+                mock.patch.object(fc_agent, "add_agent_forward"), \
+                mock.patch.object(fc_agent, "sudo"), \
+                mock.patch.object(fc_agent, "resume_firecracker") as resumed, \
+                mock.patch.object(fc_agent, "wait_for_ssh", return_value=False):
+            a = fc_agent.create_vm({"name": f"{self.name}-a", "seed_snapshot": sid, "resume": True})
+            b = fc_agent.create_vm({"name": f"{self.name}-b", "seed_snapshot": sid, "resume": True})
+        self.addCleanup(lambda: [fc_agent.shutil.rmtree(fc_agent.vm_dir(m["vm_id"]), ignore_errors=True) for m in (a, b)])
+        self.assertEqual(resumed.call_count, 2)
+        # each in its own slot, so its own namespace and host addresses and
+        # agent port, with the one guest network both memory images remember.
+        self.assertNotEqual(a["index"], b["index"])
+        self.assertNotEqual(a["netns"], b["netns"])
+        self.assertNotEqual(a["guest_ip"], b["guest_ip"])
+        self.assertNotEqual(a["host_port"], b["host_port"])
+        self.assertEqual([g for _, g in built], [fc_agent.GUEST_NET, fc_agent.GUEST_NET])
+        self.assertEqual(a["guest_net"], b["guest_net"])
 
     def test_refuses_a_disk_snapshot(self):
         write_snapshot(self.name, {"rootfs.ext4": b"rootfs"}, kind="disk")
@@ -306,12 +365,6 @@ class ResumePlanTest(unittest.TestCase):
     def test_refuses_another_hosts_cpu_or_firecracker(self):
         self.assertRefused(self.snapshot(host={"arch": "amd64", "cpu": "other", "firecracker": "v0"}),
                            "cannot resume on")
-
-    def test_refuses_a_taken_network_slot(self):
-        d = fc_agent.VMS_DIR / f"holder-{self.name}"
-        d.mkdir()
-        (d / "meta.json").write_text(json.dumps({"index": 9}))
-        self.assertRefused(self.snapshot(index=9), "network slot 9 is in use")
 
     def test_refuses_a_drive_path_outside_the_vm_dir_shape(self):
         for i, path in enumerate([

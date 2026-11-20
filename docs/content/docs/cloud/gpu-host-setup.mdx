@@ -291,7 +291,7 @@ Open at your cloud / external firewall:
 - `8091/tcp`: the `qemu-agent` HTTP API. GPU hosts listen on `8091`, not the `8090`
   that `fc-agent` uses on Firecracker hosts.
 - `19651-19899/tcp`: the per-VM guest-agent DNAT range. This is **not** the
-  `19551-19799` that Firecracker hosts use: `qemu-agent` defaults
+  `19551-...` range that Firecracker hosts use: `qemu-agent` defaults
   `FUSE_HOST_PORT_BASE` to `19650` where `fc-agent` defaults it to `19550`, and
-  each allocates one port per VM index from 1 to 249. Opening the Firecracker
+  `qemu-agent` allocates one port per VM index from 1 to 249. Opening the Firecracker
   range on a GPU host blocks every GPU VM's guest agent.

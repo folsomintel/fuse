@@ -226,8 +226,8 @@ is not:
   proves the policy is enforced; it hides nothing and is registered only
   when `ORCH_EGRESS_MOCK=true` is set, with a warning at startup.
 
-The endpoint is not a secret. It is the host side of the vm's tap
-(`socks5h://10.200.<N>.1:<port>`), reachable only from inside that vm, and it
+The endpoint is not a secret. It is the host end of the vm's veth
+(`socks5h://10.208.<hi>.<lo>:<port>`), reachable only from inside that vm, and it
 is deliberately written to a world-readable `/etc/fuse/egress.json` so a
 non-root browser harness can find it. The provider's credentials are a
 separate matter: they stay in the orchestrator's configuration, travel to the

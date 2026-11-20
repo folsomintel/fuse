@@ -8,11 +8,10 @@
 #
 #   FC_AGENT_URL=http://<host>:9000 FC_AGENT_TOKEN=<token> ./test/e2e/resume-unique-agent.sh
 #
-# a resume needs the source's network slot and drive path free, so one host
-# holds one resumed vm per seed at a time: the source is destroyed after the
-# snapshot and the two clones are resumed one after the other. for the same
-# reason both clones get the source's mac until #419 gives each vm its own
-# namespace, so the mac is reported, not asserted.
+# each vm has its own network namespace with the same guest network inside
+# (#419), so both clones run at once, each in its own slot, and both carry the
+# source's mac and ip inside their namespace. the source is still destroyed
+# after the snapshot: a resume needs the drive path it recorded to be free.
 #
 # fused runs in the source with a token file, so each clone wakes up serving
 # the source's token; the case then writes the clone's own token and signals
@@ -26,7 +25,7 @@ SRC="${PREFIX}-uniq-src-$$"
 # how long the seed sits before the first resume. without it the clones wake
 # up seconds after the snapshot and the clock check cannot fail.
 AGE="${E2E_SNAPSHOT_AGE:-90}"
-VM=""
+VMS=()
 SNAP=""
 
 # keep in step with fusedReloadCommand in internal/orchestrator/agent_profile.go.
@@ -82,7 +81,7 @@ fused_code() {
 
 cleanup() {
   head_ "cleanup"
-  for v in "$SRC" "$VM"; do
+  for v in "$SRC" "${VMS[@]}"; do
     [ -n "$v" ] && api DELETE "/v1/vm/$v" >/dev/null 2>&1 && note "destroyed $v"
   done
   [ -n "$SNAP" ] && api DELETE "/v1/snapshots/$SNAP" >/dev/null 2>&1 && note "deleted $SNAP"
@@ -112,7 +111,7 @@ api DELETE "/v1/vm/$SRC" >/dev/null && SRC=""
 note "letting the seed age ${AGE}s"
 sleep "$AGE"
 
-RANDS=(); MACS=()
+RANDS=(); MACS=(); URLS=()
 for i in 1 2; do
   VM="${PREFIX}-uniq-$i-$$"
   head_ "clone $i: $VM"
@@ -120,9 +119,10 @@ for i in 1 2; do
   URL=$(echo "$CREATE" | jqr url)
   if [ -z "$(echo "$CREATE" | jqr vm_id)" ]; then
     bad "resume $i failed: $CREATE"
-    VM=""
     continue
   fi
+  VMS+=("$VM")
+  URLS+=("$URL")
 
   # the driver being bound is the decisive part: without it the new
   # generation id firecracker writes on the load reaches nothing.
@@ -160,7 +160,6 @@ for i in 1 2; do
     fi
   fi
 
-  api DELETE "/v1/vm/$VM" >/dev/null && VM=""
 done
 
 head_ "the clones differ"
@@ -169,7 +168,17 @@ if [ "${#RANDS[@]}" -eq 2 ] && [ -n "${RANDS[0]}" ] && [ "${RANDS[0]}" != "${RAN
 else
   bad "/dev/urandom output matched or was not read: ${RANDS[*]:-none}"
 fi
-note "macs: ${MACS[*]:-none} (one slot per seed until #419)"
+if [ "${#URLS[@]}" -eq 2 ] && [ "${URLS[0]}" != "${URLS[1]}" ]; then
+  ok "both clones run at once on their own agent ports (${URLS[*]})"
+  for j in 0 1; do
+    [ "$(fused_code "${URLS[$j]}" "clone-$((j + 1))-token")" = "200" ] \
+      && ok "clone $((j + 1)) still answers with the other clone running" \
+      || bad "clone $((j + 1)) stopped answering once the other clone was resumed"
+  done
+else
+  bad "the two clones did not both come up on distinct urls: ${URLS[*]:-none}"
+fi
+note "macs: ${MACS[*]:-none} (the same by design: each sits in its own namespace)"
 
 printf '\n\033[1m%d passed, %d failed\033[0m\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
