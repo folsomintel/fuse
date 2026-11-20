@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -471,5 +472,27 @@ func TestCreateBuild_restateDownReturns503(t *testing.T) {
 	_ = json.NewDecoder(rr.Body).Decode(&e)
 	if e.Error.Code != CodeUnavailable {
 		t.Errorf("error code = %q, want %q", e.Error.Code, CodeUnavailable)
+	}
+}
+
+// TestRetryAfterOnRetryLater503s: a 503 a retry can fix tells the caller when
+// to retry; the guest having no display does not.
+func TestRetryAfterOnRetryLater503s(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w: need 2CPU", orchestrator.ErrNoCapacity), "5"},
+		{orchestrator.ErrNoHosts, "5"},
+		{fmt.Errorf("%w: no display", orchestrator.ErrGuestUnavailable), ""},
+	} {
+		rr := httptest.NewRecorder()
+		writeFleetError(rr, tc.err)
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%v: status %d, want 503", tc.err, rr.Code)
+		}
+		if got := rr.Header().Get("Retry-After"); got != tc.want {
+			t.Errorf("%v: Retry-After = %q, want %q", tc.err, got, tc.want)
+		}
 	}
 }

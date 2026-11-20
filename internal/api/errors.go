@@ -32,6 +32,12 @@ func writeRetryLater(w http.ResponseWriter, code, message string, details map[st
 	writeError(w, http.StatusServiceUnavailable, code, message, details)
 }
 
+// retryLater reports whether a fleet error answered with status is a 503 a
+// retry can fix. the guest having no display (ErrGuestUnavailable) is not.
+func retryLater(status int, err error) bool {
+	return status == http.StatusServiceUnavailable && !errors.Is(err, orchestrator.ErrGuestUnavailable)
+}
+
 // writeError writes an Error envelope with the given HTTP status and
 // code/message. Details are optional and should only carry stable,
 // non-sensitive metadata (e.g. ids, counts).
@@ -128,7 +134,7 @@ func writeFleetError(w http.ResponseWriter, err error) {
 		// the sdks wait on this intervention, then retry the call.
 		details = map[string]string{"intervention_id": locked.InterventionID, "kind": string(locked.Kind)}
 	}
-	if status == http.StatusServiceUnavailable {
+	if retryLater(status, err) {
 		writeRetryLater(w, code, err.Error(), details)
 		return
 	}
@@ -147,7 +153,7 @@ func writeFleetErrorRedacted(w http.ResponseWriter, err error, secretMap map[str
 	markSettled(w, err)
 	status, code := classifyFleetError(err)
 	msg := secrets.RedactSecretValues(err.Error(), secretMap)
-	if status == http.StatusServiceUnavailable {
+	if retryLater(status, err) {
 		writeRetryLater(w, code, msg, nil)
 		return
 	}
