@@ -185,8 +185,9 @@ class ShrinkRegrowTest(unittest.TestCase):
 class BootTest(unittest.TestCase):
     def boot(self, hotplug: bool, memory_mb: int = 4096):
         fc = FakeFirecracker()
-        meta = {"sock": "s", "cpus": 1, "memory_mb": memory_mb, "guest_ip": "172.16.0.2",
-                "host_ip": "172.16.0.1", "rootfs": "/r", "tap": "t", "mac": "m"}
+        meta = {"sock": "s", "cpus": 1, "memory_mb": memory_mb, "guest_ip": "10.209.0.1",
+                "host_ip": "10.208.0.1", "rootfs": "/r", "tap": "fcv1", "index": 1,
+                "guest_net": dict(fc_agent.GUEST_NET)}
         with mock.patch.object(fc_agent, "fc_api", fc), \
                 mock.patch.object(fc_agent, "MEM_HOTPLUG", hotplug):
             fc_agent.boot_firecracker(meta)

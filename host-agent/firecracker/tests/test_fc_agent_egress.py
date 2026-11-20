@@ -1,10 +1,11 @@
 """Tests for the host-agent side of the egress policy (epic #235, #239).
 
 Pins the four things the epic calls load-bearing: proxy mode installs no
-tap -> iface accept and does install a drop; direct mode's rule sequence is
-byte-for-byte what it was before egress existed; the agent forward that
-carries the orchestrator's connection to fused survives proxy mode; and a
-backend's config map never reaches meta.json.
+veth -> iface accept and does install a drop; direct mode's rule sequence is
+pinned call for call; the agent forward that carries the orchestrator's
+connection to fused survives proxy mode; and a backend's config map never
+reaches meta.json. Since #419 the rules key on each vm's host side veth
+(fcv<slot>) rather than its tap, which now lives in the vm's namespace.
 
 Stdlib-only, no VMs: sudo is captured, never run.
 """
@@ -12,6 +13,7 @@ import importlib.util
 import json
 import os
 import sys
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -53,13 +55,27 @@ def capture_sudo(present=()):
     return calls, fake
 
 
-# The pre-egress call sequence for a direct vm, verbatim. If this changes,
-# direct mode is no longer byte-for-byte what every existing host runs.
+# The call sequence for a direct vm in slot 3, verbatim: its namespace, the
+# veth into it, the nat at the veth, then the host rules the tap used to
+# have, keyed on the veth. If this changes, every host's direct vms change.
+IN_NS = ["ip", "netns", "exec", "fcns3"]
 DIRECT_SEQUENCE = [
+    ["ip", "netns", "del", "fcns3"],
     ["ip", "link", "del", "fcv3"],
-    ["ip", "tuntap", "add", "fcv3", "mode", "tap"],
-    ["ip", "addr", "add", "10.200.3.1/30", "dev", "fcv3"],
+    ["ip", "netns", "add", "fcns3"],
+    ["ip", "link", "add", "fcv3", "type", "veth", "peer", "name", "veth0", "netns", "fcns3"],
+    ["ip", "addr", "add", "10.208.0.3", "peer", "10.209.0.3", "dev", "fcv3"],
     ["ip", "link", "set", "fcv3", "up"],
+    IN_NS + ["ip", "link", "set", "lo", "up"],
+    IN_NS + ["ip", "addr", "add", "10.209.0.3", "peer", "10.208.0.3", "dev", "veth0"],
+    IN_NS + ["ip", "link", "set", "veth0", "up"],
+    IN_NS + ["ip", "route", "add", "default", "via", "10.208.0.3"],
+    IN_NS + ["ip", "tuntap", "add", "tap0", "mode", "tap"],
+    IN_NS + ["ip", "addr", "add", "172.16.0.1/30", "dev", "tap0"],
+    IN_NS + ["ip", "link", "set", "tap0", "up"],
+    IN_NS + ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+    IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"],
+    IN_NS + ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"],
     ["sysctl", "-w", "net.ipv4.ip_forward=1"],
     ["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
     ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
@@ -71,17 +87,19 @@ DIRECT_SEQUENCE = [
 
 OUTBOUND_ACCEPT = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
 OUTBOUND_DROP = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
+OUTBOUND_REPLY = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
 PURGE_ACCEPT = ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
 PURGE_DROP = ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
 RETURN_ACCEPT = DIRECT_SEQUENCE[-1]
+ADDRS = ("fcv3", "10.208.0.3", "10.209.0.3")
 
 
 class SetupTapTest(unittest.TestCase):
-    def test_direct_mode_is_byte_for_byte_unchanged(self):
+    def test_direct_mode_sequence_is_pinned(self):
         calls, fake = capture_sudo()
         with mock.patch.object(fc_agent, "sudo", side_effect=fake):
             result = fc_agent.setup_tap(3, "eth0")
-        self.assertEqual(result, ("fcv3", "10.200.3.1", "10.200.3.2"))
+        self.assertEqual(result, ADDRS)
         self.assertEqual(calls, DIRECT_SEQUENCE)
 
     def test_explicit_direct_equals_the_default(self):
@@ -94,7 +112,7 @@ class SetupTapTest(unittest.TestCase):
         calls, fake = capture_sudo()
         with mock.patch.object(fc_agent, "sudo", side_effect=fake):
             result = fc_agent.setup_tap(3, "eth0", "proxy")
-        self.assertEqual(result, ("fcv3", "10.200.3.1", "10.200.3.2"))
+        self.assertEqual(result, ADDRS)
         self.assertIn(OUTBOUND_DROP, calls)
         self.assertNotIn(OUTBOUND_ACCEPT, calls)
         # the drop must not be a bare omission: with no default-deny on the
@@ -102,17 +120,26 @@ class SetupTapTest(unittest.TestCase):
         self.assertTrue(any(c[1:3] == ["-I", "FORWARD"] and c[-1] == "DROP" for c in calls))
 
     def test_proxy_mode_keeps_the_return_leg_above_the_drop(self):
-        # both are -I'd, so the later insert sits higher in the chain. the
-        # RELATED,ESTABLISHED accept must be inserted after the drop, or the
-        # reply leg of the orchestrator's dnat'd connection to fused dies.
+        # all are -I'd, so a later insert sits higher in the chain. both
+        # RELATED,ESTABLISHED accepts must be inserted after the drop: the
+        # outbound one carries the replies of the orchestrator's dnat'd
+        # connection to fused, which leave by the same veth -> iface path the
+        # drop covers.
         calls, fake = capture_sudo()
         with mock.patch.object(fc_agent, "sudo", side_effect=fake):
             fc_agent.setup_tap(3, "eth0", "proxy")
+        self.assertLess(calls.index(OUTBOUND_DROP), calls.index(OUTBOUND_REPLY))
         self.assertLess(calls.index(OUTBOUND_DROP), calls.index(RETURN_ACCEPT))
 
+    def test_direct_mode_needs_no_reply_accept(self):
+        calls, fake = capture_sudo()
+        with mock.patch.object(fc_agent, "sudo", side_effect=fake):
+            fc_agent.setup_tap(3, "eth0")
+        self.assertNotIn(OUTBOUND_REPLY, calls)
+
     def test_proxy_mode_purges_a_stale_accept_first(self):
-        # iptables rules outlive the tap they name. a direct vm that held
-        # index 3 earlier left its accept; it must go before the drop lands.
+        # iptables rules outlive the device they name. a direct vm that held
+        # slot 3 earlier left its accept; it must go before the drop lands.
         calls, fake = capture_sudo(present=[PURGE_ACCEPT[1:]])
         with mock.patch.object(fc_agent, "sudo", side_effect=fake):
             fc_agent.setup_tap(3, "eth0", "proxy")
@@ -340,18 +367,23 @@ class DestroyVMTest(unittest.TestCase):
         self.assertIn(PURGE_DROP, calls)
         self.assertLess(calls.index(PURGE_DROP), calls.index(["ip", "link", "del", "fcv3"]))
 
-    def test_direct_vm_touches_no_egress_rule(self):
-        self.write_meta(egress_mode="direct")
-        calls = self.destroy()
+    def test_every_mode_purges_every_veth_rule_then_the_namespace(self):
+        # #211: whatever the mode, nothing keyed on the veth may outlive the
+        # vm, or it decides the egress of the next vm on the slot. a vm from
+        # before egress (no egress_mode) and one from before namespaces (its
+        # tap had the veth's name) take the same path.
+        purges = [PURGE_ACCEPT, PURGE_DROP, ["iptables", "-D"] + OUTBOUND_REPLY[2:],
+                  ["iptables", "-D"] + RETURN_ACCEPT[2:]]
+        for extra in ({"egress_mode": "direct"}, {"egress_mode": "proxy"}, {}):
+            with self.subTest(extra=extra):
+                shutil.rmtree(self.vms / "vm-a", ignore_errors=True)
+                self.write_meta(**extra)
+                calls = self.destroy()
+                for p in purges:
+                    self.assertIn(p, calls)
+                    self.assertLess(calls.index(p), calls.index(["ip", "netns", "del", "fcns3"]))
+                self.assertIn(["ip", "link", "del", "fcv3"], calls)
         self.assertEqual(self.destroyed, [])
-        self.assertNotIn(PURGE_DROP, calls)
-        self.assertNotIn(PURGE_ACCEPT, calls)
-
-    def test_pre_egress_meta_behaves_as_direct(self):
-        # a vm created before the field existed has no egress_mode at all.
-        self.write_meta()
-        calls = self.destroy()
-        self.assertNotIn(PURGE_DROP, calls)
 
 
 class WarpBackendTest(unittest.TestCase):

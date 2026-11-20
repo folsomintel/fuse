@@ -352,6 +352,33 @@ def hotplug_regrow(meta: dict) -> None:
 
 
 # -- Networking ---------------------------------------------------------------
+# every vm runs in its own network namespace, fcns<slot>. inside it the guest
+# sees the same network on every vm (GUEST_NET: tap0 at 172.16.0.1/30, the
+# guest at .2, one mac), so a vm resumed from a live snapshot finds the
+# network its memory image remembers whichever slot it lands in. a veth pair
+# joins the namespace to the host: fcv<slot> on the host at 10.208.<hi>.<lo>
+# and veth0 in the namespace at 10.209.<hi>.<lo>, hi and lo being the slot's
+# two bytes. the namespace nats between its veth address and the guest, so
+# from the host the guest is 10.209.<hi>.<lo>:
+#
+#   meta["guest_ip"]   10.209.<hi>.<lo>: ssh, the agent forward and expose
+#                      reach the guest here
+#   meta["host_ip"]    10.208.<hi>.<lo>: the host end, where an egress
+#                      backend listens for the guest
+#   meta["tap"]        fcv<slot>, the host side veth. every host rule (egress
+#                      mode, warp, wireguard) keys on it, as it did on the tap
+#   meta["guest_net"]  the tap, addresses and mac inside the namespace
+#
+# a vm from before namespaces keeps its 10.200.<idx> guest network
+# (legacy_guest_net) inside a namespace once its network is rebuilt, so its
+# rootfs and its live snapshots still line up.
+
+NETNS_PREFIX = "fcns"
+GUEST_NET = {"tap": "tap0", "ip": "172.16.0.2", "gw": "172.16.0.1", "mac": "06:00:AC:10:00:02"}
+# slots are 16 bits, but each vm's agent forward listens on HOST_PORT_BASE +
+# slot, so the port range is the tighter bound.
+SLOT_MAX = min(0xFFFF, 65535 - HOST_PORT_BASE)
+
 
 def used_indices() -> set[int]:
     used = set()
@@ -367,63 +394,191 @@ def used_indices() -> set[int]:
 
 def pick_index() -> int:
     used = used_indices()
-    for i in range(1, 250):
+    for i in range(1, SLOT_MAX + 1):
         if i not in used:
             return i
-    raise RuntimeError("no free VM index")
+    raise HTTPError(503, f"no free network slot: this host already holds {SLOT_MAX} vms")
 
 
 def tap_name(idx: int) -> str:
+    """the host side veth of slot idx (before namespaces, the tap itself)."""
     return f"fcv{idx}"
 
 
-def setup_tap(idx: int, iface: str, egress_mode: str = "direct") -> tuple[str, str, str]:
-    tap = tap_name(idx)
-    host_ip = f"10.200.{idx}.1"
-    guest_ip = f"10.200.{idx}.2"
+def netns_name(idx: int) -> str:
+    return f"{NETNS_PREFIX}{idx}"
+
+
+def slot_addrs(idx: int) -> tuple[str, str]:
+    """(host_ip, guest_ip): the two ends of slot idx's veth."""
+    hi, lo = idx >> 8, idx & 0xFF
+    return f"10.208.{hi}.{lo}", f"10.209.{hi}.{lo}"
+
+
+def legacy_guest_net(idx: int) -> dict:
+    """the guest network a vm at idx had before namespaces. its rootfs was
+    booted with it and any live snapshot of it remembers it."""
+    return {"tap": f"fcv{idx}", "ip": f"10.200.{idx}.2", "gw": f"10.200.{idx}.1",
+            "mac": f"06:00:AC:10:{idx:02x}:02"}
+
+
+def guest_net_of(meta: dict) -> dict:
+    return meta.get("guest_net") or legacy_guest_net(meta["index"])
+
+
+GUEST_TAP_RE = re.compile(r"[a-z0-9]{1,15}")
+GUEST_MAC_RE = re.compile(r"(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}")
+
+
+def manifest_guest_net(manifest: dict) -> dict:
+    """the guest network a live snapshot's guest remembers. a snapshot from
+    before namespaces records only its slot, which is what its guest network
+    derives from. raises ValueError (or KeyError, TypeError) on anything that
+    is not a guest network: a manifest can come off another host, and these
+    values end up in ip and firecracker calls."""
+    g = manifest.get("guest_net")
+    if g is None:
+        idx = int(manifest["index"])
+        if not 1 <= idx < 250:
+            raise ValueError(f"no guest network and no legacy slot ({idx})")
+        return legacy_guest_net(idx)
+    g = {k: str(g[k]) for k in ("tap", "ip", "gw", "mac")}
+    if not GUEST_TAP_RE.fullmatch(g["tap"]) or g["tap"] in ("lo", "veth0") or not GUEST_MAC_RE.fullmatch(g["mac"]):
+        raise ValueError("not a guest network")
+    ipaddress.IPv4Address(g["ip"])
+    ipaddress.IPv4Address(g["gw"])
+    return g
+
+
+def forward_rule(dev_in: str, dev_out: str, target: str, established: bool = False) -> list[str]:
+    """a FORWARD rule, without the iptables verb."""
+    state = ["-m", "state", "--state", "RELATED,ESTABLISHED"] if established else []
+    return ["FORWARD", "-i", dev_in, "-o", dev_out] + state + ["-j", target]
+
+
+def purge_rule(rule: list[str]) -> None:
+    """Deletes every copy of a filter rule. -D removes one match per call, so
+    loop until there is nothing left; bounded so a chain that somehow keeps
+    matching cannot spin this forever."""
+    for _ in range(16):
+        if sudo(["iptables", "-D"] + rule, check=False).returncode != 0:
+            return
+
+
+def setup_tap(idx: int, iface: str, egress_mode: str = "direct",
+              guest_net: dict | None = None) -> tuple[str, str, str]:
+    """builds slot idx's namespace, its tap and veth, the nat at the veth, and
+    the host rules for egress_mode. returns (host veth, host_ip, guest_ip).
+    removes whatever an earlier holder of the slot left first, so it is safe
+    to run again over a half-built or stale slot."""
+    g = guest_net or GUEST_NET
+    tap, ns = tap_name(idx), netns_name(idx)
+    host_ip, guest_ip = slot_addrs(idx)
+    sudo(["ip", "netns", "del", ns], check=False)
     sudo(["ip", "link", "del", tap], check=False)
-    sudo(["ip", "tuntap", "add", tap, "mode", "tap"])
-    sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
+    sudo(["ip", "netns", "add", ns])
+    sudo(["ip", "link", "add", tap, "type", "veth", "peer", "name", "veth0", "netns", ns])
+    sudo(["ip", "addr", "add", host_ip, "peer", guest_ip, "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
-    sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
-    # the guest's outbound leg is the only rule that depends on egress_mode.
-    # direct installs the tap -> iface accept it always has. proxy installs a
-    # drop in its place: not merely omitting the accept, because the FORWARD
-    # chain has no default-deny (issue #208) and omission alone would enforce
-    # nothing on a host whose policy is ACCEPT. the RELATED,ESTABLISHED return
-    # rule is -I'd after it and so sits above it, which is what keeps the
-    # reply leg of the orchestrator's dnat'd connection to fused working.
-    if egress_mode == "proxy":
-        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"],
-                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "DROP"])
-        # iptables rules outlive the tap they name, so a direct vm that held
-        # this index earlier can have left its accept behind. an accept above
-        # the drop wins, so it has to go first.
-        purge_forward_rule(tap, iface, "ACCEPT")
-    else:
-        outbound = (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
-                    ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"])
-    # NAT rules (idempotent)
-    for chk, add in [
-        (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
-         ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
-        outbound,
-        (["iptables", "-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
+    in_ns = ["ip", "netns", "exec", ns]
+    for cmd in [
+        ["ip", "link", "set", "lo", "up"],
+        ["ip", "addr", "add", guest_ip, "peer", host_ip, "dev", "veth0"],
+        ["ip", "link", "set", "veth0", "up"],
+        ["ip", "route", "add", "default", "via", host_ip],
+        ["ip", "tuntap", "add", g["tap"], "mode", "tap"],
+        ["ip", "addr", "add", f"{g['gw']}/30", "dev", g["tap"]],
+        ["ip", "link", "set", g["tap"], "up"],
+        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+        # the nat at the veth: what arrives for the veth address is the
+        # guest's, and what the guest sends leaves as the veth address. both
+        # go away with the namespace.
+        ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", guest_ip,
+         "-j", "DNAT", "--to-destination", g["ip"]],
+        ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", g["ip"],
+         "-j", "SNAT", "--to-source", guest_ip],
     ]:
-        if sudo(chk, check=False).returncode != 0:
-            sudo(add)
+        sudo(in_ns + cmd)
+    sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    # every guest packet reaches the host on the veth, so the host rules are
+    # the ones the tap had, keyed on the veth. the outbound leg is the only
+    # one that depends on egress_mode. direct installs the veth -> iface
+    # accept. proxy installs a drop in its place: not merely omitting the
+    # accept, because the FORWARD chain has no default-deny (issue #208) and
+    # omission alone would enforce nothing on a host whose policy is ACCEPT.
+    if egress_mode == "proxy":
+        # iptables rules outlive the device they name, so a direct vm that
+        # held this slot earlier can have left its accept behind. an accept
+        # above the drop wins, so it has to go first.
+        purge_rule(forward_rule(tap, iface, "ACCEPT"))
+        # the established accept is inserted after the drop and so sits above
+        # it: replies on connections that came in (the orchestrator's to
+        # fused, an expose) leave by this same veth -> iface path. a
+        # connection the guest opens never gets established, since its first
+        # packet is the one dropped.
+        outbound = [forward_rule(tap, iface, "DROP"), forward_rule(tap, iface, "ACCEPT", established=True)]
+    else:
+        outbound = [forward_rule(tap, iface, "ACCEPT")]
+    masquerade = ["POSTROUTING", "-o", iface, "-j", "MASQUERADE"]
+    if sudo(["iptables", "-t", "nat", "-C"] + masquerade, check=False).returncode != 0:
+        sudo(["iptables", "-t", "nat", "-A"] + masquerade)
+    for rule in outbound + [forward_rule(iface, tap, "ACCEPT", established=True)]:
+        if sudo(["iptables", "-C"] + rule, check=False).returncode != 0:
+            sudo(["iptables", "-I"] + rule)
     return tap, host_ip, guest_ip
 
 
-def purge_forward_rule(tap: str, iface: str, target: str) -> None:
-    """Deletes every FORWARD tap -> iface rule with the given target. -D
-    removes one match per call, so loop until there is nothing left; bounded
-    so a chain that somehow keeps matching cannot spin this forever."""
-    rule = ["iptables", "-D", "FORWARD", "-i", tap, "-o", iface, "-j", target]
-    for _ in range(16):
-        if sudo(rule, check=False).returncode != 0:
-            return
+def teardown_net(idx: int, iface: str) -> None:
+    """removes everything setup_tap made for slot idx: the host rules keyed on
+    its veth, then the namespace, which takes the veth pair, the tap and the
+    namespace's own nat with it. every step tolerates a missing piece, so
+    destroy, a failed create's rollback and the orphan sweep all land here,
+    as does a vm from before namespaces (its tap had the veth's name)."""
+    tap = tap_name(idx)
+    for rule in [forward_rule(tap, iface, "ACCEPT"), forward_rule(tap, iface, "DROP"),
+                 forward_rule(tap, iface, "ACCEPT", established=True),
+                 forward_rule(iface, tap, "ACCEPT", established=True)]:
+        purge_rule(rule)
+    sudo(["ip", "netns", "del", netns_name(idx)], check=False)
+    teardown_tap(tap)
+
+
+def rebuild_net(meta: dict) -> None:
+    """rebuilds a vm's network in its own slot (a restore in place, a
+    relaunch after a reboot) and re-points its forwards at it. a vm from
+    before namespaces moves onto one here. its guest keeps its addresses, but
+    the host side ones change, so an egress backend bound to the old ones is
+    released rather than left listening where the guest no longer reaches."""
+    iface = host_iface()
+    old_ip, old_host_ip = meta["guest_ip"], meta["host_ip"]
+    if "host_port" in meta:
+        del_agent_forward(meta["host_port"], old_ip)
+    for ep in meta.get("expose_endpoints", []):
+        del_expose_forward(ep["host_port"], old_ip, ep["port"], ep.get("protocol", "tcp"))
+    guest_net = guest_net_of(meta)
+    tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"), guest_net)
+    if host_ip != old_host_ip and meta.get("egress"):
+        release_egress(meta)
+    meta.update(tap=tap, host_ip=host_ip, guest_ip=guest_ip,
+                netns=netns_name(meta["index"]), guest_net=guest_net)
+    if "host_port" in meta:
+        add_agent_forward(meta["host_port"], guest_ip, iface)
+    for ep in meta.get("expose_endpoints", []):
+        add_expose_forward(ep["host_port"], guest_ip, ep["port"], ep.get("protocol", "tcp"))
+    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
+
+
+def sweep_orphan_netns() -> None:
+    """removes the network of any slot no vm holds: a crash between setup_tap
+    and the meta write, or a vm dir removed by hand. runs at startup, before
+    the server takes a create that could be building one."""
+    cp = run(["ip", "netns", "list"], check=False)
+    used = used_indices()
+    for line in cp.stdout.decode(errors="replace").splitlines():
+        m = re.fullmatch(NETNS_PREFIX + r"([0-9]{1,5})", line.split(" ", 1)[0])
+        if m and int(m.group(1)) not in used:
+            print(f"[fc-agent] removing orphan netns {m.group(0)}", flush=True)
+            teardown_net(int(m.group(1)), host_iface())
 
 
 # Transports an expose entry can name. Kept in step with fusefile's
@@ -442,8 +597,8 @@ def parse_egress_mode(req: dict) -> str:
         raise HTTPError(400, f"unknown egress mode {mode!r} (want one of {sorted(EGRESS_MODES)})")
     return mode
 
-def guest_network_fixup(host_ip: str, egress_mode: str) -> str:
-    route = f"ip route show default | grep -q . || ip route add default via {host_ip}; "
+def guest_network_fixup(gateway: str, egress_mode: str) -> str:
+    route = f"ip route show default | grep -q . || ip route add default via {gateway}; "
     if egress_mode == "proxy":
         return route + "echo nameserver 127.0.0.1 > /etc/resolv.conf"
     return route + "grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || echo nameserver 1.1.1.1 > /etc/resolv.conf"
@@ -463,7 +618,7 @@ def provision_egress(vm_id: str, body: dict) -> dict:
         raise HTTPError(400, f"unknown egress provider {provider!r} (this host has: {known})")
     listen_ip = body.get("listen_ip") or meta["host_ip"]
     if listen_ip != meta["host_ip"]:
-        raise HTTPError(400, f"listen_ip must be the vm's tap address {meta['host_ip']}, not {listen_ip}")
+        raise HTTPError(400, f"listen_ip must be the vm's host address {meta['host_ip']}, not {listen_ip}")
 
     provision, _ = backend
     endpoint = provision(meta, body)
@@ -504,8 +659,8 @@ def release_egress(meta: dict) -> None:
 
 WARP_PROVIDER = "cloudflare-warp"
 WARP_SCRIPT = FC_DIR / "scripts" / "fc-warp.sh"
-# the port the proxy is published on at each vm's tap address. one port for
-# every vm, because the tap address already differs per vm.
+# the port the proxy is published on at each vm's host address. one port for
+# every vm, because the host address already differs per vm.
 WARP_GUEST_PORT = int(os.environ.get("FUSE_WARP_GUEST_PORT", "1080"))
 WARP_REFS_DIR = STATE_DIR / "warp-refs"
 WARP_CONFIG_KEYS = {"WARP_ORG", "WARP_CLIENT_ID", "WARP_CLIENT_SECRET", "WARP_LICENSE", "WARP_PROXY_PORT"}
@@ -997,8 +1152,11 @@ def spawn_firecracker(meta: dict) -> None:
     log = d / "fc.log"
     sudo(["rm", "-f", str(sock)], check=False)
     # Launch firecracker under sudo, detach with setsid; capture pid from shell.
+    # it runs inside the vm's namespace, the only place its tap exists. the
+    # api socket is a path, so it is reachable from here all the same.
+    netns = f"ip netns exec {shlex.quote(meta['netns'])} " if meta.get("netns") else ""
     cmd = (
-        f"sudo -n setsid {shlex.quote(FC_BIN)} --api-sock {shlex.quote(str(sock))} "
+        f"sudo -n {netns}setsid {shlex.quote(FC_BIN)} --api-sock {shlex.quote(str(sock))} "
         f">{shlex.quote(str(log))} 2>&1 & echo $!"
     )
     pid_out = subprocess.check_output(["bash", "-lc", cmd]).decode().strip()
@@ -1036,13 +1194,14 @@ def boot_firecracker(meta: dict) -> None:
     """Configure a spawned firecracker process and cold-boot the guest."""
     sock = meta["sock"]
     boot_mib, hotplug_mib = mem_split(meta["memory_mb"])
+    g = guest_net_of(meta)
     # Configure boot, drive, net, machine-config, start.
     boot_args = (
         "console=ttyS0 reboot=k panic=1 pci=off "
         + ("" if VERBOSE_BOOT else "quiet loglevel=0 ")
         # movable, so the guest can migrate pages out of a block and unplug it.
         + ("memhp_default_state=online_movable " if hotplug_mib else "")
-        + f"ip={meta['guest_ip']}::{meta['host_ip']}:255.255.255.252::eth0:off"
+        + f"ip={g['ip']}::{g['gw']}:255.255.255.252::eth0:off"
     )
     # track_dirty_pages is set at boot on every VM, not just ones that will
     # be snapshotted, because it cannot be backfilled: firecracker only
@@ -1058,8 +1217,8 @@ def boot_firecracker(meta: dict) -> None:
         ("/boot-source", {"kernel_image_path": str(KERNEL), "boot_args": boot_args}),
         ("/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"],
                              "is_root_device": True, "is_read_only": False}),
-        ("/network-interfaces/eth0", {"iface_id": "eth0", "host_dev_name": meta["tap"],
-                                        "guest_mac": meta["mac"]}),
+        ("/network-interfaces/eth0", {"iface_id": "eth0", "host_dev_name": g["tap"],
+                                        "guest_mac": g["mac"]}),
         ("/machine-config", machine),
     ]
     if hotplug_mib:
@@ -1194,10 +1353,13 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     d.mkdir(parents=True)
     (d / "snapshots").mkdir()
 
-    idx = resume["index"] if resume else pick_index()
+    # any free slot, a resume included: the guest network lives inside the
+    # slot's namespace, so a resumed guest gets the one its memory image
+    # remembers wherever it lands.
+    idx = pick_index()
+    guest_net = resume["guest_net"] if resume else GUEST_NET
     iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode)
-    mac = f"06:00:AC:10:{idx:02x}:02"
+    tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode, guest_net)
     host_port = HOST_PORT_BASE + idx
     add_agent_forward(host_port, guest_ip, iface)
     # Guard against a stale multiplexed connection from a previous VM that
@@ -1224,9 +1386,10 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "region": req.get("region", ""),
         "egress_mode": egress_mode,
         "tap": tap,
+        "netns": netns_name(idx),
         "host_ip": host_ip,
         "guest_ip": guest_ip,
-        "mac": mac,
+        "guest_net": dict(guest_net),
         "rootfs": str(rootfs),
         "host_port": host_port,
         "url": host_authority(PUBLIC_HOST, host_port),
@@ -1249,7 +1412,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         else:
             meta["ssh_ready"] = True
             # Fix up guest networking: add default route + DNS if missing.
-            ssh_exec(guest_ip, guest_network_fixup(host_ip, egress_mode))
+            ssh_exec(guest_ip, guest_network_fixup(guest_net["gw"], egress_mode))
             if resume:
                 resync_guest_clock(guest_ip)
         save_meta(meta)
@@ -1257,9 +1420,7 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         # Roll back on failure.
         stop_firecracker(meta)
         del_agent_forward(host_port, guest_ip)
-        if egress_mode == "proxy":
-            purge_forward_rule(tap, iface, "DROP")
-        teardown_tap(tap)
+        teardown_net(idx, iface)
         shutil.rmtree(d, ignore_errors=True)
         raise
     return meta
@@ -1278,11 +1439,9 @@ def destroy_vm(vm_id: str) -> None:
         del_expose_forward(endpoint["host_port"], meta["guest_ip"],
                            endpoint["port"], endpoint.get("protocol", "tcp"))
     release_egress(meta)
-    if meta.get("egress_mode") == "proxy":
-        # the drop would otherwise outlive the tap and block the next direct
-        # vm that lands on this index.
-        purge_forward_rule(meta["tap"], host_iface(), "DROP")
-    teardown_tap(meta["tap"])
+    # every host rule keyed on the veth goes, whatever the mode: a leftover
+    # accept or drop would otherwise decide the next vm's egress on this slot.
+    teardown_net(meta["index"], host_iface())
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     # Snapshots are NOT under vm_dir any more (see SNAPSHOTS_DIR), so this
     # removes the vm's own rootfs and metadata only. A build artifact this vm
@@ -2049,9 +2208,14 @@ def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = F
         # digest like the files it describes. see the live artifact section
         # for what each field is for. snapshot_id makes it unique, so a child
         # can name its exact parent by the digest of the parent's manifest.
+        guest_net = guest_net_of(meta)
         live_manifest = {
             "snapshot_id": snap_id,
-            "index": meta["index"],
+            # an agent from before namespaces resumes by this slot alone. 0
+            # makes it refuse a guest network it cannot build, rather than
+            # resume a guest into a network it does not remember.
+            "index": meta["index"] if guest_net != GUEST_NET else 0,
+            "guest_net": guest_net,
             "rootfs_path": meta["rootfs"],
             "host": host_fingerprint(),
             "clock_realtime": snapshot_clock_realtime(),
@@ -2211,19 +2375,11 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
     if parent:
         raise HTTPError(409, f"snapshot {snapshot_id} is a diff against {parent}; "
                              "it holds only what changed and cannot be restored on its own")
-    # Stop firecracker, swap rootfs, recreate the TAP (the dead fc process
-    # may still be holding it briefly), restart with same config.
+    # Stop firecracker, swap rootfs, recreate the network (the dead fc process
+    # may still be holding the tap briefly), restart with same config.
     stop_firecracker(meta)
     time.sleep(0.3)
-    if "host_port" in meta:
-        del_agent_forward(meta["host_port"], meta["guest_ip"])
-    teardown_tap(meta["tap"])
-    iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
-    meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
-    if "host_port" in meta:
-        add_agent_forward(meta["host_port"], guest_ip, iface)
-    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
+    rebuild_net(meta)
     # Copy into a fresh inode and rename over the live rootfs instead of
     # overwriting it in place. The just-killed guest can leave dirty host
     # page-cache pages tied to the old rootfs inode; an in-place cp can
@@ -2247,9 +2403,9 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
         # InstanceStart first and the load is rejected outright.
         #
         # Nothing has to be told about the network either. This is a restore in
-        # place, so setup_tap above derived the same tap name, IPs and MAC from
-        # the same meta["index"] the frozen guest was using, and the device the
-        # memory image expects to find is the device that now exists.
+        # place, so rebuild_net above built the vm's own guest network again
+        # (same tap name, IPs and MAC), and the device the memory image
+        # expects to find is the device that now exists.
         # firecracker cannot restore hugepage memory from a file backend, so a
         # 2M vm is always resumed through fc-uffd, even here on its own host.
         if meta.get("huge_pages"):
@@ -2294,7 +2450,9 @@ def resume_plan(snapshot_id: str) -> dict:
     """decide whether this host can resume a live snapshot into a NEW vm, and
     return its manifest if so. runs before anything is allocated, under
     _create_lock like the rest of create_vm, so a refusal leaves nothing to
-    roll back and the slot it checks cannot be taken in between.
+    roll back. the network slot is not one of its checks: the guest network
+    is the same inside every slot's namespace, so any free slot will do, and
+    two vms resumed from one snapshot on one host each get their own.
 
     every refusal is a 409 naming the reason. the caller still has the source
     vm running, so a clear no is cheap and a wrong yes is a guest that dies
@@ -2308,7 +2466,7 @@ def resume_plan(snapshot_id: str) -> dict:
         raise HTTPError(409, f"snapshot {snapshot_id} is a diff and cannot be resumed on its own")
     try:
         manifest = json.loads(snapshot_file("", snapshot_id, LIVE_MANIFEST).read_text())
-        index = int(manifest["index"])
+        guest_net = manifest_guest_net(manifest)
         rootfs_path = str(manifest["rootfs_path"])
         host = manifest["host"]
         lazy = json.loads(snapshot_file("", snapshot_id, "meta.json").read_text()).get("lazy")
@@ -2323,8 +2481,6 @@ def resume_plan(snapshot_id: str) -> dict:
     here = host_fingerprint()
     if host != here:
         raise HTTPError(409, f"snapshot {snapshot_id} was taken on {host} and cannot resume on {here}")
-    if not 1 <= index < 250 or index in used_indices():
-        raise HTTPError(409, f"network slot {index} is in use on this host; the frozen guest cannot be given another")
 
     # rootfs_path came off another host and is about to become a symlink made
     # with sudo, so it is held to the one shape create_vm ever produces: a
@@ -2338,7 +2494,7 @@ def resume_plan(snapshot_id: str) -> dict:
             or os.path.lexists(parent)):
         raise HTTPError(409, f"snapshot {snapshot_id} names a drive path this host cannot recreate")
     return {
-        "index": index,
+        "guest_net": guest_net,
         "rootfs_path": rootfs_path,
         "vmstate": snapshot_file("", snapshot_id, "vmstate"),
         "mem": snapshot_file("", snapshot_id, "mem", required=not lazy),
@@ -2353,8 +2509,8 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
 
     the counterpart of start_firecracker for a vm that did not exist on this
     host when the image was taken. the network needs nothing said about it:
-    resume_plan only lets this run when the vm got the source's slot, so the
-    tap, ips and mac setup_tap built are the ones the guest remembers. the
+    create_vm built the vm's namespace with the guest network the manifest
+    records, so the tap, ips and mac are the ones the guest remembers. the
     entropy needs nothing said either: firecracker writes a fresh vmgenid on
     every load, and a guest kernel with the driver (the 6.1 default
     fc-install.sh fetches) reseeds its csprng from it, so two vms resumed from
@@ -3766,10 +3922,11 @@ def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
 
 
 def vm_public(meta: dict) -> dict:
-    # host_ip and guest_ip are the two ends of the vm's tap. the orchestrator
-    # needs them to bind an in-process egress backend where the guest can
-    # reach it and to name the guest's own addresses in NO_PROXY. additive:
-    # a reader that predates them ignores them.
+    # host_ip and guest_ip are the two ends of the vm's veth, the addresses
+    # the host and the guest reach each other on. the orchestrator needs them
+    # to bind an in-process egress backend where the guest can reach it and
+    # to name them in NO_PROXY. additive: a reader that predates them ignores
+    # them.
     return {
         "vm_id": meta["vm_id"],
         "url": meta.get("url", ""),
@@ -4249,14 +4406,8 @@ def reattach_vms() -> None:
             continue
         print(f"[fc-agent] reattach: relaunching {meta['vm_id']}", flush=True)
         try:
-            # Recreate TAP + DNAT using the stored index/ports.
-            teardown_tap(meta["tap"])
-            iface = host_iface()
-            tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
-            meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
-            if "host_port" in meta:
-                del_agent_forward(meta["host_port"], guest_ip)
-                add_agent_forward(meta["host_port"], guest_ip, iface)
+            # Recreate the netns + DNAT using the stored index/ports.
+            rebuild_net(meta)
             start_firecracker(meta)
             save_meta(meta)
         except Exception as e:
@@ -4266,6 +4417,7 @@ def reattach_vms() -> None:
 
 def main():
     reattach_vms()
+    sweep_orphan_netns()
     # started on every host, not just FC_MEM_HOTPLUG ones: a vm resumed from
     # another host's snapshot brings its hotplug device with it.
     threading.Thread(target=hotplug_loop, daemon=True).start()
