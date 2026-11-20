@@ -62,6 +62,7 @@ type clientConfig struct {
 	onHeld     func(*Intervention)
 
 	onOperation func(*OperationAccepted)
+	retries     int
 }
 
 // Option configures a Client in New.
@@ -123,6 +124,7 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 	cfg := clientConfig{
 		userAgent: "fuse-go/" + sdkVersion(),
 		baseURL:   baseURL,
+		retries:   defaultRetries,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -152,6 +154,7 @@ func New(baseURL, token string, opts ...Option) (*Client, error) {
 		onHeld:     cfg.onHeld,
 
 		onOperation: cfg.onOperation,
+		retries:     cfg.retries,
 	}
 	return newClient(t), nil
 }

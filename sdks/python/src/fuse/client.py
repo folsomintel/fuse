@@ -5,6 +5,7 @@ from typing import Callable, Optional
 import httpx
 
 from ._core import DEFAULT_TIMEOUT, DEFAULT_USER_AGENT
+from ._retry import DEFAULT_RETRIES
 from ._services.apikeys import APIKeysService
 from ._services.builds import BuildsService
 from ._services.environments import EnvironmentsService
@@ -31,6 +32,13 @@ class Client:
     # on_operation is called with the accepted operation whenever a mutating
     # call outlasts the server's wait and answers 202, before the call
     # follows it to the end.
+    #
+    # retries is how many times a call that sends an Idempotency-Key (create,
+    # fork, migrate, drain, destroy, snapshot create and restore, image
+    # convert, build create) and is answered 503 is sent again under the same
+    # key before the 503 is raised. each retry waits at least the server's
+    # Retry-After, or a backoff doubling from 1s without one, plus up to half
+    # again as jitter. 0 turns retrying off.
     def __init__(
         self,
         base_url: str,
@@ -44,6 +52,7 @@ class Client:
         hitl_wait: bool = True,
         on_held: Optional[Callable[[Intervention], None]] = None,
         on_operation: Optional[Callable[[OperationAccepted], None]] = None,
+        retries: int = DEFAULT_RETRIES,
     ) -> None:
         if not base_url:
             raise ValueError("base url is required")
@@ -62,6 +71,7 @@ class Client:
             hitl_wait=hitl_wait,
             on_held=on_held,
             on_operation=on_operation,
+            retries=retries,
         )
         self._bind()
 

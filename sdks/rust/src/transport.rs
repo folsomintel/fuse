@@ -8,6 +8,7 @@ use url::Url;
 use crate::error::{parse_api_error, Error, REQUEST_ID_HEADER};
 use crate::gates::{decode, HitlWait};
 use crate::operations::OnOperation;
+use crate::retry::DEFAULT_RETRIES;
 use crate::types::ActorLabel;
 
 pub(crate) const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -39,6 +40,9 @@ pub(crate) struct Transport {
     // on_operation is told about a 202 operation before it is followed. the
     // builder sets it after new.
     pub(crate) on_operation: Option<OnOperation>,
+    // retries is how many times a keyed call answered 503 is sent again. the
+    // builder sets it after new.
+    pub(crate) retries: u32,
 }
 
 impl Transport {
@@ -61,6 +65,7 @@ impl Transport {
             actor,
             hitl: HitlWait::default(),
             on_operation: None,
+            retries: DEFAULT_RETRIES,
         }
     }
 

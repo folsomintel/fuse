@@ -14,6 +14,7 @@ use crate::hosts::Hosts;
 use crate::images::Images;
 use crate::interventions::Interventions;
 use crate::operations::{OnOperation, Operations};
+use crate::retry::DEFAULT_RETRIES;
 use crate::snapshots::Snapshots;
 use crate::transport::{RequestIdFn, Transport, DEFAULT_TIMEOUT};
 use crate::types::{ActorLabel, Intervention, OperationAccepted, VersionInfo};
@@ -166,6 +167,7 @@ pub struct ClientBuilder {
     actor: Option<ActorLabel>,
     hitl: HitlWait,
     on_operation: Option<OnOperation>,
+    retries: u32,
 }
 
 impl ClientBuilder {
@@ -180,6 +182,7 @@ impl ClientBuilder {
             actor: None,
             hitl: HitlWait::default(),
             on_operation: None,
+            retries: DEFAULT_RETRIES,
         }
     }
 
@@ -253,6 +256,18 @@ impl ClientBuilder {
         self
     }
 
+    /// Sets how many times a call that sends an idempotency key (create,
+    /// fork, migrate, drain, destroy, snapshot create and restore, image
+    /// convert, build create) and is answered 503 is sent again under the
+    /// same key before the 503 is returned as an error. Each retry waits at
+    /// least the server's `Retry-After`, or a backoff doubling from 1s
+    /// without one, plus up to half again as jitter, on the tokio timer.
+    /// Default: 3; 0 turns retrying off.
+    pub fn retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
+        self
+    }
+
     /// Builds the client. Fails if the base URL is empty or not a valid
     /// absolute HTTP URL.
     pub fn build(self) -> Result<Client, Error> {
@@ -286,6 +301,7 @@ impl ClientBuilder {
         );
         transport.hitl = self.hitl;
         transport.on_operation = self.on_operation;
+        transport.retries = self.retries;
         Ok(Client {
             transport: Arc::new(transport),
         })

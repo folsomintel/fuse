@@ -89,7 +89,8 @@ func newIdempotencyKey() string {
 // doOperation sends a mutating call with its Idempotency-Key and, when the
 // server answers 202 with an operation, follows it until it finishes. it
 // returns a response standing in for the one the call would have given
-// directly, so callers handle it exactly as before.
+// directly, so callers handle it exactly as before. a 503 (no capacity,
+// restate down) is sent again under the same key, see WithRetry.
 func (t *transport) doOperation(ctx context.Context, req *http.Request, opts []CallOption) (*http.Response, error) {
 	var o callOptions
 	for _, opt := range opts {
@@ -101,6 +102,13 @@ func (t *transport) doOperation(ctx context.Context, req *http.Request, opts []C
 		o.idempotencyKey = newIdempotencyKey()
 	}
 	req.Header.Set(idempotencyKeyHeader, o.idempotencyKey)
+	return t.retryUnavailable(ctx, req, func(req *http.Request) (*http.Response, error) {
+		return t.doOperationOnce(ctx, req)
+	})
+}
+
+// doOperationOnce is one send of doOperation, following a 202 to its end.
+func (t *transport) doOperationOnce(ctx context.Context, req *http.Request) (*http.Response, error) {
 	resp, err := t.do(req)
 	if err != nil {
 		return nil, err

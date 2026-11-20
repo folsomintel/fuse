@@ -61,6 +61,7 @@ mod hosts;
 mod images;
 mod interventions;
 mod operations;
+mod retry;
 mod snapshots;
 mod strenum;
 mod takeover;
