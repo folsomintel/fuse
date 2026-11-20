@@ -1,0 +1,15 @@
+version: 1
+
+# the fan-out parent: big enough that copying its memory per child would show.
+# fanout.sh fills HEAVY_MB of /dev/shm after boot, so the dirty pages are
+# guest memory a live fork has to carry (tmpfs is capped at half of ram).
+resources:
+  cpus: 2
+  memory: 4GB
+  storage: 8GB
+  max_runtime: 2h
+
+run: |
+  echo ok > /tmp/bench.marker
+
+workspace: /workspace
