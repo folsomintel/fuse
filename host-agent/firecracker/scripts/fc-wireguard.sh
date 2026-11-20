@@ -3,11 +3,15 @@
 #
 #   fc-wireguard.sh up     <fp> <slot>  < wireproxy.conf   bring one bridge up (idempotent)
 #   fc-wireguard.sh down   <fp> <slot>                     tear it down
-#   fc-wireguard.sh attach <fp> <slot> <tap> <listen_ip> <port> <bridge_port>
-#                                                           publish the bridge on one vm's tap
-#   fc-wireguard.sh detach <fp> <slot> <tap> <listen_ip> <port> <bridge_port>
+#   fc-wireguard.sh attach <fp> <slot> <vm_dev> <listen_ip> <port> <bridge_port>
+#                                                           publish the bridge to one vm
+#   fc-wireguard.sh detach <fp> <slot> <vm_dev> <listen_ip> <port> <bridge_port>
 #                                                           remove that
 #   fc-wireguard.sh status <fp> <slot>                     print the bridge's wireguard state
+#
+# <vm_dev> is the host side veth of the vm's own namespace (fcv<n>), which
+# every packet the guest sends arrives on, and <listen_ip> the host address
+# on it. Both come from fc-agent.py's setup_tap.
 #
 # One bridge per distinct wireguard config, named by the config's fingerprint
 # <fp> and given a /30 by <slot>: fc-agent.py validates the config, allocates
@@ -20,9 +24,9 @@
 # pair and the host's nat, which is all the wireguard udp needs; the tunnel
 # itself lives in wireproxy's process, so nothing in the namespace or on the
 # host routes through it. A guest reaches the bridge through one dnat on its
-# tap: <listen_ip>:<port> becomes 10.202.<slot>.2:<bridge_port>. That path
-# leaves the tap on the veth, not the host's default interface, so the
-# FORWARD drop that enforces proxy mode never sees it.
+# vm device: <listen_ip>:<port> becomes 10.202.<slot>.2:<bridge_port>. That
+# path leaves the vm device for the bridge's veth, not the host's default
+# interface, so the FORWARD drop that enforces proxy mode never sees it.
 #
 # The config, which holds the private key, arrives on stdin, never as an
 # argument. It is written once, mode 600 in a root-only directory under /run
@@ -166,17 +170,17 @@ cmd_down() {
   log "bridge $FP down"
 }
 
-# vm_rules <add|del> <fp> <slot> <tap> <listen_ip> <port> <bridge_port>. the
-# drop goes in first so the accepts land above it: the tap may reach its own
+# vm_rules <add|del> <fp> <slot> <vm_dev> <listen_ip> <port> <bridge_port>. the
+# drop goes in first so the accepts land above it: the vm may reach its own
 # bridge's one port and no other address in the bridge range.
 vm_rules() {
   local mode="$1"; shift
   names "$1" "$2"
-  local tap="${3:?tap}" listen_ip="${4:?listen ip}" port="${5:?port}" bridge_port="${6:?bridge port}"
-  rule "$mode" FORWARD -i "$tap" -d "$BRIDGE_NET" -j DROP
-  rule "$mode" FORWARD -i "$VETH_HOST" -o "$tap" -m state --state RELATED,ESTABLISHED -j ACCEPT
-  rule "$mode" FORWARD -i "$tap" -o "$VETH_HOST" -d "$VETH_NS_IP" -p tcp --dport "$bridge_port" -j ACCEPT
-  rule "$mode" -t nat PREROUTING -i "$tap" -d "$listen_ip" -p tcp --dport "$port" -j DNAT --to-destination "$VETH_NS_IP:$bridge_port"
+  local vm_dev="${3:?vm device}" listen_ip="${4:?listen ip}" port="${5:?port}" bridge_port="${6:?bridge port}"
+  rule "$mode" FORWARD -i "$vm_dev" -d "$BRIDGE_NET" -j DROP
+  rule "$mode" FORWARD -i "$VETH_HOST" -o "$vm_dev" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  rule "$mode" FORWARD -i "$vm_dev" -o "$VETH_HOST" -d "$VETH_NS_IP" -p tcp --dport "$bridge_port" -j ACCEPT
+  rule "$mode" -t nat PREROUTING -i "$vm_dev" -d "$listen_ip" -p tcp --dport "$port" -j DNAT --to-destination "$VETH_NS_IP:$bridge_port"
 }
 
 case "${1:-}" in

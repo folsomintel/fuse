@@ -10,7 +10,8 @@
 # Idempotent: each rule is added only if not already present (checked via
 # iptables -C) and removed only if present, so re-running this script for
 # the same port is always safe. guest_ip is per-VM (see fc-agent.py's
-# setup_tap, which allocates 10.200.<idx>.2 per VM) -- unlike an earlier
+# setup_tap: the namespace end of each vm's veth, 10.209.<hi>.<lo> for its
+# slot, which the vm's namespace nats to the guest) -- unlike an earlier
 # version of this script there is no hardcoded guest ip. Mirrors the rule
 # set fc-agent.py's own add_agent_forward uses for the fixed agent port.
 set -euo pipefail

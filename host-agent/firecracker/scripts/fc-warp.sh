@@ -4,9 +4,13 @@
 #   fc-warp.sh install                       install the unit, retire the stock warp-svc
 #   fc-warp.sh up      < KEY=value lines     bring the per-host warp up (idempotent)
 #   fc-warp.sh down                          tear it down
-#   fc-warp.sh attach <tap> <listen_ip> <port>   publish the proxy on one vm's tap
-#   fc-warp.sh detach <tap> <listen_ip> <port>   remove that
+#   fc-warp.sh attach <vm_dev> <listen_ip> <port>   publish the proxy to one vm
+#   fc-warp.sh detach <vm_dev> <listen_ip> <port>   remove that
 #   fc-warp.sh status                        print warp-cli's status
+#
+# <vm_dev> is the host side veth of the vm's own namespace (fcv<n>), which
+# every packet the guest sends arrives on, and <listen_ip> the host address
+# on it. Both come from fc-agent.py's setup_tap.
 #
 # One warp-svc per host, in its own network namespace, shared by every
 # proxy-mode vm on the host. The namespace is the load-bearing part: warp-svc
@@ -16,10 +20,10 @@
 #
 # warp's proxy listener binds loopback inside the namespace and nothing else,
 # so a guest reaches it through a veth pair plus two DNATs: the host rewrites
-# <listen_ip>:<port> on the vm's tap to the namespace end of the veth, and the
-# namespace rewrites that to its own loopback. The proxy path leaves the tap on
-# the veth, not the host's default interface, so the FORWARD drop that enforces
-# proxy mode never sees it.
+# <listen_ip>:<port> on the vm device to the namespace end of the veth, and the
+# namespace rewrites that to its own loopback. The proxy path leaves the vm
+# device for the warp veth, not the host's default interface, so the FORWARD
+# drop that enforces proxy mode never sees it.
 #
 # The credential arrives on stdin as KEY=value lines, never as an argument and
 # never as an environment variable of a sudo command, both of which show in
@@ -214,21 +218,21 @@ cmd_down() {
   log "warp down"
 }
 
-# attach/detach: publish the namespace's proxy on one vm's tap address.
+# attach/detach: publish the namespace's proxy on one vm's host address.
 vm_rules() {
-  local mode="$1" tap="$2" listen_ip="$3" port="$4" ns_port
+  local mode="$1" vm_dev="$2" listen_ip="$3" port="$4" ns_port
   ns_port="$(cat /run/fuse-warp.port 2>/dev/null || echo 40000)"
-  rule "$mode" -t nat PREROUTING -i "$tap" -d "$listen_ip" -p tcp --dport "$port" -j DNAT --to-destination "$VETH_NS_IP:$ns_port"
-  rule "$mode" FORWARD -i "$tap" -o "$VETH_HOST" -j ACCEPT
-  rule "$mode" FORWARD -i "$VETH_HOST" -o "$tap" -m state --state RELATED,ESTABLISHED -j ACCEPT
+  rule "$mode" -t nat PREROUTING -i "$vm_dev" -d "$listen_ip" -p tcp --dport "$port" -j DNAT --to-destination "$VETH_NS_IP:$ns_port"
+  rule "$mode" FORWARD -i "$vm_dev" -o "$VETH_HOST" -j ACCEPT
+  rule "$mode" FORWARD -i "$VETH_HOST" -o "$vm_dev" -m state --state RELATED,ESTABLISHED -j ACCEPT
 }
 
 case "${1:-}" in
   install) cmd_install ;;
   up)      cmd_up ;;
   down)    cmd_down ;;
-  attach)  vm_rules add "${2:?tap}" "${3:?listen ip}" "${4:?port}"; log "attached $2 $3:$4" ;;
-  detach)  vm_rules del "${2:?tap}" "${3:?listen ip}" "${4:?port}"; log "detached $2 $3:$4" ;;
+  attach)  vm_rules add "${2:?vm device}" "${3:?listen ip}" "${4:?port}"; log "attached $2 $3:$4" ;;
+  detach)  vm_rules del "${2:?vm device}" "${3:?listen ip}" "${4:?port}"; log "detached $2 $3:$4" ;;
   status)  warp_cli status ;;
   *) die "usage: fc-warp.sh install|up|down|attach|detach|status" ;;
 esac
