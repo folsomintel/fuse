@@ -259,11 +259,17 @@ Safe to repeat without a key:
 
 ## Networking model
 
-- One TAP per VM (`fcv<N>`), /30 subnet `10.200.<N>.0/30`, host `.1`, guest `.2`.
-- Host iptables: MASQUERADE for egress, FORWARD accept for the TAP, per-VM
-  PREROUTING DNAT `<public_host>:<port> -> <guest>:9550` to the guest agent.
+- Firecracker: one network namespace per VM (`fcns<N>`, `N` the VM's 16-bit slot).
+  Inside it every guest gets the same network: `tap0` at `172.16.0.1/30`, the guest
+  at `.2`, one MAC, so a live snapshot resumes into any free slot. A veth pair
+  (`fcv<N>` on the host at `10.208.<hi>.<lo>`, `veth0` in the namespace at
+  `10.209.<hi>.<lo>`) joins it to the host, and the namespace NATs
+  `10.209.<hi>.<lo>` to the guest. The QEMU agent still uses one TAP per VM
+  (`qv<N>`, `10.200.<N>.0/30`).
+- Host iptables: MASQUERADE for egress, FORWARD accept for the veth (TAP on QEMU),
+  per-VM PREROUTING DNAT `<public_host>:<port> -> <guest>:9550` to the guest agent.
 - Cloud SG / external firewall must allow inbound TCP to the agent port (8090)
-  and the DNAT range (19551–19799 at current defaults).
+  and the DNAT range (`19550 + slot`: 19551–19799 covers the first 249 VMs).
 
 ## Baking the rootfs (`rootfs-fused.ext4`)
 

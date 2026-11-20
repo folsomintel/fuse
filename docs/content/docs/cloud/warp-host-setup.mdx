@@ -131,8 +131,9 @@ journalctl -u fuse-warp -f
 **The namespace.** `warp-svc` runs inside `fuse-warp`, so the host's default
 route, resolver and firewall never see the tunnel. The proxy listener is what
 crosses the boundary: for each proxy-mode vm the agent publishes an endpoint
-on that vm's tap address (`10.200.<N>.1`), which is the only address the
-guest can reach and the only one the agent will accept as `listen_ip`.
+on the host end of that vm's veth (`10.208.<hi>.<lo>` for its slot), with a
+DNAT that only matches traffic arriving on that veth. It is the only address
+the agent will accept as `listen_ip`.
 
 **Refcounting.** One `warp-svc` serves every proxy-mode vm on the host. The
 first proxy-mode provision on a host runs `fc-warp.sh up`, later ones share

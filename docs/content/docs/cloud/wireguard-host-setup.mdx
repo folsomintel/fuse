@@ -10,7 +10,7 @@ proxy-mode environment's outbound traffic through a WireGuard tunnel that the
 environment brings itself: a standard wg-quick config (from Mullvad, Proton,
 your own server, a corporate VPN), passed as a [secret](#the-config-secret).
 The orchestrator needs no configuration for it. The host bridges the tunnel
-to a socks5/http proxy on the vm's tap, so the workload sees the same proxy
+to a socks5/http proxy on the host end of the vm's veth, so the workload sees the same proxy
 contract as every other provider.
 
 :::warning[New, and not yet exercised on a production host]
@@ -114,7 +114,8 @@ the validated config (comments, whitespace and key case do not count):
   private key) through a systemd credential. The config file lives under
   `/run/fuse-wireguard/<fp>/`, mode 600, on tmpfs;
 - a socks5 listener on `10.202.<slot>.2:1080` and an http one on `:1081`;
-- per environment, one DNAT from its tap address `:1080` to the listener for
+- per environment, one DNAT from its host address (`10.208.<hi>.<lo>`, on its
+  own veth `fcv<slot>`) `:1080` to the listener for
   the protocol it asked for, an accept for exactly that port, and a drop for
   every other address in `10.202.0.0/16`, so an environment can reach its
   own bridge and no other.

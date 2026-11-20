@@ -6,18 +6,19 @@ hops, as a stream of length-prefixed binary frames.
 
 This document is the specification. The implementations that exist today are:
 
-| Role | File |
-| --- | --- |
-| Client (frame codec, dialer) | [`sdks/go/exec.go`](../sdks/go/exec.go) |
-| Relay (hijack + byte pump) | [`internal/api/exec.go`](../internal/api/exec.go) |
-| Relay (dial the host agent) | [`internal/hostwire/dial.go`](../internal/hostwire/dial.go), [`internal/hostwire/attach.go`](../internal/hostwire/attach.go) |
-| Server (pty, frame codec) | [`host-agent/firecracker/fc-agent.py`](../host-agent/firecracker/fc-agent.py), [`host-agent/qemu/qemu-agent.py`](../host-agent/qemu/qemu-agent.py) |
+| Role                         | File                                                                                                                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Client (frame codec, dialer) | [`sdks/go/exec.go`](../sdks/go/exec.go)                                                                                                            |
+| Relay (hijack + byte pump)   | [`internal/api/exec.go`](../internal/api/exec.go)                                                                                                  |
+| Relay (dial the host agent)  | [`internal/hostwire/dial.go`](../internal/hostwire/dial.go), [`internal/hostwire/attach.go`](../internal/hostwire/attach.go)                       |
+| Server (pty, frame codec)    | [`host-agent/firecracker/fc-agent.py`](../host-agent/firecracker/fc-agent.py), [`host-agent/qemu/qemu-agent.py`](../host-agent/qemu/qemu-agent.py) |
 
 ## Why it exists
 
-**The orchestrator cannot reach a guest.** Each VM sits on its own `/30` TAP on its
-host (`10.200.<idx>.1` for the host end, `10.200.<idx>.2` for the guest), routable only
-from that host. The orchestrator's only route to guest-adjacent anything is the host
+**The orchestrator cannot reach a guest.** Each Firecracker VM sits in its own network
+namespace on its host, reached through a veth (`10.208.<hi>.<lo>` for the host end,
+`10.209.<hi>.<lo>` for the guest), routable only from that host. A QEMU VM sits on a
+`/30` TAP (`10.200.<idx>.1` host, `10.200.<idx>.2` guest), equally host-local. The orchestrator's only route to guest-adjacent anything is the host
 agent's HTTP API. So an interactive session cannot be a direct connection to the VM: every
 byte in both directions has to relay through the host agent, which is the only process
 that can open a pty onto the guest.
@@ -48,7 +49,7 @@ knowing.
       |  hop 2:  GET /v1/vm/{vmId}/attach                 Upgrade: fuse-attach/1
       |          Authorization: Bearer <host agent token>
       v
-  host agent                            (pty.fork -> ssh -tt root@10.200.N.2 [cmd...])
+  host agent                            (pty.fork -> ssh -tt root@<guest ip> [cmd...])
       |
       v
   guest
@@ -57,7 +58,7 @@ knowing.
 The orchestrator does not forward the client's request. It parses the attach spec out of
 the query string (`hostwire.ParseAttachQuery`), re-encodes it (`hostwire.AttachQuery`), and
 issues a fresh request to the host agent with the host agent's own token. Only the byte
-stream *after* the two `101` responses is relayed verbatim.
+stream _after_ the two `101` responses is relayed verbatim.
 
 ## Handshake
 
@@ -123,14 +124,14 @@ what lets failures be reported as HTTP: once the socket is hijacked there is no
 
 Errors before the `101` use the standard envelope, `{"error":{"code":"...","message":"..."}}`:
 
-| Status | Code | Cause |
-| --- | --- | --- |
-| 400 | `invalid_argument` | missing or wrong `Upgrade` header |
-| 403 | `unauthorized` | not the master token |
-| 404 | `not_found` | unknown VM |
-| 409 | `conflict` | VM is not in state `running` (draining, provisioning, ...) |
-| 501 | `unimplemented` | the provider has no guest to attach to (e.g. the stub) |
-| 500 | `internal` | host agent unreachable, or it refused the upgrade |
+| Status | Code               | Cause                                                      |
+| ------ | ------------------ | ---------------------------------------------------------- |
+| 400    | `invalid_argument` | missing or wrong `Upgrade` header                          |
+| 403    | `unauthorized`     | not the master token                                       |
+| 404    | `not_found`        | unknown VM                                                 |
+| 409    | `conflict`         | VM is not in state `running` (draining, provisioning, ...) |
+| 501    | `unimplemented`    | the provider has no guest to attach to (e.g. the stub)     |
+| 500    | `internal`         | host agent unreachable, or it refused the upgrade          |
 
 That last row includes `tty=1` being absent: the host agent is the party that enforces it,
 so its `400` arrives on hop 2 and surfaces to the client as a `500 internal` whose message
@@ -164,13 +165,13 @@ Every byte after the `101`, in both directions, is part of a frame.
 The header is always 8 bytes. There is no checksum, no stream id, no continuation bit: the
 connection carries exactly one session.
 
-| Type | Name | Direction | Payload |
-| --- | --- | --- | --- |
-| `0` | stdin | client to server | raw bytes, written to the pty master |
-| `1` | stdout | server to client | raw bytes read from the pty master |
-| `2` | stderr | server to client | raw bytes. Unused today: a pty merges the guest's stdout and stderr into one stream, so the host agent only ever emits type `1`. Reserved so a future non-pty mode can split them. |
-| `3` | resize | client to server | JSON `{"rows":24,"cols":80}` |
-| `4` | exit | server to client | JSON `{"exit_code":0}` |
+| Type | Name   | Direction        | Payload                                                                                                                                                                            |
+| ---- | ------ | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | stdin  | client to server | raw bytes, written to the pty master                                                                                                                                               |
+| `1`  | stdout | server to client | raw bytes read from the pty master                                                                                                                                                 |
+| `2`  | stderr | server to client | raw bytes. Unused today: a pty merges the guest's stdout and stderr into one stream, so the host agent only ever emits type `1`. Reserved so a future non-pty mode can split them. |
+| `3`  | resize | client to server | JSON `{"rows":24,"cols":80}`                                                                                                                                                       |
+| `4`  | exit   | server to client | JSON `{"exit_code":0}`                                                                                                                                                             |
 
 Rules that every implementation follows and a third one must:
 
@@ -216,12 +217,12 @@ Exit frame from the Python host agent, exit code 0 (16-byte payload, note the sp
 An upgrade is a `GET`, so there is no request body to carry the spec. It rides in the query
 string instead. Inventing a pre-upgrade handshake frame would buy nothing.
 
-| Param | Required | Meaning |
-| --- | --- | --- |
-| `tty` | yes | Must be `1` (`true` is also accepted). This protocol is pty-only; the host agent rejects anything else with `400`. |
-| `rows` | no | Initial pty rows. Parsed as an integer in `1..65535`; anything else is treated as unset, and an unset or zero value leaves the pty at its default size. |
-| `cols` | no | Initial pty cols. Same parsing. |
-| `cmd` | no | argv to run. **Repeats.** Absent means the guest's login shell. |
+| Param  | Required | Meaning                                                                                                                                                 |
+| ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tty`  | yes      | Must be `1` (`true` is also accepted). This protocol is pty-only; the host agent rejects anything else with `400`.                                      |
+| `rows` | no       | Initial pty rows. Parsed as an integer in `1..65535`; anything else is treated as unset, and an unset or zero value leaves the pty at its default size. |
+| `cols` | no       | Initial pty cols. Same parsing.                                                                                                                         |
+| `cmd`  | no       | argv to run. **Repeats.** Absent means the guest's login shell.                                                                                         |
 
 `cmd` repeats once per argv element rather than arriving as one string, because that
 preserves argv boundaries: `?cmd=sh&cmd=-c&cmd=echo+hi` is unambiguously
@@ -233,7 +234,7 @@ One sharp edge: **do not send empty-string argv elements.** The host agent parse
 with Python's `parse_qs`, which drops blank values by default, so an empty argument would
 silently vanish and shift the argv.
 
-Rows and cols are only the *seed*. Every subsequent terminal resize is a type `3` frame on
+Rows and cols are only the _seed_. Every subsequent terminal resize is a type `3` frame on
 the stream itself.
 
 ## Session lifecycle
@@ -245,7 +246,7 @@ the stream itself.
 3. **Host agent** validates `tty=1`, drains anything already buffered, writes its own `101`,
    then `pty.fork()`s a child running `ssh -tt root@<guest_ip> [cmd...]`. `-tt` forces a pty
    on the guest side even when a command is given. `pty.fork` rather than `subprocess`
-   because the child needs the pty as its *controlling terminal in a new session*, which is
+   because the child needs the pty as its _controlling terminal in a new session_, which is
    what makes `SIGWINCH` delivery, and therefore resizing, work at all.
 4. **Initial window size** is applied with `TIOCSWINSZ` from `rows`/`cols`.
 5. **Steady state.** The client sends type `0` (stdin) and type `3` (resize). The host agent
@@ -276,7 +277,7 @@ Each of these is a bug someone already had.
 
 **1. HTTP/1.1, on a raw connection. Not `http.Client`.**
 HTTP/2 has no connection upgrade at all, and an `http.Client` speaking TLS may negotiate h2
-via ALPN and silently break the handshake. Worse, `net/http` gives a *client* no way to
+via ALPN and silently break the handshake. Worse, `net/http` gives a _client_ no way to
 reclaim the socket after a response: only servers get `Hijack`. Both the Go SDK and the
 orchestrator therefore dial a `net.Conn` themselves, `req.Write(conn)` the head, and
 `http.ReadResponse` the `101` off a `bufio.Reader`. That pins the exchange to HTTP/1.1,
@@ -284,7 +285,7 @@ where an upgrade is well defined.
 
 **2. Drain the reader's buffer after the request head.**
 A client that writes its head and immediately writes a frame leaves those frame bytes
-sitting in the *server's* read buffer. `select()`/`poll()` on the socket will never report
+sitting in the _server's_ read buffer. `select()`/`poll()` on the socket will never report
 them: they are already out of the kernel. Every hop drains explicitly.
 
 - Orchestrator: `Hijack()` returns a `*bufio.ReadWriter`; the relay reads from
@@ -306,7 +307,7 @@ starts. The client does the same after its `101`.
 
 **4. Bound the length before you allocate.**
 `length` is attacker-controlled: it is four bytes off a socket. Check it against the 1 MiB
-maximum *before* allocating a buffer of that size, or a peer that sends `ff ff ff ff` asks
+maximum _before_ allocating a buffer of that size, or a peer that sends `ff ff ff ff` asks
 you for 4 GiB. The Go client returns an error; the Python agent raises and tears the session
 down.
 
@@ -323,7 +324,7 @@ for exactly this reason.
 
 ## What this is not
 
-- **It is not SSH.** SSH is an implementation detail *inside* the host agent, one hop away
+- **It is not SSH.** SSH is an implementation detail _inside_ the host agent, one hop away
   from anything a client can see. There is no `scp`/`sftp`, no port forwarding, no
   `-o` options, no agent forwarding, no key material anywhere near the client. The client
   speaks frames.

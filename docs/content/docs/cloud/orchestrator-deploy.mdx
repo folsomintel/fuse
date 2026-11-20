@@ -39,14 +39,16 @@ Default ports:
 | `8080` | Orchestrator (control plane API) |
 | `8090` | Firecracker host agent (`fc-agent`) |
 | `8091` | GPU/QEMU host agent (`qemu-agent`) |
-| `19551-19799` | Per-VM guest-agent DNAT range, Firecracker hosts (`fc-agent`) |
+| `19551-<19550 + max VMs>` | Per-VM guest-agent DNAT range, Firecracker hosts (`fc-agent`) |
 | `19651-19899` | Per-VM guest-agent DNAT range, GPU/QEMU hosts (`qemu-agent`) |
 
 The two DNAT ranges differ because each agent has its own
 `FUSE_HOST_PORT_BASE` default, `19550` for `fc-agent` and `19650` for
-`qemu-agent`, and each allocates one port per VM index from 1 to 249. Open the
-range that matches the backend the host actually runs, rather than assuming one
-range covers the fleet.
+`qemu-agent`, and each allocates one port per VM slot, lowest free first.
+`qemu-agent` slots run from 1 to 249. `fc-agent` slots run from 1 up to
+`65535 - FUSE_HOST_PORT_BASE`, so open as far as the most VMs the host runs
+(`19551-19799` covers 249). Open the range that matches the backend the host
+actually runs, rather than assuming one range covers the fleet.
 
 ## Configuration
 

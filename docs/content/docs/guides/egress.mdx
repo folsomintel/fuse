@@ -16,11 +16,11 @@ for it, and how a workload inside the guest is expected to use it.
 
 | Mode | What the guest gets |
 | --- | --- |
-| `direct` | A default route via the host's tap, `MASQUERADE` out of the host's interface, a public resolver in `resolv.conf`. Omitting the block means this. |
-| `proxy` | A proxy endpoint on the host side of its tap, and nothing else. The forward rule that would carry its packets out of the host is replaced by a `DROP`. |
+| `direct` | A default route out of its own network namespace, `MASQUERADE` out of the host's interface, a public resolver in `resolv.conf`. Omitting the block means this. |
+| `proxy` | A proxy endpoint on the host end of its veth, and nothing else. The forward rule that would carry its packets out of the host is replaced by a `DROP`. |
 
 Proxy mode is a policy, not a preference. The host agent does not merely skip
-installing the `FORWARD` accept for the tap; it installs an explicit drop in
+installing the `FORWARD` accept for the vm's veth; it installs an explicit drop in
 its place, so a workload that ignores the proxy gets **no egress rather than
 direct egress**. A bare `curl http://1.1.1.1/` from inside a proxy-mode guest
 hangs and times out. That is the whole point: the proxy is the only way out,
@@ -96,12 +96,12 @@ const info = await client.environments.get(env.id);
 //   mode: "proxy",
 //   provider: "cloudflare-warp",
 //   protocol: "socks5",
-//   endpoint: "socks5h://10.200.3.1:1080",
+//   endpoint: "socks5h://10.208.0.3:1080",
 //   health: { state: "healthy", checked_at: "2026-09-17T10:00:30Z" }
 // }
 ```
 
-`endpoint` is the host side of the vm's tap, an address that means nothing to
+`endpoint` is the host end of the vm's veth, an address that means nothing to
 anyone not already inside the sandbox. `health` reads `unknown` until the
 orchestrator's reconcile tick (30s by default) has probed the endpoint once.
 A direct environment reports `{ mode: "direct" }` and nothing else, so a
@@ -139,7 +139,7 @@ outage:
 | A fetch by ip hangs, a fetch by name fails instantly | The ip fetch is hitting the `DROP`; the name fetch never got that far. Both mean the client is not using the proxy. |
 
 The guest's own addresses are still reachable by ip without the proxy:
-loopback, and the two ends of its tap, are in `NO_PROXY` for exactly that
+loopback, its own address and the host end of its veth are in `NO_PROXY` for exactly that
 reason. Anything a compose service publishes on the vm's loopback works as
 before.
 
@@ -153,17 +153,17 @@ In proxy mode the guest gets, in both cases because the ecosystem is split on
 which one to read:
 
 ```
-HTTP_PROXY=socks5h://10.200.3.1:1080
-HTTPS_PROXY=socks5h://10.200.3.1:1080
-ALL_PROXY=socks5h://10.200.3.1:1080
-NO_PROXY=10.200.3.1,10.200.3.2,127.0.0.1,::1,localhost
+HTTP_PROXY=socks5h://10.208.0.3:1080
+HTTPS_PROXY=socks5h://10.208.0.3:1080
+ALL_PROXY=socks5h://10.208.0.3:1080
+NO_PROXY=10.208.0.3,172.16.0.2,127.0.0.1,::1,localhost
 http_proxy=...    # and the same four lowercased
 ```
 
 `NO_PROXY` is a list of **bare addresses**, never a cidr. Many clients
-silently ignore cidr notation in `NO_PROXY`, so a `10.200.0.0/16` there would
+silently ignore cidr notation in `NO_PROXY`, so a `10.208.0.0/16` there would
 look like coverage and provide none. The set is loopback in every spelling
-plus the guest's own tap address and the host side of it.
+plus the guest's own address and the host end of its veth.
 
 Where they reach:
 
@@ -192,8 +192,8 @@ harness has to be able to read it:
   "mode": "proxy",
   "provider": "cloudflare-warp",
   "protocol": "socks5",
-  "endpoint": "socks5h://10.200.3.1:1080",
-  "no_proxy": ["10.200.3.1", "10.200.3.2", "127.0.0.1", "::1", "localhost"]
+  "endpoint": "socks5h://10.208.0.3:1080",
+  "no_proxy": ["10.208.0.3", "172.16.0.2", "127.0.0.1", "::1", "localhost"]
 }
 ```
 
@@ -230,7 +230,7 @@ or it hits the [DNS](#dns) wall above.
 | `cloudflare-warp` | One `warp-svc` per host, in its own network namespace, shared and refcounted across that host's proxy-mode environments. Traffic exits through Cloudflare's network. | `socks5`, `http` | The orchestrator has WARP credentials configured. See [WARP egress host setup](/docs/cloud/warp-host-setup). |
 | `wireguard` | The environment's own WireGuard config (named by `egress.secret`), bridged by wireproxy in a network namespace on the host. One bridge per distinct config, shared and refcounted across that host's environments that use it. Traffic exits wherever the WireGuard peer is. | `socks5`, `http` | Always. A host needs wireproxy installed; see [WireGuard egress host setup](/docs/cloud/wireguard-host-setup). |
 
-The mock binds the host side of each vm's tap, which is only reachable when
+The mock binds the host end of each vm's veth, which is only reachable when
 the orchestrator and the host agent share a machine, which is why it is a
 local-development tool and not a small production option. The orchestrator
 logs a warning at startup whenever it is registered.
@@ -260,14 +260,14 @@ Each failure mode has one shape, and none of them is "fell back to direct".
   negotiation, not just a tcp connect, bounded at 5 seconds) and a failure
   becomes `egress.health.state: unhealthy` with the backend-level reason. The
   environment keeps running with **no egress, never direct egress**: the
-  `DROP` on the tap was never conditional on the proxy being up.
+  `DROP` on the veth was never conditional on the proxy being up.
 
 How to read it:
 
 ```bash
 $ fuse environment get fuse-abc123
 ...
-egress          proxy  cloudflare-warp  socks5h://10.200.3.1:1080  unhealthy  dial tcp 10.200.3.1:1080: connection refused
+egress          proxy  cloudflare-warp  socks5h://10.208.0.3:1080  unhealthy  dial tcp 10.208.0.3:1080: connection refused
 ```
 
 The same verdict is `egress.health` on every SDK's environment type, and the
