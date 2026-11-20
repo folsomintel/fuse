@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // DefaultHostID is the id the default agent (FleetConfig.DefaultHostURL) is
@@ -14,6 +15,9 @@ const DefaultHostID = "local-fc"
 
 // maxDefaultHostVMs is the agent's vm index range (fc-agent.py pick_index).
 const maxDefaultHostVMs = 249
+
+// defaultHostProbeTimeout bounds the capacity probe registerDefaultHost makes.
+const defaultHostProbeTimeout = 10 * time.Second
 
 // registerDefaultHost registers the default agent as host DefaultHostID when
 // no host is registered yet, with the capacity the agent reports and the vm
@@ -36,7 +40,11 @@ func (fm *FleetManager) registerDefaultHost(ctx context.Context) error {
 	if !ok {
 		return errors.New("the default provider cannot report its capacity")
 	}
-	capacity, err := prober.Capacity(ctx)
+	// the agent client's own timeout is minutes; a hung agent must not hold
+	// every create on a hostless fleet behind defaultHostMu that long.
+	probeCtx, cancel := context.WithTimeout(ctx, defaultHostProbeTimeout)
+	defer cancel()
+	capacity, err := prober.Capacity(probeCtx)
 	if err != nil {
 		return fmt.Errorf("probe the default agent's capacity: %w", err)
 	}
@@ -55,6 +63,12 @@ func (fm *FleetManager) registerDefaultHost(ctx context.Context) error {
 		Backend:  BackendFirecracker,
 		Capacity: capacity,
 	}
+	// in process, not through RegisterHost's restate Host object: this runs
+	// inside the durable create's place step, and the Host object's Register
+	// handler is this same registerHost call (HostRegister), so restate would
+	// add a nested invocation and nothing else. the record's token is sealed
+	// by hostToRecord with TOKEN_ENCRYPTION_KEY, which the orchestrator
+	// requires. an operator registering local-fc later replaces this one.
 	if err := fm.registerHost(ctx, h, fm.hostProviderFactory(h.URL, h.Token, h.Backend)); err != nil {
 		return err
 	}
