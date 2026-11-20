@@ -308,9 +308,12 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 	spec := v.spec
 	h.Allocated.CPUs += spec.CPUs
 	h.Allocated.RamMB += ramCharge(h.Allocated, spec)
+	// bind the seed onto the vm, so deallocation releases the share it was
+	// charged even if the spec's seed fields change later. always written:
+	// a fork or migrate target starts from a copy of its source's spec, and
+	// must not inherit the source's binding.
+	v.spec.SharedMemSeed = ""
 	if sharesSeedMem(spec) {
-		// bind the seed onto the vm, so deallocation releases the share it
-		// was charged even if the spec's seed fields change later.
 		v.spec.SharedMemSeed = spec.SeedSnapshotID
 		h.Allocated.SharedSeeds = addSharedSeed(h.Allocated.SharedSeeds, spec.SeedSnapshotID, 1)
 	}

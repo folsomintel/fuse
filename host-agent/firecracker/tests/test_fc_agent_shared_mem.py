@@ -107,6 +107,15 @@ class ResumeSharesMemTest(unittest.TestCase):
             self.assertEqual(mem.read_bytes(), b"m" * IMAGE)
             self.assertEqual(os.stat(mem).st_nlink, 3)
 
+    def test_a_retried_resume_still_links(self):
+        seed = write_seed("snap-retry")
+        stale = fc_agent.vm_dir("vm-retry") / "mem"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_bytes(b"left by the last attempt")
+        meta = self.resume(seed, "vm-retry")
+        self.assertTrue(meta["mem_shared"])
+        self.assertEqual(os.stat(stale).st_ino, os.stat(seed / "mem").st_ino)
+
     def test_another_filesystem_falls_back_to_a_copy(self):
         seed = write_seed("snap-xdev")
         with mock.patch.object(fc_agent.os, "link", side_effect=OSError(18, "Invalid cross-device link")):

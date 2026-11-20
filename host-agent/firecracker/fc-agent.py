@@ -1970,6 +1970,8 @@ def link_mem(src: Path, dst: Path) -> bool:
     its own anonymous pages and never reach the file the others read. a copy
     otherwise (another filesystem, or a link the kernel refuses).
     """
+    # a retried resume finds the last attempt's file, which os.link refuses.
+    dst.unlink(missing_ok=True)
     try:
         os.link(src, dst)
         return True

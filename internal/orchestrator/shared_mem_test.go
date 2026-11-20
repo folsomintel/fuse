@@ -184,6 +184,26 @@ func TestSharedSeed_hostCopiesDoNotSeeLaterAllocations(t *testing.T) {
 	}
 }
 
+func TestSharedSeed_aCopiedSpecDoesNotInheritTheSourcesBinding(t *testing.T) {
+	// a fork or migrate target starts from its source's spec, binding and all.
+	fm := memFleet(t, 8192)
+	src, _ := place(fm, clone("snap-a", 1024))
+	target := src.spec
+	target.SeedSnapshotID, target.ResumeSeed = "", false
+	v, _ := place(fm, target)
+	if v.spec.SharedMemSeed != "" {
+		t.Fatalf("target SharedMemSeed = %q, want none", v.spec.SharedMemSeed)
+	}
+	fm.mu.Lock()
+	fm.deallocateOnHost("h1", v.spec)
+	fm.mu.Unlock()
+	h := findHost(t, fm, "h1")
+	if want := 1024 + seedPrivateMB(1024); h.Allocated.RamMB != want || h.Allocated.SharedSeeds["snap-a"] != 1 {
+		t.Errorf("after the target's destroy allocated = ram %d seeds %v, want %d and the source still sharing",
+			h.Allocated.RamMB, h.Allocated.SharedSeeds, want)
+	}
+}
+
 func TestRecoverRederivesSharedSeedCharge(t *testing.T) {
 	store := NewMemoryStateStore()
 	stub := newStubProvider()
