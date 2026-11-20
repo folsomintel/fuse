@@ -406,6 +406,20 @@ func (_u *VMUpdate) SetNillableHugePages(v *bool) *VMUpdate {
 	return _u
 }
 
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (_u *VMUpdate) SetSharedMemSeed(v string) *VMUpdate {
+	_u.mutation.SetSharedMemSeed(v)
+	return _u
+}
+
+// SetNillableSharedMemSeed sets the "shared_mem_seed" field if the given value is not nil.
+func (_u *VMUpdate) SetNillableSharedMemSeed(v *string) *VMUpdate {
+	if v != nil {
+		_u.SetSharedMemSeed(*v)
+	}
+	return _u
+}
+
 // SetHitl sets the "hitl" field.
 func (_u *VMUpdate) SetHitl(v json.RawMessage) *VMUpdate {
 	_u.mutation.SetHitl(v)
@@ -660,6 +674,9 @@ func (_u *VMUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SharedMemSeed(); ok {
+		_spec.SetField(vm.FieldSharedMemSeed, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.Hitl(); ok {
 		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
@@ -1091,6 +1108,20 @@ func (_u *VMUpdateOne) SetNillableHugePages(v *bool) *VMUpdateOne {
 	return _u
 }
 
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (_u *VMUpdateOne) SetSharedMemSeed(v string) *VMUpdateOne {
+	_u.mutation.SetSharedMemSeed(v)
+	return _u
+}
+
+// SetNillableSharedMemSeed sets the "shared_mem_seed" field if the given value is not nil.
+func (_u *VMUpdateOne) SetNillableSharedMemSeed(v *string) *VMUpdateOne {
+	if v != nil {
+		_u.SetSharedMemSeed(*v)
+	}
+	return _u
+}
+
 // SetHitl sets the "hitl" field.
 func (_u *VMUpdateOne) SetHitl(v json.RawMessage) *VMUpdateOne {
 	_u.mutation.SetHitl(v)
@@ -1375,6 +1406,9 @@ func (_u *VMUpdateOne) sqlSave(ctx context.Context) (_node *VM, err error) {
 	}
 	if value, ok := _u.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SharedMemSeed(); ok {
+		_spec.SetField(vm.FieldSharedMemSeed, field.TypeString, value)
 	}
 	if value, ok := _u.mutation.Hitl(); ok {
 		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)

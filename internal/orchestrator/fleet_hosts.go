@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"sync"
 	"time"
@@ -282,6 +283,7 @@ func (fm *FleetManager) activeHostsLocked() []*Host {
 		// deep-copy the per-instance MIG slices for the same reason.
 		hc.Capacity.MIGInstances = append([]MIGInstance(nil), h.Capacity.MIGInstances...)
 		hc.Allocated.MIGInstanceUUIDs = append([]string(nil), h.Allocated.MIGInstanceUUIDs...)
+		hc.Allocated.SharedSeeds = maps.Clone(h.Allocated.SharedSeeds)
 		out = append(out, &hc)
 	}
 	return out
@@ -305,7 +307,13 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 	}
 	spec := v.spec
 	h.Allocated.CPUs += spec.CPUs
-	h.Allocated.RamMB += spec.RamMB
+	h.Allocated.RamMB += ramCharge(h.Allocated, spec)
+	if sharesSeedMem(spec) {
+		// bind the seed onto the vm, so deallocation releases the share it
+		// was charged even if the spec's seed fields change later.
+		v.spec.SharedMemSeed = spec.SeedSnapshotID
+		h.Allocated.SharedSeeds = addSharedSeed(h.Allocated.SharedSeeds, spec.SeedSnapshotID, 1)
+	}
 	h.Allocated.StorageGB += spec.StorageGB
 	h.Allocated.VMCount++
 	switch {
@@ -358,6 +366,23 @@ func (fm *FleetManager) allocateOnHost(hostID string, v *vm) {
 	fm.persistHostBackground(h.ID)
 }
 
+// addSharedSeed returns refs with seed's count moved by delta, dropping the
+// seed at zero. it builds a fresh map rather than editing refs in place, the
+// same reason the gpu sets do: host copies handed out may still share it.
+func addSharedSeed(refs map[string]int, seed string, delta int) map[string]int {
+	out := make(map[string]int, len(refs)+1)
+	maps.Copy(out, refs)
+	if n := out[seed] + delta; n > 0 {
+		out[seed] = n
+	} else {
+		delete(out, seed)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // deallocateOnHost decrements the allocated counters when a VM is
 // destroyed and persists the new totals asynchronously. Must be
 // called under fm.mu.Lock.
@@ -370,7 +395,17 @@ func (fm *FleetManager) deallocateOnHost(hostID string, spec Spec) {
 	if h.Allocated.CPUs < 0 {
 		h.Allocated.CPUs = 0
 	}
-	h.Allocated.RamMB -= spec.RamMB
+	release := spec.RamMB
+	if spec.SharedMemSeed != "" {
+		// a vm sharing a seed image gives back its private share, and the
+		// image too once it was the last vm on the host holding it.
+		release = seedPrivateMB(spec.RamMB)
+		h.Allocated.SharedSeeds = addSharedSeed(h.Allocated.SharedSeeds, spec.SharedMemSeed, -1)
+		if h.Allocated.SharedSeeds[spec.SharedMemSeed] == 0 {
+			release += spec.RamMB
+		}
+	}
+	h.Allocated.RamMB -= release
 	if h.Allocated.RamMB < 0 {
 		h.Allocated.RamMB = 0
 	}

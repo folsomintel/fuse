@@ -1608,6 +1608,7 @@ type VMMutation struct {
 	egress                   *json.RawMessage
 	appendegress             json.RawMessage
 	huge_pages               *bool
+	shared_mem_seed          *string
 	hitl                     *json.RawMessage
 	appendhitl               json.RawMessage
 	ancestors                *json.RawMessage
@@ -2815,6 +2816,42 @@ func (m *VMMutation) ResetHugePages() {
 	m.huge_pages = nil
 }
 
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (m *VMMutation) SetSharedMemSeed(s string) {
+	m.shared_mem_seed = &s
+}
+
+// SharedMemSeed returns the value of the "shared_mem_seed" field in the mutation.
+func (m *VMMutation) SharedMemSeed() (r string, exists bool) {
+	v := m.shared_mem_seed
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSharedMemSeed returns the old "shared_mem_seed" field's value of the VM entity.
+// If the VM object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *VMMutation) OldSharedMemSeed(ctx context.Context) (v string, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSharedMemSeed is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSharedMemSeed requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSharedMemSeed: %w", err)
+	}
+	return oldValue.SharedMemSeed, nil
+}
+
+// ResetSharedMemSeed resets all changes to the "shared_mem_seed" field.
+func (m *VMMutation) ResetSharedMemSeed() {
+	m.shared_mem_seed = nil
+}
+
 // SetHitl sets the "hitl" field.
 func (m *VMMutation) SetHitl(jm json.RawMessage) {
 	m.hitl = &jm
@@ -3100,7 +3137,7 @@ func (m *VMMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *VMMutation) Fields() []string {
-	fields := make([]string, 0, 28)
+	fields := make([]string, 0, 29)
 	if m.host_id != nil {
 		fields = append(fields, vm.FieldHostID)
 	}
@@ -3169,6 +3206,9 @@ func (m *VMMutation) Fields() []string {
 	}
 	if m.huge_pages != nil {
 		fields = append(fields, vm.FieldHugePages)
+	}
+	if m.shared_mem_seed != nil {
+		fields = append(fields, vm.FieldSharedMemSeed)
 	}
 	if m.hitl != nil {
 		fields = append(fields, vm.FieldHitl)
@@ -3239,6 +3279,8 @@ func (m *VMMutation) Field(name string) (ent.Value, bool) {
 		return m.Egress()
 	case vm.FieldHugePages:
 		return m.HugePages()
+	case vm.FieldSharedMemSeed:
+		return m.SharedMemSeed()
 	case vm.FieldHitl:
 		return m.Hitl()
 	case vm.FieldAncestors:
@@ -3304,6 +3346,8 @@ func (m *VMMutation) OldField(ctx context.Context, name string) (ent.Value, erro
 		return m.OldEgress(ctx)
 	case vm.FieldHugePages:
 		return m.OldHugePages(ctx)
+	case vm.FieldSharedMemSeed:
+		return m.OldSharedMemSeed(ctx)
 	case vm.FieldHitl:
 		return m.OldHitl(ctx)
 	case vm.FieldAncestors:
@@ -3483,6 +3527,13 @@ func (m *VMMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetHugePages(v)
+		return nil
+	case vm.FieldSharedMemSeed:
+		v, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSharedMemSeed(v)
 		return nil
 	case vm.FieldHitl:
 		v, ok := value.(json.RawMessage)
@@ -3768,6 +3819,9 @@ func (m *VMMutation) ResetField(name string) error {
 		return nil
 	case vm.FieldHugePages:
 		m.ResetHugePages()
+		return nil
+	case vm.FieldSharedMemSeed:
+		m.ResetSharedMemSeed()
 		return nil
 	case vm.FieldHitl:
 		m.ResetHitl()

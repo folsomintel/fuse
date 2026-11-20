@@ -130,6 +130,13 @@ type Spec struct {
 	// with it can be migrated lazily (MigrateOptions.Lazy).
 	HugePages bool
 
+	// SharedMemSeed is the seed whose memory image this vm shares with the
+	// other vms resumed from it on its host. allocation fills it in (see
+	// sharesSeedMem) and persists it like GPUUUIDs, so deallocation and
+	// recovery release exactly what was charged. empty means the vm's
+	// memory was charged in full.
+	SharedMemSeed string `json:"shared_mem_seed,omitempty"`
+
 	// PinnedHostID restricts scheduling to a single host. Set when the VM must
 	// land where its host-local seed artifact already is. Empty means schedule
 	// across the fleet as usual.
