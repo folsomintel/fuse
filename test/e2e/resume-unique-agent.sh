@@ -31,7 +31,7 @@ SNAP=""
 
 # keep in step with fusedReloadCommand in internal/orchestrator/agent_profile.go.
 RELOAD='rm -f /run/fused-reload
-systemctl kill -s HUP --kill-whom=main fused || exit 1
+pid=$(systemctl show -p MainPID --value fused) && [ "${pid:-0}" -gt 0 ] && kill -HUP "$pid" || exit 1
 i=0
 while [ ! -e /run/fused-reload ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
 if [ -e /run/fused-reload ]; then
