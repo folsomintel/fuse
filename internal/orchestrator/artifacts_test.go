@@ -681,6 +681,15 @@ func TestForkEnvironment_refusesWhenNoHostFits(t *testing.T) {
 	if h.Allocated.VMCount != 1 {
 		t.Errorf("h-a allocated = %+v, want only the source charged", h.Allocated)
 	}
+	// refused before the seed snapshot, so a retried fork does not pause the
+	// source for nothing.
+	snaps, err := fm.ListSnapshots(ctx, "fuse-task-src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 0 {
+		t.Errorf("%d snapshots of the source, want none for a refused fork", len(snaps))
+	}
 }
 
 // TestReconcileArtifacts_safety is the eviction safety suite. Every case here

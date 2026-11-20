@@ -169,6 +169,12 @@ func (fm *FleetManager) ForkBegin(ctx context.Context, vmID string, req ForkRequ
 	if err != nil {
 		return ForkPlan{}, err
 	}
+	// a fork no host has room for is refused here, before the seed snapshot
+	// pauses the source, so a retried burst does not snapshot it each time.
+	// place still runs the full check (it also knows whether the seed moves).
+	if err := fm.forkFitsSomewhere(src); err != nil {
+		return ForkPlan{}, err
+	}
 	return ForkPlan{
 		SourceVMID:   req.SourceVMID,
 		SourceHostID: src.hostID,

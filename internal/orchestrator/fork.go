@@ -76,9 +76,36 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 	targetProvider, ok := fm.providerForHost(selected.ID)
 	fm.mu.RUnlock()
 	if !ok {
-		return "", nil, fmt.Errorf("provider for host %s not found after scheduling", selected.ID)
+		// the host left between scheduling and here: retry-later, not a 500.
+		return "", nil, fmt.Errorf("%w: host %s was removed while the fork was placed", ErrNoCapacity, selected.ID)
 	}
 	return selected.ID, targetProvider, nil
+}
+
+// forkFitsSomewhere is the cheap half of placeFork's gate, run before the
+// seed snapshot: ErrNoCapacity when no active host of the source's backend
+// could take a vm of the source's shape. a single-provider source has no
+// host to check.
+func (fm *FleetManager) forkFitsSomewhere(src forkSource) error {
+	if src.hostID == "" {
+		return nil
+	}
+	// the fork's shape, without the source's placement (see ForkPlaceholder).
+	spec := src.spec
+	spec.SeedSnapshotID, spec.PinnedHostID, spec.HostID, spec.Labels = "", "", "", nil
+	fm.mu.RLock()
+	defer fm.mu.RUnlock()
+	backend := HostBackend("")
+	if h, ok := fm.hosts[src.hostID]; ok {
+		backend = h.Backend
+	}
+	for _, h := range fm.activeHostsLocked() {
+		if h.Backend == backend && hostRejection(h, spec) == "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: no %s host has room for a %dCPU/%dMB/%dGB fork",
+		ErrNoCapacity, backend, spec.CPUs, spec.RamMB, spec.StorageGB)
 }
 
 // ForkOptions tunes a ForkEnvironment call. All fields are optional.
