@@ -72,9 +72,11 @@ const DefaultFusedDrainCommand = "systemctl stop fused 2>/dev/null || pkill -TER
 // up. a fused that predates the handler exits on the signal and writes
 // nothing; systemd counts SIGHUP as a clean stop and does not restart it, so
 // an agent that is gone is restarted onto the new files, and one still up
-// that never answered is a failure.
+// that never answered is a failure. the signal goes to fused's MainPID
+// directly: systemd 249 (the ubuntu 22.04 guest) only knows --kill-who and
+// newer releases only --kill-whom, so neither spelling works everywhere.
 const fusedReloadCommand = `rm -f /run/fused-reload
-systemctl kill -s HUP --kill-whom=main fused || exit 1
+pid=$(systemctl show -p MainPID --value fused) && [ "${pid:-0}" -gt 0 ] && kill -HUP "$pid" || exit 1
 i=0
 while [ ! -e /run/fused-reload ] && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
 if [ -e /run/fused-reload ]; then

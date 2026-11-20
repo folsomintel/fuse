@@ -36,7 +36,10 @@ ORCH_PORT="${ORCH_PORT:-8080}"
 FC_AGENT_PORT="${FC_AGENT_PORT:-8090}"
 FUSE_VERSION="${FUSE_VERSION:-latest}"
 FC_CI_VERSION="v1.10"
-FC_KERNEL="vmlinux-5.10.223"
+# the 6.1 kernel has the vmgenid driver, so clones of one snapshot reseed
+# their csprng (see fc-install.sh). it is not in the v1.10 bucket the rootfs
+# comes from, so it has its own url.
+FC_KERNEL="vmlinux-6.1.155"
 # keep in step with the image tag in ops/restate/compose.yaml.
 RESTATE_VERSION="v1.8.1"
 RESTATE_INGRESS_PORT=18080
@@ -50,6 +53,7 @@ case "$(uname -m)" in
   *) echo "[local] unsupported arch $(uname -m)" >&2; exit 1 ;;
 esac
 CI_BASE="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/${FC_CI_VERSION}/${ARCH}"
+FC_KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/${ARCH}/${FC_KERNEL}"
 
 # >>> fuse release-asset checksum verification >>>
 # This block is embedded, not sourced: ops/install-orchestrator.sh is
@@ -207,7 +211,12 @@ install_stack() {
   fi
 
   # guest kernel + base rootfs + guest ssh key, from the firecracker ci bucket.
-  [ -f "$DIR/fc/vmlinux.bin" ] || fetch "$CI_BASE/$FC_KERNEL" "$DIR/fc/vmlinux.bin"
+  # the kernel is keyed on a version marker like the orchestrator below, so a
+  # kernel bump reaches appliances installed before it.
+  if [ "$(cat "$DIR/fc/.kernel-version" 2>/dev/null || true)" != "$FC_KERNEL" ]; then
+    fetch "$FC_KERNEL_URL" "$DIR/fc/vmlinux.bin"
+    echo "$FC_KERNEL" > "$DIR/fc/.kernel-version"
+  fi
   [ -f "$DIR/fc/rootfs.ext4" ] || fetch "$CI_BASE/ubuntu-22.04.ext4" "$DIR/fc/rootfs.ext4"
   if [ ! -f "$DIR/fc/ubuntu.id_rsa" ]; then
     fetch "$CI_BASE/ubuntu-22.04.id_rsa" "$DIR/fc/ubuntu.id_rsa"
