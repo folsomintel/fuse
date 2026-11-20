@@ -52,7 +52,11 @@ parent_snapshots() {
     | jq -r '(if type=="array" then . else (.items // .snapshots // []) end)[] | (.id // .snapshot_id)'
 }
 
+# finish: clean up, then exit non-zero if the run, the leak audit or the
+# report failed. rc is the run's own status: the exit that fired the trap,
+# 130/143 for ctrl-c/term.
 finish() {
+  local rc=$?
   trap - EXIT INT TERM
   wait_jobs
   destroy_all "$IDS"
@@ -60,12 +64,13 @@ finish() {
     for s in $(parent_snapshots); do fuse snapshot delete --yes "$s" >/dev/null 2>&1 || true; done
     fuse environment destroy --yes "$parent" >/dev/null 2>&1 || true
   fi
-  bench_finish
-  local rc=$?
-  bench_py report.py fanout "$OUT"
+  bench_finish || [ "$rc" != 0 ] || rc=1
+  bench_py report.py fanout "$OUT" || [ "$rc" != 0 ] || rc=1
   exit "$rc"
 }
-trap finish EXIT INT TERM
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # wait_snapshot <id>: until the snapshot is ready (bounded)
 wait_snapshot() {
