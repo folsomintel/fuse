@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# fake-fuse: a stand-in for the fuse cli so the harness runs with no host.
+# it keeps vms and snapshots as directories under FC_STATE_DIR, where the
+# leak audit's vm_dirs and snapshot_dirs probes look, so a leak is visible.
+#
+#   FAKE_DELAY         seconds each create/fork takes (default 0.1)
+#   FAKE_LEAK_DESTROY  1: destroy reports success but keeps the vm dir
+#   FAKE_FAIL_EXEC     1: every exec exits 1
+set -uo pipefail
+: "${FC_STATE_DIR:?set FC_STATE_DIR}"
+VMS="$FC_STATE_DIR/vms"
+SNAPS="${SNAPSHOTS_DIR:-$FC_STATE_DIR/snapshots}"
+mkdir -p "$VMS" "$SNAPS"
+
+new_id() { printf '%s-%s%s' "$1" "$(date +%s)" "$RANDOM$RANDOM"; }
+
+# positional args with flags (and their values) removed
+positional() {
+  local out=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) break;;
+      --yes|--live|--all-pages) shift;;
+      -o|--*) shift; [ $# -gt 0 ] && shift;;
+      *) out+=("$1"); shift;;
+    esac
+  done
+  [ ${#out[@]} -gt 0 ] && printf '%s\n' "${out[@]}"
+}
+flag() { # flag <name> <args...>: value of --name
+  local name="$1"; shift
+  while [ $# -gt 0 ]; do [ "$1" = "$name" ] && { echo "$2"; return; }; shift; done
+}
+
+case "${1:-}" in
+  --version) echo "fuse fake"; exit 0;;
+  up)
+    sleep "${FAKE_DELAY:-0.1}"
+    id=$(new_id vm); mkdir "$VMS/$id"
+    printf '{"id":"%s","state":"running"}\n' "$id";;
+  environment)
+    sub="$2"; shift 2
+    id=$(positional "$@" | awk 'NR==1')
+    case "$sub" in
+      get) [ -d "$VMS/$id" ] || exit 1; printf '{"id":"%s","state":"running"}\n' "$id";;
+      exec)
+        [ -d "$VMS/$id" ] || exit 1
+        [ "${FAKE_FAIL_EXEC:-}" = 1 ] && exit 1
+        case "$*" in *heavy*) [ -f "$VMS/$id/heavy" ] && echo live || echo cold;; esac;;
+      fork)
+        [ -d "$VMS/$id" ] || exit 1
+        sleep "${FAKE_DELAY:-0.1}"
+        if [ -z "$(flag --reuse-snapshot "$@")" ]; then s=$(new_id snap); mkdir "$SNAPS/$s"; echo "$id" > "$SNAPS/$s/vm"; fi
+        c=$(new_id vm); mkdir "$VMS/$c"
+        printf '{"id":"%s","state":"provisioning"}\n' "$c";;
+      destroy) [ "${FAKE_LEAK_DESTROY:-}" = 1 ] || rm -rf "${VMS:?}/$id";;
+      *) echo "fake-fuse: environment $sub not faked" >&2; exit 2;;
+    esac;;
+  snapshot)
+    sub="$2"; shift 2
+    id=$(positional "$@" | awk 'NR==1')
+    case "$sub" in
+      create) [ -d "$VMS/$id" ] || exit 1; s=$(new_id snap); mkdir "$SNAPS/$s"; echo "$id" > "$SNAPS/$s/vm"
+              printf '{"id":"%s","state":"creating"}\n' "$s";;
+      get) [ -d "$SNAPS/$id" ] || exit 1; printf '{"id":"%s","state":"ready"}\n' "$id";;
+      list)
+        vm=$(flag --vm-id "$@")
+        for d in "$SNAPS"/*/; do
+          [ -f "$d/vm" ] && [ "$(cat "$d/vm")" = "$vm" ] && printf '{"id":"%s"}\n' "$(basename "$d")"
+        done | jq -s '{items:.}';;
+      delete) rm -rf "${SNAPS:?}/$id";;
+      *) echo "fake-fuse: snapshot $sub not faked" >&2; exit 2;;
+    esac;;
+  *) echo "fake-fuse: $* not faked" >&2; exit 2;;
+esac
