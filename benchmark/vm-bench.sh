@@ -8,8 +8,9 @@
 # reports min / p50 / p90 / p95 / p99 / max / mean per op, plus the orchestrator's
 # own server-side per-step breakdown (where the time goes).
 #
-# run this ON phantom (it uses the local fuse context). nothing is left behind:
-# every env created is destroyed at the end (and on ctrl-c).
+# run this on the benchmark host (it uses the local fuse context). nothing is
+# left behind: every env created is destroyed at the end (and on ctrl-c). it
+# exits non-zero if any create, fork or destroy failed.
 #
 #   N=20 bash vm-bench.sh                 # 20 iterations each (default 10)
 #   FUSEFILE=/path/to/Fusefile bash vm-bench.sh
@@ -19,7 +20,7 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 N="${N:-10}"
-FUSEFILE="${FUSEFILE:-/home/debian/fuse/docs/fusefiles/Fusefile.cpu}"
+FUSEFILE="${FUSEFILE:-$BENCH_LIB_DIR/Fusefile.bench}"
 FROM_BUILD="${FROM_BUILD:-}"          # optional build-snapshot id for the warm-boot test
 OUT="${OUT:-$HOME/fuse-bench-$(date +%s)}"
 METRICS_URL="${METRICS_URL:-http://127.0.0.1:8080/metrics}"
@@ -44,7 +45,8 @@ report_row() { # report_row <label> <file>
     "$1" "$n" "$min" "$(pct 50 "$f")" "$(pct 90 "$f")" "$(pct 95 "$f")" "$max" "$mean"
 }
 
-snap_metrics() { curl -s "$METRICS_URL" 2>/dev/null | grep -E '^orchestrator_(operations|step)_duration_seconds_(sum|count)'; }
+failed=0
+snap_metrics() { curl -s --max-time 10 "$METRICS_URL" 2>/dev/null | grep -E '^orchestrator_(operations|step)_duration_seconds_(sum|count)'; }
 
 echo "fuse vm benchmark  N=$N fusefile=$FUSEFILE out=$OUT"
 snap_metrics > "$OUT/metrics.before" 2>/dev/null
@@ -53,10 +55,13 @@ snap_metrics > "$OUT/metrics.before" 2>/dev/null
 : > "$OUT/cold_create.txt"
 for i in $(seq 1 "$N"); do
   t0=$(now)
-  out=$(fuse up "$FUSEFILE" --task-id "bench-cold-$i" -o json 2>>"$OUT/err.log")
-  t1=$(now)
-  id=$(printf '%s' "$out" | id_of)
-  if [ -n "$id" ]; then created+=("$id"); dt "$t0" "$t1" >> "$OUT/cold_create.txt"; echo "  cold $i: $(dt "$t0" "$t1")s ($id)"; else echo "  cold $i: FAILED (see err.log)"; fi
+  id=$(up_env "$FUSEFILE" --task-id "bench-cold-$i")
+  [ -n "$id" ] && created+=("$id")
+  if [ -n "$id" ] && wait_running "$id"; then
+    t1=$(now); dt "$t0" "$t1" >> "$OUT/cold_create.txt"; echo "  cold $i: $(dt "$t0" "$t1")s ($id)"
+  else
+    echo "  cold $i: FAILED (see err.log)"; failed=$((failed + 1))
+  fi
 done
 
 # ---- warm create (boot from build artifact) ----
@@ -64,10 +69,13 @@ done
 if [ -n "$FROM_BUILD" ]; then
   for i in $(seq 1 "$N"); do
     t0=$(now)
-    out=$(fuse up "$FUSEFILE" --from-build "$FROM_BUILD" --task-id "bench-warm-$i" -o json 2>>"$OUT/err.log")
-    t1=$(now)
-    id=$(printf '%s' "$out" | id_of)
-    if [ -n "$id" ]; then created+=("$id"); dt "$t0" "$t1" >> "$OUT/warm_create.txt"; echo "  warm $i: $(dt "$t0" "$t1")s ($id)"; fi
+    id=$(up_env "$FUSEFILE" --from-build "$FROM_BUILD" --task-id "bench-warm-$i")
+    [ -n "$id" ] && created+=("$id")
+    if [ -n "$id" ] && wait_running "$id"; then
+      t1=$(now); dt "$t0" "$t1" >> "$OUT/warm_create.txt"; echo "  warm $i: $(dt "$t0" "$t1")s ($id)"
+    else
+      echo "  warm $i: FAILED (see err.log)"; failed=$((failed + 1))
+    fi
   done
 fi
 
@@ -80,19 +88,27 @@ if [ -n "$base" ]; then
     t0=$(now)
     out=$(fuse environment fork "$base" --comment "bench-fork-$i" -o json 2>>"$OUT/err.log")
     fid=$(printf '%s' "$out" | id_of)
-    [ -n "$fid" ] && wait_running "$fid"
-    t1=$(now)
-    if [ -n "$fid" ]; then created+=("$fid"); dt "$t0" "$t1" >> "$OUT/fork.txt"; echo "  fork $i: $(dt "$t0" "$t1")s ($fid)"; fi
+    [ -n "$fid" ] && created+=("$fid")
+    if [ -n "$fid" ] && wait_running "$fid"; then
+      t1=$(now); dt "$t0" "$t1" >> "$OUT/fork.txt"; echo "  fork $i: $(dt "$t0" "$t1")s ($fid)"
+    else
+      echo "  fork $i: FAILED (see err.log)"; failed=$((failed + 1))
+    fi
   done
 fi
 
-# ---- destroy (timed, then handled by trap for any stragglers) ----
+# ---- destroy (timed; a failed one stays in created for the trap to retry) ----
 : > "$OUT/destroy.txt"
+left=()
 for id in ${created[@]+"${created[@]}"}; do
   t0=$(now)
-  if fuse environment destroy --yes "$id" >/dev/null 2>>"$OUT/err.log"; then t1=$(now); dt "$t0" "$t1" >> "$OUT/destroy.txt"; else echo "  destroy $id: FAILED (see err.log)"; fi
+  if fuse environment destroy --yes "$id" >/dev/null 2>>"$OUT/err.log"; then
+    t1=$(now); dt "$t0" "$t1" >> "$OUT/destroy.txt"
+  else
+    echo "  destroy $id: FAILED (see err.log)"; failed=$((failed + 1)); left+=("$id")
+  fi
 done
-created=()  # already destroyed; stop the trap re-destroying
+created=(${left[@]+"${left[@]}"})
 
 snap_metrics > "$OUT/metrics.after" 2>/dev/null
 
@@ -108,9 +124,16 @@ report_row "fork"        "$OUT/fork.txt"
 report_row "destroy"     "$OUT/destroy.txt"
 echo
 echo "server-side per-step breakdown (mean, from orchestrator metrics delta):"
-join -j1 \
-  <(awk '/_sum{/{gsub(/orchestrator_|_duration_seconds_sum/,""); print $1" "$2}' "$OUT/metrics.after" 2>/dev/null | sort) \
-  <(awk '/_count{/{gsub(/orchestrator_|_duration_seconds_count/,""); print $1" "$2}' "$OUT/metrics.after" 2>/dev/null | sort) 2>/dev/null \
-  | awk '{ if($3>0) printf "  %-40s %.3fs/op (n=%d)\n", $1, $2/$3, $3 }' || true
+# after minus before, so ops from earlier runs on this orchestrator drop out
+awk '
+  FNR==1 { file++ }
+  /_duration_seconds_(sum|count)\{/ {
+    key=$1; sub(/_duration_seconds_(sum|count)/, "", key); sub(/^orchestrator_/, "", key)
+    kind = ($1 ~ /_sum\{/) ? "sum" : "count"
+    v[kind, key] += (file == 1 ? -$2 : $2); keys[key]=1
+  }
+  END { for (k in keys) if (v["count", k] > 0) printf "  %-40s %.3fs/op (n=%d)\n", k, v["sum", k]/v["count", k], v["count", k] }
+' "$OUT/metrics.before" "$OUT/metrics.after" 2>/dev/null | sort || true
 echo
 echo "raw samples + metrics in: $OUT"
+[ "$failed" = 0 ] || { echo "$failed op(s) failed" >&2; exit 1; }
