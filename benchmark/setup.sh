@@ -180,7 +180,7 @@ ok "checkout $REPO_DIR at $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 (cd "$FC_DIR" && ./scripts/fc-agent.sh bootstrap --no-updater --no-register)
 # the snapshot store is where fork clones rootfs and memory files; it follows
 # SNAPSHOTS_DIR in the agent's .env when set, which can point off BENCH_DIR.
-SNAPSHOTS_DIR="$(grep -E '^SNAPSHOTS_DIR=' "$FC_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+SNAPSHOTS_DIR="$(grep -E '^SNAPSHOTS_DIR=' "$FC_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
 SNAPSHOTS_DIR="${SNAPSHOTS_DIR:-$FC_DIR/agent-state/snapshots}"
 mkdir -p "$SNAPSHOTS_DIR"
 reflink_ok "$SNAPSHOTS_DIR" \
@@ -189,11 +189,16 @@ ok "snapshot store $SNAPSHOTS_DIR on $(findmnt -no FSTYPE -T "$SNAPSHOTS_DIR") (
 
 # ---------------------------------------------------------------------------
 log "6/7 register host + cli"
-TOK="$(grep -E '^ORCH_AUTH_TOKEN=' /etc/default/orchestrator | cut -d= -f2-)"
+TOK="$(grep -E '^ORCH_AUTH_TOKEN=' /etc/default/orchestrator | cut -d= -f2- || true)"
 [ -n "$TOK" ] || die "no ORCH_AUTH_TOKEN in /etc/default/orchestrator; bootstrap did not finish"
-AGENT_TOK="$(grep -E '^FC_AGENT_TOKEN=' "$FC_DIR/.env" | cut -d= -f2-)"
+AGENT_TOK="$(grep -E '^FC_AGENT_TOKEN=' "$FC_DIR/.env" | cut -d= -f2- || true)"
+[ -n "$AGENT_TOK" ] || die "no FC_AGENT_TOKEN in $FC_DIR/.env; bootstrap did not finish"
+# the bearer header goes to curl from a 0600 file, not argv, so ps cannot see it
+AUTH_HDR="$(mktemp)"
+trap 'rm -f "$AUTH_HDR"' EXIT
+printf 'Authorization: Bearer %s\n' "$TOK" > "$AUTH_HDR"
 for _ in $(seq 1 60); do
-  curl -fsS -H "Authorization: Bearer $TOK" "$ORCH_URL/v1/hosts" >/dev/null 2>&1 && break
+  curl -fsS --max-time 5 -H @"$AUTH_HDR" "$ORCH_URL/v1/hosts" >/dev/null 2>&1 && break
   sleep 1
 done
 CPUS=$(nproc)
@@ -201,8 +206,8 @@ RAM_MB=$(awk '/^MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
 STORAGE_GB=$(df -Pk "$BENCH_DIR" | awk 'NR==2{printf "%d", $2/1048576}')
 # re-registering overwrites the host record, so a re-run picks up new knobs.
 printf '%s' "{\"id\":\"$HOST_ID\",\"url\":\"http://127.0.0.1:8090\",\"token\":\"$AGENT_TOK\",\"region\":\"local\",\"backend\":\"firecracker\",\"capacity\":{\"cpus\":$(( CPUS * BENCH_CPU_OVERCOMMIT )),\"ram_mb\":$RAM_MB,\"storage_gb\":$STORAGE_GB,\"vm_count\":$BENCH_MAX_VMS}}" \
-  | curl -fsS -X POST "$ORCH_URL/v1/hosts" \
-  -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
+  | curl -fsS --max-time 30 -X POST "$ORCH_URL/v1/hosts" \
+  -H @"$AUTH_HDR" -H 'Content-Type: application/json' \
   -d @- \
   >/dev/null || die "host register failed"
 ok "host $HOST_ID: $(( CPUS * BENCH_CPU_OVERCOMMIT )) vcpus (${BENCH_CPU_OVERCOMMIT}x), ${RAM_MB} MB, ${STORAGE_GB} GB, ${BENCH_MAX_VMS} vms"
@@ -229,12 +234,12 @@ else
   FUSEFILE="$REPO_DIR/benchmark/Fusefile.bench"
   # smoke first: the same script at N=1 must create, fork and destroy cleanly
   # before the full run is worth its time.
-  N=1 FUSEFILE="$FUSEFILE" OUT="$RES/smoke" bash "$BENCH" | tee "$RES/smoke.md"
+  N=1 FUSEFILE="$FUSEFILE" OUT="$RES/smoke" bash "$BENCH" | tee "$RES/smoke.md" || die "smoke run failed; see $RES/smoke.md and $RES/smoke/err.log"
   for f in cold_create fork destroy; do
     [ -s "$RES/smoke/$f.txt" ] || die "smoke run produced no $f sample; see $RES/smoke/err.log"
   done
   ok "smoke passed"
-  N="$BENCH_N" FUSEFILE="$FUSEFILE" OUT="$RES/baseline" bash "$BENCH" | tee "$RES/baseline.md"
+  N="$BENCH_N" FUSEFILE="$FUSEFILE" OUT="$RES/baseline" bash "$BENCH" | tee "$RES/baseline.md" || die "baseline run had failures; see $RES/baseline.md"
 fi
 
 echo
