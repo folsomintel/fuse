@@ -369,15 +369,19 @@ def hotplug_regrow(meta: dict) -> None:
 #                      mode, warp, wireguard) keys on it, as it did on the tap
 #   meta["guest_net"]  the tap, addresses and mac inside the namespace
 #
-# a vm from before namespaces keeps its 10.200.<idx> guest network
-# (legacy_guest_net) inside a namespace once its network is rebuilt, so its
-# rootfs and its live snapshots still line up.
+# a vm from before namespaces (meta without "netns") keeps its old layout, a
+# tap fcv<idx> in the host namespace at 10.200.<idx>.1/30, until it is
+# destroyed: its guest, and any egress proxy url written into it, know only
+# those addresses. its live snapshots still resume into a new vm, with that
+# 10.200.<idx> guest network (legacy_guest_net) inside the new vm's namespace.
 
 NETNS_PREFIX = "fcns"
 GUEST_NET = {"tap": "tap0", "ip": "172.16.0.2", "gw": "172.16.0.1", "mac": "06:00:AC:10:00:02"}
 # slots are 16 bits, but each vm's agent forward listens on HOST_PORT_BASE +
-# slot, so the port range is the tighter bound.
-SLOT_MAX = min(0xFFFF, 65535 - HOST_PORT_BASE)
+# slot, and expose ports come out of the kernel's ephemeral range (32768 up,
+# see _free_host_port). the agent ports stop below it, so the two never meet.
+_PORT_CEILING = 32767 if HOST_PORT_BASE < 32767 else 65535
+SLOT_MAX = min(0xFFFF, _PORT_CEILING - HOST_PORT_BASE)
 
 
 def used_indices() -> set[int]:
@@ -500,32 +504,58 @@ def setup_tap(idx: int, iface: str, egress_mode: str = "direct",
     ]:
         sudo(in_ns + cmd)
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
-    # every guest packet reaches the host on the veth, so the host rules are
-    # the ones the tap had, keyed on the veth. the outbound leg is the only
-    # one that depends on egress_mode. direct installs the veth -> iface
-    # accept. proxy installs a drop in its place: not merely omitting the
-    # accept, because the FORWARD chain has no default-deny (issue #208) and
-    # omission alone would enforce nothing on a host whose policy is ACCEPT.
+    host_rules(tap, iface, egress_mode)
+    return tap, host_ip, guest_ip
+
+
+def setup_legacy_tap(idx: int, iface: str, egress_mode: str = "direct") -> None:
+    """rebuilds the pre-namespace layout for a vm created before namespaces:
+    a tap fcv<idx> in the host namespace at 10.200.<idx>.1/30. its guest and
+    its egress proxy url only know those addresses, so it keeps them."""
+    tap = tap_name(idx)
+    sudo(["ip", "link", "del", tap], check=False)
+    sudo(["ip", "tuntap", "add", tap, "mode", "tap"])
+    sudo(["ip", "addr", "add", f"10.200.{idx}.1/30", "dev", tap])
+    sudo(["ip", "link", "set", tap, "up"])
+    sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    host_rules(tap, iface, egress_mode)
+
+
+def vm_rules(dev: str, iface: str) -> list[list[str]]:
+    """every host FORWARD rule host_rules can key on a vm's device."""
+    return [forward_rule(dev, iface, "ACCEPT"), forward_rule(dev, iface, "DROP"),
+            forward_rule(dev, iface, "ACCEPT", established=True),
+            forward_rule(iface, dev, "ACCEPT", established=True)]
+
+
+def host_rules(dev: str, iface: str, egress_mode: str) -> None:
+    """the host rules for a vm whose packets all reach the host on dev (its
+    veth, or a pre-namespace vm's tap). the outbound leg is the only one that
+    depends on egress_mode. direct installs a dev -> iface accept. proxy
+    installs a drop in its place: not merely omitting the accept, because the
+    FORWARD chain has no default-deny (issue #208) and omission alone would
+    enforce nothing on a host whose policy is ACCEPT."""
+    # iptables rules outlive the device they name, so whatever an earlier
+    # holder of the slot left goes first: a leftover accept above a drop
+    # would win, and a leftover established accept below one would be
+    # skipped by -C and never reach the top.
+    for rule in vm_rules(dev, iface):
+        purge_rule(rule)
     if egress_mode == "proxy":
-        # iptables rules outlive the device they name, so a direct vm that
-        # held this slot earlier can have left its accept behind. an accept
-        # above the drop wins, so it has to go first.
-        purge_rule(forward_rule(tap, iface, "ACCEPT"))
         # the established accept is inserted after the drop and so sits above
         # it: replies on connections that came in (the orchestrator's to
-        # fused, an expose) leave by this same veth -> iface path. a
+        # fused, an expose) leave by this same dev -> iface path. a
         # connection the guest opens never gets established, since its first
         # packet is the one dropped.
-        outbound = [forward_rule(tap, iface, "DROP"), forward_rule(tap, iface, "ACCEPT", established=True)]
+        outbound = [forward_rule(dev, iface, "DROP"), forward_rule(dev, iface, "ACCEPT", established=True)]
     else:
-        outbound = [forward_rule(tap, iface, "ACCEPT")]
+        outbound = [forward_rule(dev, iface, "ACCEPT")]
     masquerade = ["POSTROUTING", "-o", iface, "-j", "MASQUERADE"]
     if sudo(["iptables", "-t", "nat", "-C"] + masquerade, check=False).returncode != 0:
         sudo(["iptables", "-t", "nat", "-A"] + masquerade)
-    for rule in outbound + [forward_rule(iface, tap, "ACCEPT", established=True)]:
+    for rule in outbound + [forward_rule(iface, dev, "ACCEPT", established=True)]:
         if sudo(["iptables", "-C"] + rule, check=False).returncode != 0:
             sudo(["iptables", "-I"] + rule)
-    return tap, host_ip, guest_ip
 
 
 def teardown_net(idx: int, iface: str) -> None:
@@ -535,9 +565,7 @@ def teardown_net(idx: int, iface: str) -> None:
     destroy, a failed create's rollback and the orphan sweep all land here,
     as does a vm from before namespaces (its tap had the veth's name)."""
     tap = tap_name(idx)
-    for rule in [forward_rule(tap, iface, "ACCEPT"), forward_rule(tap, iface, "DROP"),
-                 forward_rule(tap, iface, "ACCEPT", established=True),
-                 forward_rule(iface, tap, "ACCEPT", established=True)]:
+    for rule in vm_rules(tap, iface):
         purge_rule(rule)
     sudo(["ip", "netns", "del", netns_name(idx)], check=False)
     teardown_tap(tap)
@@ -545,27 +573,20 @@ def teardown_net(idx: int, iface: str) -> None:
 
 def rebuild_net(meta: dict) -> None:
     """rebuilds a vm's network in its own slot (a restore in place, a
-    relaunch after a reboot) and re-points its forwards at it. a vm from
-    before namespaces moves onto one here. its guest keeps its addresses, but
-    the host side ones change, so an egress backend bound to the old ones is
-    released rather than left listening where the guest no longer reaches."""
+    relaunch after a reboot) with the addresses it already has, and puts its
+    agent forward back. a vm from before namespaces gets its old tap layout
+    back rather than a namespace, so its guest, its egress backend and the
+    orchestrator's view of its addresses all stay true."""
     iface = host_iface()
-    old_ip, old_host_ip = meta["guest_ip"], meta["host_ip"]
     if "host_port" in meta:
-        del_agent_forward(meta["host_port"], old_ip)
-    for ep in meta.get("expose_endpoints", []):
-        del_expose_forward(ep["host_port"], old_ip, ep["port"], ep.get("protocol", "tcp"))
-    guest_net = guest_net_of(meta)
-    tap, host_ip, guest_ip = setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"), guest_net)
-    if host_ip != old_host_ip and meta.get("egress"):
-        release_egress(meta)
-    meta.update(tap=tap, host_ip=host_ip, guest_ip=guest_ip,
-                netns=netns_name(meta["index"]), guest_net=guest_net)
+        del_agent_forward(meta["host_port"], meta["guest_ip"])
+    if meta.get("netns"):
+        setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"), guest_net_of(meta))
+    else:
+        setup_legacy_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
     if "host_port" in meta:
-        add_agent_forward(meta["host_port"], guest_ip, iface)
-    for ep in meta.get("expose_endpoints", []):
-        add_expose_forward(ep["host_port"], guest_ip, ep["port"], ep.get("protocol", "tcp"))
-    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
+        add_agent_forward(meta["host_port"], meta["guest_ip"], iface)
+    Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
 
 
 def sweep_orphan_netns() -> None:
@@ -1476,9 +1497,13 @@ SNAPSHOT_API_TIMEOUT = float(os.environ.get("FC_AGENT_SNAPSHOT_API_TIMEOUT", "60
 #
 # live.json is the resume manifest, the three facts about the source that the
 # memory image silently depends on and does not say:
-#   index        the network slot. the frozen guest holds its ip, gateway and
-#                mac in memory and all three derive from this, so a resume has
-#                to get the same slot (there is no network remapping yet).
+#   guest_net    the tap, ip, gateway and mac the frozen guest holds in
+#                memory. a resume builds them inside the new vm's namespace,
+#                in whatever slot is free.
+#   index        the source's slot, 0 for a namespaced guest network. only a
+#                snapshot from before namespaces is resumed by it (its guest
+#                network derives from it), and an agent from before namespaces
+#                refuses 0.
 #   rootfs_path  the drive path firecracker recorded in vmstate, which it
 #                reopens by name on load.
 #   host         the cpu and firecracker build that wrote the image.

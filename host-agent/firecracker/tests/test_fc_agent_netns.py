@@ -138,8 +138,10 @@ class SlotTest(unittest.TestCase):
         self.assertLessEqual(len(fc_agent.tap_name(fc_agent.SLOT_MAX)), 15)
 
     def test_the_agent_port_of_the_last_slot_is_a_port(self):
-        self.assertLessEqual(fc_agent.HOST_PORT_BASE + fc_agent.SLOT_MAX, 65535)
-        self.assertGreater(fc_agent.SLOT_MAX, 249)
+        # below the ephemeral range expose ports are drawn from, so an agent
+        # port and an expose dnat can never be handed the same number.
+        self.assertLess(fc_agent.HOST_PORT_BASE + fc_agent.SLOT_MAX, 32768)
+        self.assertEqual(fc_agent.SLOT_MAX, 13217)
 
 
 class PickIndexTest(unittest.TestCase):
@@ -318,30 +320,44 @@ class RebuildTest(FakeHostCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_a_vm_from_before_namespaces_moves_onto_one(self):
+    def test_a_vm_from_before_namespaces_keeps_its_old_layout(self):
+        # its guest, the proxy url written into it and the orchestrator all
+        # know 10.200.3.x, so moving it would cut its egress silently.
         meta = {"vm_id": "old", "index": 3, "tap": "fcv3", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2",
                 "mac": "06:00:AC:10:03:02", "host_port": 19553, "egress_mode": "proxy",
-                "egress": {"provider": "fake"}, "expose_endpoints": [{"host_port": 30000, "port": 80}]}
+                "egress": {"provider": "fake"}}
+        before = dict(meta)
         fc_agent.rebuild_net(meta)
-        self.assertEqual((meta["host_ip"], meta["guest_ip"], meta["netns"]), ("10.208.0.3", "10.209.0.3", "fcns3"))
-        # the guest keeps the network its rootfs and snapshots remember.
-        self.assertEqual(meta["guest_net"], fc_agent.legacy_guest_net(3))
+        self.assertEqual(meta, before)
+        self.assertEqual(self.host.netns, set())
+        self.assertEqual(self.host.links, {("", "fcv3")})
+        self.assertIn(["FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"], self.host.host_rules())
         self.assertEqual(self.calls, [
             ("del_agent_forward", 19553, "10.200.3.2"),
-            ("del_expose_forward", 30000, "10.200.3.2", 80, "tcp"),
-            ("add_agent_forward", 19553, "10.209.0.3", "eth0"),
-            ("add_expose_forward", 30000, "10.209.0.3", 80, "tcp"),
+            ("add_agent_forward", 19553, "10.200.3.2", "eth0"),
         ])
-        # its backend was bound to the old host address, which is gone.
-        self.assertEqual(self.released, ["old"])
+        self.assertEqual(self.released, [])
 
     def test_a_namespaced_vm_keeps_its_addresses_and_backend(self):
         meta = {"vm_id": "new", "index": 3, "tap": "fcv3", "host_ip": "10.208.0.3", "guest_ip": "10.209.0.3",
                 "netns": "fcns3", "guest_net": dict(fc_agent.GUEST_NET), "egress_mode": "proxy",
-                "egress": {"provider": "fake"}}
+                "egress": {"provider": "fake"}, "host_port": 19553}
+        before = dict(meta)
         fc_agent.rebuild_net(meta)
-        self.assertEqual((meta["host_ip"], meta["guest_ip"]), ("10.208.0.3", "10.209.0.3"))
+        self.assertEqual(meta, before)
+        self.assertEqual(self.host.netns, {"fcns3"})
+        self.assertEqual(self.calls[-1], ("add_agent_forward", 19553, "10.209.0.3", "eth0"))
         self.assertEqual(self.released, [])
+
+    def test_a_stale_established_accept_cannot_sit_below_the_drop(self):
+        # a crash mid-teardown can leave the reply accept behind. setup must
+        # purge it, or -C would skip it and the drop would land above it.
+        reply = ["FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
+        self.host.rules[("", "filter")] = [["FORWARD", "-i", "x", "-j", "ACCEPT"], reply]
+        fc_agent.setup_tap(3, "eth0", "proxy")
+        forward = self.host.rules[("", "filter")]
+        self.assertEqual(forward.count(reply), 1)
+        self.assertLess(forward.index(reply), forward.index(["FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]))
 
 
 class LaunchTest(unittest.TestCase):

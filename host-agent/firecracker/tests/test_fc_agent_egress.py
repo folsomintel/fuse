@@ -77,6 +77,11 @@ DIRECT_SEQUENCE = [
     IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"],
     IN_NS + ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"],
     ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+    # whatever an earlier holder of the slot left on the veth goes first.
+    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
+    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"],
+    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    ["iptables", "-D", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
     ["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
     ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
     ["iptables", "-C", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
