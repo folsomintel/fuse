@@ -387,6 +387,15 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(bodies["/network-interfaces/eth0"]["host_dev_name"], "fcv3")
 
 
+class VMPublicTest(unittest.TestCase):
+    def test_reports_the_addresses_the_guest_sees(self):
+        # the orchestrator puts these in the guest's NO_PROXY: the guest's
+        # own address is 172.16.0.2, not the veth address the host uses.
+        pub = fc_agent.vm_public({"vm_id": "vm-a", "host_ip": "10.208.0.3", "guest_ip": "10.209.0.3",
+                                  "guest_net": dict(fc_agent.GUEST_NET)})
+        self.assertEqual((pub["host_ip"], pub["guest_ip"]), ("10.208.0.3", "172.16.0.2"))
+
+
 class EgressFollowsTheVethTest(unittest.TestCase):
     def test_warp_and_wireguard_attach_to_the_veth_and_its_host_address(self):
         meta = {"vm_id": "vm-a", "tap": "fcv300", "host_ip": "10.208.1.44", "guest_ip": "10.209.1.44"}

@@ -3922,16 +3922,18 @@ def do_start_surfd(vm_id: str, manifest_path: str, secrets_path: str,
 
 
 def vm_public(meta: dict) -> dict:
-    # host_ip and guest_ip are the two ends of the vm's veth, the addresses
-    # the host and the guest reach each other on. the orchestrator needs them
-    # to bind an in-process egress backend where the guest can reach it and
-    # to name them in NO_PROXY. additive: a reader that predates them ignores
-    # them.
+    # the vm's addresses as its guest sees them: host_ip is the host end of
+    # its veth, where an egress backend listens for it, and guest_ip its own
+    # address inside the namespace, not the veth address the host reaches it
+    # on. the orchestrator needs them to bind an in-process egress backend
+    # where the guest can reach it and to name the guest's own addresses in
+    # NO_PROXY. additive: a reader that predates them ignores them.
+    guest_net = meta.get("guest_net")
     return {
         "vm_id": meta["vm_id"],
         "url": meta.get("url", ""),
         "host_ip": meta.get("host_ip", ""),
-        "guest_ip": meta.get("guest_ip", ""),
+        "guest_ip": guest_net["ip"] if guest_net else meta.get("guest_ip", ""),
         "egress_mode": meta.get("egress_mode", "direct"),
     }
 
