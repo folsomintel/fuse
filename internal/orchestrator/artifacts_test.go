@@ -1039,3 +1039,69 @@ func TestHostsHoldingArtifact_isTenantScoped(t *testing.T) {
 		t.Errorf("an empty digest resolved to %+v (err %v), want nothing", empty, err)
 	}
 }
+
+// TestForkPlace_competingForksDoNotOvercommit races fork placements for the
+// source host's last slot: exactly one may land, the rest are refused with
+// ErrNoCapacity, and the host is never charged past its capacity.
+func TestForkPlace_competingForksDoNotOvercommit(t *testing.T) {
+	ctx := context.Background()
+	provider := newDigestForkProvider()
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: &recordingMover{}})
+	// room for the source and one fork.
+	if err := fm.RegisterHost(ctx, artifactHost("h-a", 2), provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fm.ProvisionAndAssign(ctx, "task-src",
+		Spec{CPUs: 1, RamMB: 512, HostID: "h-a"}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatalf("provision source: %v", err)
+	}
+	seed, err := fm.durableSnapshotsClient().Snapshot(ctx, "fuse-task-src", SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	const forks = 8
+	plans := make([]ForkPlan, forks)
+	for i := range plans {
+		id := fmt.Sprintf("fuse-fork-%d", i)
+		plan, err := fm.ForkBegin(ctx, id, ForkRequest{SourceVMID: "fuse-task-src", TaskID: id, ReuseSnapshotID: seed.SnapshotID})
+		if err != nil {
+			t.Fatalf("begin %s: %v", id, err)
+		}
+		if err := fm.ForkPlaceholder(ctx, plan); err != nil {
+			t.Fatalf("placeholder %s: %v", id, err)
+		}
+		plans[i] = plan
+	}
+
+	errs := make([]error, forks)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, plan := range plans {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, errs[i] = fm.ForkPlace(ctx, plan, seed)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	placed := 0
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			placed++
+		case !errors.Is(err, ErrNoCapacity):
+			t.Errorf("place err = %v, want nil or ErrNoCapacity", err)
+		}
+	}
+	if placed != 1 {
+		t.Errorf("%d forks placed, want 1", placed)
+	}
+	h, _ := fm.GetHost("h-a")
+	if h.Allocated.CPUs > h.Capacity.CPUs {
+		t.Errorf("h-a allocated %d cpus of %d", h.Allocated.CPUs, h.Capacity.CPUs)
+	}
+}

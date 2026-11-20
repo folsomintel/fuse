@@ -252,7 +252,19 @@ func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed Snaps
 		// single-provider mode: there is no host to charge.
 		return "", nil
 	}
+	// placeFork judged a copy of the host; re-check the live one in the
+	// section that charges it, so a concurrent fork or create that took the
+	// last slot meanwhile turns this one into a retry-later refusal.
 	fm.mu.Lock()
+	h, ok := fm.hosts[hostID]
+	if !ok {
+		fm.mu.Unlock()
+		return "", fmt.Errorf("%w: host %s was removed while the fork was placed", ErrNoCapacity, hostID)
+	}
+	if why := hostRejection(h, spec); why != "" {
+		fm.mu.Unlock()
+		return "", fmt.Errorf("%w: host %s %s", ErrNoCapacity, hostID, why)
+	}
 	v.hostID = hostID
 	fm.allocateOnHost(hostID, v)
 	fm.mu.Unlock()
