@@ -318,7 +318,12 @@ paths:
         `spec.labels` key or value is a 400, and an unknown `spec.host_id`
         is a 404 before any VM is created. A pin to a real but ineligible
         host, and a label selector that matches no host, both fail 503 with
-        a message naming the gate that rejected them.
+        a message naming the gate that rejected them. A spec no host has
+        room for is refused with 503 before anything boots. On an
+        orchestrator pointed at one agent (`FIRECRACKER_BASE_URL`) with no
+        host registered, the first create registers that agent as host
+        `local-fc` with its probed capacity, so it is admitted the same
+        way; if the agent cannot report its capacity the create fails 503.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/Wait"
@@ -407,9 +412,13 @@ paths:
         - `fork` — create a new environment seeded from a checkpoint of
           this one. With `reuse_snapshot_id` empty the server snapshots
           the source first; otherwise it reuses that ready snapshot (it
-          must belong to this VM). The fork is pinned to the source's
-          host, receives its own guest credentials (fused is restarted),
-          and is returned as a new Environment with 201. GPU environments
+          must belong to this VM). The fork lands on the source's host
+          when it fits there, otherwise on another host of the same
+          backend when the seed can be copied; when neither has room it
+          is refused with 503 `unavailable` (and a `Retry-After`) rather
+          than overcommitting the source's host. It receives its own
+          guest credentials (fused is restarted), and is returned as a
+          new Environment with 201. GPU environments
           (spec.gpus > 0, including MIG) and QEMU-hosted environments
           cannot be forked: a vfio device cannot be checkpointed, so the
           request returns 409 `conflict`. That is a permanent property of
@@ -2800,7 +2809,17 @@ components:
         GPUs a host cannot satisfy lands here. It is also the answer when
         the orchestrator could not reach restate, which runs every
         mutating operation: nothing was started. Either way it is worth
-        retrying, once capacity frees up or restate is back.
+        retrying, once capacity frees up or restate is back: these 503s
+        carry `Retry-After` (seconds), and the SDKs retry create, fork and
+        the other operation calls with jittered backoff that waits at
+        least that long, under the same `Idempotency-Key`. A 503 from the
+        guest (a computer action with no display) carries no
+        `Retry-After` and is not retried.
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds to wait before retrying. Absent on a 503 a retry cannot fix.
       content:
         application/json:
           schema:

@@ -394,7 +394,7 @@ func (h *Handler) asOperation(kind string, limit int64, next http.HandlerFunc) h
 		}
 		prev, err := h.operationStore().begin(op)
 		if err != nil {
-			writeError(w, http.StatusServiceUnavailable, CodeUnavailable, err.Error(), nil)
+			writeRetryLater(w, CodeUnavailable, err.Error(), nil)
 			return
 		}
 		if prev != nil {
