@@ -106,8 +106,7 @@ child() { # child <n> <k> <level-start>
 }
 
 echo "fork fan-out  levels=($LEVELS) heavy=${HEAVY_MB}MB seed=$SEED out=$OUT"
-out=$(fuse up "$PARENT_FUSEFILE" --task-id "$RUN-parent" -o json 2>>"$OUT/err.log")
-parent=$(printf '%s' "$out" | id_of)
+parent=$(up_env "$PARENT_FUSEFILE" --task-id "$RUN-parent")
 if [ -z "$parent" ] || ! wait_running "$parent"; then
   echo "parent did not start (see $OUT/err.log)" >&2; exit 1
 fi

@@ -20,17 +20,29 @@ dt()    { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.3f", b-a}'; }
 # extract an env id from `-o json` output, tolerant of field name
 id_of() { jq -r '.id // .environment.id // .vmId // .vm_id // .vm.id // empty' 2>/dev/null; }
 
-# poll until the env reports a running/ready/active state (bounded)
+# poll until the env reports a running/ready/active state (bounded). a vm
+# that fails provisioning is removed, so a run of failed gets ends it early.
 wait_running() {
-  local id="$1" deadline=$(( $(date +%s) + ${2:-180} ))
+  local id="$1" deadline=$(( $(date +%s) + ${2:-180} )) misses=0 out s
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    local s
-    s=$(fuse environment get "$id" -o json 2>/dev/null | jq -r '.state // .status // empty' 2>/dev/null)
-    case "$s" in running|ready|active|RUNNING|READY|ACTIVE) return 0;; failed|FAILED) return 1;; esac
+    if out=$(fuse environment get "$id" -o json 2>/dev/null); then
+      misses=0
+      s=$(printf '%s' "$out" | jq -r '.state // .status // empty' 2>/dev/null)
+      case "$s" in running|ready|active|RUNNING|READY|ACTIVE) return 0;; failed|FAILED|destroyed) return 1;; esac
+    else
+      misses=$((misses + 1))
+      [ "$misses" -ge 10 ] && return 1
+    fi
     sleep 0.2
   done
   return 1
 }
+
+# up_env <fusefile> [fuse up flags...]: create without waiting and print the
+# id. --no-wait matters: a waiting `fuse up -o json` streams every event as
+# json first, and prints nothing at all if the stream fails after the create
+# was accepted, which would strand the vm. callers wait with wait_running.
+up_env() { fuse up "$@" --no-wait -o json 2>>"$OUT/err.log" | id_of; }
 
 pct() { # pct <p> <sorted-file>
   awk -v p="$1" '{a[NR]=$1} END{if(NR==0){print "NA";exit}

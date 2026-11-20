@@ -54,9 +54,8 @@ finish() {
 trap finish EXIT INT TERM
 
 arrival() { # arrival <rate> <i> <sched>
-  local rate="$1" i="$2" sched="$3" out id t_c t_e t_d c=null e=null d=null tot=null ok=false err=""
-  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$rate-$i" -o json 2>>"$OUT/err.log")
-  id=$(printf '%s' "$out" | id_of)
+  local rate="$1" i="$2" sched="$3" id t_c t_e t_d c=null e=null d=null tot=null ok=false err=""
+  id=$(up_env "$FUSEFILE" --task-id "$RUN-$rate-$i")
   if [ -z "$id" ]; then
     err=create
   else

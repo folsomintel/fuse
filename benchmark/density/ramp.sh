@@ -54,10 +54,9 @@ finish() {
 trap finish EXIT INT TERM
 
 create_one() { # create_one <batch> <i>
-  local t0 t1 out id ok=false
+  local t0 t1 id ok=false
   t0=$(now)
-  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$1-$2" -o json 2>>"$OUT/err.log")
-  id=$(printf '%s' "$out" | id_of)
+  id=$(up_env "$FUSEFILE" --task-id "$RUN-$1-$2")
   if [ -n "$id" ]; then
     echo "$id" >> "$IDS"
     wait_running "$id" && ok=true
