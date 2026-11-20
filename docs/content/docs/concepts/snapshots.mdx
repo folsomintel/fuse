@@ -133,6 +133,41 @@ fuse snapshot delete <id>
 Deletion is leaf-only and also removes the underlying provider artifact; there's no
 soft-delete.
 
+## Memory shared across resumed VMs
+
+A VM resumed from a live snapshot into a new VM (a live migrate does this today)
+does not load its memory straight out of the snapshot store. The agent
+hardlinks the snapshot's memory image into the VM's own directory and points
+Firecracker at that link. Firecracker maps the file copy-on-write, so what a
+guest writes lands in its own private pages and never reaches the file.
+
+That has two consequences:
+
+- **Deleting the snapshot cannot kill a guest.** The delete removes the store's
+  link. The image stays on disk until the last VM resumed from it is
+  destroyed, so its bytes are freed then, not at the delete.
+- **VMs resumed from one snapshot share its memory.** They map one file, so
+  the host keeps one copy of the image in page cache however many VMs read
+  it, and each VM costs only the pages it has changed.
+
+The scheduler accounts for it the same way. The first VM on a host resumed from
+a snapshot is charged the image's full size plus a private share of 25% of
+its memory. Each further VM from the same snapshot on that host is charged
+only its private share. The image stays charged until the last of those VMs is
+destroyed. The private share is headroom for the pages a guest dirties, not
+a limit, so a fleet of clones that each rewrite most of their memory can
+use more than the scheduler counted.
+
+Two cases do not share and are charged in full:
+
+- **2M hugepage VMs.** These are filled by `fc-uffd` into their own
+  hugepages, so each one holds a private copy.
+- **A store on another filesystem.** A hardlink cannot cross filesystems, so
+  when the snapshot store and the VM directories are on different mounts the
+  agent copies the image instead. The guest is just as safe from a delete,
+  but the VMs no longer share page cache. Keep `SNAPSHOTS_DIR` on the same
+  filesystem as the VM state (the default, both live under `/var/lib/fuse`).
+
 ## Limitations of live snapshots
 
 These are real and worth reading before you build on `live`.
