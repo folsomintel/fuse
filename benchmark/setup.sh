@@ -7,8 +7,10 @@
 # what it does (idempotent, safe to re-run):
 #   1. preflight: root, x86_64, apt/dnf, hardware virtualization + /dev/kvm
 #   2. packages: git, jq, xfsprogs, sudo, docker (restate-server runs in it)
-#   3. storage: puts the fuse checkout on a reflink-capable filesystem, so
-#      rootfs and snapshot copies are reflinks, not full copies
+#   3. storage: puts the fuse checkout, and with it the snapshot store, on xfs
+#      (reflink=1) or btrfs, so rootfs and snapshot copies are reflinks; on
+#      ext4 copy_rootfs falls back to a full disk copy per fork. checked
+#      again after bootstrap in case SNAPSHOTS_DIR points elsewhere
 #   4. host tuning: fd/pid/map/conntrack/neighbour limits, performance
 #      governor, ksm off
 #   5. fuse: clones the repo and runs `fc-agent.sh bootstrap` (agent,
@@ -89,10 +91,13 @@ systemctl enable --now docker >/dev/null 2>&1 || die "could not start docker"
 ok "git, jq, xfsprogs, sudo, docker"
 
 # ---------------------------------------------------------------------------
-log "3/7 storage (reflink-capable filesystem for $BENCH_DIR)"
-# reflink_ok <dir>: can this directory's filesystem reflink a file?
+log "3/7 storage (xfs reflink=1 or btrfs for $BENCH_DIR)"
+# reflink_ok <dir>: is this directory on xfs or btrfs, and can it reflink a
+# file? those are the two filesystems fc-agent's copy_rootfs clones on; on
+# ext4 every fork falls back to a full copy of the disk.
 reflink_ok() {
   local probe="$1/.reflink-probe" rc=0
+  case "$(findmnt -no FSTYPE -T "$1" 2>/dev/null)" in xfs|btrfs) ;; *) return 1;; esac
   echo probe > "$probe" || return 1
   cp --reflink=always "$probe" "$probe.copy" 2>/dev/null || rc=1
   rm -f "$probe" "$probe.copy"
@@ -129,7 +134,7 @@ else
   mountpoint -q "$BENCH_DIR" || mount "$BENCH_DIR"
   ok "xfs loop image $BENCH_IMG mounted on $BENCH_DIR"
 fi
-reflink_ok "$BENCH_DIR" || die "$BENCH_DIR still cannot reflink"
+reflink_ok "$BENCH_DIR" || die "$BENCH_DIR is still not a reflinking xfs or btrfs"
 
 # ---------------------------------------------------------------------------
 log "4/7 host tuning"
@@ -173,6 +178,14 @@ ok "checkout $REPO_DIR at $(git -C "$REPO_DIR" rev-parse --short HEAD)"
 # no updater: the version must not move mid-benchmark. registration is done
 # below with benchmark capacity instead of bootstrap's defaults.
 (cd "$FC_DIR" && ./scripts/fc-agent.sh bootstrap --no-updater --no-register)
+# the snapshot store is where fork clones rootfs and memory files; it follows
+# SNAPSHOTS_DIR in the agent's .env when set, which can point off BENCH_DIR.
+SNAPSHOTS_DIR="$(grep -E '^SNAPSHOTS_DIR=' "$FC_DIR/.env" 2>/dev/null | cut -d= -f2-)"
+SNAPSHOTS_DIR="${SNAPSHOTS_DIR:-$FC_DIR/agent-state/snapshots}"
+mkdir -p "$SNAPSHOTS_DIR"
+reflink_ok "$SNAPSHOTS_DIR" \
+  || die "snapshot store $SNAPSHOTS_DIR is $(findmnt -no FSTYPE -T "$SNAPSHOTS_DIR"), not a reflinking xfs or btrfs; every fork would copy the full disk"
+ok "snapshot store $SNAPSHOTS_DIR on $(findmnt -no FSTYPE -T "$SNAPSHOTS_DIR") (reflink)"
 
 # ---------------------------------------------------------------------------
 log "6/7 register host + cli"
@@ -202,32 +215,10 @@ ok "fuse cli $(fuse --version 2>/dev/null) connected"
 log "7/7 fingerprint + runs"
 RES="$REPO_DIR/benchmark/results/$(hostname -s)-$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$RES"
-jq -n \
-  --arg utc "$(date -u +%FT%TZ)" \
-  --arg hostname "$(hostname -s)" \
-  --arg cpu "$CPU_MODEL" \
-  --argjson threads "$CPUS" \
-  --argjson ram_mb "$RAM_MB" \
-  --arg kernel "$(uname -r)" \
-  --arg os "$(. /etc/os-release && echo "$PRETTY_NAME")" \
-  --arg fs "$(findmnt -no FSTYPE -T "$BENCH_DIR")" \
-  --arg backing "$(findmnt -no SOURCE -T "$BENCH_DIR")" \
-  --arg disk "$(lsblk -dno MODEL,ROTA 2>/dev/null | awk '{rota=$NF; $NF=""; printf "%s(rota=%s) ", $0, rota}')" \
-  --arg firecracker "$(/usr/local/bin/firecracker --version 2>/dev/null | head -n1)" \
-  --arg guest_kernel "${FC_GUEST_KERNEL:-5.10}" \
-  --arg fuse_ref "$FUSE_REF" \
-  --arg fuse_sha "$(git -C "$REPO_DIR" rev-parse HEAD)" \
-  --arg fuse_cli "$(fuse --version 2>/dev/null)" \
-  --arg governor "$GOVERNOR" \
-  --arg ksm "$KSM" \
-  --argjson swap_mb "$(awk '/^SwapTotal/{printf "%d", $2/1024}' /proc/meminfo)" \
-  --argjson cpu_overcommit "$BENCH_CPU_OVERCOMMIT" \
-  '{utc:$utc, hostname:$hostname, cpu:$cpu, threads:$threads, ram_mb:$ram_mb,
-    kernel:$kernel, os:$os, storage:{fs:$fs, backing:$backing, disks:$disk},
-    firecracker:$firecracker, guest_kernel:$guest_kernel,
-    fuse:{ref:$fuse_ref, sha:$fuse_sha, cli:$fuse_cli},
-    tuning:{governor:$governor, ksm:$ksm, swap_mb:$swap_mb, cpu_overcommit:$cpu_overcommit},
-    control_plane:"co-located"}' > "$RES/env.json"
+# shellcheck source=benchmark/lib.sh
+. "$REPO_DIR/benchmark/lib.sh"
+export SNAPSHOTS_DIR
+write_env_json "$RES/env.json" "$REPO_DIR"
 ok "fingerprint: $RES/env.json"
 
 if [ "${BENCH_SKIP_RUN:-}" = "1" ]; then
@@ -250,5 +241,6 @@ echo "======================================================================"
 echo " fuse benchmark host ready"
 echo "   results : $RES"
 echo "   rerun   : N=20 HOST=$HOST_ID FUSEFILE=$REPO_DIR/benchmark/Fusefile.bench bash $REPO_DIR/benchmark/vm-bench.sh"
+echo "   density : SMOKE=1 bash $REPO_DIR/benchmark/density/ramp.sh   (also churn.sh, fork-fanout/fanout.sh; drop SMOKE for the full run)"
 echo "   laptop  : fuse connect http://${PUBLIC_HOST:-<this-box>}:8080 --token $TOK"
 echo "======================================================================"
