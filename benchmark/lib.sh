@@ -7,6 +7,13 @@
 BENCH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PATH="$PATH:/usr/local/bin"
 
+# the agent's snapshot store: SNAPSHOTS_DIR from its .env when set, the same
+# lookup setup.sh does, so the leak audit and env.json look where it writes.
+if [ -z "${SNAPSHOTS_DIR:-}" ]; then
+  SNAPSHOTS_DIR="$(grep -E '^SNAPSHOTS_DIR=' "$BENCH_LIB_DIR/../host-agent/firecracker/.env" 2>/dev/null | cut -d= -f2- || true)"
+  if [ -n "$SNAPSHOTS_DIR" ]; then export SNAPSHOTS_DIR; fi
+fi
+
 now()   { date +%s.%N; }
 dt()    { awk -v a="$1" -v b="$2" 'BEGIN{printf "%.3f", b-a}'; }
 

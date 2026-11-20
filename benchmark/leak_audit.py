@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -35,10 +36,10 @@ RESTATE_ADMIN = os.environ.get("RESTATE_ADMIN_URL", "http://127.0.0.1:9070")
 PROC = os.environ.get("BENCH_PROC", "/proc")
 
 
-def run(cmd, timeout=30):
+def run(cmd, timeout=30, env=None):
     """stdout of cmd, or None if it is missing or fails."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except (OSError, subprocess.TimeoutExpired):
         return None
     return p.stdout if p.returncode == 0 else None
@@ -106,11 +107,25 @@ def database_url():
     return None
 
 
+def pg_env(url):
+    """libpq env vars for a postgres:// url, so the password never sits in argv."""
+    u = urllib.parse.urlsplit(url)
+    env = dict(os.environ)
+    for key, val in (("PGHOST", u.hostname), ("PGPORT", u.port), ("PGUSER", u.username),
+                     ("PGPASSWORD", u.password), ("PGDATABASE", u.path.lstrip("/"))):
+        if val:
+            env[key] = urllib.parse.unquote(str(val))
+    sslmode = urllib.parse.parse_qs(u.query).get("sslmode")
+    if sslmode:
+        env["PGSSLMODE"] = sslmode[0]
+    return env
+
+
 def psql_count(sql):
     url = database_url()
     if not url:
         return None
-    out = run(["psql", url, "-tAc", sql])
+    out = run(["psql", "-tAc", sql], env=pg_env(url))
     try:
         return int(out.strip())
     except (AttributeError, ValueError):
@@ -118,7 +133,12 @@ def psql_count(sql):
 
 
 def restate_inflight():
-    body = json.dumps({"query": "SELECT count(*) AS n FROM sys_invocation WHERE status != 'completed'"})
+    # scheduled invocations are excluded: every create arms a delayed expiry
+    # send that destroy does not cancel, and it sits scheduled until the
+    # environment's max_runtime passes, long after the run. a stuck durable op
+    # shows up as running, backing-off, suspended or paused.
+    body = json.dumps({"query": "SELECT count(*) AS n FROM sys_invocation "
+                                "WHERE status NOT IN ('completed', 'scheduled')"})
     req = urllib.request.Request(
         RESTATE_ADMIN + "/query", data=body.encode(), method="POST",
         headers={"Content-Type": "application/json", "Accept": "application/json"})
