@@ -57,6 +57,11 @@ case "${1:-}" in
       "--allow-empty-secrets --dry-run --no-wait --plan --no-cache --wait-healthy --show-copy" "$@"
     sleep "${FAKE_DELAY:-0.1}"
     id=$(new_id vm); mkdir "$VMS/$id"
+    # without --no-wait the real cli streams each provisioning event (with its
+    # own "id") as json before the environment
+    if [ "$(flag --no-wait)" != true ]; then
+      printf '{\n  "id": "%s",\n  "type": "vm.provisioning"\n}\n' "$(new_id evt)" "$(new_id evt)"
+    fi
     printf '{"id":"%s","state":"running"}\n' "$id";;
   environment)
     sub="${2:-}"; shift 2

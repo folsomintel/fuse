@@ -88,6 +88,9 @@ is "$(find "$FC_STATE_DIR/vms" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')" "$v
 
 # the fake rejects what the real cli rejects
 is "$(fuse up x --host h 2>&1)" "fake-fuse: unknown flag: --host" "fake rejects an unknown flag"
+is "$(fuse up x -o json | jq -r .id | wc -l | tr -d ' ')" 3 "fake up streams events without --no-wait"
+is "$(fuse up x --no-wait -o json | jq -r .id | wc -l | tr -d ' ')" 1 "fake up --no-wait prints one object"
+rm -rf "$FC_STATE_DIR"/vms/*
 is "$(fuse environment destroy vm-x 2>&1)" "fake-fuse: aborted (use --yes to skip the confirmation prompt)" "fake destroy needs --yes"
 
 echo
