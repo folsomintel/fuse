@@ -57,11 +57,13 @@ def test_retries_zero_raises_the_first_503() -> None:
 
 
 @respx.mock
-def test_unkeyed_call_is_not_retried() -> None:
-    route = respx.get(f"{BASE_URL}/v1/environments/vm-1").mock(return_value=unavailable())
+def test_unkeyed_computer_action_is_not_retried() -> None:
+    # a computer action is a POST with no idempotency key: its 503 (no
+    # display) is not something a retry fixes, and it is not safe to resend.
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1/computer").mock(return_value=unavailable())
     with fuse.Client(BASE_URL, "tok") as client:
         with pytest.raises(fuse.ApiError):
-            client.environments.get("vm-1")
+            client.environments.computer("vm-1", fuse.ComputerAction(action="screenshot"))
 
     assert route.call_count == 1
 
