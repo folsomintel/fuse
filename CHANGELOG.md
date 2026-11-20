@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.3.0](https://github.com/folsomintel/fuse/compare/v1.2.0...v1.3.0) (2026-11-20)
+
+
+### Features
+
+* add density, churn and fork fan-out benchmarks with a host sampler and leak audit ([5e05d6b](https://github.com/folsomintel/fuse/commit/5e05d6b154930edcdf5cd499d9c6d059bf2dfd0a))
+* give each firecracker vm its own network namespace and lift the 249-vm cap ([b579715](https://github.com/folsomintel/fuse/commit/b579715d9a8394f1da91642a3d40f5c61326cafe))
+* refuse forks and creates with no capacity, with retry-after and sdk retry across api and all four sdks ([9029a3f](https://github.com/folsomintel/fuse/commit/9029a3f66281f47ce043981727e482c188e8be0d))
+
+
+### Bug Fixes
+
+* carry retry_after on a failed operation so polled 503s wait as long ([acb5f74](https://github.com/folsomintel/fuse/commit/acb5f7415d40437fd3ac941076502575ebc1b258))
+* keep a resumed guest's egress proxy url stable by dialing its gateway ([af30db3](https://github.com/folsomintel/fuse/commit/af30db3635cbde0960815eebab01b74895088bb5))
+* keep fan-out's failure status through the cleanup trap ([3214cb8](https://github.com/folsomintel/fuse/commit/3214cb88b1f408a8ed2d2a36de4eccadc4eafbd4))
+* re-check the live host when charging a fork's placement ([62279f2](https://github.com/folsomintel/fuse/commit/62279f214cb9c14a370c24cd318bd65ccd7d5a6f))
+* refuse to format a bench disk with partitions unless BENCH_FORCE=1 ([61e7002](https://github.com/folsomintel/fuse/commit/61e70029ff3fb6d0d4819ef13379c5a5f9a2380c))
+* report firecracker pss as unknown when no smaps_rollup is readable ([4c0bba4](https://github.com/folsomintel/fuse/commit/4c0bba4de8d0248eae2e34335649812d5607a7d8))
+* track the sampler's own pid so bench_finish stops it ([5f928c9](https://github.com/folsomintel/fuse/commit/5f928c99a3483fecf2b024e76dac9fe660a9aac2))
+* wait for in-flight creates before the ramp destroys its vms ([0dc9ae3](https://github.com/folsomintel/fuse/commit/0dc9ae344efe17860db62e9fc4cf501c4866d84c))
+
 ## [1.2.0](https://github.com/folsomintel/fuse/compare/v1.1.0...v1.2.0) (2026-11-20)
 
 
