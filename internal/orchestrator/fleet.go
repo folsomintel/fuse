@@ -478,6 +478,15 @@ type FleetConfig struct {
 	// single-provider mode for all subsequent placements.
 	HostProviderFactory func(url, token string, backend HostBackend) Provider
 
+	// DefaultHostURL and DefaultHostToken name the host agent Provider
+	// fronts (FIRECRACKER_BASE_URL / FIRECRACKER_TOKEN). when set and no
+	// host is registered, the first create registers that agent as host
+	// DefaultHostID with its probed capacity, so creates are admitted by
+	// capacity like on any other fleet. empty (the in-memory stub) keeps the
+	// unscheduled single-provider path.
+	DefaultHostURL   string
+	DefaultHostToken string
+
 	// EgressRegistry holds the egress backends this orchestrator can
 	// provision. nil, or an empty registry, means a proxy-mode create is
 	// refused; there is no fallback to direct.
@@ -563,6 +572,12 @@ type FleetManager struct {
 	// recovery; in that case, recovered VMs fall through to the
 	// single fm.provider path until an operator re-registers the host.
 	hostProviderFactory func(url, token string, backend HostBackend) Provider
+
+	// defaultHostURL and defaultHostToken are FleetConfig's DefaultHost*;
+	// defaultHostMu serializes registering that agent (registerDefaultHost).
+	defaultHostURL   string
+	defaultHostToken string
+	defaultHostMu    sync.Mutex
 
 	// egressRegistry is the fleet's egress backends, or nil when none are
 	// configured. handed to Boot per vm and consulted on every teardown.
@@ -796,6 +811,8 @@ func NewFleetManager(cfg FleetConfig) *FleetManager {
 		recoveredCreates:         make(map[string]bool),
 		tokenEncryptionKey:       cfg.TokenEncryptionKey,
 		hostProviderFactory:      cfg.HostProviderFactory,
+		defaultHostURL:           cfg.DefaultHostURL,
+		defaultHostToken:         cfg.DefaultHostToken,
 		egressRegistry:           cfg.EgressRegistry,
 		placementPolicy:          cfg.PlacementPolicy,
 		broadcaster:              newEventBroadcaster(),
@@ -989,14 +1006,26 @@ func (fm *FleetManager) provisionAndAssign(ctx context.Context, taskID string, s
 // placeVM picks v's host and reserves its capacity there, so concurrent
 // creates cannot claim the same capacity, and returns the host's provider. a
 // vm seeded from an artifact is narrowed to, or biased towards, the hosts
-// that hold it (see planSeedPlacement). CPU-only legacy deployments with no
-// registered hosts place nothing and get the default provider. on success
+// that hold it (see planSeedPlacement). with no registered hosts the default
+// agent is registered first (see registerDefaultHost), so its creates are
+// admitted by capacity; only the in-memory stub (no DefaultHostURL) still
+// places nothing and gets the default provider. on success
 // v.hostID is set and allocateOnHost has bound any gpu devices onto v.spec.
 // the durable create and fork run it as their placement step.
 func (fm *FleetManager) placeVM(ctx context.Context, v *vm, seed seedPlacement) (Provider, error) {
 	fm.mu.Lock()
 	spec := v.spec
 	hosts := fm.activeHostsLocked()
+	// an orchestrator pointed at one agent but never given a host registers
+	// that agent, so its creates are admitted by capacity too.
+	if len(fm.hosts) == 0 && fm.defaultHostURL != "" {
+		fm.mu.Unlock()
+		if err := fm.registerDefaultHost(ctx); err != nil {
+			return nil, fmt.Errorf("%w: no host is registered and the default agent could not be: %v", ErrNoHosts, err)
+		}
+		fm.mu.Lock()
+		hosts = fm.activeHostsLocked()
+	}
 	// A vm seeded from an immovable artifact can only be born where those bytes
 	// already are, so narrow the candidate set to that host and let Schedule
 	// report insufficient capacity the way it does for any other request.

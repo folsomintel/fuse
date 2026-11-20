@@ -27,9 +27,12 @@ const forkTaskPrefix = "fork-"
 
 // ForkRefusals are the sentinel errors a fork refuses with besides
 // SnapshotFleetErrors. the durable handler carries each one across restate as
-// its own error code, so the api answers it with that sentinel's status.
+// its own error code, so the api answers it with that sentinel's status. a
+// code is its index, so new sentinels go at the end.
 var ForkRefusals = []error{
 	ErrSnapshotNotSeedable,
+	// placement found no host with room (ErrSeedUnplaceable wraps it).
+	ErrNoCapacity,
 }
 
 // ForkRequest is the input of the durable Environment/{vm_id}.Fork handler,
@@ -217,9 +220,9 @@ func (fm *FleetManager) ForkPlaceholder(ctx context.Context, plan ForkPlan) erro
 	return nil
 }
 
-// ForkPlace picks the fork's host (see placeFork, which cannot fail), charges
-// it there and persists the placement, so a restart re-derives the charge. a
-// fork already placed keeps its host.
+// ForkPlace picks the fork's host (see placeFork), charges it there and
+// persists the placement, so a restart re-derives the charge. a fork already
+// placed keeps its host. a fork that fits nowhere fails with ErrNoCapacity.
 func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed SnapshotRecord) (string, error) {
 	v, err := fm.forkTarget(plan)
 	if err != nil {
@@ -235,7 +238,10 @@ func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed Snaps
 	if err != nil {
 		return "", err
 	}
-	hostID, _ = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed)
+	hostID, _, err = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed)
+	if err != nil {
+		return "", err
+	}
 	if hostID == "" {
 		// single-provider mode: there is no host to charge.
 		return "", nil

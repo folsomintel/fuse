@@ -224,6 +224,25 @@ func TestForkRollsBackThroughRestate(t *testing.T) {
 	}
 }
 
+// a fork that fits on no host is refused at place: the caller gets
+// ErrNoCapacity back (a 503 it retries) and the fork rolls back without
+// booting anything.
+func TestForkNoCapacityThroughRestate(t *testing.T) {
+	fleet := newForkFleet()
+	fleet.fail["place"] = []error{fmt.Errorf("%w: source host h1 does not fit", orchestrator.ErrSeedUnplaceable)}
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err := client.Fork(ctx, uniqueVM("fork-full"), forkRequest(uniqueVM("src")))
+	if !errors.Is(err, orchestrator.ErrNoCapacity) {
+		t.Fatalf("fork: %v, want ErrNoCapacity", err)
+	}
+	if got, want := fleet.steps(), "fork_begin,placeholder,"+forkSnapshotSteps+",place,unpublish_ingress,abandon,delete_seed"; got != want {
+		t.Fatalf("steps %s, want %s", got, want)
+	}
+}
+
 // a seed snapshot that fails for good leaves nothing on a host and no seed,
 // so the rollback only drops the placeholder; the caller gets the snapshot's
 // sentinel back.

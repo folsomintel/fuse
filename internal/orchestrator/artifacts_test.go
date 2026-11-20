@@ -629,11 +629,11 @@ func TestForkEnvironment_fallsBackOffTheSourceHost(t *testing.T) {
 	}
 }
 
-// TestForkEnvironment_staysHomeWhenTheArtifactCannotMove is the guard against
-// the fallback becoming a new failure mode. Forking has never consulted
-// capacity, so an artifact that cannot be copied must leave the old behaviour
-// exactly as it was rather than failing a fork that works today.
-func TestForkEnvironment_staysHomeWhenTheArtifactCannotMove(t *testing.T) {
+// TestForkEnvironment_refusesWhenTheArtifactCannotMove is the admission gate:
+// a fork whose source host is full and whose seed cannot be copied anywhere
+// else is refused with ErrNoCapacity (a 503 the caller retries) instead of
+// overcommitting the source's host.
+func TestForkEnvironment_refusesWhenTheArtifactCannotMove(t *testing.T) {
 	ctx := context.Background()
 	provider := newForkTestProvider() // its checkpoints report no digest
 	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: &recordingMover{}})
@@ -648,16 +648,38 @@ func TestForkEnvironment_staysHomeWhenTheArtifactCannotMove(t *testing.T) {
 		t.Fatalf("provision source: %v", err)
 	}
 
-	forkID, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
-	if err != nil {
-		t.Fatalf("fork: %v", err)
+	_, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("fork err = %v, want ErrNoCapacity", err)
 	}
-	info, ok := fm.GetVM(forkID)
-	if !ok {
-		t.Fatalf("fork %s is not tracked", forkID)
+	h, _ := fm.GetHost("h-a")
+	if h.Allocated.VMCount != 1 {
+		t.Errorf("h-a allocated = %+v, want only the source charged", h.Allocated)
 	}
-	if info.HostID != "h-a" {
-		t.Fatalf("fork landed on %q, want the source's host h-a", info.HostID)
+}
+
+// TestForkEnvironment_refusesWhenNoHostFits is the same gate for a seed that
+// can move: when no host of the source's backend has room either, the fork is
+// refused rather than charged to the full source host.
+func TestForkEnvironment_refusesWhenNoHostFits(t *testing.T) {
+	ctx := context.Background()
+	provider := newDigestForkProvider()
+	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", ArtifactMover: &recordingMover{}})
+	if err := fm.RegisterHost(ctx, artifactHost("h-a", 1), provider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fm.ProvisionAndAssign(ctx, "task-src",
+		Spec{CPUs: 1, RamMB: 512, HostID: "h-a"}, []byte(`{}`), nil, BootOptions{}); err != nil {
+		t.Fatalf("provision source: %v", err)
+	}
+
+	_, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
+	if !errors.Is(err, ErrNoCapacity) {
+		t.Fatalf("fork err = %v, want ErrNoCapacity", err)
+	}
+	h, _ := fm.GetHost("h-a")
+	if h.Allocated.VMCount != 1 {
+		t.Errorf("h-a allocated = %+v, want only the source charged", h.Allocated)
 	}
 }
 
