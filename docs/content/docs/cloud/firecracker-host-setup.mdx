@@ -31,6 +31,10 @@ The server also needs:
 - `apt` (Debian/Ubuntu) or `dnf` (Fedora/RHEL), so the scripts can install their
   own dependencies
 - `sudo`, and `git` to clone the repo
+- docker, which runs `restate-server` for the orchestrator. `fc-deps.sh`
+  installs it if missing (`docker.io` on apt, `moby-engine` on Fedora) and
+  makes sure the daemon is running. On RHEL, Rocky or Alma, install `docker-ce`
+  from [Docker's repo](https://docs.docker.com/engine/install/) first
 
 ## 2. Run bootstrap
 
@@ -45,16 +49,16 @@ into it.
 
 `bootstrap` runs eight stages and prints each one as `[bootstrap] N/8`:
 
-| Stage                 | What it does                                                                                 |
-| --------------------- | -------------------------------------------------------------------------------------------- |
-| 1. host dependencies  | `fc-deps.sh` installs podman, python3, iptables, e2fsprogs and the rest, then checks KVM     |
-| 2. firecracker        | `fc-install.sh` fetches the Firecracker binary, a guest kernel, a base rootfs and an SSH key |
-| 3. host agent         | installs and starts `fc-agent.service` on `:8090`, generating its token                      |
-| 4. postgres           | `fc-postgres.sh` installs Postgres and creates a loopback-only `fuse_orchestrator` database  |
-| 5. orchestrator       | installs and starts `orchestrator.service` on `:8080`, with auth on and a generated token    |
-| 6. auto-update        | installs a weekly timer that pulls the latest release (skip with `--no-updater`)             |
-| 7. guest agent + bake | downloads `fused` and bakes it into `rootfs-fused.ext4`                                      |
-| 8. register           | registers this box with the orchestrator as host `local-fc` (skip with `--no-register`)      |
+| Stage                 | What it does                                                                                     |
+| --------------------- | ------------------------------------------------------------------------------------------------ |
+| 1. host dependencies  | `fc-deps.sh` installs podman, docker, python3, iptables, e2fsprogs and the rest, then checks KVM |
+| 2. firecracker        | `fc-install.sh` fetches the Firecracker binary, a guest kernel, a base rootfs and an SSH key     |
+| 3. host agent         | installs and starts `fc-agent.service` on `:8090`, generating its token                          |
+| 4. postgres           | `fc-postgres.sh` installs Postgres and creates a loopback-only `fuse_orchestrator` database      |
+| 5. orchestrator       | installs and starts `orchestrator.service` on `:8080`, with auth on and a generated token        |
+| 6. auto-update        | installs a weekly timer that pulls the latest release (skip with `--no-updater`)                 |
+| 7. guest agent + bake | downloads `fused` and bakes it into `rootfs-fused.ext4`                                          |
+| 8. register           | registers this box with the orchestrator as host `local-fc` (skip with `--no-register`)          |
 
 It's safe to re-run. If a stage fails, fix the cause and run it again. When it
 finishes it prints the address and token to use from your laptop:
@@ -171,7 +175,7 @@ does:
 git clone https://github.com/folsomintel/fuse ~/fuse
 cd ~/fuse/host-agent/firecracker
 
-# 0. Install host dependencies (podman, python3, e2fsprogs, ...) and verify them.
+# 0. Install host dependencies (podman, docker, python3, e2fsprogs, ...) and verify them.
 ./scripts/fc-deps.sh
 
 # 1. Fetch firecracker binary + CI kernel + base rootfs + SSH key. The guest kernel
