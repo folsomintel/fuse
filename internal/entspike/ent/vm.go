@@ -64,6 +64,8 @@ type VM struct {
 	Egress json.RawMessage `json:"egress,omitempty"`
 	// HugePages holds the value of the "huge_pages" field.
 	HugePages bool `json:"huge_pages,omitempty"`
+	// SharedMemSeed holds the value of the "shared_mem_seed" field.
+	SharedMemSeed string `json:"shared_mem_seed,omitempty"`
 	// Hitl holds the value of the "hitl" field.
 	Hitl json.RawMessage `json:"hitl,omitempty"`
 	// Ancestors holds the value of the "ancestors" field.
@@ -88,7 +90,7 @@ func (*VM) scanValues(columns []string) ([]any, error) {
 			values[i] = new(sql.NullBool)
 		case vm.FieldCpus, vm.FieldRAMMB, vm.FieldStorageGB, vm.FieldMaxRuntimeSeconds, vm.FieldIdleTimeoutSeconds, vm.FieldGpus:
 			values[i] = new(sql.NullInt64)
-		case vm.FieldID, vm.FieldHostID, vm.FieldNetworkHost, vm.FieldState, vm.FieldURL, vm.FieldTaskID, vm.FieldTenantID, vm.FieldRegion, vm.FieldLastError, vm.FieldGpuKind, vm.FieldGpuProfile:
+		case vm.FieldID, vm.FieldHostID, vm.FieldNetworkHost, vm.FieldState, vm.FieldURL, vm.FieldTaskID, vm.FieldTenantID, vm.FieldRegion, vm.FieldLastError, vm.FieldGpuKind, vm.FieldGpuProfile, vm.FieldSharedMemSeed:
 			values[i] = new(sql.NullString)
 		case vm.FieldCreatedAt, vm.FieldUpdatedAt:
 			values[i] = new(sql.NullTime)
@@ -259,6 +261,12 @@ func (_m *VM) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.HugePages = value.Bool
 			}
+		case vm.FieldSharedMemSeed:
+			if value, ok := values[i].(*sql.NullString); !ok {
+				return fmt.Errorf("unexpected type %T for field shared_mem_seed", values[i])
+			} else if value.Valid {
+				_m.SharedMemSeed = value.String
+			}
 		case vm.FieldHitl:
 			if value, ok := values[i].(*[]byte); !ok {
 				return fmt.Errorf("unexpected type %T for field hitl", values[i])
@@ -397,6 +405,9 @@ func (_m *VM) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("huge_pages=")
 	builder.WriteString(fmt.Sprintf("%v", _m.HugePages))
+	builder.WriteString(", ")
+	builder.WriteString("shared_mem_seed=")
+	builder.WriteString(_m.SharedMemSeed)
 	builder.WriteString(", ")
 	builder.WriteString("hitl=")
 	builder.WriteString(fmt.Sprintf("%v", _m.Hitl))

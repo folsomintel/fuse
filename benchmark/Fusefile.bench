@@ -1,0 +1,14 @@
+version: 1
+
+# the benchmark unit: the smallest useful sandbox. 1 vcpu / 1 GiB so a small
+# box can hold every vm vm-bench.sh keeps alive at once (2N of them).
+resources:
+  cpus: 1
+  memory: 1GB
+  storage: 4GB
+  max_runtime: 4h
+
+run: |
+  echo ok > /tmp/bench.marker
+
+workspace: /workspace

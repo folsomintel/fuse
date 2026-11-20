@@ -77,6 +77,11 @@ func (VM) Fields() []ent.Field {
 		// migrate time, so it outlives an orchestrator restart like the rest
 		// of the spec.
 		field.Bool("huge_pages").Default(false),
+		// the seed whose memory image this vm shares with the other vms
+		// resumed from it on its host, as allocation charged it. "" means
+		// the vm's memory was charged in full. recovery re-derives each
+		// host's shared charge from it.
+		field.String("shared_mem_seed").Default(""),
 		// hitl policy the vm was created with. null means hitl is off.
 		field.JSON("hitl", json.RawMessage{}).
 			StorageKey("hitl_spec_json").Optional().

@@ -1,0 +1,3 @@
+# run output and python bytecode from the harness
+results/
+__pycache__/

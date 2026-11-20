@@ -1723,11 +1723,22 @@ func (fm *FleetManager) recomputeHostAllocations() []Host {
 		var boundDeviceUUIDs []string
 		var boundMIGUUIDs []string
 		var migCounts map[string]int
+		var sharedSeeds map[string]int
 		perInstanceMIG := len(h.Capacity.MIGInstances) > 0
 		perDevice := len(h.Capacity.GPUDevices) > 0
 		for _, v := range live[h.ID] {
 			alloc.CPUs += v.spec.CPUs
-			alloc.RamMB += v.spec.RamMB
+			if seed := v.spec.SharedMemSeed; seed != "" {
+				// the seed image once per host, then each sharer's private
+				// share, as allocateOnHost charged it.
+				if sharedSeeds[seed] == 0 {
+					alloc.RamMB += v.spec.RamMB
+				}
+				sharedSeeds = addSharedSeed(sharedSeeds, seed, 1)
+				alloc.RamMB += seedPrivateMB(v.spec.RamMB)
+			} else {
+				alloc.RamMB += v.spec.RamMB
+			}
 			alloc.StorageGB += v.spec.StorageGB
 			alloc.VMCount++
 			switch {
@@ -1772,6 +1783,7 @@ func (fm *FleetManager) recomputeHostAllocations() []Host {
 			alloc.GPUDeviceUUIDs = boundDeviceUUIDs
 			alloc.GPUs = len(boundDeviceUUIDs)
 		}
+		alloc.SharedSeeds = sharedSeeds
 		h.Allocated = alloc
 		h.UpdatedAt = time.Now()
 		recomputed = append(recomputed, *h)

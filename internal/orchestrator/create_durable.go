@@ -343,6 +343,7 @@ func createSpec(v *vm, run *createRun, st CreateState) Spec {
 	// placement binds gpu devices onto the tracked spec, which the row keeps.
 	spec.GPUUUIDs = v.spec.GPUUUIDs
 	spec.MIGInstanceUUIDs = v.spec.MIGInstanceUUIDs
+	spec.SharedMemSeed = v.spec.SharedMemSeed
 	if st.SeedSnapshotID != "" {
 		spec.SeedSnapshotID = st.SeedSnapshotID
 		spec.PinnedHostID = st.HostID

@@ -59,6 +59,8 @@ const (
 	FieldEgress = "egress_json"
 	// FieldHugePages holds the string denoting the huge_pages field in the database.
 	FieldHugePages = "huge_pages"
+	// FieldSharedMemSeed holds the string denoting the shared_mem_seed field in the database.
+	FieldSharedMemSeed = "shared_mem_seed"
 	// FieldHitl holds the string denoting the hitl field in the database.
 	FieldHitl = "hitl_spec_json"
 	// FieldAncestors holds the string denoting the ancestors field in the database.
@@ -99,6 +101,7 @@ var Columns = []string{
 	FieldMigInstanceUuids,
 	FieldEgress,
 	FieldHugePages,
+	FieldSharedMemSeed,
 	FieldHitl,
 	FieldAncestors,
 	FieldHitlKeysEncrypted,
@@ -149,6 +152,8 @@ var (
 	DefaultGpuProfile string
 	// DefaultHugePages holds the default value on creation for the "huge_pages" field.
 	DefaultHugePages bool
+	// DefaultSharedMemSeed holds the default value on creation for the "shared_mem_seed" field.
+	DefaultSharedMemSeed string
 )
 
 // State defines the type for the "state" enum field.
@@ -270,6 +275,11 @@ func ByGpuProfile(opts ...sql.OrderTermOption) OrderOption {
 // ByHugePages orders the results by the huge_pages field.
 func ByHugePages(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldHugePages, opts...).ToFunc()
+}
+
+// BySharedMemSeed orders the results by the shared_mem_seed field.
+func BySharedMemSeed(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSharedMemSeed, opts...).ToFunc()
 }
 
 // ByCreatedAt orders the results by the created_at field.

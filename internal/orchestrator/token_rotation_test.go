@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/folsomintel/fuse/internal/secrets"
@@ -282,5 +286,47 @@ func TestRotateTokenUpload_reloadsAgent(t *testing.T) {
 func TestFusedReloadCommand_parses(t *testing.T) {
 	if out, err := exec.Command("sh", "-n", "-c", fusedReloadCommand).CombinedOutput(); err != nil {
 		t.Fatalf("sh -n: %v: %s", err, out)
+	}
+}
+
+// fakeSystemctl stands in for systemd 249, the ubuntu 22.04 guest: it rejects
+// --kill-whom (and the --kill-who newer releases dropped) and reports the pid
+// in $STATE/pid as fused's MainPID. fused is inactive until restarted.
+const fakeSystemctl = `#!/bin/sh
+case "$*" in
+  *--kill-who*) echo "systemctl: unrecognized option" >&2; exit 1 ;;
+  "show -p MainPID --value fused") cat "$STATE/pid" ;;
+  "is-active -q fused") [ -e "$STATE/restarted" ] ;;
+  "restart fused") touch "$STATE/restarted" ;;
+  *) echo "systemctl: unexpected: $*" >&2; exit 1 ;;
+esac
+`
+
+// TestFusedReloadCommand_signalsMainPIDOnSystemd249: the reload has to reach
+// fused on the default guest, whose systemctl knows neither kill spelling the
+// orchestrator could pass.
+func TestFusedReloadCommand_signalsMainPIDOnSystemd249(t *testing.T) {
+	bin, state := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "systemctl"), []byte(fakeSystemctl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fused := exec.Command("sleep", "30")
+	if err := fused.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer fused.Process.Kill()
+	if err := os.WriteFile(filepath.Join(state, "pid"), []byte(strconv.Itoa(fused.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("sh", "-c", fusedReloadCommand)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "STATE="+state)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reload: %v: %s", err, out)
+	}
+	_ = fused.Wait()
+	ws, ok := fused.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !ws.Signaled() || ws.Signal() != syscall.SIGHUP {
+		t.Fatalf("fused ended with %v, want killed by SIGHUP", fused.ProcessState)
 	}
 }

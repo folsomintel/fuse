@@ -290,6 +290,20 @@ func (_c *VMCreate) SetNillableHugePages(v *bool) *VMCreate {
 	return _c
 }
 
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (_c *VMCreate) SetSharedMemSeed(v string) *VMCreate {
+	_c.mutation.SetSharedMemSeed(v)
+	return _c
+}
+
+// SetNillableSharedMemSeed sets the "shared_mem_seed" field if the given value is not nil.
+func (_c *VMCreate) SetNillableSharedMemSeed(v *string) *VMCreate {
+	if v != nil {
+		_c.SetSharedMemSeed(*v)
+	}
+	return _c
+}
+
 // SetHitl sets the "hitl" field.
 func (_c *VMCreate) SetHitl(v json.RawMessage) *VMCreate {
 	_c.mutation.SetHitl(v)
@@ -425,6 +439,10 @@ func (_c *VMCreate) defaults() {
 		v := vm.DefaultHugePages
 		_c.mutation.SetHugePages(v)
 	}
+	if _, ok := _c.mutation.SharedMemSeed(); !ok {
+		v := vm.DefaultSharedMemSeed
+		_c.mutation.SetSharedMemSeed(v)
+	}
 }
 
 // check runs all checks and user-defined validators on the builder.
@@ -484,6 +502,9 @@ func (_c *VMCreate) check() error {
 	}
 	if _, ok := _c.mutation.HugePages(); !ok {
 		return &ValidationError{Name: "huge_pages", err: errors.New(`ent: missing required field "VM.huge_pages"`)}
+	}
+	if _, ok := _c.mutation.SharedMemSeed(); !ok {
+		return &ValidationError{Name: "shared_mem_seed", err: errors.New(`ent: missing required field "VM.shared_mem_seed"`)}
 	}
 	if _, ok := _c.mutation.CreatedAt(); !ok {
 		return &ValidationError{Name: "created_at", err: errors.New(`ent: missing required field "VM.created_at"`)}
@@ -618,6 +639,10 @@ func (_c *VMCreate) createSpec() (*VM, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.HugePages(); ok {
 		_spec.SetField(vm.FieldHugePages, field.TypeBool, value)
 		_node.HugePages = value
+	}
+	if value, ok := _c.mutation.SharedMemSeed(); ok {
+		_spec.SetField(vm.FieldSharedMemSeed, field.TypeString, value)
+		_node.SharedMemSeed = value
 	}
 	if value, ok := _c.mutation.Hitl(); ok {
 		_spec.SetField(vm.FieldHitl, field.TypeJSON, value)
@@ -1036,6 +1061,18 @@ func (u *VMUpsert) SetHugePages(v bool) *VMUpsert {
 // UpdateHugePages sets the "huge_pages" field to the value that was provided on create.
 func (u *VMUpsert) UpdateHugePages() *VMUpsert {
 	u.SetExcluded(vm.FieldHugePages)
+	return u
+}
+
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (u *VMUpsert) SetSharedMemSeed(v string) *VMUpsert {
+	u.Set(vm.FieldSharedMemSeed, v)
+	return u
+}
+
+// UpdateSharedMemSeed sets the "shared_mem_seed" field to the value that was provided on create.
+func (u *VMUpsert) UpdateSharedMemSeed() *VMUpsert {
+	u.SetExcluded(vm.FieldSharedMemSeed)
 	return u
 }
 
@@ -1568,6 +1605,20 @@ func (u *VMUpsertOne) SetHugePages(v bool) *VMUpsertOne {
 func (u *VMUpsertOne) UpdateHugePages() *VMUpsertOne {
 	return u.Update(func(s *VMUpsert) {
 		s.UpdateHugePages()
+	})
+}
+
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (u *VMUpsertOne) SetSharedMemSeed(v string) *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.SetSharedMemSeed(v)
+	})
+}
+
+// UpdateSharedMemSeed sets the "shared_mem_seed" field to the value that was provided on create.
+func (u *VMUpsertOne) UpdateSharedMemSeed() *VMUpsertOne {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateSharedMemSeed()
 	})
 }
 
@@ -2280,6 +2331,20 @@ func (u *VMUpsertBulk) SetHugePages(v bool) *VMUpsertBulk {
 func (u *VMUpsertBulk) UpdateHugePages() *VMUpsertBulk {
 	return u.Update(func(s *VMUpsert) {
 		s.UpdateHugePages()
+	})
+}
+
+// SetSharedMemSeed sets the "shared_mem_seed" field.
+func (u *VMUpsertBulk) SetSharedMemSeed(v string) *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.SetSharedMemSeed(v)
+	})
+}
+
+// UpdateSharedMemSeed sets the "shared_mem_seed" field to the value that was provided on create.
+func (u *VMUpsertBulk) UpdateSharedMemSeed() *VMUpsertBulk {
+	return u.Update(func(s *VMUpsert) {
+		s.UpdateSharedMemSeed()
 	})
 }
 

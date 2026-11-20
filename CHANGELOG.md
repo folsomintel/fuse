@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0](https://github.com/folsomintel/fuse/compare/v1.1.0...v1.2.0) (2026-11-20)
+
+
+### Features
+
+* charge a shared seed's memory image once per host plus private headroom per vm ([378997e](https://github.com/folsomintel/fuse/commit/378997e9fba1688df19791fad4857c0f40d67fb3))
+* hardlink a seed's memory image into each vm resumed from it ([f52e780](https://github.com/folsomintel/fuse/commit/f52e780028a01871ebe6b97afc734cc0e1f196a5))
+* share a live snapshot's memory image across the vms resumed from it ([d82779b](https://github.com/folsomintel/fuse/commit/d82779bbf592a434263c46e6514c8c31ff0827b3))
+
+
+### Bug Fixes
+
+* install docker in fc-deps so bootstrap works on a fresh host ([#433](https://github.com/folsomintel/fuse/issues/433)) ([dfa9b62](https://github.com/folsomintel/fuse/commit/dfa9b62a308c07c664d0558bee677525700f6458))
+* relink a retried resume's mem and never inherit a source's shared seed binding ([1c2697a](https://github.com/folsomintel/fuse/commit/1c2697ab009267938826f60d9c81c03303e48d8f))
+* signal fused's mainpid for token reloads and give fuse local the 6.1 kernel ([15c894a](https://github.com/folsomintel/fuse/commit/15c894aac79706c55e511627a345855fe032c9cd))
+* signal fused's mainpid for token reloads and give fuse local the 6.1 kernel ([093775e](https://github.com/folsomintel/fuse/commit/093775ec0e539e1f4ed257f0d4886dd11ed67545))
+
 ## [1.1.0](https://github.com/folsomintel/fuse/compare/v1.0.0...v1.1.0) (2026-11-19)
 
 

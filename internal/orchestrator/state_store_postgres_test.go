@@ -90,12 +90,13 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 		NetworkHost: "10.0.0.5:2222",
 		State:       VMStateRunning,
 		Spec: Spec{
-			CPUs:      2,
-			RamMB:     4096,
-			StorageGB: 20,
-			GPUs:      1,
-			GPUKind:   "a100",
-			GPUUUIDs:  []string{"gpu-a"},
+			CPUs:          2,
+			RamMB:         4096,
+			StorageGB:     20,
+			GPUs:          1,
+			GPUKind:       "a100",
+			GPUUUIDs:      []string{"gpu-a"},
+			SharedMemSeed: "snap-seed",
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -150,6 +151,9 @@ func TestPostgresStateStore_HostAndVMGPUFields(t *testing.T) {
 	}
 	if len(gotVM.Spec.GPUUUIDs) != 1 || gotVM.Spec.GPUUUIDs[0] != "gpu-a" {
 		t.Errorf("vm spec gpu_uuids = %v, want [gpu-a]", gotVM.Spec.GPUUUIDs)
+	}
+	if gotVM.Spec.SharedMemSeed != "snap-seed" {
+		t.Errorf("vm spec shared_mem_seed = %q, want snap-seed", gotVM.Spec.SharedMemSeed)
 	}
 }
 
