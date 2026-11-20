@@ -200,9 +200,10 @@ CPUS=$(nproc)
 RAM_MB=$(awk '/^MemTotal/{printf "%d", $2/1024}' /proc/meminfo)
 STORAGE_GB=$(df -Pk "$BENCH_DIR" | awk 'NR==2{printf "%d", $2/1048576}')
 # re-registering overwrites the host record, so a re-run picks up new knobs.
-curl -fsS -X POST "$ORCH_URL/v1/hosts" \
+printf '%s' "{\"id\":\"$HOST_ID\",\"url\":\"http://127.0.0.1:8090\",\"token\":\"$AGENT_TOK\",\"region\":\"local\",\"backend\":\"firecracker\",\"capacity\":{\"cpus\":$(( CPUS * BENCH_CPU_OVERCOMMIT )),\"ram_mb\":$RAM_MB,\"storage_gb\":$STORAGE_GB,\"vm_count\":$BENCH_MAX_VMS}}" \
+  | curl -fsS -X POST "$ORCH_URL/v1/hosts" \
   -H "Authorization: Bearer $TOK" -H 'Content-Type: application/json' \
-  -d "{\"id\":\"$HOST_ID\",\"url\":\"http://127.0.0.1:8090\",\"token\":\"$AGENT_TOK\",\"region\":\"local\",\"backend\":\"firecracker\",\"capacity\":{\"cpus\":$(( CPUS * BENCH_CPU_OVERCOMMIT )),\"ram_mb\":$RAM_MB,\"storage_gb\":$STORAGE_GB,\"vm_count\":$BENCH_MAX_VMS}}" \
+  -d @- \
   >/dev/null || die "host register failed"
 ok "host $HOST_ID: $(( CPUS * BENCH_CPU_OVERCOMMIT )) vcpus (${BENCH_CPU_OVERCOMMIT}x), ${RAM_MB} MB, ${STORAGE_GB} GB, ${BENCH_MAX_VMS} vms"
 
@@ -228,19 +229,19 @@ else
   FUSEFILE="$REPO_DIR/benchmark/Fusefile.bench"
   # smoke first: the same script at N=1 must create, fork and destroy cleanly
   # before the full run is worth its time.
-  N=1 HOST="$HOST_ID" FUSEFILE="$FUSEFILE" OUT="$RES/smoke" bash "$BENCH" | tee "$RES/smoke.md"
+  N=1 FUSEFILE="$FUSEFILE" OUT="$RES/smoke" bash "$BENCH" | tee "$RES/smoke.md"
   for f in cold_create fork destroy; do
     [ -s "$RES/smoke/$f.txt" ] || die "smoke run produced no $f sample; see $RES/smoke/err.log"
   done
   ok "smoke passed"
-  N="$BENCH_N" HOST="$HOST_ID" FUSEFILE="$FUSEFILE" OUT="$RES/baseline" bash "$BENCH" | tee "$RES/baseline.md"
+  N="$BENCH_N" FUSEFILE="$FUSEFILE" OUT="$RES/baseline" bash "$BENCH" | tee "$RES/baseline.md"
 fi
 
 echo
 echo "======================================================================"
 echo " fuse benchmark host ready"
 echo "   results : $RES"
-echo "   rerun   : N=20 HOST=$HOST_ID FUSEFILE=$REPO_DIR/benchmark/Fusefile.bench bash $REPO_DIR/benchmark/vm-bench.sh"
+echo "   rerun   : N=20 FUSEFILE=$REPO_DIR/benchmark/Fusefile.bench bash $REPO_DIR/benchmark/vm-bench.sh"
 echo "   density : SMOKE=1 bash $REPO_DIR/benchmark/density/ramp.sh   (also churn.sh, fork-fanout/fanout.sh; drop SMOKE for the full run)"
-echo "   laptop  : fuse connect http://${PUBLIC_HOST:-<this-box>}:8080 --token $TOK"
+echo "   laptop  : fuse connect http://${PUBLIC_HOST:-<this-box>}:8080 --token <ORCH_AUTH_TOKEN from /etc/default/orchestrator>"
 echo "======================================================================"
