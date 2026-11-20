@@ -23,7 +23,7 @@
 #                live: same with a --live snapshot (needs #420/#422)
 #                fresh: plain fork, every child takes its own snapshot
 #   MEM_FLOOR_PCT (10), ERR_LIMIT (0.05)
-#   HOST, PARENT_FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
+#   PARENT_FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
 set -uo pipefail
 # shellcheck source=benchmark/lib.sh
 . "$(dirname "$0")/../lib.sh"
@@ -33,7 +33,6 @@ scale HEAVY_MB 64 1536
 SEED="${SEED:-disk}"
 MEM_FLOOR_PCT="${MEM_FLOOR_PCT:-10}"
 ERR_LIMIT="${ERR_LIMIT:-0.05}"
-HOST="${HOST:-local-fc}"
 PARENT_FUSEFILE="${PARENT_FUSEFILE:-$(dirname "$0")/Fusefile.heavy}"
 OUT="${OUT:-$(default_out fork-fanout)}"
 RUN="fanout$(date +%s)"
@@ -106,8 +105,8 @@ child() { # child <n> <k> <level-start>
   op_line "$OUT/children.jsonl" "\"n\":$n,\"k\":$k,\"id\":\"$id\",\"fork_s\":$f,\"first_exec_s\":$x,\"memory\":\"$(printf '%s' "$mem" | tr -dc '[:lower:]')\",\"ok\":$ok"
 }
 
-echo "fork fan-out  levels=($LEVELS) heavy=${HEAVY_MB}MB seed=$SEED host=$HOST out=$OUT"
-out=$(fuse up "$PARENT_FUSEFILE" --task-id "$RUN-parent" --host "$HOST" -o json 2>>"$OUT/err.log")
+echo "fork fan-out  levels=($LEVELS) heavy=${HEAVY_MB}MB seed=$SEED out=$OUT"
+out=$(fuse up "$PARENT_FUSEFILE" --task-id "$RUN-parent" -o json 2>>"$OUT/err.log")
 parent=$(printf '%s' "$out" | id_of)
 if [ -z "$parent" ] || ! wait_running "$parent"; then
   echo "parent did not start (see $OUT/err.log)" >&2; exit 1

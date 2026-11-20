@@ -19,7 +19,6 @@ set -uo pipefail
 . "$(dirname "$0")/lib.sh"
 
 N="${N:-10}"
-HOST="${HOST:-fc-1}"
 FUSEFILE="${FUSEFILE:-/home/debian/fuse/docs/fusefiles/Fusefile.cpu}"
 FROM_BUILD="${FROM_BUILD:-}"          # optional build-snapshot id for the warm-boot test
 OUT="${OUT:-$HOME/fuse-bench-$(date +%s)}"
@@ -29,8 +28,8 @@ mkdir -p "$OUT"
 created=()   # ids to clean up
 cleanup() {
   echo "cleaning up ${#created[@]} env(s)..."
-  for id in "${created[@]}"; do
-    [ -n "$id" ] && fuse environment destroy "$id" >/dev/null 2>&1 || true
+  for id in ${created[@]+"${created[@]}"}; do
+    [ -n "$id" ] && fuse environment destroy --yes "$id" >/dev/null 2>&1 || true
   done
 }
 trap cleanup EXIT INT TERM
@@ -47,14 +46,14 @@ report_row() { # report_row <label> <file>
 
 snap_metrics() { curl -s "$METRICS_URL" 2>/dev/null | grep -E '^orchestrator_(operations|step)_duration_seconds_(sum|count)'; }
 
-echo "fuse vm benchmark  N=$N host=$HOST fusefile=$FUSEFILE out=$OUT"
+echo "fuse vm benchmark  N=$N fusefile=$FUSEFILE out=$OUT"
 snap_metrics > "$OUT/metrics.before" 2>/dev/null
 
 # ---- cold create ----
 : > "$OUT/cold_create.txt"
 for i in $(seq 1 "$N"); do
   t0=$(now)
-  out=$(fuse up "$FUSEFILE" --task-id "bench-cold-$i" --host "$HOST" -o json 2>>"$OUT/err.log")
+  out=$(fuse up "$FUSEFILE" --task-id "bench-cold-$i" -o json 2>>"$OUT/err.log")
   t1=$(now)
   id=$(printf '%s' "$out" | id_of)
   if [ -n "$id" ]; then created+=("$id"); dt "$t0" "$t1" >> "$OUT/cold_create.txt"; echo "  cold $i: $(dt "$t0" "$t1")s ($id)"; else echo "  cold $i: FAILED (see err.log)"; fi
@@ -65,7 +64,7 @@ done
 if [ -n "$FROM_BUILD" ]; then
   for i in $(seq 1 "$N"); do
     t0=$(now)
-    out=$(fuse up "$FUSEFILE" --from-build "$FROM_BUILD" --task-id "bench-warm-$i" --host "$HOST" -o json 2>>"$OUT/err.log")
+    out=$(fuse up "$FUSEFILE" --from-build "$FROM_BUILD" --task-id "bench-warm-$i" -o json 2>>"$OUT/err.log")
     t1=$(now)
     id=$(printf '%s' "$out" | id_of)
     if [ -n "$id" ]; then created+=("$id"); dt "$t0" "$t1" >> "$OUT/warm_create.txt"; echo "  warm $i: $(dt "$t0" "$t1")s ($id)"; fi
@@ -89,9 +88,9 @@ fi
 
 # ---- destroy (timed, then handled by trap for any stragglers) ----
 : > "$OUT/destroy.txt"
-for id in "${created[@]}"; do
-  t0=$(now); fuse environment destroy "$id" >/dev/null 2>&1; t1=$(now)
-  dt "$t0" "$t1" >> "$OUT/destroy.txt"
+for id in ${created[@]+"${created[@]}"}; do
+  t0=$(now)
+  if fuse environment destroy --yes "$id" >/dev/null 2>>"$OUT/err.log"; then t1=$(now); dt "$t0" "$t1" >> "$OUT/destroy.txt"; else echo "  destroy $id: FAILED (see err.log)"; fi
 done
 created=()  # already destroyed; stop the trap re-destroying
 

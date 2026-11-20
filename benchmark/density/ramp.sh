@@ -19,7 +19,7 @@
 #   ERR_LIMIT        stop when this fraction of a batch's creates and execs fail (0.05)
 # other:
 #   EXEC_SAMPLE      vms exec'd per batch, drawn from all live ones (32)
-#   HOST, FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
+#   FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
 set -uo pipefail
 # shellcheck source=benchmark/lib.sh
 . "$(dirname "$0")/../lib.sh"
@@ -31,7 +31,6 @@ CREATE_P99_LIMIT="${CREATE_P99_LIMIT:-60}"
 EXEC_P99_LIMIT="${EXEC_P99_LIMIT:-10}"
 ERR_LIMIT="${ERR_LIMIT:-0.05}"
 EXEC_SAMPLE="${EXEC_SAMPLE:-32}"
-HOST="${HOST:-local-fc}"
 FUSEFILE="${FUSEFILE:-$BENCH_LIB_DIR/Fusefile.bench}"
 OUT="${OUT:-$(default_out density-ramp)}"
 RUN="ramp$(date +%s)"
@@ -57,7 +56,7 @@ trap finish EXIT INT TERM
 create_one() { # create_one <batch> <i>
   local t0 t1 out id ok=false
   t0=$(now)
-  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$1-$2" --host "$HOST" -o json 2>>"$OUT/err.log")
+  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$1-$2" -o json 2>>"$OUT/err.log")
   id=$(printf '%s' "$out" | id_of)
   if [ -n "$id" ]; then
     echo "$id" >> "$IDS"
@@ -90,7 +89,7 @@ live_ids() { jq -r 'select(.op=="create" and .ok) | .id' "$OUT/ops.jsonl"; }
 stop() { op_line "$OUT/stop.jsonl" "\"batch\":$1,\"reason\":\"$2\""; echo "stop: $2"; }
 
 # shellcheck disable=SC2153 # BATCH is set by scale
-echo "density ramp  batch=$BATCH max=$MAX_VMS host=$HOST out=$OUT"
+echo "density ramp  batch=$BATCH max=$MAX_VMS out=$OUT"
 batch=0
 while :; do
   batch=$((batch + 1))

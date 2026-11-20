@@ -19,7 +19,7 @@
 #   HOLD             seconds each vm lives between exec and destroy (0)
 #   MAX_INFLIGHT     arrivals past this many in flight are shed and count as errors (500)
 #   KNEE_FACTOR (2), ERR_LIMIT (0.01), STOP_AT_KNEE (1)
-#   HOST, FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
+#   FUSEFILE, OUT, AUDIT_SETTLE, PSS_EVERY
 set -uo pipefail
 # shellcheck source=benchmark/lib.sh
 . "$(dirname "$0")/../lib.sh"
@@ -30,7 +30,6 @@ HOLD="${HOLD:-0}"
 MAX_INFLIGHT="${MAX_INFLIGHT:-500}"
 export KNEE_FACTOR="${KNEE_FACTOR:-2}" ERR_LIMIT="${ERR_LIMIT:-0.01}"
 STOP_AT_KNEE="${STOP_AT_KNEE:-1}"
-HOST="${HOST:-local-fc}"
 FUSEFILE="${FUSEFILE:-$BENCH_LIB_DIR/Fusefile.bench}"
 OUT="${OUT:-$(default_out density-churn)}"
 RUN="churn$(date +%s)"
@@ -56,7 +55,7 @@ trap finish EXIT INT TERM
 
 arrival() { # arrival <rate> <i> <sched>
   local rate="$1" i="$2" sched="$3" out id t_c t_e t_d c=null e=null d=null tot=null ok=false err=""
-  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$rate-$i" --host "$HOST" -o json 2>>"$OUT/err.log")
+  out=$(fuse up "$FUSEFILE" --task-id "$RUN-$rate-$i" -o json 2>>"$OUT/err.log")
   id=$(printf '%s' "$out" | id_of)
   if [ -z "$id" ]; then
     err=create
@@ -83,7 +82,7 @@ arrival() { # arrival <rate> <i> <sched>
   op_line "$ARR" "\"rate\":$rate,\"i\":$i,\"sched\":$sched,\"id\":\"$id\",\"create_s\":$c,\"exec_s\":$e,\"destroy_s\":$d,\"total_s\":$tot,\"ok\":$ok,\"err\":\"$err\""
 }
 
-echo "churn  rates=($RATES) duration=${DURATION}s hold=${HOLD}s host=$HOST out=$OUT"
+echo "churn  rates=($RATES) duration=${DURATION}s hold=${HOLD}s out=$OUT"
 for rate in $RATES; do
   n=$(awk -v r="$rate" -v d="$DURATION" 'BEGIN{printf "%d", r*d}')
   start=$(now)
