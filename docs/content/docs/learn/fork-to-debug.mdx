@@ -90,10 +90,15 @@ Whatever they produced is already baked into the disk you forked.
 **The fork gets its own credentials.** It is a distinct environment with its own
 guest token, not a clone that shares the original's identity.
 
+**The fork needs room.** It lands on the source's host when that host can take
+it, otherwise on another host of the same backend that can (the seed snapshot
+is copied there). When no host has room the fork is refused with a `503`
+`unavailable` instead of overcommitting a full host; the CLI and the SDKs retry
+it a few times before giving up.
+
 :::warning[Known limitation]
-Fork bypasses the scheduler and performs no capacity check, so a fork can
-overcommit a host that is already full. It also cannot be used on GPU
-environments at all; that failure surfaces as a `409` `conflict`.
+Fork cannot be used on GPU environments at all; that failure surfaces as a
+`409` `conflict`.
 :::
 
 ## Read next
