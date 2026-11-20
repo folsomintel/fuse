@@ -154,6 +154,11 @@ func HugePages(v bool) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldHugePages, v))
 }
 
+// SharedMemSeed applies equality check predicate on the "shared_mem_seed" field. It's identical to SharedMemSeedEQ.
+func SharedMemSeed(v string) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldSharedMemSeed, v))
+}
+
 // HitlKeysEncrypted applies equality check predicate on the "hitl_keys_encrypted" field. It's identical to HitlKeysEncryptedEQ.
 func HitlKeysEncrypted(v []byte) predicate.VM {
 	return predicate.VM(sql.FieldEQ(FieldHitlKeysEncrypted, v))
@@ -1162,6 +1167,71 @@ func HugePagesEQ(v bool) predicate.VM {
 // HugePagesNEQ applies the NEQ predicate on the "huge_pages" field.
 func HugePagesNEQ(v bool) predicate.VM {
 	return predicate.VM(sql.FieldNEQ(FieldHugePages, v))
+}
+
+// SharedMemSeedEQ applies the EQ predicate on the "shared_mem_seed" field.
+func SharedMemSeedEQ(v string) predicate.VM {
+	return predicate.VM(sql.FieldEQ(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedNEQ applies the NEQ predicate on the "shared_mem_seed" field.
+func SharedMemSeedNEQ(v string) predicate.VM {
+	return predicate.VM(sql.FieldNEQ(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedIn applies the In predicate on the "shared_mem_seed" field.
+func SharedMemSeedIn(vs ...string) predicate.VM {
+	return predicate.VM(sql.FieldIn(FieldSharedMemSeed, vs...))
+}
+
+// SharedMemSeedNotIn applies the NotIn predicate on the "shared_mem_seed" field.
+func SharedMemSeedNotIn(vs ...string) predicate.VM {
+	return predicate.VM(sql.FieldNotIn(FieldSharedMemSeed, vs...))
+}
+
+// SharedMemSeedGT applies the GT predicate on the "shared_mem_seed" field.
+func SharedMemSeedGT(v string) predicate.VM {
+	return predicate.VM(sql.FieldGT(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedGTE applies the GTE predicate on the "shared_mem_seed" field.
+func SharedMemSeedGTE(v string) predicate.VM {
+	return predicate.VM(sql.FieldGTE(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedLT applies the LT predicate on the "shared_mem_seed" field.
+func SharedMemSeedLT(v string) predicate.VM {
+	return predicate.VM(sql.FieldLT(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedLTE applies the LTE predicate on the "shared_mem_seed" field.
+func SharedMemSeedLTE(v string) predicate.VM {
+	return predicate.VM(sql.FieldLTE(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedContains applies the Contains predicate on the "shared_mem_seed" field.
+func SharedMemSeedContains(v string) predicate.VM {
+	return predicate.VM(sql.FieldContains(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedHasPrefix applies the HasPrefix predicate on the "shared_mem_seed" field.
+func SharedMemSeedHasPrefix(v string) predicate.VM {
+	return predicate.VM(sql.FieldHasPrefix(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedHasSuffix applies the HasSuffix predicate on the "shared_mem_seed" field.
+func SharedMemSeedHasSuffix(v string) predicate.VM {
+	return predicate.VM(sql.FieldHasSuffix(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedEqualFold applies the EqualFold predicate on the "shared_mem_seed" field.
+func SharedMemSeedEqualFold(v string) predicate.VM {
+	return predicate.VM(sql.FieldEqualFold(FieldSharedMemSeed, v))
+}
+
+// SharedMemSeedContainsFold applies the ContainsFold predicate on the "shared_mem_seed" field.
+func SharedMemSeedContainsFold(v string) predicate.VM {
+	return predicate.VM(sql.FieldContainsFold(FieldSharedMemSeed, v))
 }
 
 // HitlIsNil applies the IsNil predicate on the "hitl" field.

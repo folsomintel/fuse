@@ -133,6 +133,39 @@ fuse snapshot delete <id>
 Deletion is leaf-only and also removes the underlying provider artifact; there's no
 soft-delete.
 
+## Memory shared across resumed VMs
+
+A VM resumed from a live snapshot into a new VM (a live migrate does this today)
+does not load its memory straight out of the snapshot store. The agent
+hardlinks the snapshot's memory image into the VM's own directory and points
+Firecracker at that link. Firecracker maps the file copy-on-write, so what a
+guest writes lands in its own private pages and never reaches the file.
+
+That has two consequences:
+
+- **Deleting the snapshot cannot kill a guest.** The delete removes the store's
+  link. The image stays on disk until the last VM resumed from it is
+  destroyed, so its bytes are freed then, not at the delete.
+- **VMs resumed from one snapshot share its memory.** They map one file, so
+  the host keeps one copy of the image in page cache however many VMs read
+  it, and each VM costs only the pages it has changed.
+
+The scheduler does not count on the sharing yet: every VM, a live migrate's
+target included, is charged its full memory size.
+
+Two cases do not share:
+
+- **2M hugepage VMs.** These are filled by `fc-uffd` into their own
+  hugepages, so each one holds a private copy.
+- **A store on another filesystem.** A hardlink cannot cross filesystems, so
+  when the snapshot store and the VM directories are on different mounts the
+  agent copies the image instead. The guest is just as safe from a delete,
+  but the VMs no longer share page cache. Keep `SNAPSHOTS_DIR` on the same
+  filesystem as the VM state. The default puts both under the agent's state
+  directory; a store on
+  [a shared filesystem](/docs/concepts/layer-cache#a-shared-filesystem-is-a-supported-alternative)
+  is always another mount.
+
 ## Limitations of live snapshots
 
 These are real and worth reading before you build on `live`.

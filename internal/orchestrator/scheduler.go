@@ -108,6 +108,49 @@ type HostCapacity struct {
 	// only, like GPUDeviceUUIDs: the durable source of truth is the
 	// per-VM mig_instance_uuids binding.
 	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
+
+	// SharedSeeds counts, per seed snapshot id, the vms on this host that
+	// share that seed's memory image (Spec.SharedMemSeed). RamMB holds the
+	// image once for the whole set plus each vm's private share. populated
+	// only on Allocated, in-memory only: recovery recomputes it from the
+	// per-vm shared_mem_seed binding.
+	SharedSeeds map[string]int `json:"shared_seeds,omitempty"`
+}
+
+// seedPrivatePercent is the share of a vm's memory charged to it alone when
+// it resumes from a seed image other vms on the host already map. the image
+// is mapped copy-on-write, so a clone only costs what it dirties; this is the
+// headroom held for that, not a limit the guest is held to.
+const seedPrivatePercent = 25
+
+// sharesSeedMem reports whether spec resumes from a seed's memory image that
+// the host shares across the vms resumed from it. the fc-agent hardlinks a
+// file-backed image into each vm, so the vms map one inode and share its page
+// cache. a 2M hugepage guest is filled by fc-uffd into its own pages, so it
+// shares nothing and is charged in full.
+func sharesSeedMem(spec Spec) bool {
+	return spec.ResumeSeed && spec.SeedSnapshotID != "" && !spec.HugePages
+}
+
+// seedPrivateMB is the private headroom charged per vm sharing a seed image.
+func seedPrivateMB(ramMB int) int {
+	return max(ramMB*seedPrivatePercent/100, 1)
+}
+
+// ramCharge is the memory that placing spec on a host adds to its allocated
+// ram: the full size, or for a vm sharing a seed image, its private share
+// plus the image itself when no vm on the host holds that seed yet. every vm
+// resumed from one seed has the seed's memory size (a snapshot load cannot
+// resize it), so the image is spec.RamMB.
+func ramCharge(allocated HostCapacity, spec Spec) int {
+	if !sharesSeedMem(spec) {
+		return spec.RamMB
+	}
+	charge := seedPrivateMB(spec.RamMB)
+	if allocated.SharedSeeds[spec.SeedSnapshotID] == 0 {
+		charge += spec.RamMB
+	}
+	return charge
 }
 
 // MIGInstance is one carved MIG GPU instance advertised by the host agent.
@@ -280,10 +323,12 @@ const (
 )
 
 // fits returns true if the host has enough headroom (capacity minus
-// allocated) to place a VM with the given spec.
+// allocated) to place a VM with the given spec. memory is what ramCharge
+// would add, so a vm resuming from a seed image the host already holds needs
+// only its private share.
 func fits(capacity, allocated HostCapacity, spec Spec) bool {
 	if (capacity.CPUs-allocated.CPUs) < spec.CPUs ||
-		(capacity.RamMB-allocated.RamMB) < spec.RamMB ||
+		(capacity.RamMB-allocated.RamMB) < ramCharge(allocated, spec) ||
 		(capacity.StorageGB-allocated.StorageGB) < spec.StorageGB ||
 		(capacity.VMCount-allocated.VMCount) < 1 {
 		return false
@@ -444,6 +489,7 @@ func (c HostCapacity) clone() HostCapacity {
 	c.GPUDevices = slices.Clone(c.GPUDevices)
 	c.GPUDeviceUUIDs = slices.Clone(c.GPUDeviceUUIDs)
 	c.MIGInstanceUUIDs = slices.Clone(c.MIGInstanceUUIDs)
+	c.SharedSeeds = maps.Clone(c.SharedSeeds)
 	return c
 }
 
@@ -668,7 +714,7 @@ func SchedulePreferring(spec Spec, hosts []*Host, policy PlacementPolicy, hints 
 		Policy:          policy,
 		Candidates:      len(candidates),
 		HeadroomCPUs:    best.host.Capacity.CPUs - best.host.Allocated.CPUs - spec.CPUs,
-		HeadroomRam:     best.host.Capacity.RamMB - best.host.Allocated.RamMB - spec.RamMB,
+		HeadroomRam:     best.host.Capacity.RamMB - best.host.Allocated.RamMB - ramCharge(best.host.Allocated, spec),
 		ArtifactLocal:   best.local,
 		ArtifactHolders: localCount,
 	}

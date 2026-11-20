@@ -140,4 +140,8 @@ func init() {
 	vmDescHugePages := vmFields[23].Descriptor()
 	// vm.DefaultHugePages holds the default value on creation for the huge_pages field.
 	vm.DefaultHugePages = vmDescHugePages.Default.(bool)
+	// vmDescSharedMemSeed is the schema descriptor for shared_mem_seed field.
+	vmDescSharedMemSeed := vmFields[24].Descriptor()
+	// vm.DefaultSharedMemSeed holds the default value on creation for the shared_mem_seed field.
+	vm.DefaultSharedMemSeed = vmDescSharedMemSeed.Default.(string)
 }

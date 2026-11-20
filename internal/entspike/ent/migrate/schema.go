@@ -80,6 +80,7 @@ var (
 		{Name: "mig_instance_uuids", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "egress_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "huge_pages", Type: field.TypeBool, Default: false},
+		{Name: "shared_mem_seed", Type: field.TypeString, Default: ""},
 		{Name: "hitl_spec_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "ancestors_json", Type: field.TypeJSON, Nullable: true, SchemaType: map[string]string{"postgres": "text"}},
 		{Name: "hitl_keys_encrypted", Type: field.TypeBytes, Nullable: true},

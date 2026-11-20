@@ -1960,6 +1960,27 @@ def copy_rootfs(src: str, dst: Path) -> bool:
     return False
 
 
+def link_mem(src: Path, dst: Path) -> bool:
+    """give a vm its own name for a seed's memory image, and say whether it is
+    shared. a hardlink when the store and the vm dir are on one filesystem: the
+    inode outlives the store entry, so deleting the snapshot still cannot pull
+    pages out from under the guest, and every vm resumed from the seed maps
+    the same inode, so they share its page cache instead of each reading in a
+    copy. firecracker maps the file MAP_PRIVATE, so a guest's writes land in
+    its own anonymous pages and never reach the file the others read. a copy
+    otherwise (another filesystem, or a link the kernel refuses).
+    """
+    # a retried resume finds the last attempt's file, which os.link refuses.
+    dst.unlink(missing_ok=True)
+    try:
+        os.link(src, dst)
+        return True
+    except OSError as e:
+        print(f"[fc-agent] mem {src}: no hardlink ({e}), copying", flush=True)
+    copy_rootfs(str(src), dst)
+    return False
+
+
 def snapshot_create(vm_id: str, comment: str, live: bool = False, diff: bool = False,
                     parent: str = "", keep_paused: bool = False,
                     shrink_memory: bool = False) -> dict:
@@ -2164,8 +2185,11 @@ def snapshot_delete(snapshot_id: str, vm_id: str = "") -> None:
     """remove a snapshot from the store, and from vm_id's list when given.
 
     safe while a vm seeded from it is running: create_vm copies the rootfs,
-    a file-backed resume copies mem, and fc-uffd holds its own descriptor on
-    the memory image, so nothing running reads through the store path. the
+    a file-backed resume hardlinks or copies mem into the vm dir (link_mem),
+    and fc-uffd holds its own descriptor on the memory image, so nothing
+    running reads through the store path. removing the store entry drops one
+    link; the inode, and the page cache the vms share, lives until the last
+    vm resumed from it is destroyed. the
     orchestrator decides what may be deleted (lineage, seeds in flight); this
     only reclaims the bytes, which until now nothing on the host ever did.
     """
@@ -2372,11 +2396,11 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         # snapshot later cannot pull pages out from under the guest.
         backend = start_uffd(meta, resume["manifest"], resume["mem"], resume["lazy"])
     else:
-        # the vm keeps its own copy of the memory image. firecracker maps the file
-        # it is given for the life of the process, so loading straight out of the
-        # store would make deleting a snapshot kill a running guest.
+        # the vm holds its own link to the memory image. firecracker maps the
+        # file it is given for the life of the process, so loading straight
+        # out of the store would make deleting a snapshot kill a running guest.
         mem = vm_dir(meta["vm_id"]) / "mem"
-        copy_rootfs(str(resume["mem"]), mem)
+        meta["mem_shared"] = link_mem(resume["mem"], mem)
         backend = {"backend_type": "File", "backend_path": str(mem)}
     link = Path(resume["rootfs_path"])
     spawn_firecracker(meta)
