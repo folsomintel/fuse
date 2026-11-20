@@ -7,7 +7,7 @@ resources:
   cpus: 2
   memory: 4GB
   storage: 8GB
-  max_runtime: 2h
+  max_runtime: 4h
 
 run: |
   echo ok > /tmp/bench.marker
