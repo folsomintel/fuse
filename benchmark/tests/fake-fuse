@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# fake-fuse: a stand-in for the fuse cli so the harness runs with no host.
+# it keeps vms and snapshots as directories under FC_STATE_DIR, where the
+# leak audit's vm_dirs and snapshot_dirs probes look, so a leak is visible.
+#
+# like the real cli it rejects a flag the subcommand does not define (the
+# lists mirror cli/*.go) and refuses destroy/delete without --yes when not on
+# a tty, so a harness call the real cli would reject fails here too.
+#
+#   FAKE_DELAY         seconds each create/fork takes (default 0.1)
+#   FAKE_LEAK_DESTROY  1: destroy reports success but keeps the vm dir
+#   FAKE_FAIL_EXEC     1: every exec exits 1
+set -uo pipefail
+: "${FC_STATE_DIR:?set FC_STATE_DIR}"
+VMS="$FC_STATE_DIR/vms"
+SNAPS="${SNAPSHOTS_DIR:-$FC_STATE_DIR/snapshots}"
+mkdir -p "$VMS" "$SNAPS"
+
+GLOBAL_VALUE="-o --output --context --config"
+
+new_id() { printf '%s-%s%s' "$1" "$(date +%s)" "$RANDOM$RANDOM"; }
+die() { echo "fake-fuse: $*" >&2; exit 2; }
+
+# parse "<value flags>" "<bool flags>" args...: sets POS (first positional)
+# and FLAGS (" --name=value" pairs); an unknown flag is an error. everything
+# after `--` is the guest command and is not parsed.
+parse() {
+  local values="$1 $GLOBAL_VALUE" bools="$2"; shift 2
+  POS="" FLAGS=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) break;;
+      -*)
+        if [[ " $values " == *" $1 "* ]]; then
+          [ $# -ge 2 ] || die "flag needs an argument: $1"
+          FLAGS="$FLAGS $1=$2"; shift 2
+        elif [[ " $bools " == *" $1 "* ]]; then
+          FLAGS="$FLAGS $1=true"; shift
+        else
+          die "unknown flag: $1"
+        fi;;
+      *) [ -z "$POS" ] && POS="$1"; shift;;
+    esac
+  done
+}
+flag() { # flag <name>: value of --name, empty when unset
+  local f
+  for f in $FLAGS; do [ "${f%%=*}" = "$1" ] && { echo "${f#*=}"; return; }; done
+}
+need_yes() { [ "$(flag --yes)" = true ] || die "aborted (use --yes to skip the confirmation prompt)"; }
+
+case "${1:-}" in
+  --version) echo "fuse fake"; exit 0;;
+  up)
+    shift
+    parse "-f --file --secret --secrets-file --task-id --gateway-url --gateway-token --from-build --health-timeout" \
+      "--allow-empty-secrets --dry-run --no-wait --plan --no-cache --wait-healthy --show-copy" "$@"
+    sleep "${FAKE_DELAY:-0.1}"
+    id=$(new_id vm); mkdir "$VMS/$id"
+    # without --no-wait the real cli streams each provisioning event (with its
+    # own "id") as json before the environment
+    if [ "$(flag --no-wait)" != true ]; then
+      printf '{\n  "id": "%s",\n  "type": "vm.provisioning"\n}\n' "$(new_id evt)" "$(new_id evt)"
+    fi
+    printf '{"id":"%s","state":"running"}\n' "$id";;
+  environment)
+    sub="${2:-}"; shift 2
+    case "$sub" in
+      get)
+        parse "" "" "$@"
+        [ -d "$VMS/$POS" ] || exit 1
+        printf '{"id":"%s","state":"running"}\n' "$POS";;
+      exec)
+        parse "--shell --timeout" "" "$@"
+        [ -d "$VMS/$POS" ] || exit 1
+        [ "${FAKE_FAIL_EXEC:-}" = 1 ] && exit 1
+        # flag values are split on spaces, so match the shell string in argv
+        case "$*" in *heavy*) [ -f "$VMS/$POS/heavy" ] && echo live || echo cold;; esac;;
+      fork)
+        parse "--reuse-snapshot --comment" "" "$@"
+        [ -d "$VMS/$POS" ] || exit 1
+        sleep "${FAKE_DELAY:-0.1}"
+        if [ -z "$(flag --reuse-snapshot)" ]; then s=$(new_id snap); mkdir "$SNAPS/$s"; echo "$POS" > "$SNAPS/$s/vm"; fi
+        c=$(new_id vm); mkdir "$VMS/$c"
+        printf '{"id":"%s","state":"provisioning"}\n' "$c";;
+      destroy)
+        parse "" "--yes" "$@"
+        need_yes
+        [ "${FAKE_LEAK_DESTROY:-}" = 1 ] || rm -rf "${VMS:?}/$POS";;
+      *) die "environment $sub not faked";;
+    esac;;
+  snapshot)
+    sub="${2:-}"; shift 2
+    case "$sub" in
+      create)
+        parse "--comment --mode --retention --export-ref --metadata" "--live" "$@"
+        [ -d "$VMS/$POS" ] || exit 1
+        s=$(new_id snap); mkdir "$SNAPS/$s"; echo "$POS" > "$SNAPS/$s/vm"
+        printf '{"id":"%s","state":"creating"}\n' "$s";;
+      get)
+        parse "" "" "$@"
+        [ -d "$SNAPS/$POS" ] || exit 1
+        printf '{"id":"%s","state":"ready"}\n' "$POS";;
+      list)
+        parse "--vm-id --task-id --tenant-id --state --limit --cursor" "--all-pages" "$@"
+        vm=$(flag --vm-id)
+        for d in "$SNAPS"/*/; do
+          [ -f "$d/vm" ] && [ "$(cat "$d/vm")" = "$vm" ] && printf '{"id":"%s"}\n' "$(basename "$d")"
+        done | jq -s '{snapshots:.}';;
+      delete)
+        parse "" "--yes" "$@"
+        need_yes
+        rm -rf "${SNAPS:?}/$POS";;
+      *) die "snapshot $sub not faked";;
+    esac;;
+  *) die "$* not faked";;
+esac
