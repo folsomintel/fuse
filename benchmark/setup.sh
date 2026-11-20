@@ -109,9 +109,18 @@ if reflink_ok "$BENCH_DIR"; then
   ok "$BENCH_DIR already reflinks ($(findmnt -no FSTYPE -T "$BENCH_DIR"))"
 elif [ -n "$BENCH_DEVICE" ]; then
   [ -b "$BENCH_DEVICE" ] || die "BENCH_DEVICE=$BENCH_DEVICE is not a block device"
-  findmnt -S "$BENCH_DEVICE" >/dev/null 2>&1 && die "$BENCH_DEVICE is mounted; refusing to format it"
-  if [ -n "$(blkid -o value -s TYPE "$BENCH_DEVICE" 2>/dev/null)" ] && [ "${BENCH_FORCE:-}" != "1" ]; then
-    die "$BENCH_DEVICE already holds a filesystem; set BENCH_FORCE=1 to wipe it"
+  # the disk or any of its partitions mounted (or in use as swap)
+  if findmnt -S "$BENCH_DEVICE" >/dev/null 2>&1 \
+    || [ -n "$(lsblk -nro MOUNTPOINT "$BENCH_DEVICE" 2>/dev/null | tr -d '[:space:]')" ]; then
+    die "$BENCH_DEVICE or one of its partitions is mounted; refusing to format it"
+  fi
+  # a filesystem on the device itself, a partition table, or child devices
+  # (partitions, lvm, raid): blkid -s TYPE alone misses data on partitions.
+  if { [ -n "$(blkid -o value -s TYPE "$BENCH_DEVICE" 2>/dev/null)" ] \
+      || [ -n "$(blkid -p -o value -s PTTYPE "$BENCH_DEVICE" 2>/dev/null)" ] \
+      || [ "$(lsblk -nro NAME "$BENCH_DEVICE" 2>/dev/null | wc -l)" -gt 1 ]; } \
+    && [ "${BENCH_FORCE:-}" != "1" ]; then
+    die "$BENCH_DEVICE already holds a filesystem or partitions; set BENCH_FORCE=1 to wipe it"
   fi
   mkfs.xfs -f -q -m reflink=1 "$BENCH_DEVICE"
   UUID="$(blkid -o value -s UUID "$BENCH_DEVICE")"
