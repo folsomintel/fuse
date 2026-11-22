@@ -81,7 +81,8 @@ Fusefile turns on the layer cache, so later builds are a lookup. Other flags:
 7. Destroys every copy, deletes the live seed snapshot the fork took of main,
    and runs the leak audit against the baseline.
 
-The run exits 1 if any copy failed, main changed, a copy's clock was more than
+The run exits 1 if any copy failed, any copy read a block from disk on its
+first heavy query (it came up cold), main changed, a copy's clock was more than
 5 s off, or the leak audit found something.
 
 ## What it writes

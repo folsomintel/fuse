@@ -408,9 +408,11 @@ class Run:
         vm_id = json.loads(out).get("id", "")
         if not vm_id:
             raise SystemExit(f"fuse up printed no environment id: {out[:300]}")
+        # recorded before the wait, so main is destroyed even if it never runs
+        self.main_id = str(vm_id)
         self.created_main = True
-        wait_running(self.client, vm_id, 600)
-        return str(vm_id)
+        wait_running(self.client, self.main_id, 600)
+        return self.main_id
 
     def prepare_main(self) -> None:
         main = self.copies[0]
@@ -569,6 +571,9 @@ class Run:
             first_heavy_query_blocks_read_max=max(
                 (c.blocks_read for c in ok if c.blocks_read is not None), default=None
             ),
+            # a copy that read any block from disk on its first heavy query did
+            # not come up warm
+            copies_cold=sum(1 for c in ok if c.blocks_read),
             clock_skew_max_s=max(skews, default=None),
             clock_ok=all(s <= CLOCK_SKEW_LIMIT_S for s in skews),
             amcheck={
@@ -582,8 +587,19 @@ class Run:
             json.dump(self.summary, f, indent=2)
 
     def main(self) -> int:
-        a = self.args
         log(f"run {self.run_id}, results in {self.out}")
+        try:
+            return self.run()
+        finally:
+            # a main this run created goes on every exit path, failures too
+            if self.created_main and not self.args.keep_main:
+                try:
+                    self.client.environments.destroy(self.main_id)
+                except fuse.ApiError as e:
+                    log(f"destroy main {self.main_id}: {e}")
+
+    def run(self) -> int:
+        a = self.args
         self.main_id = self.boot_main()
         log(f"main is {self.main_id}")
         self.prepare_main()
@@ -618,8 +634,6 @@ class Run:
                 self.audit(baseline)
             finally:
                 self.summarize()
-                if self.created_main and not a.keep_main:
-                    self.client.environments.destroy(self.main_id)
 
         s = self.summary
         log(
@@ -630,6 +644,7 @@ class Run:
         leak = s["leak_audit"]
         ok = (
             s["copies_failed"] == 0
+            and s["copies_cold"] == 0
             and s["main"]["untouched"]
             and s["clock_ok"]
             and (leak is None or leak["ok"])
