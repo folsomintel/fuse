@@ -108,7 +108,7 @@ func TestForkEnvironment_gpuEnvUnsupported(t *testing.T) {
 	}
 	vmID := provisionGPUTestVM(t, fm, "task-1")
 
-	_, err := fm.ForkEnvironment(context.Background(), vmID, ForkOptions{})
+	_, err := forkOne(context.Background(), fm, vmID, ForkOptions{})
 	if err == nil {
 		t.Fatal("expected fork of gpu env to fail")
 	}

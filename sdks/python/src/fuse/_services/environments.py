@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 from collections.abc import Iterator, Sequence
 from typing import Any, Callable, Optional
 from urllib.parse import quote
@@ -20,6 +21,7 @@ from ..types import (
     ExecRequest,
     ExecResult,
     ForkOptions,
+    ForkResponse,
     HumanRequest,
     Intervention,
     MigrateOptions,
@@ -115,10 +117,20 @@ class EnvironmentsService:
         vm_id: str,
         options: ForkOptions | None = None,
         *,
+        live: Optional[bool] = None,
+        count: Optional[int] = None,
         idempotency_key: Optional[str] = None,
-    ) -> EnvironmentInfo:
+    ) -> builtins.list[EnvironmentInfo]:
+        # forks count new environments (1 by default) from one snapshot of
+        # vm_id and returns every child, in order. live and count are sugar
+        # for ForkOptions(live=..., count=...) and cannot be mixed with
+        # options. a fork a hitl gate held comes back as a one-element list.
         if not vm_id:
             raise ValueError("vm id is required")
+        if live is not None or count is not None:
+            if options is not None:
+                raise ValueError("pass live and count either in options or as keywords, not both")
+            options = ForkOptions(live=live, count=count)
         path = f"/v1/environments/{quote(vm_id, safe='')}"
         resp = call_operation(
             self._t,
@@ -130,8 +142,8 @@ class EnvironmentsService:
         )
         held = read_held(resp)
         if held is not None:
-            return self._held_environment(held)
-        return EnvironmentInfo.model_validate(resp.json())
+            return [self._held_environment(held)]
+        return ForkResponse.model_validate(resp.json()).children
 
     def migrate(
         self,

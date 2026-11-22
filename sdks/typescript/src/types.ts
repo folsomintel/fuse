@@ -331,6 +331,21 @@ export interface EnvironmentInfo {
 export interface ForkOptions {
   reuse_snapshot_id?: string;
   comment?: string;
+  /** Resume every child from a live snapshot's memory image instead of
+   * cold-booting its rootfs. With `reuse_snapshot_id` empty a live seed is
+   * taken; otherwise it must name a live snapshot. A live child lands on a
+   * host other than the source's, and the fork is a 409 conflict when there
+   * is none. */
+  live?: boolean;
+  /** How many children to fork from the one seed, which is taken once.
+   * Omitted means 1; the server refuses more than 1000 with a 400. */
+  count?: number;
+}
+
+/** ForkResponse is the 201 body of environments.fork: every child, in
+ * order, even for a count of 1. */
+export interface ForkResponse {
+  children: EnvironmentInfo[];
 }
 
 /** MigrateOptions is the optional body for environments.migrate. */
@@ -465,11 +480,12 @@ export interface SnapshotRequest {
    *
    * It costs the environment's full configured memory in bytes on every
    * create, pauses the guest for the length of the capture, and produces an
-   * artifact pinned to the host that took it. It also cannot seed a new
-   * environment: `fork` and `CreateRequest.seed_snapshot_id` read only a
-   * snapshot's rootfs, and a live snapshot's rootfs is captured without
-   * quiescing the guest filesystem, so it is consistent only alongside the
-   * memory image. Both reject a live snapshot with a 409 conflict.
+   * artifact pinned to the host that took it. It cannot seed a cold boot: a
+   * plain `fork` and `CreateRequest.seed_snapshot_id` read only a snapshot's
+   * rootfs, and a live snapshot's rootfs is captured without quiescing the
+   * guest filesystem, so it is consistent only alongside the memory image.
+   * Both reject a live snapshot with a 409 conflict. A `fork` with `live`
+   * resumes the memory image instead, so it takes one.
    *
    * Against a backend with no live-snapshot support this is a 501
    * `unimplemented`, not a conflict.
@@ -1195,7 +1211,7 @@ export interface Operation {
   /** The http status the call answered with. */
   status_code?: number;
   /** The call's response body on success: an EnvironmentInfo for create,
-   * fork, migrate and drain, a Snapshot for snapshot, an Image for
+   * migrate and drain, a ForkResponse for fork, a Snapshot for snapshot, an Image for
    * image.convert, absent for destroy and restore, and a held response when
    * a hitl gate held the action. */
   result?: unknown;

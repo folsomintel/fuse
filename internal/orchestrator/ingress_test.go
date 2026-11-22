@@ -229,7 +229,7 @@ func TestForkEnvironment_getsItsOwnURL(t *testing.T) {
 	fm := newInlineFleet(FleetConfig{Provider: provider, Prefix: "fuse-", Ingress: proxy})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	forkID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	forkID, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

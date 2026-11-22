@@ -29,8 +29,8 @@ status             -
 ```
 
 A failed operation adds an `error` line with the error code and message. A
-succeeded one that returned a body (an environment for create, fork, migrate
-and drain, a snapshot for snapshot) prints that body after a blank line, as
+succeeded one that returned a body (an environment for create, migrate and
+drain, `{"children": [...]}` for fork, a snapshot for snapshot) prints that body after a blank line, as
 one line of JSON. Destroy and restore return no body. With `-o json` the
 whole operation prints as JSON, the same shape as
 [`GET /v1/operations/{operationId}`](/reference/api).

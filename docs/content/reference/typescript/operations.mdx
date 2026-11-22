@@ -171,7 +171,8 @@ const OperationState = {
   restate ui), so it is empty.
 - `status_code`, with `result` on success or `error` on failure, is what the
   call itself would have answered. `result` is the response body: an
-  `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
+  `EnvironmentInfo` for create, migrate and drain, a `ForkResponse` for fork, a
+  `Snapshot` for
   snapshot, an `Image` for image.convert (with `status_code` 202), and absent
   for destroy and restore.
 - `retry_after` is the seconds the call's `Retry-After` asked for, set on a

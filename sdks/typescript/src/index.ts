@@ -58,6 +58,7 @@ export type {
   ToolResultBlock,
   ToolResultImageSource,
   ForkOptions,
+  ForkResponse,
   MigrateOptions,
   ExecRequest,
   ExecResult,

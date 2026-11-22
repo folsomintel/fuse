@@ -325,6 +325,19 @@ type CreateSnapshotRequest struct {
 type ForkEnvironmentRequest struct {
 	ReuseSnapshotID string `json:"reuse_snapshot_id,omitempty"`
 	Comment         string `json:"comment,omitempty"`
+	// Live resumes every child from a live snapshot's memory image instead
+	// of cold-booting its rootfs. the source must be running.
+	Live bool `json:"live,omitempty"`
+	// Count is how many children to fork from the one seed. absent means 1;
+	// a value below 1 or above orchestrator.MaxForkCount is a 400.
+	Count *int `json:"count,omitempty"`
+}
+
+// ForkEnvironmentResponse is the 201 body of
+// POST /v1/environments/{vmId}?action=fork: every child, in order, even for
+// a fork of one.
+type ForkEnvironmentResponse struct {
+	Children []Environment `json:"children"`
 }
 
 // MigrateEnvironmentRequest is the optional body for

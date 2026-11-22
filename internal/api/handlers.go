@@ -1180,10 +1180,12 @@ func (h *Handler) drainEnvironment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toAPIEnvironment(info))
 }
 
-// forkEnvironment creates a new environment seeded from an existing one and
-// returns it with 201. an optional body selects an existing snapshot to fork
-// from (reuse_snapshot_id) and a comment; an empty body snapshots the source
-// first. the new vm id is resolved via GetVM, mirroring drainEnvironment.
+// forkEnvironment creates count new environments (one by default) seeded
+// from one snapshot of an existing one and returns them with 201 as
+// {"children": [...]}. an optional body selects an existing snapshot to fork
+// from (reuse_snapshot_id), a comment, live (resume from a live snapshot's
+// memory) and count; an empty body snapshots the source first. each new vm
+// is resolved via GetVM, mirroring drainEnvironment.
 func (h *Handler) forkEnvironment(w http.ResponseWriter, r *http.Request) {
 	vmID := chi.URLParam(r, "vmId")
 
@@ -1191,27 +1193,43 @@ func (h *Handler) forkEnvironment(w http.ResponseWriter, r *http.Request) {
 	if !decodeOptionalJSON(w, r, MaxJSONBodyBytes, &req) {
 		return
 	}
+	count := 1
+	if req.Count != nil {
+		count = *req.Count
+		if count < 1 || count > orchestrator.MaxForkCount {
+			writeError(w, http.StatusBadRequest, CodeInvalidArgument,
+				fmt.Sprintf("count must be between 1 and %d, got %d", orchestrator.MaxForkCount, count), nil)
+			return
+		}
+	}
 
 	forkOpts := orchestrator.ForkOptions{
 		ReuseSnapshotID: req.ReuseSnapshotID,
 		Comment:         req.Comment,
+		Live:            req.Live,
+		Count:           count,
 	}
 	if !h.holdLifecycle(w, r, vmID, hitl.ActionFork, forkOpts) {
 		return
 	}
-	newID, err := h.Fleet.ForkEnvironment(r.Context(), vmID, forkOpts)
+	ids, err := h.Fleet.ForkEnvironment(r.Context(), vmID, forkOpts)
 	if err != nil {
 		writeFleetError(w, err)
 		return
 	}
-	info, ok := h.Fleet.GetVM(newID)
-	if !ok {
-		// fork reported success but the new vm is not readable yet; return
-		// 204 rather than synthesising a stale body.
-		w.WriteHeader(http.StatusNoContent)
-		return
+	children := make([]Environment, 0, len(ids))
+	for _, id := range ids {
+		info, ok := h.Fleet.GetVM(id)
+		if !ok {
+			// the fork reported success but the new vm is not readable yet. a
+			// retry with the same Idempotency-Key replays the same children.
+			writeError(w, http.StatusInternalServerError, CodeInternal,
+				fmt.Sprintf("forked environment %s is not readable yet; retry with the same Idempotency-Key", id), nil)
+			return
+		}
+		children = append(children, toAPIEnvironment(info))
 	}
-	writeJSON(w, http.StatusCreated, toAPIEnvironment(info))
+	writeJSON(w, http.StatusCreated, ForkEnvironmentResponse{Children: children})
 }
 
 func (h *Handler) migrateEnvironment(w http.ResponseWriter, r *http.Request) {

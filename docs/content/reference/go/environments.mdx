@@ -167,8 +167,19 @@ scripted automation, use `Exec` for that. Also master-token only.
 | `List(ctx, ListEnvironmentsOptions{...})` | List environments, optionally filtered by `TaskID`/`State`/`HostID`. |
 | `Get(ctx, vmID)` | Fetch one environment by ID. |
 | `Drain(ctx, vmID)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
-| `Fork(ctx, vmID, ForkOptions{...})` | Create a new environment seeded from a snapshot of this one. |
+| `Fork(ctx, vmID, ForkOptions{...})` | Create `Count` new environments (default 1) seeded from one snapshot of this one; returns `[]EnvironmentInfo`, every child in order. |
 | `RotateToken(ctx, vmID)` | Re-issue the guest's credentials without recreating the VM. |
+
+`Fork` always returns a list, even for one child, and a fork a hitl gate held
+comes back as a one-element list once approved. `ForkOptions{Live: true}`
+resumes every child from a live snapshot's memory image, see
+[Forking](/docs/concepts/environments#forking). If any child fails, `Fork`
+returns the first failure's error; the children that did fork keep running and
+the error message names them.
+
+```go
+children, err := client.Environments.Fork(ctx, "fuse-abc123", fuse.ForkOptions{Live: true, Count: 3})
+```
 
 Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
 can't be forked, see [Providers](/docs/concepts/providers). Full

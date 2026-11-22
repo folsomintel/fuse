@@ -44,7 +44,7 @@ stopped is what makes the disk match the memory exactly.
 | **Restore behaviour** | Cold boot from the disk | Resume where the guest stopped |
 | **Cost on disk** | Size of the rootfs | Size of the rootfs plus `mem_size_mib`, every time |
 | **Impact while creating** | Guest keeps running | Guest is paused for the length of the window |
-| **Usable by fork** | Yes | Only its disk half, see below |
+| **Usable by fork** | Yes, cold boot | Only by a `--live` fork, see below |
 | **Portable to another host** | Yes | No, host-pinned |
 
 Reach for `live` when the thing you want back is process state: a warmed JIT, a
@@ -170,18 +170,21 @@ Two cases do not share:
 
 These are real and worth reading before you build on `live`.
 
-**You cannot fork from a live snapshot.** Fork seeds a brand-new VM from a
-snapshot's rootfs, and that is all it looks at. Point it at a live snapshot and
-you get the disk half: a new environment that cold-boots, with none of the memory
-you captured. The same is true of pulling a snapshot artifact to another host,
-the transfer path moves one file, the rootfs. This is why the recorded `digest`
-covers the rootfs and only the rootfs on both kinds, it describes exactly what
-travels.
+**Only a live fork can fork from a live snapshot.** A plain fork seeds a brand-new
+VM from a snapshot's rootfs and boots it cold. A live snapshot's rootfs is
+captured without quiescing the guest filesystem, so it is consistent only next to
+its memory image, and a plain fork of one is refused with `409`. A fork with
+`--live` (`live: true` in the API) resumes the memory image instead, so it takes a
+live snapshot, and it takes a fresh one when you do not name one. A live child
+cannot resume on its source's own host yet, so it lands on another host and the
+whole snapshot, memory image included, is copied there. With no other host that
+can take it, the fork is refused with `409`.
 
-**Live snapshots are pinned to the host that took them.** A memory image is tied
-to the CPU model it was captured on and to the Firecracker version that wrote it.
-It is not a portable artifact the way a rootfs copy is, and nothing will make it
-one. If you need the state somewhere else, you need a disk snapshot.
+**Live snapshots only resume where the CPU and Firecracker match.** A memory
+image is tied to the CPU model it was captured on and to the Firecracker version
+that wrote it. A live fork or live migrate onto a host with a different CPU or
+Firecracker build is refused with `409`. If you need the state on a different
+kind of host, you need a disk snapshot.
 
 **A live snapshot costs `mem_size_mib` extra, every single time.** Firecracker
 writes the full memory image, there is no sparseness or incremental encoding to

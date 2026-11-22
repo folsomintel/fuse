@@ -452,33 +452,57 @@ func newEnvForkCmd() *cobra.Command {
 	var (
 		reuseSnapshot string
 		comment       string
+		live          bool
+		count         int
 	)
 	cmd := &cobra.Command{
 		Use:   "fork <id>",
-		Short: "Fork an environment into a new one",
+		Short: "Fork an environment into one or more new ones",
+		Long:  "Fork an environment into --count new ones (1 by default), all seeded from one snapshot of the source, taken once (or --reuse-snapshot).\n\nWith --live every child resumes from a live snapshot's memory image with its processes intact instead of cold-booting the rootfs. A live child lands on a host other than the source's; with no other host that can take it the fork is refused.\n\nEach child is its own fork: one that fails leaves its siblings running, and the command exits non-zero naming the children that did fork.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if count < 1 {
+				return fmt.Errorf("--count must be at least 1, got %d", count)
+			}
 			cl, _, err := app.client()
 			if err != nil {
 				return err
 			}
-			e, err := cl.Environments.Fork(cmd.Context(), args[0], fuse.ForkOptions{
+			envs, err := cl.Environments.Fork(cmd.Context(), args[0], fuse.ForkOptions{
 				ReuseSnapshotID: reuseSnapshot,
 				Comment:         comment,
+				Live:            live,
+				Count:           count,
 			})
 			if err != nil {
 				return friendly(err)
 			}
-			successf("forked environment %q into %s", args[0], e.ID)
-			if app.isJSON() {
-				return printJSON(e)
+			ids := make([]string, 0, len(envs))
+			for _, e := range envs {
+				ids = append(ids, e.ID)
 			}
-			renderEnvDetail(e, nil)
+			successf("forked environment %q into %s", args[0], strings.Join(ids, ", "))
+			if app.isJSON() {
+				return printJSON(envs)
+			}
+			if len(envs) == 1 {
+				renderEnvDetail(&envs[0], nil)
+				return nil
+			}
+			rows := make([][]string, 0, len(envs))
+			for _, e := range envs {
+				rows = append(rows, []string{
+					e.ID, e.State, dash(e.HostID), dash(e.URL), shortTime(e.CreatedAt),
+				})
+			}
+			renderTable([]string{"ID", "STATE", "HOST", "URL", "CREATED"}, rows)
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&reuseSnapshot, "reuse-snapshot", "", "reuse an existing snapshot id instead of taking a new one")
 	cmd.Flags().StringVar(&comment, "comment", "", "comment to attach to the fork")
+	cmd.Flags().BoolVar(&live, "live", false, "resume every child from a live snapshot's memory instead of cold-booting it")
+	cmd.Flags().IntVar(&count, "count", 1, "how many children to fork from the one seed (max 1000)")
 	return cmd
 }
 

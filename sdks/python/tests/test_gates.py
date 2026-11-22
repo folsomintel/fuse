@@ -209,10 +209,10 @@ def test_held_fork_returns_new_environment() -> None:
         return_value=httpx.Response(200, json={"id": "vm-2", "state": "running"})
     )
     with new_client() as client:
-        env = client.environments.fork("vm-1")
+        envs = client.environments.fork("vm-1")
 
     assert get_route.called
-    assert env.id == "vm-2"
+    assert [e.id for e in envs] == ["vm-2"]
 
 
 @respx.mock

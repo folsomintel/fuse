@@ -140,11 +140,11 @@ func TestFork_heldResponseStillSettles(t *testing.T) {
 	})
 	defer done()
 
-	env, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{})
+	envs, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env.ID != "vm-2" {
-		t.Fatalf("env = %+v, want vm-2", env)
+	if len(envs) != 1 || envs[0].ID != "vm-2" {
+		t.Fatalf("envs = %+v, want [vm-2]", envs)
 	}
 }

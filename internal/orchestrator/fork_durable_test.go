@@ -45,7 +45,7 @@ func (s *stepForker) Fork(ctx context.Context, vmID string, req ForkRequest) err
 			if plan.Seed.SnapshotID != "" {
 				return nil
 			}
-			seed, err = fm.durableSnapshotsClient().Snapshot(ctx, plan.SourceVMID, SnapshotOptions{Comment: plan.Comment})
+			seed, err = fm.durableSnapshotsClient().Snapshot(ctx, plan.SourceVMID, SnapshotOptions{Comment: plan.Comment, Live: plan.Live})
 			return err
 		}},
 		{"place", func() error { hostID, err = fm.ForkPlace(ctx, plan, seed); return err }},
@@ -100,7 +100,7 @@ func TestDurableFork_stepsAreRetrySafe(t *testing.T) {
 	fm.SetDurableForker(&stepForker{fm: fm, twice: true})
 
 	ctx := context.Background()
-	newID, err := fm.ForkEnvironment(ctx, srcID, ForkOptions{Comment: "forked"})
+	newID, err := forkOne(ctx, fm, srcID, ForkOptions{Comment: "forked"})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestDurableFork_placeholderSurvivesRecovery(t *testing.T) {
 	fm, provider, srcID := newDurableForkFleet(t, store)
 	forker := &stepForker{fm: fm, stopAfter: "create"}
 	fm.SetDurableForker(forker)
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{}); !errors.Is(err, errStopped) {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{}); !errors.Is(err, errStopped) {
 		t.Fatalf("fork: %v, want the stop", err)
 	}
 	newID := forker.plan.NewVMID
@@ -188,7 +188,7 @@ func TestDurableFork_abandonLeavesNothingTracked(t *testing.T) {
 	fm, _, srcID := newDurableForkFleet(t, store)
 	forker := &stepForker{fm: fm, stopAfter: "create"}
 	fm.SetDurableForker(forker)
-	_, _ = fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	_, _ = forkOne(context.Background(), fm, srcID, ForkOptions{})
 	plan := forker.plan
 
 	ctx := context.Background()
@@ -231,7 +231,7 @@ func TestDurableFork_beginRefusesGPU(t *testing.T) {
 	fm.vms[srcID].spec.GPUs = 1
 	fm.mu.Unlock()
 	fm.SetDurableForker(&stepForker{fm: fm})
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{}); !errors.Is(err, ErrGPUUnsupported) {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{}); !errors.Is(err, ErrGPUUnsupported) {
 		t.Fatalf("fork: %v, want ErrGPUUnsupported", err)
 	}
 	if got := len(fm.ListFleet()); got != 1 {
@@ -242,14 +242,14 @@ func TestDurableFork_beginRefusesGPU(t *testing.T) {
 // a retry carrying the same idempotency key names the same fork, so restate
 // attaches it to the first request's invocation.
 func TestForkTaskID_followsIdempotencyKey(t *testing.T) {
-	a, b := forkTaskID("fuse-src", "key-1"), forkTaskID("fuse-src", "key-1")
+	a, b := forkTaskID("fuse-src", "key-1", 0), forkTaskID("fuse-src", "key-1", 0)
 	if a != b {
 		t.Fatalf("same key named %s and %s", a, b)
 	}
-	if forkTaskID("fuse-src", "key-2") == a || forkTaskID("fuse-other", "key-1") == a {
+	if forkTaskID("fuse-src", "key-2", 0) == a || forkTaskID("fuse-other", "key-1", 0) == a {
 		t.Fatal("a different key or source named the same fork")
 	}
-	if c, d := forkTaskID("fuse-src", ""), forkTaskID("fuse-src", ""); c == d {
+	if c, d := forkTaskID("fuse-src", "", 0), forkTaskID("fuse-src", "", 0); c == d {
 		t.Fatal("forks without a key share a name")
 	}
 }

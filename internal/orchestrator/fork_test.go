@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -12,6 +13,8 @@ import (
 // additionally implements SnapshotForkable, exercising the happy path a real
 // firecracker provider cannot yet.
 type forkTestProvider struct {
+	// mu guards envs: a fork of several children creates them concurrently.
+	mu   sync.Mutex
 	envs map[string]*snapshotTestEnv
 }
 
@@ -21,21 +24,29 @@ func newForkTestProvider() *forkTestProvider {
 
 func (p *forkTestProvider) Create(_ context.Context, spec Spec) (Environment, error) {
 	env := &snapshotTestEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+	p.mu.Lock()
 	p.envs[spec.Name] = env
+	p.mu.Unlock()
 	return env, nil
 }
 func (p *forkTestProvider) Get(_ context.Context, name string) (Environment, error) {
+	p.mu.Lock()
 	env, ok := p.envs[name]
+	p.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("env %s not found", name)
 	}
 	return env, nil
 }
 func (p *forkTestProvider) Destroy(_ context.Context, name string) error {
+	p.mu.Lock()
 	delete(p.envs, name)
+	p.mu.Unlock()
 	return nil
 }
 func (p *forkTestProvider) List(_ context.Context, _ string) ([]Environment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	out := make([]Environment, 0, len(p.envs))
 	for _, env := range p.envs {
 		out = append(out, env)
@@ -47,7 +58,9 @@ func (*forkTestProvider) Close() error { return nil }
 // CreateFromCheckpoint copies the source env's matching checkpoint into a new
 // env keyed by the new vm id (spec.Name) and returns it.
 func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, srcVMID, checkpointID string) (Environment, error) {
+	p.mu.Lock()
 	srcEnv, ok := p.envs[srcVMID]
+	p.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("source env %s not found", srcVMID)
 	}
@@ -55,6 +68,7 @@ func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, sr
 		seed  Checkpoint
 		found bool
 	)
+	srcEnv.mu.Lock()
 	for _, cp := range srcEnv.checkpoints {
 		if cp.ID == checkpointID {
 			seed = cp
@@ -62,12 +76,15 @@ func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, sr
 			break
 		}
 	}
+	srcEnv.mu.Unlock()
 	if !found {
 		return nil, fmt.Errorf("checkpoint %s not found on %s", checkpointID, srcVMID)
 	}
 	env := &snapshotTestEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
 	env.checkpoints = append(env.checkpoints, seed)
+	p.mu.Lock()
 	p.envs[spec.Name] = env
+	p.mu.Unlock()
 	return env, nil
 }
 
@@ -79,7 +96,7 @@ func TestForkEnvironment_snapshotsSourceAndRegistersRunning(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{Comment: "forked"})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{Comment: "forked"})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -138,7 +155,7 @@ func TestForkEnvironment_reuseSnapshotDoesNotCreateExtra(t *testing.T) {
 		t.Fatalf("list source snapshots: %v", err)
 	}
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -176,7 +193,7 @@ func TestForkEnvironment_rejectsNonRunning(t *testing.T) {
 	fm.vms[srcID].state = VMStateDraining
 	fm.mu.Unlock()
 
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{}); err == nil {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{}); err == nil {
 		t.Fatal("expected fork of non-running vm to fail")
 	}
 }
@@ -191,7 +208,7 @@ func TestForkEnvironment_providerNotForkable(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	_, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	_, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err == nil {
 		t.Fatal("expected fork to fail when provider does not implement SnapshotForkable")
 	}
@@ -254,7 +271,7 @@ func TestForkEnvironment_rejectsLiveSeed(t *testing.T) {
 		t.Fatalf("seed kind = %q, want live; the test provider did not take a live snapshot", seed.Kind)
 	}
 
-	_, err = fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
+	_, err = forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
 	if !errors.Is(err, ErrSnapshotNotSeedable) {
 		t.Fatalf("err = %v, want ErrSnapshotNotSeedable", err)
 	}
@@ -284,7 +301,19 @@ func TestForkEnvironment_diskSeedStillWorks(t *testing.T) {
 		t.Fatalf("seed kind = live, want disk")
 	}
 
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID}); err != nil {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID}); err != nil {
 		t.Fatalf("fork from a disk snapshot: %v", err)
 	}
+}
+
+// forkOne forks one child of srcVMID and returns its id.
+func forkOne(ctx context.Context, fm *FleetManager, srcVMID string, opts ForkOptions) (string, error) {
+	ids, err := fm.ForkEnvironment(ctx, srcVMID, opts)
+	if err != nil {
+		return "", err
+	}
+	if len(ids) != 1 {
+		return "", fmt.Errorf("fork returned %d children, want 1", len(ids))
+	}
+	return ids[0], nil
 }

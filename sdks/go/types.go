@@ -435,6 +435,15 @@ const (
 type ForkOptions struct {
 	ReuseSnapshotID string `json:"reuse_snapshot_id,omitempty"`
 	Comment         string `json:"comment,omitempty"`
+	// Live resumes every child from a live snapshot's memory image instead
+	// of cold-booting its rootfs. With ReuseSnapshotID empty a live seed is
+	// taken; otherwise it must name a live snapshot. A live child lands on a
+	// host other than the source's, and the fork is a 409 conflict when there
+	// is none.
+	Live bool `json:"live,omitempty"`
+	// Count is how many children to fork from the one seed, which is taken
+	// once. Zero means 1; the server refuses more than 1000 with a 400.
+	Count int `json:"count,omitempty"`
 }
 
 // MigrateOptions is the optional body for env.Migrate.
@@ -479,11 +488,12 @@ type SnapshotRequest struct {
 	//
 	// It costs the environment's full configured memory in bytes on every
 	// create, pauses the guest for the length of the capture, and produces an
-	// artifact pinned to the host that took it. It also cannot seed a new
-	// environment: Fork and CreateRequest.SeedSnapshotID read only a
-	// snapshot's rootfs, and a live snapshot's rootfs is captured without
-	// quiescing the guest filesystem, so it is consistent only alongside the
-	// memory image. Both reject a live snapshot with a 409 conflict.
+	// artifact pinned to the host that took it. It cannot seed a cold boot:
+	// a plain Fork and CreateRequest.SeedSnapshotID read only a snapshot's
+	// rootfs, and a live snapshot's rootfs is captured without quiescing the
+	// guest filesystem, so it is consistent only alongside the memory image.
+	// Both reject a live snapshot with a 409 conflict. A Fork with
+	// ForkOptions.Live resumes the memory image instead, so it takes one.
 	//
 	// Against a backend with no live-snapshot support this is a 501
 	// unimplemented, not a conflict, so IsConflict does not match it.

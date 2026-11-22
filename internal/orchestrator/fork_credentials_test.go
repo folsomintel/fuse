@@ -194,7 +194,7 @@ func TestForkEnvironment_mintsItsOwnCredentials(t *testing.T) {
 		t.Fatal("source guest should have an auth token file after provisioning")
 	}
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestForkEnvironment_survivesReconcileDuringCredentialUpload(t *testing.T) {
 		})
 	}
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -343,7 +343,7 @@ func TestForkEnvironment_chargesSourceHost(t *testing.T) {
 		t.Fatalf("allocated after provision = %+v, want 2 cpus / 1024 MB", afterProvision)
 	}
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

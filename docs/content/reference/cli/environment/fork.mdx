@@ -3,14 +3,15 @@ title: fuse environment fork
 sidebar:
   icon: git-fork
   label: fork
-description: Fork an environment into a new one
+description: Fork an environment into one or more new ones
 ---
 
 ```bash
 fuse environment fork <id> [flags]
 ```
 
-Creates a new environment seeded from an existing one's state.
+Creates one or more new environments seeded from one snapshot of an existing
+one.
 
 ## Flags
 
@@ -18,6 +19,8 @@ Creates a new environment seeded from an existing one's state.
 | --- | --- |
 | `--reuse-snapshot` | Reuse an existing snapshot ID instead of taking a new one. |
 | `--comment` | Comment recorded on the seed snapshot the fork creates. |
+| `--live` | Resume every child from a live snapshot's memory image instead of cold-booting its disk. |
+| `--count` | How many children to fork from the one seed (default 1, at most 1000). |
 
 ## Behavior
 
@@ -35,6 +38,22 @@ fuse environment fork fuse-abc123 --comment "branch for experiment"
 fuse environment fork fuse-abc123 --reuse-snapshot snap-1
 ```
 
+With `--count N` the seed is taken once and N children are forked from it. One
+child prints its detail view; several print a table, one row per child. With
+`-o json` the output is always a JSON list of environments, even for one
+child. Each child is its own fork: if one fails, the others keep running and the
+command exits non-zero with a message naming the children that did fork.
+
+With `--live` the seed is a live snapshot (or `--reuse-snapshot` must name a
+live one), and each child resumes from its memory with its processes intact. A
+live child cannot resume on its source's own host yet, so it always lands on
+another host of the same backend, CPU model and Firecracker build. Without
+`--live`, a fork of a live snapshot is refused.
+
+```bash
+fuse environment fork fuse-abc123 --live --count 3
+```
+
 Fork is unavailable wherever snapshotting is, GPU/QEMU-backed environments
 cannot be forked. See [Snapshots](/docs/concepts/snapshots) and
 [Providers](/docs/concepts/providers).
@@ -43,8 +62,10 @@ cannot be forked. See [Snapshots](/docs/concepts/snapshots) and
 
 | Status | Code | When |
 | --- | --- | --- |
+| 400 | `invalid_argument` | `--count` is below 1 or above 1000 (the CLI refuses below 1 before sending). |
 | 404 | `not_found` | `--reuse-snapshot` names a snapshot that belongs to a different environment. |
-| 409 | `conflict` | The reused snapshot is not in the `ready` state, or the source environment holds a GPU passthrough device. |
+| 409 | `conflict` | The reused snapshot is not in the `ready` state, its kind does not match `--live`, the source environment holds a GPU passthrough device, or a `--live` fork has no host other than the source's to resume on. |
+| 503 | `unavailable` | No host has room for a child. |
 | 500 | `internal` | The source environment is not `running`. |
 
 The 404 reads confusingly when the snapshot plainly exists: a snapshot of

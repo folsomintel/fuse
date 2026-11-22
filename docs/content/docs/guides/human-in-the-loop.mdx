@@ -292,7 +292,7 @@ tighten it to `ask`.
 orchestrator performs the action itself, exactly as approved, and stores the
 outcome on the intervention's `result`: `result.exec` for an exec,
 `result.computer` for a computer action, `result.env_id` for a fork or
-migrate, `result.snapshot_id` for a snapshot, `result.error` when the
+migrate (a fork of several children names only its first), `result.snapshot_id` for a snapshot, `result.error` when the
 approved action failed. `GET
 /v1/interventions/{id}?wait=` returns once that result is in. A `deny`
 answers `403` with `details.reason: hitl_denied`, the gate in
@@ -311,8 +311,8 @@ it is stored. Each pending intervention's deadline is a restate timer too, so
 `on_timeout` applies on time after a restart, even with nobody reading it.
 
 The SDKs wait on a `202` for you: `exec` returns the approved command's
-result, `computer` the action's output and screenshot, `fork` the new
-environment, and so on. A rejection raises
+result, `computer` the action's output and screenshot, `fork` a one-element
+list holding the new environment, and so on. A rejection raises
 `InterventionRejectedError` with the reason; `wait: false` (or the client
 option) raises `PendingInterventionError` with the handle instead of
 waiting. The CLI prints the intervention it is waiting on:

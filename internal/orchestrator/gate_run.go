@@ -65,11 +65,13 @@ func (fm *FleetManager) runApproved(ctx context.Context, in hitl.Intervention) h
 		if err := decode(&opts); err != nil {
 			return fail(err)
 		}
-		id, err := fm.ForkEnvironment(ctx, in.EnvID, opts)
+		ids, err := fm.ForkEnvironment(ctx, in.EnvID, opts)
 		if err != nil {
 			return fail(err)
 		}
-		return hitl.Result{EnvID: id}
+		// the result names one environment: a held fork of several children
+		// reports its first.
+		return hitl.Result{EnvID: ids[0]}
 	case hitl.ActionMigrate:
 		var opts MigrateOptions
 		if err := decode(&opts); err != nil {

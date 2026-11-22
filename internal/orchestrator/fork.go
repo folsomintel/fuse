@@ -23,10 +23,16 @@ import (
 //  3. otherwise refuse: ErrSeedUnplaceable (which wraps ErrNoCapacity) when the
 //     seed cannot leave the source's host, ErrNoCapacity when no other host
 //     has room.
-func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID string, srcProvider Provider, seed SnapshotRecord) (string, Provider, error) {
+//
+// a live fork skips the first rung (see liveForkOffSource) and is refused
+// with errLiveForkNoHost, a 409, when no other host can take it.
+func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID string, srcProvider Provider, seed SnapshotRecord, live bool) (string, Provider, error) {
 	// single-provider mode: there is no scheduler and no host registry to
 	// consult, so there is nothing to choose between.
 	if srcHostID == "" {
+		if live {
+			return "", nil, errLiveForkNoHost("", "there is no other host to resume on")
+		}
 		return "", srcProvider, nil
 	}
 
@@ -41,13 +47,18 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 	why := "is not active"
 	if src := hostByID(hosts, srcHostID); src != nil {
 		why = hostRejection(src, spec)
-		if why == "" {
+		if live {
+			why = "is the source's own host"
+		} else if why == "" {
 			return srcHostID, srcProvider, nil
 		}
 	}
 
 	plan := fm.planSeedPlacement(ctx, Spec{SeedSnapshotID: seed.SnapshotID})
 	if !plan.movable {
+		if live {
+			return "", nil, errLiveForkNoHost(srcHostID, "the seed cannot be copied off it ("+plan.whyImmovable()+")")
+		}
 		return "", nil, fmt.Errorf("%w: source host %s %s, and the seed cannot be copied (%s)",
 			ErrSeedUnplaceable, srcHostID, why, plan.whyImmovable())
 	}
@@ -57,12 +68,15 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 		// a rootfs prepared under one backend is not portable to another, and
 		// the backends' snapshot stores are not interchangeable either, so a
 		// fork never crosses that line however much room the other side has.
-		if h.Backend == srcBackend {
+		if h.Backend == srcBackend && !liveForkOffSource(live, h.ID, srcHostID) {
 			eligible = append(eligible, h)
 		}
 	}
 	selected, _, err := SchedulePreferring(spec, eligible, fm.placementPolicy,
 		PlacementHints{ArtifactHosts: plan.hostPreference()})
+	if err != nil && live {
+		return "", nil, errLiveForkNoHost(srcHostID, fmt.Sprintf("no other host can take it: %v", err))
+	}
 	if err != nil {
 		// a label or pin miss is still "nowhere to put it" for a fork, so every
 		// scheduling refusal reaches the caller as ErrNoCapacity.
@@ -82,12 +96,37 @@ func (fm *FleetManager) placeFork(ctx context.Context, spec Spec, srcHostID stri
 	return selected.ID, targetProvider, nil
 }
 
+// liveForkOffSource reports whether hostID is ruled out for a live fork: it
+// is the source's own host. pending the fc-agent same-host live resume:
+// resume_plan refuses a live snapshot whose recorded drive path is a running
+// vm's dir (409), and resume_firecracker would rmtree that dir, which here is
+// the source's. until the agent can resume next to a running source, a live
+// child always lands on another host.
+func liveForkOffSource(live bool, hostID, srcHostID string) bool {
+	return live && hostID == srcHostID
+}
+
+// errLiveForkNoHost is the refusal of a live fork with nowhere but its
+// source's host to resume on (see liveForkOffSource): a 409 naming why,
+// rather than the 503 of a full fleet.
+func errLiveForkNoHost(srcHostID, why string) error {
+	if srcHostID == "" {
+		srcHostID = "the only provider"
+	}
+	return fmt.Errorf("%w: a live fork cannot resume on its source's host (%s) yet, and %s; fork without live, or add a host",
+		ErrSnapshotNotSeedable, srcHostID, why)
+}
+
 // forkFitsSomewhere is the cheap half of placeFork's gate, run before the
 // seed snapshot: ErrNoCapacity when no active host of the source's backend
-// could take a vm of the source's shape. a single-provider source has no
+// could take a vm of the source's shape (errLiveForkNoHost for a live fork,
+// which never counts the source's host). a single-provider source has no
 // host to check.
-func (fm *FleetManager) forkFitsSomewhere(src forkSource) error {
+func (fm *FleetManager) forkFitsSomewhere(src forkSource, live bool) error {
 	if src.hostID == "" {
+		if live {
+			return errLiveForkNoHost("", "there is no other host to resume on")
+		}
 		return nil
 	}
 	// the fork's shape, without the source's placement (see ForkPlaceholder).
@@ -100,9 +139,13 @@ func (fm *FleetManager) forkFitsSomewhere(src forkSource) error {
 		backend = h.Backend
 	}
 	for _, h := range fm.activeHostsLocked() {
-		if h.Backend == backend && hostRejection(h, spec) == "" {
+		if h.Backend == backend && !liveForkOffSource(live, h.ID, src.hostID) && hostRejection(h, spec) == "" {
 			return nil
 		}
+	}
+	if live {
+		return errLiveForkNoHost(src.hostID, fmt.Sprintf("no other %s host has room for a %dCPU/%dMB/%dGB fork",
+			backend, spec.CPUs, spec.RamMB, spec.StorageGB))
 	}
 	return fmt.Errorf("%w: no %s host has room for a %dCPU/%dMB/%dGB fork",
 		ErrNoCapacity, backend, spec.CPUs, spec.RamMB, spec.StorageGB)
@@ -118,21 +161,33 @@ type ForkOptions struct {
 	// ReuseSnapshotID selects an existing ready snapshot of the source
 	// vm to seed the fork from. empty means snapshot the source first.
 	ReuseSnapshotID string
+
+	// Live resumes every child from a live snapshot's memory image instead
+	// of cold-booting its rootfs: a live seed is taken (or ReuseSnapshotID
+	// must name a live snapshot). see liveForkOffSource for where it lands.
+	Live bool
+
+	// Count is how many children to fork from the one seed, which is taken
+	// once. 0 means 1; it is at most MaxForkCount.
+	Count int
 }
 
-// ForkEnvironment creates a brand-new vm seeded from a checkpoint of an
-// existing running vm. it obtains a seed snapshot (creating one when
-// ReuseSnapshotID is empty), asks a SnapshotForkable provider to build a
-// new environment from that checkpoint, registers the new vm as running,
-// and records lineage so the fork references its seed snapshot.
+// ForkEnvironment creates opts.Count brand-new vms (one by default) seeded
+// from one checkpoint of an existing running vm, and returns their ids in
+// child order. each child is a durable fork of its own (see forkChildren).
+//
+// the seed is ReuseSnapshotID, or a snapshot of the source taken once for all
+// the children. each child is built from it by a SnapshotForkable provider
+// (or, live, resumed from its memory image), registered as running, and
+// given lineage that references the seed snapshot.
 //
 // lineage is recorded by persisting a SnapshotRecord for the new vm whose
 // ParentSnapshotID is the seed snapshot id (state ready). this reuses the
 // same store path CreateSnapshot uses (upsertSnapshotRecord) and is
 // directly assertable via ListSnapshots / GetSnapshotByID.
 //
-// the fork is charged to whichever host it lands on, which is the source's host
-// unless that host can no longer fit it and the seed artifact can be copied
+// each child is charged to whichever host it lands on, which is the source's
+// host (never, for a live fork) unless that host can no longer fit it and the seed artifact can be copied
 // elsewhere (see placeFork). it is given its OWN guest credentials either way,
 // since it boots a copy of the source's disk and would otherwise answer to the
 // source's token.
@@ -141,15 +196,11 @@ type ForkOptions struct {
 // fork as unsupported for them. the firecracker provider implements it; the
 // qemu provider deliberately does not (vfio gpu passthrough cannot be
 // checkpointed).
-func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) (string, error) {
+func (fm *FleetManager) ForkEnvironment(ctx context.Context, srcVMID string, opts ForkOptions) ([]string, error) {
 	ctx, end := fm.startOperation(ctx, "fork", srcVMID)
-	var (
-		id  string
-		err error
-	)
-	id, err = fm.durableForkVM(ctx, fm.durableForker(), srcVMID, opts)
+	ids, err := fm.forkChildren(ctx, fm.durableForker(), srcVMID, opts)
 	end(err)
-	return id, err
+	return ids, err
 }
 
 // forkSource is what a fork reads off its source vm.
@@ -162,9 +213,10 @@ type forkSource struct {
 }
 
 // checkFork validates that srcVMID can be forked and returns its source and,
-// when reuseSnapshotID is set, the seed snapshot. it takes no snapshot and
-// writes nothing, so a refused fork leaves no trace.
-func (fm *FleetManager) checkFork(ctx context.Context, srcVMID, reuseSnapshotID string) (forkSource, SnapshotRecord, error) {
+// when reuseSnapshotID is set, the seed snapshot. live is a live fork, which
+// needs a live seed. it takes no snapshot and writes nothing, so a refused
+// fork leaves no trace.
+func (fm *FleetManager) checkFork(ctx context.Context, srcVMID, reuseSnapshotID string, live bool) (forkSource, SnapshotRecord, error) {
 	// validate the source vm exists and is running, and resolve the
 	// provider under the lock (providerForHost requires fm.mu held),
 	// mirroring snapshotEnvironment's resolution.
@@ -226,12 +278,19 @@ func (fm *FleetManager) checkFork(ctx context.Context, srcVMID, reuseSnapshotID 
 	if existing.State != SnapshotStateReady {
 		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is %s", ErrSnapshotInvalidState, reuseSnapshotID, existing.State)
 	}
-	// a fork boots the seed's rootfs on its own, and a live snapshot's
+	// a cold fork boots the seed's rootfs on its own, and a live snapshot's
 	// rootfs is only consistent alongside the memory image it was captured
 	// with. reject it here rather than letting the fork provision a vm and
-	// die on "agent start failed" once the guest cannot mount what it got.
-	if existing.Kind == SnapshotKindLive {
-		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is a live snapshot, whose rootfs is only consistent with its memory image; fork from a disk snapshot instead", ErrSnapshotNotSeedable, reuseSnapshotID)
+	// die on "agent start failed" once the guest cannot mount what it got. a
+	// live fork resumes that memory image, so it is the one fork that may.
+	if existing.Kind == SnapshotKindLive && !live {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is a live snapshot, whose rootfs is only consistent with its memory image; fork from a disk snapshot instead, or fork with live", ErrSnapshotNotSeedable, reuseSnapshotID)
+	}
+	if live && existing.Kind != SnapshotKindLive {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is a disk snapshot, with no memory image for a live fork to resume; reuse a live snapshot, or fork without live", ErrSnapshotNotSeedable, reuseSnapshotID)
+	}
+	if live && diffParent(existing) != "" {
+		return forkSource{}, SnapshotRecord{}, fmt.Errorf("%w: snapshot %s is a diff against %s and cannot be resumed on its own", ErrSnapshotNotSeedable, reuseSnapshotID, diffParent(existing))
 	}
 	// a ready record is not proof of an artifact on the host. fork itself
 	// writes lineage records that are ready but back no checkpoint, and a
