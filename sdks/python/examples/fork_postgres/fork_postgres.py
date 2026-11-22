@@ -388,11 +388,16 @@ class Run:
             ["build", "-f", a.fusefile, "--name", "fork-postgres"], a.fuse_bin, a.context, 7200
         )
         log(f"build artifact {build}")
+        # the cli refuses --from-build next to an `image:`, since both name the
+        # rootfs to boot, so main boots from a copy of the Fusefile without it
+        boot = self.out / "Fusefile.boot"
+        lines = Path(a.fusefile).read_text().splitlines(keepends=True)
+        boot.write_text("".join(ln for ln in lines if not ln.startswith("image:")))
         out = fuse_cli(
             [
                 "up",
                 "-f",
-                a.fusefile,
+                str(boot),
                 "--from-build",
                 build,
                 "--task-id",
