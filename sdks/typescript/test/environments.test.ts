@@ -247,12 +247,16 @@ describe("environments", () => {
       query = queryOf(req);
       body = await readBody(req);
       res.setHeader("Content-Type", "application/json");
-      res.end(`{"id":"vm-2","state":"running","task_id":"task-1","url":"u"}`);
+      res.end(
+        `{"children":[{"id":"vm-2","state":"running","task_id":"task-1","url":"u"},{"id":"vm-3","state":"running"}]}`,
+      );
     });
 
-    const env = await current.client.environments.fork("vm-1", {
+    const envs = await current.client.environments.fork("vm-1", {
       reuse_snapshot_id: "snap-1",
       comment: "forked",
+      live: true,
+      count: 2,
     });
 
     expect(method).toBe("POST");
@@ -261,8 +265,22 @@ describe("environments", () => {
     expect(JSON.parse(body)).toEqual({
       reuse_snapshot_id: "snap-1",
       comment: "forked",
+      live: true,
+      count: 2,
     });
-    expect(env.id).toBe("vm-2");
+    expect(envs.map((e) => e.id)).toEqual(["vm-2", "vm-3"]);
+  });
+
+  it("fork refuses a count below 1 before sending", async () => {
+    let calls = 0;
+    current = await serve(async (_req, res) => {
+      calls++;
+      res.end("{}");
+    });
+    await expect(current.client.environments.fork("vm-1", { count: 0 })).rejects.toThrow(
+      /count/,
+    );
+    expect(calls).toBe(0);
   });
 
   it("migrate posts action=migrate with a MigrateOptions body and decodes the result", async () => {

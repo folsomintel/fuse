@@ -531,8 +531,25 @@ class EnvironmentInfo(_Model):
 
 class ForkOptions(_Model):
     # optional body for environments.fork.
+    #
+    # live resumes every child from a live snapshot's memory image instead of
+    # cold-booting its rootfs. with reuse_snapshot_id empty a live seed is
+    # taken; otherwise it must name a live snapshot. a live child lands on a
+    # host other than the source's, and the fork is a 409 conflict when there
+    # is none.
+    #
+    # count is how many children to fork from the one seed, which is taken
+    # once. none means 1; the server refuses more than 1000 with a 400.
     reuse_snapshot_id: Optional[str] = None
     comment: Optional[str] = None
+    live: Optional[bool] = None
+    count: Optional[int] = Field(default=None, ge=1)
+
+
+class ForkResponse(_Model):
+    # the 201 body of environments.fork: every child, in order, even for a
+    # count of 1.
+    children: list[EnvironmentInfo] = Field(default_factory=list)
 
 
 class MigrateOptions(_Model):
@@ -627,11 +644,12 @@ class SnapshotRequest(_Model):
     #
     # it costs the environment's full configured memory in bytes on every
     # create, pauses the guest for the length of the capture, and produces an
-    # artifact pinned to the host that took it. it also cannot seed a new
-    # environment: fork and CreateRequest.seed_snapshot_id read only a
-    # snapshot's rootfs, and a live snapshot's rootfs is captured without
-    # quiescing the guest filesystem, so it is consistent only alongside the
-    # memory image. both reject a live snapshot with a 409 conflict.
+    # artifact pinned to the host that took it. it cannot seed a cold boot: a
+    # plain fork and CreateRequest.seed_snapshot_id read only a snapshot's
+    # rootfs, and a live snapshot's rootfs is captured without quiescing the
+    # guest filesystem, so it is consistent only alongside the memory image.
+    # both reject a live snapshot with a 409 conflict. a fork with live=True
+    # resumes the memory image instead, so it takes one.
     #
     # against a backend with no live-snapshot support this is a 501
     # unimplemented, not a conflict, so is_conflict reports false for it.
@@ -1097,7 +1115,7 @@ class Operation(_Model):
     finished_at: Optional[datetime] = None
     status_code: int = 0
     # the call's raw response body on success: an environment for create,
-    # fork, migrate and drain, a snapshot for snapshot, an image for
+    # migrate and drain, a ForkResponse for fork, a snapshot for snapshot, an image for
     # image.convert, none for destroy and restore, and a held response when a
     # hitl gate held the action (202).
     result: Optional[Any] = None

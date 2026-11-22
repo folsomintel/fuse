@@ -212,18 +212,41 @@ async fn fork_posts_options_body() {
     Mock::given(method("POST"))
         .and(path("/v1/environments/vm-1"))
         .and(query_param("action", "fork"))
-        .and(body_partial_json(json!({"reuse_snapshot_id": "snap-1"})))
-        .respond_with(ResponseTemplate::new(200).set_body_json(env_body("vm-2", "provisioning")))
+        .and(body_partial_json(
+            json!({"reuse_snapshot_id": "snap-1", "live": true, "count": 2}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "children": [env_body("vm-2", "running"), env_body("vm-3", "running")]
+        })))
         .mount(&server)
         .await;
 
     let forked = client(&server)
         .await
         .environments()
-        .fork("vm-1", ForkOptions::new().reuse_snapshot_id("snap-1"))
+        .fork(
+            "vm-1",
+            ForkOptions::new()
+                .reuse_snapshot_id("snap-1")
+                .live(true)
+                .count(2),
+        )
         .await
         .unwrap();
-    assert_eq!(forked.id, "vm-2");
+    let ids: Vec<_> = forked.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, ["vm-2", "vm-3"]);
+}
+
+#[tokio::test]
+async fn fork_refuses_a_zero_count() {
+    let server = MockServer::start().await;
+    let err = client(&server)
+        .await
+        .environments()
+        .fork("vm-1", ForkOptions::new().count(0))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, fuse::Error::InvalidRequest(_)), "{err:?}");
 }
 
 #[tokio::test]

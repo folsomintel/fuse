@@ -116,12 +116,12 @@ func TestHeldForkReturnsNewEnvironment(t *testing.T) {
 	})
 	defer cleanup()
 
-	env, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{})
+	envs, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if env.ID != "vm-2" {
-		t.Fatalf("env = %+v", env)
+	if len(envs) != 1 || envs[0].ID != "vm-2" {
+		t.Fatalf("envs = %+v", envs)
 	}
 }
 
@@ -145,5 +145,34 @@ func TestApproveWithSendsEditAndGrant(t *testing.T) {
 	argv, _ := body["edited_argv"].([]any)
 	if len(argv) != 2 || body["grant"] != "ttl:30m" {
 		t.Fatalf("body = %v", body)
+	}
+}
+
+func TestForkSendsLiveAndCountAndReturnsChildren(t *testing.T) {
+	var body map[string]any
+	c, cleanup := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("action") != "fork" {
+			t.Errorf("action = %q", r.URL.Query().Get("action"))
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"children":[{"id":"vm-2","state":"running"},{"id":"vm-3","state":"running"}]}`)
+	})
+	defer cleanup()
+
+	envs, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{Live: true, Count: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["live"] != true || body["count"] != float64(2) {
+		t.Fatalf("body = %v, want live and count", body)
+	}
+	if len(envs) != 2 || envs[0].ID != "vm-2" || envs[1].ID != "vm-3" {
+		t.Fatalf("envs = %+v", envs)
+	}
+	if _, err := c.Environments.Fork(context.Background(), "vm-1", ForkOptions{Count: -1}); err == nil {
+		t.Fatal("negative count was sent")
 	}
 }

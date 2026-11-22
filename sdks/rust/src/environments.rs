@@ -12,8 +12,8 @@ use crate::interventions::{wait_intervention, HumanRequest, ReviewRequest, Revie
 use crate::operations::CallOptions;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{
-    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, HitlKind, Intervention,
-    MigrateOptions,
+    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, ForkResponse, HitlKind,
+    Intervention, MigrateOptions,
 };
 
 // mirrors the orchestrator's own default guest-command bound. it is what the
@@ -329,11 +329,16 @@ impl Environments {
         self.action(vm_id, "drain", options).await
     }
 
-    /// Creates a new environment seeded from an existing one and returns
-    /// the new environment. When `options.reuse_snapshot_id` is `None` the
-    /// server snapshots the source first; otherwise it reuses the named
-    /// snapshot.
-    pub async fn fork(&self, vm_id: &str, options: ForkOptions) -> Result<EnvironmentInfo, Error> {
+    /// Creates `options.count` new environments (one by default) seeded from
+    /// one snapshot of an existing one and returns every child, in order.
+    /// When `options.reuse_snapshot_id` is `None` the server snapshots the
+    /// source once; otherwise it reuses the named snapshot. A fork a hitl
+    /// gate held comes back as a one-element list once approved.
+    pub async fn fork(
+        &self,
+        vm_id: &str,
+        options: ForkOptions,
+    ) -> Result<Vec<EnvironmentInfo>, Error> {
         self.fork_with_options(vm_id, options, CallOptions::new())
             .await
     }
@@ -345,14 +350,23 @@ impl Environments {
         vm_id: &str,
         options: ForkOptions,
         call: CallOptions,
-    ) -> Result<EnvironmentInfo, Error> {
+    ) -> Result<Vec<EnvironmentInfo>, Error> {
         require(vm_id, "vm id")?;
+        if options.count == Some(0) {
+            return Err(Error::InvalidRequest(
+                "fork count must be at least 1".to_owned(),
+            ));
+        }
         let request = self
             .t
             .request(Method::POST, &["v1", "environments", vm_id])
             .query(&[("action", "fork")])
             .json(&options);
-        self.send_env(call.apply(request)).await
+        let held = match self.t.send_gated(call.apply(request)).await? {
+            Gated::Done(body) => return Ok(decode_body::<ForkResponse>(&body)?.children),
+            Gated::Held(held) => held,
+        };
+        Ok(vec![self.held_env(held).await?])
     }
 
     /// Moves an environment to another host and returns the new environment.
@@ -568,6 +582,12 @@ impl Environments {
             Gated::Done(body) => return decode_body(&body),
             Gated::Held(held) => held,
         };
+        self.held_env(held).await
+    }
+
+    // held_env waits out a held create, fork or migrate and fetches the
+    // environment it produced.
+    async fn held_env(&self, held: Box<Intervention>) -> Result<EnvironmentInfo, Error> {
         let settled = self.t.settle_held(held, None, false).await?;
         match settled.result.as_ref().and_then(|r| r.env_id.clone()) {
             Some(env_id) if !env_id.is_empty() => self.get(&env_id).await,

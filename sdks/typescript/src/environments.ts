@@ -15,6 +15,7 @@ import type {
   ExecRequest,
   ExecResult,
   ForkOptions,
+  ForkResponse,
   Intervention,
   MigrateOptions,
   ToolResultBlock,
@@ -186,16 +187,22 @@ export class EnvironmentsService {
     });
   }
 
-  /** Fork an environment into a new one; returns the new environment. When a
+  /** Fork an environment into `count` new ones (1 by default), all seeded
+   * from one snapshot of the source; returns every child, in order. When a
    * hitl gate holds the fork, it waits for the decision and returns the
-   * environment the orchestrator then forked. */
+   * environment the orchestrator then forked as a one-element list. */
   async fork(
     vmId: string,
     body: ForkOptions = {},
     opts: MutatingCallOptions = {},
-  ): Promise<EnvironmentInfo> {
+  ): Promise<EnvironmentInfo[]> {
     requireArg(vmId, "vm id");
-    const out = await this.t.gated<EnvironmentInfo>(
+    if (body.count !== undefined && (!Number.isInteger(body.count) || body.count < 1)) {
+      throw new FuseError(
+        `fork count must be an integer of at least 1, got ${body.count}`,
+      );
+    }
+    const out = await this.t.gated<ForkResponse>(
       "POST",
       `/v1/environments/${encodeURIComponent(vmId)}`,
       {
@@ -205,8 +212,8 @@ export class EnvironmentsService {
         idempotencyKey: idempotencyKey(opts),
       },
     );
-    if (!out.held) return out.value;
-    return this.heldEnvironment(out.held, opts);
+    if (!out.held) return out.value.children;
+    return [await this.heldEnvironment(out.held, opts)];
   }
 
   /**

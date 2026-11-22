@@ -318,13 +318,14 @@ async fn held_fork_returns_the_new_environment() {
         .mount(&server)
         .await;
 
-    let env = client(&server)
+    let envs = client(&server)
         .await
         .environments()
         .fork("vm-1", ForkOptions::new())
         .await
         .unwrap();
-    assert_eq!(env.id, "vm-2");
+    assert_eq!(envs.len(), 1);
+    assert_eq!(envs[0].id, "vm-2");
 }
 
 #[tokio::test]

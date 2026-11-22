@@ -226,13 +226,17 @@ def test_environments_migrate() -> None:
 def test_environments_fork() -> None:
     route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
         return_value=httpx.Response(
-            200,
-            json={"id": "vm-2", "state": "running", "task_id": "task-1", "url": "u"},
+            201,
+            json={"children": [
+                {"id": "vm-2", "state": "running", "task_id": "task-1", "url": "u"},
+                {"id": "vm-3", "state": "running"},
+            ]},
         )
     )
     with new_client() as client:
-        env = client.environments.fork(
-            "vm-1", fuse.ForkOptions(reuse_snapshot_id="snap-1", comment="c")
+        envs = client.environments.fork(
+            "vm-1",
+            fuse.ForkOptions(reuse_snapshot_id="snap-1", comment="c", live=True, count=2),
         )
 
     request = route.calls.last.request
@@ -240,8 +244,24 @@ def test_environments_fork() -> None:
     assert request.url.path == "/v1/environments/vm-1"
     assert request.url.params.get("action") == "fork"
     body = json.loads(request.content)
-    assert body == {"reuse_snapshot_id": "snap-1", "comment": "c"}
-    assert env.id == "vm-2"
+    assert body == {"reuse_snapshot_id": "snap-1", "comment": "c", "live": True, "count": 2}
+    assert [e.id for e in envs] == ["vm-2", "vm-3"]
+
+
+@respx.mock
+def test_environments_fork_keyword_sugar() -> None:
+    route = respx.post(f"{BASE_URL}/v1/environments/vm-1").mock(
+        return_value=httpx.Response(201, json={"children": [{"id": "vm-2", "state": "running"}]})
+    )
+    with new_client() as client:
+        envs = client.environments.fork("vm-1", live=True, count=3)
+        with pytest.raises(ValueError):
+            client.environments.fork("vm-1", fuse.ForkOptions(), live=True)
+
+    assert json.loads(route.calls.last.request.content) == {"live": True, "count": 3}
+    assert [e.id for e in envs] == ["vm-2"]
+    with pytest.raises(ValueError):
+        fuse.ForkOptions(count=0)
 
 
 @respx.mock

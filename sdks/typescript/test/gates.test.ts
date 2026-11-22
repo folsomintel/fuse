@@ -210,9 +210,9 @@ describe("hitl gates", () => {
       res.end();
     });
 
-    const env = await current.client.environments.fork("vm-1");
+    const envs = await current.client.environments.fork("vm-1");
 
-    expect(env.id).toBe("vm-2");
+    expect(envs.map((e) => e.id)).toEqual(["vm-2"]);
     expect(seen).toEqual([
       "POST /v1/environments/vm-1",
       "GET /v1/interventions/int_3",

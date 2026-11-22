@@ -1871,11 +1871,41 @@ pub struct ForkOptions {
     pub reuse_snapshot_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// Resumes every child from a live snapshot's memory image instead of
+    /// cold-booting its rootfs. With `reuse_snapshot_id` unset a live seed is
+    /// taken; otherwise it must name a live snapshot. A live child lands on a
+    /// host other than the source's, and the fork is a 409 conflict when
+    /// there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live: Option<bool>,
+    /// How many children to fork from the one seed, which is taken once.
+    /// `None` means 1; 0 is refused before sending and the server refuses
+    /// more than 1000 with a 400.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+/// The 201 body of [`Environments::fork`](crate::Environments::fork): every
+/// child, in order, even for a count of 1.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForkResponse {
+    pub children: Vec<EnvironmentInfo>,
 }
 
 impl ForkOptions {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn live(mut self, live: bool) -> Self {
+        self.live = Some(live);
+        self
+    }
+
+    pub fn count(mut self, count: u32) -> Self {
+        self.count = Some(count);
+        self
     }
 
     pub fn reuse_snapshot_id(mut self, snapshot_id: impl Into<String>) -> Self {
@@ -1958,11 +1988,12 @@ pub struct SnapshotRequest {
     /// environment never can, and a provider without live support answers
     /// 501. Read [`Snapshot::kind`] back to see what was actually written.
     ///
-    /// A live snapshot cannot seed a new environment. Fork and
+    /// A live snapshot cannot seed a cold boot. A plain fork and
     /// [`CreateRequest::seed_snapshot_id`] read only a snapshot's rootfs, and
     /// a live snapshot's rootfs is captured without quiescing the guest
     /// filesystem, so it is consistent only alongside the memory image. Both
-    /// reject a live snapshot with a 409 conflict.
+    /// reject a live snapshot with a 409 conflict. A fork with
+    /// [`ForkOptions::live`] resumes the memory image instead, so it takes one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub live: Option<bool>,
     /// Labels this snapshot as the artifact of one cacheable setup step,
@@ -2430,7 +2461,7 @@ pub struct Operation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status_code: Option<u16>,
     /// The call's response body on success: an environment for create,
-    /// fork, migrate and drain, a snapshot for snapshot, an image for
+    /// migrate and drain, a [`ForkResponse`] for fork, a snapshot for snapshot, an image for
     /// image.convert, absent for destroy and restore, and a held response
     /// when a hitl gate held the action (status 202).
     #[serde(default, skip_serializing_if = "Option::is_none")]

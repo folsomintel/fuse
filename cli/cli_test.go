@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -299,14 +300,14 @@ func TestEnvForkJSON(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)
 		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"id":"fuse-fork-abc","state":"running","task_id":"fork-abc","url":"http://fuse-fork-abc.test","spec":{}}`)
+		fmt.Fprint(w, `{"children":[{"id":"fuse-fork-abc","state":"running","task_id":"fork-abc","url":"http://fuse-fork-abc.test","spec":{}},{"id":"fuse-fork-def","state":"running","spec":{}}]}`)
 	}))
 	defer srv.Close()
 
 	cfg := writeConfig(t, srv.URL)
 	out, err := capture(t, func() error {
 		root := newRootCmd()
-		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "fork", "fuse-task-1", "--reuse-snapshot", "cp-1", "--comment", "clone"})
+		root.SetArgs([]string{"--config", cfg, "-o", "json", "environment", "fork", "fuse-task-1", "--reuse-snapshot", "cp-1", "--comment", "clone", "--live", "--count", "2"})
 		return root.Execute()
 	})
 	if err != nil {
@@ -321,8 +322,28 @@ func TestEnvForkJSON(t *testing.T) {
 	if !strings.Contains(gotBody, `"reuse_snapshot_id":"cp-1"`) || !strings.Contains(gotBody, `"comment":"clone"`) {
 		t.Errorf("request body missing fork options: %s", gotBody)
 	}
-	if !strings.Contains(out, `"fuse-fork-abc"`) {
-		t.Errorf("output missing new env id: %s", out)
+	if !strings.Contains(gotBody, `"live":true`) || !strings.Contains(gotBody, `"count":2`) {
+		t.Errorf("request body missing live and count: %s", gotBody)
+	}
+	var children []map[string]any
+	if err := json.Unmarshal([]byte(out), &children); err != nil || len(children) != 2 {
+		t.Errorf("json output %s, want the list of both children (%v)", out, err)
+	}
+}
+
+func TestEnvForkRejectsBadCount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request %s %s", r.Method, r.URL)
+	}))
+	defer srv.Close()
+	cfg := writeConfig(t, srv.URL)
+	_, err := capture(t, func() error {
+		root := newRootCmd()
+		root.SetArgs([]string{"--config", cfg, "environment", "fork", "fuse-task-1", "--count", "0"})
+		return root.Execute()
+	})
+	if err == nil {
+		t.Fatal("fork --count 0 succeeded")
 	}
 }
 

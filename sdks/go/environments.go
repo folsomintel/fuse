@@ -296,16 +296,21 @@ func (s *EnvironmentsService) Drain(ctx context.Context, vmID string, opts ...Ca
 	return s.action(ctx, vmID, "drain", opts)
 }
 
-// Fork creates a new environment seeded from an existing one and returns the
-// new environment. when opts.ReuseSnapshotID is empty the server snapshots the
-// source first; otherwise it reuses the named snapshot. it does not use the
-// shared action helper because fork sends a request body.
-func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions, callOpts ...CallOption) (*EnvironmentInfo, error) {
+// Fork creates opts.Count new environments (one by default) seeded from one
+// snapshot of an existing one and returns every child, in order. when
+// opts.ReuseSnapshotID is empty the server snapshots the source once;
+// otherwise it reuses the named snapshot. a fork a hitl gate held comes back
+// as a one-element list once approved. it does not use the shared action
+// helper because fork sends a request body.
+func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOptions, callOpts ...CallOption) ([]EnvironmentInfo, error) {
 	if s == nil || s.t == nil {
 		return nil, errors.New("environments service is not configured")
 	}
 	if vmID == "" {
 		return nil, errors.New("vm id is required")
+	}
+	if opts.Count < 0 {
+		return nil, fmt.Errorf("fork count must be at least 1, got %d", opts.Count)
 	}
 	path := "/v1/environments/" + url.PathEscape(vmID)
 	values := url.Values{}
@@ -325,14 +330,23 @@ func (s *EnvironmentsService) Fork(ctx context.Context, vmID string, opts ForkOp
 		if err != nil {
 			return nil, err
 		}
-		return s.heldEnvironment(ctx, held)
+		env, err := s.heldEnvironment(ctx, held)
+		if err != nil {
+			return nil, err
+		}
+		return []EnvironmentInfo{*env}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
-	var env EnvironmentInfo
-	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return nil, fmt.Errorf("decode environment: %w", err)
+	var out forkResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode fork response: %w", err)
 	}
-	return &env, nil
+	return out.Children, nil
+}
+
+// forkResponse is the 201 body of a fork.
+type forkResponse struct {
+	Children []EnvironmentInfo `json:"children"`
 }
 
 func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts MigrateOptions, callOpts ...CallOption) (*EnvironmentInfo, error) {
