@@ -2678,26 +2678,39 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         meta["mem_shared"] = link_mem(resume["mem"], mem)
         backend = {"backend_type": "File", "backend_path": str(mem)}
     link = Path(resume["rootfs_path"])
+    if link.parent.name == meta["vm_id"]:
+        raise HTTPError(409, f"a vm resumed from this snapshot cannot take its source's name {meta['vm_id']}")
     spawn_firecracker(meta)
-    link.parent.mkdir()
+    # every resume of one snapshot links the same path, and a create of the
+    # source's name would make that dir, so the source name's vm lock is held
+    # until the load is done. a timeout, as this vm's own lock is held too.
+    link_lock = vm_lock(link.parent.name)
+    if not link_lock.acquire(timeout=CREATE_VM_LOCK_WAIT):
+        raise HTTPError(409, f"another resume of snapshot {resume['vmstate'].parent.name} is loading; retry")
     try:
-        link.symlink_to(meta["rootfs"])
-        sock = meta["sock"]
-        for method, path, body in [
-            ("PUT", "/snapshot/load", {
-                "snapshot_path": str(resume["vmstate"]),
-                "mem_backend": backend,
-                "resume_vm": False,
-                LOAD_TRACK_DIRTY_FIELD: True,
-                **load_clock_fields(resume["manifest"]),
-            }),
-            ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
-        ]:
-            code, resp = fc_api(sock, method, path, body, timeout=SNAPSHOT_API_TIMEOUT)
-            if code >= 300:
-                raise RuntimeError(f"firecracker API {path} -> {code}: {resp!r}")
+        if os.path.lexists(link.parent):
+            raise HTTPError(409, f"{link.parent} exists, so this host cannot recreate the snapshot's drive path")
+        link.parent.mkdir()
+        try:
+            link.symlink_to(meta["rootfs"])
+            sock = meta["sock"]
+            for method, path, body in [
+                ("PUT", "/snapshot/load", {
+                    "snapshot_path": str(resume["vmstate"]),
+                    "mem_backend": backend,
+                    "resume_vm": False,
+                    LOAD_TRACK_DIRTY_FIELD: True,
+                    **load_clock_fields(resume["manifest"]),
+                }),
+                ("PATCH", "/drives/rootfs", {"drive_id": "rootfs", "path_on_host": meta["rootfs"]}),
+            ]:
+                code, resp = fc_api(sock, method, path, body, timeout=SNAPSHOT_API_TIMEOUT)
+                if code >= 300:
+                    raise RuntimeError(f"firecracker API {path} -> {code}: {resp!r}")
+        finally:
+            shutil.rmtree(link.parent, ignore_errors=True)
     finally:
-        shutil.rmtree(link.parent, ignore_errors=True)
+        link_lock.release()
     fc_vm_state(meta["sock"], "Resumed")
     hotplug_regrow(meta)
     meta["resumed_from"] = str(resume["vmstate"].parent.name)

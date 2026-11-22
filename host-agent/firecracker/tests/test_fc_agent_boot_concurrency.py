@@ -299,5 +299,74 @@ class RestartTest(BootTestCase):
         self.teardown_net.assert_not_called()
 
 
+class ParallelResumeTest(BootTestCase):
+    """every resume of one snapshot links the source's drive path for its
+    load, so two at once take turns on it instead of colliding."""
+
+    def setUp(self):
+        super().setUp()
+        self.store = Path(self.tmp.name) / "seed-1"
+        self.store.mkdir()
+        (self.store / "manifest.json").write_text("{}")
+        self.loading = threading.Event()
+        self.finish = threading.Event()
+        self.addCleanup(self.finish.set)
+        self.loads = []
+
+        def fc_api(sock, method, path, body=None, timeout=5.0):
+            if path == "/snapshot/load":
+                self.loads.append(sock)
+                # the symlink is in place for as long as the load runs.
+                assert (self.vms / "vm-src" / "rootfs.ext4").is_symlink()
+                if len(self.loads) == 1:
+                    self.loading.set()
+                    assert self.finish.wait(WAIT), "load was never released"
+            return 204, None
+
+        for name, fn in [("spawn_firecracker", lambda m: m.update(sock=f"/{m['vm_id']}.sock")),
+                         ("fc_api", fc_api), ("fc_vm_state", lambda sock, state: None),
+                         ("hotplug_regrow", lambda m: None), ("link_mem", lambda src, dst: False)]:
+            p = mock.patch.object(fc_agent, name, side_effect=fn)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def resume(self, vm_id):
+        meta = {"vm_id": vm_id, "rootfs": str(self.vms / vm_id / "rootfs.ext4")}
+        fc_agent.resume_firecracker(meta, {
+            "rootfs_path": str(self.vms / "vm-src" / "rootfs.ext4"),
+            "vmstate": self.store / "vmstate", "mem": self.store / "mem",
+            "manifest": self.store / "manifest.json", "huge_pages": False, "lazy": False,
+        })
+
+    def test_two_resumes_of_one_snapshot_both_load(self):
+        errors = []
+
+        def run(vm_id):
+            try:
+                self.resume(vm_id)
+            except Exception as e:
+                errors.append(e)
+
+        ta = threading.Thread(target=run, args=("vm-a",), daemon=True)
+        ta.start()
+        self.assertTrue(self.loading.wait(WAIT))
+        tb = threading.Thread(target=run, args=("vm-b",), daemon=True)
+        tb.start()
+        tb.join(0.2)
+        self.assertTrue(tb.is_alive(), "the second resume did not wait for the first's load")
+        self.finish.set()
+        ta.join(WAIT)
+        tb.join(WAIT)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(self.loads), 2)
+        self.assertFalse((self.vms / "vm-src").exists())
+
+    def test_a_resume_onto_its_sources_name_is_refused(self):
+        with self.assertRaises(fc_agent.HTTPError) as cm:
+            self.resume("vm-src")
+        self.assertEqual(cm.exception.code, 409)
+        self.assertEqual(self.loads, [])
+
+
 if __name__ == "__main__":
     unittest.main()
