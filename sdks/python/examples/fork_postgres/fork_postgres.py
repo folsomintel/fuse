@@ -484,7 +484,7 @@ class Run:
         a = self.args
         self.summary["mem_before_fork"] = self.mem_now()
         self.t_fork = time.monotonic()
-        children = fork_live(self.client, self.main_id, a.count, self.key, self.run_id)
+        children = fork_live(self.client, self.main_id, a.count, self.key, self.key)
         fork_call_s = round(time.monotonic() - self.t_fork, 3)
         self.summary["fork_call_s"] = fork_call_s
         log(f"fork call returned {len(children)} children in {fork_call_s:.1f}s")
