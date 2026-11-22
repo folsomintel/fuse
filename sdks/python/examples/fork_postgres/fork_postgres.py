@@ -514,7 +514,7 @@ class Run:
 
     # teardown
 
-    def teardown(self, snapshots_before: set[str]) -> None:
+    def teardown(self) -> None:
         ids = [c.vm_id for c in self.copies[1:] if c.vm_id]
         if ids:
             log(f"destroying {len(ids)} copies")
@@ -533,20 +533,23 @@ class Run:
                 if not fuse.is_not_found(e):
                     log(f"delete snapshot {snapshot_id}: {e}")
 
-        def delete_lineage(vm_id: str) -> None:
+        def delete_lineage(vm_id: str) -> set[str]:
             # each copy's fork-seed-* lineage record outlives its vm and is a
-            # child of the seed, so it has to go before the seed can
+            # child of the seed, so it has to go before the seed can. its
+            # parent names the seed this run's fork took.
+            seeds = set()
             for s in self.client.snapshots.list(vm_id=vm_id):
+                if s.parent_snapshot_id:
+                    seeds.add(s.parent_snapshot_id)
                 delete_snapshot(s.id)
+            return seeds
 
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(destroy, ids))
-            list(pool.map(delete_lineage, ids))
-        # the live seed the fork took of main
-        if self.main_id:
-            for s in self.client.snapshots.list(vm_id=self.main_id):
-                if s.id not in snapshots_before:
-                    delete_snapshot(s.id)
+            seeds = set().union(*pool.map(delete_lineage, ids))
+        # only the seed of this run's fork, never another snapshot of main
+        for seed in seeds:
+            delete_snapshot(seed)
 
     def audit(self, baseline: Optional[dict[str, Any]]) -> None:
         if self.leak_audit is None or baseline is None:
@@ -622,7 +625,6 @@ class Run:
         if baseline is not None:
             with open(self.out / "leak-before.json", "w") as f:
                 json.dump(baseline, f, indent=2)
-        snapshots_before = {s.id for s in self.client.snapshots.list(vm_id=self.main_id)}
 
         threads = [threading.Thread(target=self.sample_loop, daemon=True)]
         if not a.no_tiles:
@@ -643,7 +645,7 @@ class Run:
             if not a.no_tiles:
                 self.draw(sys.stdout.isatty(), final=True)
             try:
-                self.teardown(snapshots_before)
+                self.teardown()
                 self.audit(baseline)
             finally:
                 self.summarize()
