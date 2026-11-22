@@ -172,6 +172,14 @@ func (fm *FleetManager) forkChildren(ctx context.Context, d DurableForker, srcVM
 	if len(forked) == 0 && taken && settled {
 		fm.deleteCheckpoint(ctx, seed)
 	}
+	// with survivors the failure is not reported settled, even when restate
+	// recorded it: a settled 5xx moves the caller's retry to a new restate key,
+	// and so to a new set of children, stranding the ones that forked. kept
+	// on the same key, a retry replays every child's first answer instead.
+	var s *SettledError
+	if len(forked) > 0 && errors.As(first, &s) {
+		first = s.Err
+	}
 	return forked, fmt.Errorf("fork %s: %d of %d children failed (forked: [%s]); child %d: %w",
 		srcVMID, count-len(forked), count, strings.Join(forked, ", "), firstAt, first)
 }

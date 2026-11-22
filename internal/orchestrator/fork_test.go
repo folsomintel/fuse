@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -12,6 +13,8 @@ import (
 // additionally implements SnapshotForkable, exercising the happy path a real
 // firecracker provider cannot yet.
 type forkTestProvider struct {
+	// mu guards envs: a fork of several children creates them concurrently.
+	mu   sync.Mutex
 	envs map[string]*snapshotTestEnv
 }
 
@@ -21,21 +24,29 @@ func newForkTestProvider() *forkTestProvider {
 
 func (p *forkTestProvider) Create(_ context.Context, spec Spec) (Environment, error) {
 	env := &snapshotTestEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
+	p.mu.Lock()
 	p.envs[spec.Name] = env
+	p.mu.Unlock()
 	return env, nil
 }
 func (p *forkTestProvider) Get(_ context.Context, name string) (Environment, error) {
+	p.mu.Lock()
 	env, ok := p.envs[name]
+	p.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("env %s not found", name)
 	}
 	return env, nil
 }
 func (p *forkTestProvider) Destroy(_ context.Context, name string) error {
+	p.mu.Lock()
 	delete(p.envs, name)
+	p.mu.Unlock()
 	return nil
 }
 func (p *forkTestProvider) List(_ context.Context, _ string) ([]Environment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	out := make([]Environment, 0, len(p.envs))
 	for _, env := range p.envs {
 		out = append(out, env)
@@ -47,7 +58,9 @@ func (*forkTestProvider) Close() error { return nil }
 // CreateFromCheckpoint copies the source env's matching checkpoint into a new
 // env keyed by the new vm id (spec.Name) and returns it.
 func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, srcVMID, checkpointID string) (Environment, error) {
+	p.mu.Lock()
 	srcEnv, ok := p.envs[srcVMID]
+	p.mu.Unlock()
 	if !ok {
 		return nil, fmt.Errorf("source env %s not found", srcVMID)
 	}
@@ -55,6 +68,7 @@ func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, sr
 		seed  Checkpoint
 		found bool
 	)
+	srcEnv.mu.Lock()
 	for _, cp := range srcEnv.checkpoints {
 		if cp.ID == checkpointID {
 			seed = cp
@@ -62,12 +76,15 @@ func (p *forkTestProvider) CreateFromCheckpoint(_ context.Context, spec Spec, sr
 			break
 		}
 	}
+	srcEnv.mu.Unlock()
 	if !found {
 		return nil, fmt.Errorf("checkpoint %s not found on %s", checkpointID, srcVMID)
 	}
 	env := &snapshotTestEnv{name: spec.Name, url: "http://" + spec.Name + ".test"}
 	env.checkpoints = append(env.checkpoints, seed)
+	p.mu.Lock()
 	p.envs[spec.Name] = env
+	p.mu.Unlock()
 	return env, nil
 }
 

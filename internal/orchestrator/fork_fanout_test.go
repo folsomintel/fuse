@@ -123,6 +123,11 @@ func TestForkEnvironment_failedChildKeepsSiblings(t *testing.T) {
 	if err == nil {
 		t.Fatal("fork with a failed child succeeded")
 	}
+	// a settled answer would move the caller's retry to a new key, and so to a
+	// new set of children; with survivors it has to stay on this one.
+	if IsSettled(err) {
+		t.Fatalf("err %v is settled, want a retry to replay these children", err)
+	}
 	if len(got) != 2 || got[0] != ids[0] || got[1] != ids[2] {
 		t.Fatalf("forked %v, want the two siblings %v and %v", got, ids[0], ids[2])
 	}
@@ -161,6 +166,9 @@ func TestForkEnvironment_seedDeletedOnlyWhenEveryChildFailed(t *testing.T) {
 			got, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{Count: 2})
 			if err == nil || len(got) != 0 {
 				t.Fatalf("fork = (%v, %v), want every child failed", got, err)
+			}
+			if IsSettled(err) == tc.unsettled {
+				t.Fatalf("settled = %v, want %v", IsSettled(err), !tc.unsettled)
 			}
 			seeds, _ := fm.ListSnapshots(context.Background(), srcID)
 			if len(seeds) != tc.seeds {

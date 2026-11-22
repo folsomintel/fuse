@@ -1323,6 +1323,24 @@ func TestEnvironmentAction_Fork_Count(t *testing.T) {
 	}
 }
 
+// a live fork with no host but its source's to resume on is a 409.
+func TestEnvironmentAction_Fork_LiveWithoutAnotherHostIs409(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-1",
+		Spec:           ResourceSpec{CPUs: 2, RamMB: 1024},
+		ManifestInline: encodeManifest(t),
+	}); rr.Code != http.StatusCreated {
+		t.Fatalf("create source: code = %d", rr.Code)
+	}
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=fork", ForkEnvironmentRequest{Live: true})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestEnvironmentAction_Fork_RejectsBadCount(t *testing.T) {
 	h, _, _ := newTestHandler(t)
 	r := mustRouter(t, h)
