@@ -2732,6 +2732,11 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     # Path containment and existence are snapshot_rootfs's job now, and it also
     # finds artifacts in the host-global store whose origin vm is long gone.
     snap_rootfs = snapshot_rootfs(src_vm_id, snapshot_id)
+    # a fork onto its source's own name would wait in create_vm for the lock
+    # the caller already holds, so it is refused here instead.
+    name = req.get("name") or ""
+    if name and sanitize_name(name) == src_vm_id:
+        raise HTTPError(409, f"vm {src_vm_id} already exists")
 
     fork_req = dict(req)
     for field in ("cpus", "memory_mb", "storage_gb", "region", "huge_pages"):

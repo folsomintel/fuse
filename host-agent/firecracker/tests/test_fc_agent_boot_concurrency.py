@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -209,6 +210,17 @@ class SameVMTest(BootTestCase):
                 fc_agent.create_vm({"name": "a"})
         self.assertEqual(e.exception.code, 409)
         self.assertFalse(fc_agent.vm_dir("a").exists())
+
+    def test_a_fork_onto_its_own_source_is_refused_at_once(self):
+        fc_agent.create_vm({"name": "a"})
+        lock = fc_agent.vm_lock("a")
+        with lock, mock.patch.object(fc_agent, "snapshot_rootfs", return_value=fc_agent.BASE_ROOTFS), \
+             mock.patch.object(fc_agent, "CREATE_VM_LOCK_WAIT", WAIT):
+            started = time.monotonic()
+            with self.assertRaises(fc_agent.HTTPError) as e:
+                fc_agent.fork_vm("a", {"name": "a", "snapshot_id": "s1"})
+        self.assertEqual(e.exception.code, 409)
+        self.assertLess(time.monotonic() - started, 1.0, "the fork waited out the lock timeout")
 
 
 class DestroyLockTest(BootTestCase):
