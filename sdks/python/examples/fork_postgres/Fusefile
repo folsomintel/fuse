@@ -1,0 +1,93 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/folsomintel/fuse/main/schema/fusefile-v1.json
+version: 1
+
+# the "main" database the fork demo copies: postgres 15 with a fixed pgbench
+# dataset (scale 550, about 8 GiB of table and index) loaded at build time.
+#
+# this needs a 20G rootfs, which the base image is not: `resources.disk` only
+# reserves space, it never grows the guest disk. bake the image once per host
+# (see README.md):
+#
+#   FC_ROOTFS_SIZE=20G host-agent/firecracker/scripts/fc-bake-distro-rootfs.sh \
+#     docker.io/library/debian:12 debian-12-pg
+#
+# loading 8 GiB takes minutes, far over the startup script ceiling, so the
+# build steps run through `fuse build` (600s per step) and main boots with
+# `fuse up --from-build`. the layer cache makes a second `fuse build` a lookup.
+#
+# guest memory stays on 4K pages: there is no fusefile field for 2M hugepages,
+# and the driver must not add one, because #420 keeps hugepage memory private
+# per vm and the copies would share nothing.
+image: debian-12-pg
+
+cache:
+  enabled: true
+
+resources:
+  # every copy inherits this spec, so keep it small: 100 copies is 100 vcpus.
+  cpus: 1
+  # shared_buffers (9GB below) holds the whole dataset, plus room for the os.
+  memory: 12GB
+  disk: 20GB
+  max_runtime: 4h
+
+build:
+  # pinned to the postgres 15 major from debian 12. contrib (amcheck,
+  # pg_prewarm) and pg_amcheck ship in these two packages.
+  - |
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -q
+    apt-get install -y -q --no-install-recommends postgresql-15 postgresql-client-15
+
+  # the whole dataset fits in shared_buffers, so a warm copy never reads its
+  # disk. wal_level minimal skips wal for the bulk load; nothing replicates.
+  - |
+    cat > /etc/postgresql/15/main/conf.d/fork-demo.conf <<'EOF'
+    shared_buffers = 9GB
+    huge_pages = off
+    maintenance_work_mem = 1GB
+    wal_level = minimal
+    max_wal_senders = 0
+    max_wal_size = 4GB
+    checkpoint_timeout = 30min
+    listen_addresses = 'localhost'
+    EOF
+
+  # each load step starts postgres and stops it cleanly, so every cached layer
+  # is a shut-down cluster rather than one that needs crash recovery. the load
+  # is split in two so neither half runs into the 600s step limit.
+  - |
+    pg_ctlcluster 15 main status >/dev/null || pg_ctlcluster 15 main start
+    runuser -u postgres -- pgbench -i -s 550 -I dtG postgres
+    pg_ctlcluster 15 main stop -m fast
+
+  - |
+    pg_ctlcluster 15 main status >/dev/null || pg_ctlcluster 15 main start
+    runuser -u postgres -- pgbench -i -s 550 -I vp postgres
+    runuser -u postgres -- psql -X -v ON_ERROR_STOP=1 -d postgres \
+      -c 'CREATE EXTENSION IF NOT EXISTS amcheck' \
+      -c 'CREATE EXTENSION IF NOT EXISTS pg_prewarm'
+    pg_ctlcluster 15 main stop -m fast
+
+  # pg-warm reads every table and index into shared_buffers and prints the
+  # blocks it loaded. the driver runs it on main after timing a cold query.
+  - |
+    cat > /usr/local/bin/pg-warm <<'EOF'
+    #!/bin/sh
+    set -eu
+    exec runuser -u postgres -- psql -XAtq -v ON_ERROR_STOP=1 -d postgres -c \
+      "SELECT sum(pg_prewarm(c.oid)) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind IN ('r', 'i')"
+    EOF
+    chmod 0755 /usr/local/bin/pg-warm
+
+# systemd may already have started the cluster, so start it only if it is
+# down, then wait for it to take connections.
+run: |
+  pg_ctlcluster 15 main status >/dev/null || pg_ctlcluster 15 main start
+  for i in $(seq 1 40); do
+    pg_isready -q && exit 0
+    sleep 1
+  done
+  exit 1
+
+startup_timeout: 55s
