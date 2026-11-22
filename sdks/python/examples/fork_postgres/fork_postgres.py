@@ -449,36 +449,43 @@ class Run:
 
     # copies
 
-    def run_copy(self, c: Copy, amcheck: bool) -> None:
+    def run_copy(self, c: Copy, amcheck: bool, heavy: threading.Semaphore) -> None:
         try:
+            # readiness is timed for every copy at once; only the heavy work
+            # below waits for a --parallel slot, so a queued copy's fork time
+            # never includes another copy's jobs
             wait_running(self.client, c.vm_id, 600)
             c.fork_s = round(time.monotonic() - self.t_fork, 3)
             c.status = "up"
             c.clock_skew_s = round(first_now(self.client, c.vm_id, 120), 3)
             c.first_query_s = round(time.monotonic() - self.t_fork, 3)
-            c.query_ms, c.blocks_hit, c.blocks_read = heavy_query(self.client, c.vm_id)
-            if amcheck:
-                c.status = "checking"
-                r = self.client.environments.exec(
-                    c.vm_id,
-                    fuse.ExecRequest(
-                        cmd=["runuser", "-u", "postgres", "--", "pg_amcheck", "-d", "postgres"],
-                        timeout_ms=600_000,
-                    ),
-                )
-                c.amcheck = "ok" if r.exit_code == 0 else "failed"
-                if r.exit_code != 0:
-                    c.error = f"pg_amcheck: {(r.stdout + r.stderr).strip()[-300:]}"
-            c.status = "wrecking"
-            j = JOBS[(c.index - 1) % len(JOBS)]
-            job = psql(self.client, c.vm_id, *j.statements, stop_on_error=False, timeout_s=600)
-            landed = checked(psql(self.client, c.vm_id, j.verify), "verify") == "t"
-            if not landed:
-                c.error = c.error or f"job did not land: {job.stderr.strip()[-300:]}"
-            c.status = "wrecked" if landed and c.amcheck != "failed" else "failed"
+            with heavy:
+                self.wreck_copy(c, amcheck)
         except Exception as e:  # one copy failing must not stop the others
             c.status = "failed"
             c.error = f"{type(e).__name__}: {e}"
+
+    def wreck_copy(self, c: Copy, amcheck: bool) -> None:
+        c.query_ms, c.blocks_hit, c.blocks_read = heavy_query(self.client, c.vm_id)
+        if amcheck:
+            c.status = "checking"
+            r = self.client.environments.exec(
+                c.vm_id,
+                fuse.ExecRequest(
+                    cmd=["runuser", "-u", "postgres", "--", "pg_amcheck", "-d", "postgres"],
+                    timeout_ms=600_000,
+                ),
+            )
+            c.amcheck = "ok" if r.exit_code == 0 else "failed"
+            if r.exit_code != 0:
+                c.error = f"pg_amcheck: {(r.stdout + r.stderr).strip()[-300:]}"
+        c.status = "wrecking"
+        j = JOBS[(c.index - 1) % len(JOBS)]
+        job = psql(self.client, c.vm_id, *j.statements, stop_on_error=False, timeout_s=600)
+        landed = checked(psql(self.client, c.vm_id, j.verify), "verify") == "t"
+        if not landed:
+            c.error = c.error or f"job did not land: {job.stderr.strip()[-300:]}"
+        c.status = "wrecked" if landed and c.amcheck != "failed" else "failed"
 
     def fork_and_wreck(self) -> None:
         a = self.args
@@ -498,10 +505,11 @@ class Run:
         # amcheck an evenly spaced sample of the copies, before their jobs
         n = len(children)
         sample = set(range(1, n + 1, max(1, n // a.amcheck))[: a.amcheck]) if a.amcheck else set()
-        pool = ThreadPoolExecutor(max_workers=a.parallel or max(1, n))
+        heavy = threading.Semaphore(a.parallel or max(1, n))
+        pool = ThreadPoolExecutor(max_workers=max(1, n))
         try:
             futures = [
-                pool.submit(self.run_copy, c, c.index in sample)
+                pool.submit(self.run_copy, c, c.index in sample, heavy)
                 for c in self.copies[1:]
                 if c.status != "failed"
             ]
@@ -687,7 +695,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     ap.add_argument("--context", default="", help="cli context, if not the active one")
     ap.add_argument("--amcheck", type=int, default=5, help="copies to run pg_amcheck on")
     ap.add_argument(
-        "--parallel", type=int, default=0, help="copies driven at once (default: all of them)"
+        "--parallel",
+        type=int,
+        default=0,
+        help="copies running their heavy work at once (default: all of them)",
     )
     ap.add_argument("--out", default="", help="results dir (default benchmark/results/...)")
     ap.add_argument(
