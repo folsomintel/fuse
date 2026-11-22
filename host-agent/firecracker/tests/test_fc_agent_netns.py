@@ -85,8 +85,11 @@ class FakeHost:
             self.links.add((ns, cmd[3]))
             return 0
         if cmd[0] == "iptables":
+            # without -w a parallel create holding the xtables lock makes the
+            # call fail (#79), so every call has to wait for it.
+            assert cmd[1:3] == ["-w", "30"], f"iptables call without -w: {cmd}"
             table = "filter"
-            rest = cmd[1:]
+            rest = cmd[3:]
             if rest[0] == "-t":
                 table, rest = rest[1], rest[2:]
             verb, rule = rest[0], rest[1:]

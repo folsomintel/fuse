@@ -44,6 +44,7 @@ import agentlib  # noqa: E402
 from agentlib import (  # noqa: E402
     FUSED_PORT,
     HTTPError,
+    IPTABLES,
     _ssh_control_path,
     add_agent_forward,
     compose_up_command,
@@ -506,14 +507,14 @@ def pick_index() -> int:
         meta_p = d / "meta.json"
         if meta_p.exists():
             try:
-                used.add(json.loads(meta_p.read_text()["index"]))
+                used.add(json.loads(meta_p.read_text())["index"])
             except Exception:
-                pass 
+                pass
 
     for i in range(1, 250):
         if i not in used:
-            return i 
-    raise RuntimeError("no free VM index")
+            return i
+    raise HTTPError(503, "no free vm index: this host already holds 249 vms")
 
 
 def tap_name(idx: int) -> str:
@@ -521,23 +522,27 @@ def tap_name(idx: int) -> str:
     return f"qv{idx}"
 
 
+def tap_addrs(idx: int) -> tuple[str, str]:
+    """(host_ip, guest_ip): the two ends of a vm index's tap."""
+    return f"10.200.{idx}.1", f"10.200.{idx}.2"
+
+
 def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     """Create and configure the tap for a vm index; return (tap, host_ip, guest_ip)."""
     tap = tap_name(idx)
-    host_ip = f"10.200.{idx}.1"
-    guest_ip = f"10.200.{idx}.2"
+    host_ip, guest_ip = tap_addrs(idx)
     sudo(["ip", "link", "del", tap], check=False)
     sudo(["ip", "tuntap", "add", tap, "mode", "tap"])
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
     for chk, add in [
-        (["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
-         ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
-        (["iptables", "-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"]),
-        (["iptables", "-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-         ["iptables", "-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
+        (IPTABLES + ["-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
+         IPTABLES + ["-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
+        (IPTABLES + ["-C", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"],
+         IPTABLES + ["-I", "FORWARD", "-i", tap, "-o", iface, "-j", "ACCEPT"]),
+        (IPTABLES + ["-C", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+         IPTABLES + ["-I", "FORWARD", "-i", iface, "-o", tap, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]),
     ]:
         if sudo(chk, check=False).returncode != 0:
             sudo(add)
@@ -571,13 +576,13 @@ def add_expose_forward(host_port: int, guest_ip: str, guest_port: int,
     per-transport: a tcp rule forwards no udp traffic."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", protocol,
+        IPTABLES + ["-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", protocol,
+        IPTABLES + ["-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-I", "FORWARD", "-p", protocol, "-d", guest_ip,
+        IPTABLES + ["-I", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
@@ -589,13 +594,13 @@ def del_expose_forward(host_port: int, guest_ip: str, guest_port: int,
     """Remove an expose DNAT rule (idempotent)."""
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", protocol,
+        IPTABLES + ["-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", protocol,
+        IPTABLES + ["-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", protocol,
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{guest_port}"],
-        ["iptables", "-D", "FORWARD", "-p", protocol, "-d", guest_ip,
+        IPTABLES + ["-D", "FORWARD", "-p", protocol, "-d", guest_ip,
          "--dport", str(guest_port), "-j", "ACCEPT"],
     ]
     for r in rules:
@@ -708,26 +713,43 @@ def stop_qemu(meta: dict) -> None:
 # -- VM lifecycle (HTTP surface) ---------------------------------------------
 
 def create_vm(req: dict) -> dict:
-    """Create and boot a vm from a create request.
+    """creates and boots a vm. the vm's own lock is held throughout, so a
+    retry or a destroy of the same name waits for this create. _create_lock
+    is held only while reserve_vm picks the index and gpus and writes the
+    meta that reserves them, so the rootfs copy, the boot and the ssh wait of
+    different vms run in parallel."""
+    name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
+    vm_id = sanitize_name(name)
+    with vm_lock(vm_id):
+        with _create_lock:
+            meta, source_rootfs = reserve_vm(req, name, vm_id)
+        if not meta.get("creating"):
+            # the same create sent again: the vm it already made.
+            return meta
+        boot_vm(meta, source_rootfs)
+        return meta
+
+
+def reserve_vm(req: dict, name: str, vm_id: str) -> tuple[dict, Path]:
+    """Validate a create request and reserve its index and gpus.
 
     req carries name, cpus, memory_mb, storage_gb, region, image, and the GPU
     fields the qemu provider forwards: gpus (int), gpu_kind (str), and
     gpu_profile (str, MIG profile like "1g.10gb"). Resolves the base rootfs
-    (BASE_ROOTFS or IMAGES_DIR/<image>.qcow2), allocates a per-vm
-    index/tap/host-port, then picks GPU devices: with gpu_profile set, `gpus`
-    free MIG instances of that profile via pick_mig_devices (fractional, D5);
-    otherwise `gpus` free whole VFIO devices via pick_gpu_slots. Copies a
-    per-vm rootfs, then start_qemu. Rolls back all allocations on any failure.
-    Returns the vm meta dict.
+    (BASE_ROOTFS or IMAGES_DIR/<image>.qcow2), picks GPU devices (with
+    gpu_profile set, `gpus` free MIG instances of that profile via
+    pick_mig_devices (fractional, D5); otherwise `gpus` free whole VFIO
+    devices via pick_gpu_slots), then a per-vm index and host port. boot_vm
+    builds the tap, copies the rootfs and starts qemu. Returns the vm meta, already saved with "creating" set, and the rootfs
+    to copy. callers hold _create_lock: the index and the gpu picks read
+    every saved meta, so they are taken from the moment it is saved.
     """
-    name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
-    vm_id = sanitize_name(name)
     # the same create sent again (a retry that lost its response) gets the vm
     # it made, before any allocation that vm itself would now fail. a
     # different spec under the name is still the 409 below.
     existing = load_meta(vm_id)
     if existing and existing.get("create_spec") == create_spec_digest(req):
-        return existing
+        return existing, BASE_ROOTFS
     # this backend is one host with no one to test the proxy-mode netfilter
     # work against, so it refuses anything but direct egress. a refusal is
     # honest where a silent direct would leave the control plane believing
@@ -766,26 +788,12 @@ def create_vm(req: dict) -> dict:
     d = vm_dir(vm_id)
     if d.exists():
         raise HTTPError(409, f"vm {vm_id} already exists")
-    d.mkdir(parents=True)
-
+    # picked before the dir exists, so a full host leaves no empty dir
+    # behind to 409 the name.
     idx = pick_index()
-    iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(idx, iface)
+    host_ip, guest_ip = tap_addrs(idx)
     mac = f"06:00:AC:10:{idx:02x}:02"
     host_port = HOST_PORT_BASE + idx
-    add_agent_forward(host_port, guest_ip, iface)
-    # Guard against a stale multiplexed connection from a previous VM that
-    # held this same guest ip (indices, and so ips, get reused).
-    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
-
-    rootfs = d / "rootfs.qcow2"
-    # Reflink when the filesystem supports copy-on-write (near-instant);
-    # falls back to a full byte copy otherwise.
-    sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
-    if not rootfs.exists():
-        shutil.copyfile(source_rootfs, rootfs)
-    sudo(["chmod", "666", str(rootfs)], check=False)
-
     meta = {
         "vm_id": vm_id,
         "name": name,
@@ -795,11 +803,11 @@ def create_vm(req: dict) -> dict:
         "storage_gb": int(req.get("storage_gb", 0)),
         "region": req.get("region", ""),
         "image": image,
-        "tap": tap,
+        "tap": tap_name(idx),
         "host_ip": host_ip,
         "guest_ip": guest_ip,
         "mac": mac,
-        "rootfs": str(rootfs),
+        "rootfs": str(d / "rootfs.qcow2"),
         "host_port": host_port,
         "gpus": gpu_count,
         "gpu_kind": gpu_kind,
@@ -809,9 +817,40 @@ def create_vm(req: dict) -> dict:
         "url": host_authority(PUBLIC_HOST, host_port),
         "created_at": now_iso(),
         "create_spec": create_spec_digest(req),
+        # set until boot_vm finishes. an agent restarted mid-create finds it
+        # and undoes the create, so the index and gpus are not held forever.
+        "creating": True,
     }
-    save_meta(meta)
     try:
+        d.mkdir(parents=True)
+        save_meta(meta)
+    except Exception:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return meta, source_rootfs
+
+
+def boot_vm(meta: dict, source_rootfs: Path) -> None:
+    """builds the tap, copies the rootfs and boots a vm reserve_vm reserved.
+    runs without _create_lock, under the vm's own lock. any failure undoes
+    the whole create, which frees the index and the gpus."""
+    host_ip, guest_ip = meta["host_ip"], meta["guest_ip"]
+    try:
+        iface = host_iface()
+        setup_tap(meta["index"], iface)
+        add_agent_forward(meta["host_port"], guest_ip, iface)
+        # Guard against a stale multiplexed connection from a previous VM that
+        # held this same guest ip (indices, and so ips, get reused).
+        Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
+
+        rootfs = Path(meta["rootfs"])
+        # Reflink when the filesystem supports copy-on-write (near-instant);
+        # falls back to a full byte copy otherwise.
+        sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
+        if not rootfs.exists():
+            shutil.copyfile(source_rootfs, rootfs)
+        sudo(["chmod", "666", str(rootfs)], check=False)
+
         start_qemu(meta)
         save_meta(meta)
         if not wait_for_ssh(guest_ip, timeout=60.0):
@@ -824,14 +863,22 @@ def create_vm(req: dict) -> dict:
                 f"{host_ip}; grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || "
                 "echo nameserver 1.1.1.1 > /etc/resolv.conf",
             )
-            save_meta(meta)
+        meta.pop("creating")
+        save_meta(meta)
     except Exception:
-        stop_qemu(meta)
-        del_agent_forward(host_port, guest_ip)
-        teardown_tap(tap)
-        shutil.rmtree(d, ignore_errors=True)
+        undo_create(meta)
         raise
-    return meta
+
+
+def undo_create(meta: dict) -> None:
+    """removes what a create built for meta and then its dir, which frees
+    the index and the gpus. every step tolerates a missing piece, so this is
+    safe at any point after reserve_vm, including on an agent restarted
+    mid-create."""
+    stop_qemu(meta)
+    del_agent_forward(meta["host_port"], meta["guest_ip"])
+    teardown_tap(meta["tap"])
+    shutil.rmtree(vm_dir(meta["vm_id"]), ignore_errors=True)
 
 def reapply_mig_layout() -> None:
     """Re-apply the persisted MIG layout (qemu-mig-setup.sh) so freed instances
@@ -1123,8 +1170,7 @@ class Handler(agentlib.BaseHandler):
             # /v1/vm collection
             if path == "/v1/vm" and method == "POST":
                 req = self._read_json()
-                with _create_lock:
-                    meta = create_vm(req)
+                meta = create_vm(req)
                 return self._json(200, vm_public(meta))
             if path == "/v1/vm" and method == "GET":
                 prefix = query.get("prefix", "")
@@ -1140,13 +1186,13 @@ class Handler(agentlib.BaseHandler):
                         raise HTTPError(404, "vm not found")
                     return self._json(200, vm_public(meta))
                 if method == "DELETE":
-                    # Same lock order as create/fork (vm_lock outer, _create_lock
-                    # inner) so a delete can never run mid-create: it either
-                    # completes before the create starts or waits for the create
-                    # (and its meta.tmp writes) to finish first.
+                    # create_vm holds the vm's own lock for the whole create,
+                    # so a delete of this vm waits for its create to finish
+                    # (or fail and roll back) but never for another vm's.
+                    # destroy frees the index and gpus last, by removing the
+                    # vm dir, so it needs no _create_lock.
                     with vm_lock(vm_id):
-                        with _create_lock:
-                            destroy_vm(vm_id)
+                        destroy_vm(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -1258,6 +1304,15 @@ def reattach_vms() -> None:
     for d in sorted(VMS_DIR.iterdir()):
         meta = load_meta(d.name)
         if not meta:
+            continue
+        if meta.get("creating"):
+            # the agent stopped mid-create, so nobody got this vm back.
+            # undo it like a failed create, which frees its index and gpus.
+            print(f"[qemu-agent] reattach: undoing unfinished create of {meta['vm_id']}", flush=True)
+            try:
+                undo_create(meta)
+            except Exception as e:
+                print(f"[qemu-agent] reattach: undo of {meta['vm_id']} FAILED: {e}", flush=True)
             continue
         pid = meta.get("pid")
         sock = meta.get("sock")

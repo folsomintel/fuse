@@ -47,6 +47,7 @@ import agentlib  # noqa: E402
 from agentlib import (  # noqa: E402
     FUSED_PORT,
     HTTPError,
+    IPTABLES,
     _ssh_control_path,
     add_agent_forward,
     compose_up_command,
@@ -487,7 +488,7 @@ def purge_rule(rule: list[str]) -> None:
     loop until there is nothing left; bounded so a chain that somehow keeps
     matching cannot spin this forever."""
     for _ in range(16):
-        if sudo(["iptables", "-D"] + rule, check=False).returncode != 0:
+        if sudo(IPTABLES + ["-D"] + rule, check=False).returncode != 0:
             return
 
 
@@ -519,15 +520,15 @@ def setup_tap(idx: int, iface: str, egress_mode: str = "direct",
         # the nat at the veth: what arrives for the veth address is the
         # guest's, and what the guest sends leaves as the veth address. both
         # go away with the namespace.
-        ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", guest_ip,
+        IPTABLES + ["-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", guest_ip,
          "-j", "DNAT", "--to-destination", g["ip"]],
-        ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", g["ip"],
+        IPTABLES + ["-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", g["ip"],
          "-j", "SNAT", "--to-source", guest_ip],
         # the guest reaches its egress proxy at its own gateway, which is the
         # same in every slot, and the namespace forwards it to this slot's
         # host address. a guest resumed into another slot keeps the proxy url
         # its running processes were started with.
-        ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", g["tap"], "-d", g["gw"], "-p", "tcp",
+        IPTABLES + ["-t", "nat", "-A", "PREROUTING", "-i", g["tap"], "-d", g["gw"], "-p", "tcp",
          "-j", "DNAT", "--to-destination", host_ip],
     ]:
         sudo(in_ns + cmd)
@@ -579,11 +580,11 @@ def host_rules(dev: str, iface: str, egress_mode: str) -> None:
     else:
         outbound = [forward_rule(dev, iface, "ACCEPT")]
     masquerade = ["POSTROUTING", "-o", iface, "-j", "MASQUERADE"]
-    if sudo(["iptables", "-t", "nat", "-C"] + masquerade, check=False).returncode != 0:
-        sudo(["iptables", "-t", "nat", "-A"] + masquerade)
+    if sudo(IPTABLES + ["-t", "nat", "-C"] + masquerade, check=False).returncode != 0:
+        sudo(IPTABLES + ["-t", "nat", "-A"] + masquerade)
     for rule in outbound + [forward_rule(iface, dev, "ACCEPT", established=True)]:
-        if sudo(["iptables", "-C"] + rule, check=False).returncode != 0:
-            sudo(["iptables", "-I"] + rule)
+        if sudo(IPTABLES + ["-C"] + rule, check=False).returncode != 0:
+            sudo(IPTABLES + ["-I"] + rule)
 
 
 def teardown_net(idx: int, iface: str) -> None:
@@ -1346,16 +1347,49 @@ def resolve_image_path(image: str) -> Path:
     return Path(resolved)
 
 
+# how long a create waits for its vm's own lock. a fork holds its source's
+# lock when it takes the new vm's, so two forks onto each other's names would
+# otherwise wait on each other forever.
+CREATE_VM_LOCK_WAIT = 120.0
+
+
 def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
+    """creates and boots a vm. the vm's own lock is held throughout, so a
+    retry or a destroy of the same name waits for this create. _create_lock
+    is held only while reserve_vm picks the slot and writes the meta that
+    reserves it, so the rootfs copy, the boot and the ssh wait of different
+    vms run in parallel."""
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
-    egress_mode = parse_egress_mode(req)
     vm_id = sanitize_name(name)
+    lock = vm_lock(vm_id)
+    if not lock.acquire(timeout=CREATE_VM_LOCK_WAIT):
+        raise HTTPError(409, f"vm {vm_id} is busy with another operation; retry")
+    try:
+        with _create_lock:
+            meta, source_rootfs, resume = reserve_vm(req, name, vm_id, source_rootfs)
+        if not meta.get("creating"):
+            # the same create sent again: the vm it already made.
+            return meta
+        boot_vm(meta, source_rootfs, resume)
+        return meta
+    finally:
+        lock.release()
+
+
+def reserve_vm(req: dict, name: str, vm_id: str,
+               source_rootfs: Path | None) -> tuple[dict, Path, dict | None]:
+    """validates a create and reserves its slot: returns the vm's meta,
+    already saved with "creating" set, plus the rootfs to copy and the resume
+    plan. callers hold _create_lock. used_indices reads the saved meta, so
+    the slot is taken from here on, and image eviction sees the image the
+    meta names, so it leaves the image alone while boot_vm copies it."""
+    egress_mode = parse_egress_mode(req)
     # the same create sent again (a retry that lost its response) gets the vm
     # it made, before any allocation that vm itself would now fail. a
     # different spec under the name is still the 409 below.
     existing = load_meta(vm_id)
     if existing and existing.get("create_spec") == create_spec_digest(req):
-        return existing
+        return existing, source_rootfs, None
 
     # Resolve the source rootfs before any allocation, so an unknown named
     # image fails fast with no vm dir/tap/forward left to roll back. Unset
@@ -1407,31 +1441,14 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
     d = vm_dir(vm_id)
     if d.exists():
         raise HTTPError(409, f"vm {vm_id} already exists")
-    d.mkdir(parents=True)
-    (d / "snapshots").mkdir()
-
     # any free slot, a resume included: the guest network lives inside the
     # slot's namespace, so a resumed guest gets the one its memory image
-    # remembers wherever it lands.
+    # remembers wherever it lands. picked before the dir exists, so a full
+    # host leaves no empty dir behind to 409 the name.
     idx = pick_index()
     guest_net = resume["guest_net"] if resume else GUEST_NET
-    iface = host_iface()
-    tap, host_ip, guest_ip = setup_tap(idx, iface, egress_mode, guest_net)
+    host_ip, guest_ip = slot_addrs(idx)
     host_port = HOST_PORT_BASE + idx
-    add_agent_forward(host_port, guest_ip, iface)
-    # Guard against a stale multiplexed connection from a previous VM that
-    # held this same guest ip (indices, and so ips, get reused).
-    Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
-
-    rootfs = d / "rootfs.ext4"
-    # Per-VM rootfs copy (so writes don't affect other VMs). Reflink when the
-    # filesystem supports copy-on-write (near-instant); same fallback pattern
-    # as snapshot_create's rootfs copy below.
-    sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
-    if not rootfs.exists():
-        shutil.copyfile(source_rootfs, rootfs)
-    sudo(["chmod", "666", str(rootfs)], check=False)
-
     meta = {
         "vm_id": vm_id,
         "name": name,
@@ -1442,22 +1459,55 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         "storage_gb": int(req.get("storage_gb", 0)),
         "region": req.get("region", ""),
         "egress_mode": egress_mode,
-        "tap": tap,
+        "tap": tap_name(idx),
         "netns": netns_name(idx),
         "host_ip": host_ip,
         "guest_ip": guest_ip,
         "guest_net": dict(guest_net),
-        "rootfs": str(rootfs),
+        "rootfs": str(d / "rootfs.ext4"),
         "host_port": host_port,
         "url": host_authority(PUBLIC_HOST, host_port),
         "created_at": now_iso(),
         "create_spec": create_spec_digest(req),
         "snapshots": [],
+        # set until boot_vm finishes. an agent restarted mid-create finds it
+        # and undoes the create, so the slot is not held forever.
+        "creating": True,
     }
     if base_image:
         meta["image"] = base_image
-    save_meta(meta)
     try:
+        d.mkdir(parents=True)
+        (d / "snapshots").mkdir()
+        save_meta(meta)
+    except Exception:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    return meta, source_rootfs, resume
+
+
+def boot_vm(meta: dict, source_rootfs: Path, resume: dict | None) -> None:
+    """builds the network, copies the rootfs and boots a vm reserve_vm
+    reserved. runs without _create_lock, under the vm's own lock. any failure
+    undoes the whole create, which frees the slot."""
+    guest_ip, guest_net = meta["guest_ip"], meta["guest_net"]
+    try:
+        iface = host_iface()
+        setup_tap(meta["index"], iface, meta["egress_mode"], guest_net)
+        add_agent_forward(meta["host_port"], guest_ip, iface)
+        # Guard against a stale multiplexed connection from a previous VM that
+        # held this same guest ip (indices, and so ips, get reused).
+        Path(_ssh_control_path(guest_ip)).unlink(missing_ok=True)
+
+        rootfs = Path(meta["rootfs"])
+        # Per-VM rootfs copy (so writes don't affect other VMs). Reflink when the
+        # filesystem supports copy-on-write (near-instant); same fallback pattern
+        # as snapshot_create's rootfs copy below.
+        sudo(["cp", "--reflink=auto", str(source_rootfs), str(rootfs)], check=False)
+        if not rootfs.exists():
+            shutil.copyfile(source_rootfs, rootfs)
+        sudo(["chmod", "666", str(rootfs)], check=False)
+
         if resume:
             resume_firecracker(meta, resume)
         else:
@@ -1469,18 +1519,24 @@ def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
         else:
             meta["ssh_ready"] = True
             # Fix up guest networking: add default route + DNS if missing.
-            ssh_exec(guest_ip, guest_network_fixup(guest_net["gw"], egress_mode))
+            ssh_exec(guest_ip, guest_network_fixup(guest_net["gw"], meta["egress_mode"]))
             if resume:
                 resync_guest_clock(guest_ip)
+        meta.pop("creating")
         save_meta(meta)
     except Exception:
-        # Roll back on failure.
-        stop_firecracker(meta)
-        del_agent_forward(host_port, guest_ip)
-        teardown_net(idx, iface)
-        shutil.rmtree(d, ignore_errors=True)
+        undo_create(meta)
         raise
-    return meta
+
+
+def undo_create(meta: dict) -> None:
+    """removes what a create built for meta and then its dir, which frees the
+    slot. every step tolerates a missing piece, so this is safe at any point
+    after reserve_vm, including on an agent restarted mid-create."""
+    stop_firecracker(meta)
+    del_agent_forward(meta["host_port"], meta["guest_ip"])
+    teardown_net(meta["index"], host_iface())
+    shutil.rmtree(vm_dir(meta["vm_id"]), ignore_errors=True)
 
 
 def destroy_vm(vm_id: str) -> None:
@@ -2536,7 +2592,7 @@ def snapshot_restore(vm_id: str, snapshot_id: str) -> None:
 def resume_plan(snapshot_id: str) -> dict:
     """decide whether this host can resume a live snapshot into a NEW vm, and
     return its manifest if so. runs before anything is allocated, under
-    _create_lock like the rest of create_vm, so a refusal leaves nothing to
+    _create_lock like the rest of reserve_vm, so a refusal leaves nothing to
     roll back. the network slot is not one of its checks: the guest network
     is the same inside every slot's namespace, so any free slot will do, and
     two vms resumed from one snapshot on one host each get their own.
@@ -2685,8 +2741,7 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     # meaningless here; drop it so create_vm cannot try to resolve it.
     fork_req.pop("image", None)
 
-    with _create_lock:
-        return create_vm(fork_req, source_rootfs=snap_rootfs)
+    return create_vm(fork_req, source_rootfs=snap_rootfs)
 
 
 # -- Content-addressed artifacts (host-to-host) -------------------------------
@@ -3316,8 +3371,10 @@ IMAGE_CONVERT_TIMEOUT = float(os.environ.get("FC_IMAGE_CONVERT_TIMEOUT", "1800")
 REGISTRY_TIMEOUT = float(os.environ.get("FC_REGISTRY_TIMEOUT", "10"))
 MAX_REGISTRY_BYTES = 4 << 20
 IMAGE_KEY_DOMAIN = "fuse-oci-image/v1"
-# lock order: _create_lock before IMAGES_LOCK. eviction takes both, so it
-# never removes an image while a create is copying it.
+# lock order: _create_lock before IMAGES_LOCK. eviction takes both, and
+# skips any image a vm meta names. reserve_vm writes that meta under
+# _create_lock before boot_vm copies the image, so eviction never removes an
+# image while a create is copying it.
 IMAGES_LOCK = threading.Lock()
 # the disk converted oci images may hold on this host. only oci-* rootfs with
 # a record count and are evicted; the baked catalogue in IMAGES_DIR never is.
@@ -4227,8 +4284,7 @@ class Handler(agentlib.BaseHandler):
             # /v1/vm collection
             if path == "/v1/vm" and method == "POST":
                 req = self._read_json()
-                with _create_lock:
-                    meta = create_vm(req)
+                meta = create_vm(req)
                 return self._json(200, vm_public(meta))
             if path == "/v1/vm" and method == "GET":
                 prefix = query.get("prefix", "")
@@ -4269,13 +4325,13 @@ class Handler(agentlib.BaseHandler):
                         raise HTTPError(404, "vm not found")
                     return self._json(200, vm_public(meta))
                 if method == "DELETE":
-                    # Same lock order as create/fork (vm_lock outer, _create_lock
-                    # inner) so a delete can never run mid-create: it either
-                    # completes before the create starts or waits for the create
-                    # (and its meta.tmp writes) to finish first.
+                    # create_vm holds the vm's own lock for the whole create,
+                    # so a delete of this vm waits for its create to finish
+                    # (or fail and roll back) but never for another vm's.
+                    # destroy frees the slot last, by removing the vm dir, so
+                    # it needs no _create_lock.
                     with vm_lock(vm_id):
-                        with _create_lock:
-                            destroy_vm(vm_id)
+                        destroy_vm(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -4410,9 +4466,11 @@ class Handler(agentlib.BaseHandler):
                     if action == "fork" and method == "POST":
                         # Seeds a NEW vm from vm_id's snapshot. Holds vm_id's
                         # lock (the source must not be restored/destroyed
-                        # mid-copy) and takes _create_lock inside fork_vm to
-                        # allocate the new vm. No path takes _create_lock
-                        # before a vm lock, so this order cannot cycle.
+                        # mid-copy), and create_vm then takes the new vm's lock
+                        # and _create_lock. No path takes a vm lock while
+                        # holding _create_lock, and create_vm waits for the new
+                        # vm's lock with a timeout, so two forks onto each
+                        # other's names cannot deadlock.
                         body = self._read_json()
                         return self._json(200, vm_public(fork_vm(vm_id, body)))
             # Artifact pull. Bearer-authenticated like everything else here,
@@ -4487,6 +4545,15 @@ def reattach_vms() -> None:
     for d in sorted(VMS_DIR.iterdir()):
         meta = load_meta(d.name)
         if not meta:
+            continue
+        if meta.get("creating"):
+            # the agent stopped mid-create, so nobody got this vm back.
+            # undo it like a failed create, which frees its slot.
+            print(f"[fc-agent] reattach: undoing unfinished create of {meta['vm_id']}", flush=True)
+            try:
+                undo_create(meta)
+            except Exception as e:
+                print(f"[fc-agent] reattach: undo of {meta['vm_id']} FAILED: {e}", flush=True)
             continue
         pid = meta.get("pid")
         sock = meta.get("sock")

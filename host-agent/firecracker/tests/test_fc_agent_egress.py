@@ -55,6 +55,10 @@ def capture_sudo(present=()):
     return calls, fake
 
 
+# every iptables call waits for the xtables lock (#79), so a parallel create
+# cannot make one fail.
+IPT = ["iptables", "-w", "30"]
+
 # The call sequence for a direct vm in slot 3, verbatim: its namespace, the
 # veth into it, the nat at the veth, then the host rules the tap used to
 # have, keyed on the veth. If this changes, every host's direct vms change.
@@ -74,28 +78,28 @@ DIRECT_SEQUENCE = [
     IN_NS + ["ip", "addr", "add", "172.16.0.1/30", "dev", "tap0"],
     IN_NS + ["ip", "link", "set", "tap0", "up"],
     IN_NS + ["sysctl", "-w", "net.ipv4.ip_forward=1"],
-    IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"],
-    IN_NS + ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"],
-    IN_NS + ["iptables", "-t", "nat", "-A", "PREROUTING", "-i", "tap0", "-d", "172.16.0.1", "-p", "tcp", "-j", "DNAT", "--to-destination", "10.208.0.3"],
+    IN_NS + IPT + ["-t", "nat", "-A", "PREROUTING", "-i", "veth0", "-d", "10.209.0.3", "-j", "DNAT", "--to-destination", "172.16.0.2"],
+    IN_NS + IPT + ["-t", "nat", "-A", "POSTROUTING", "-o", "veth0", "-s", "172.16.0.2", "-j", "SNAT", "--to-source", "10.209.0.3"],
+    IN_NS + IPT + ["-t", "nat", "-A", "PREROUTING", "-i", "tap0", "-d", "172.16.0.1", "-p", "tcp", "-j", "DNAT", "--to-destination", "10.208.0.3"],
     ["sysctl", "-w", "net.ipv4.ip_forward=1"],
     # whatever an earlier holder of the slot left on the veth goes first.
-    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
-    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"],
-    ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-    ["iptables", "-D", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-    ["iptables", "-t", "nat", "-C", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
-    ["iptables", "-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
-    ["iptables", "-C", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
-    ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
-    ["iptables", "-C", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
-    ["iptables", "-I", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
+    IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"],
+    IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    IPT + ["-D", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    IPT + ["-t", "nat", "-C", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
+    IPT + ["-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
+    IPT + ["-C", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
+    IPT + ["-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
+    IPT + ["-C", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    IPT + ["-I", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
 ]
 
-OUTBOUND_ACCEPT = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
-OUTBOUND_DROP = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
-OUTBOUND_REPLY = ["iptables", "-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
-PURGE_ACCEPT = ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
-PURGE_DROP = ["iptables", "-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
+OUTBOUND_ACCEPT = IPT + ["-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
+OUTBOUND_DROP = IPT + ["-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
+OUTBOUND_REPLY = IPT + ["-I", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"]
+PURGE_ACCEPT = IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
+PURGE_DROP = IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"]
 RETURN_ACCEPT = DIRECT_SEQUENCE[-1]
 ADDRS = ("fcv3", "10.208.0.3", "10.209.0.3")
 
@@ -123,7 +127,7 @@ class SetupTapTest(unittest.TestCase):
         self.assertNotIn(OUTBOUND_ACCEPT, calls)
         # the drop must not be a bare omission: with no default-deny on the
         # chain (issue #208) an absent accept enforces nothing.
-        self.assertTrue(any(c[1:3] == ["-I", "FORWARD"] and c[-1] == "DROP" for c in calls))
+        self.assertTrue(any(c[3:5] == ["-I", "FORWARD"] and c[-1] == "DROP" for c in calls))
 
     def test_proxy_mode_keeps_the_return_leg_above_the_drop(self):
         # all are -I'd, so a later insert sits higher in the chain. both
@@ -158,8 +162,8 @@ class SetupTapTest(unittest.TestCase):
         with mock.patch.object(fc_agent, "sudo", side_effect=fake):
             fc_agent.setup_tap(3, "eth0", "proxy")
         outbound = {"ACCEPT", "DROP"}
-        stripped = [c for c in calls if not (c[1] in ("-C", "-I", "-D") and c[2] == "FORWARD" and c[4] == "fcv3" and c[-1] in outbound)]
-        expected = [c for c in DIRECT_SEQUENCE if not (c[0] == "iptables" and c[2] == "FORWARD" and c[4] == "fcv3")]
+        stripped = [c for c in calls if not (c[:3] == IPT and c[3] in ("-C", "-I", "-D") and c[4] == "FORWARD" and c[6] == "fcv3" and c[-1] in outbound)]
+        expected = [c for c in DIRECT_SEQUENCE if not (c[:3] == IPT and c[4] == "FORWARD" and c[6] == "fcv3")]
         self.assertEqual(stripped, expected)
 
 
@@ -172,10 +176,10 @@ class AgentForwardTest(unittest.TestCase):
         with mock.patch.object(fc_agent.agentlib, "sudo", side_effect=fake):
             fc_agent.add_agent_forward(19553, "10.200.3.2", "eth0")
         self.assertEqual(calls, [
-            ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "19553", "-j", "DNAT", "--to-destination", "10.200.3.2:9550"],
-            ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport", "19553", "-j", "DNAT", "--to-destination", "10.200.3.2:9550"],
-            ["iptables", "-I", "FORWARD", "-p", "tcp", "-d", "10.200.3.2", "--dport", "9550", "-j", "ACCEPT"],
-            ["iptables", "-I", "INPUT", "-p", "tcp", "--dport", "19553", "-j", "ACCEPT"],
+            IPT + ["-t", "nat", "-I", "PREROUTING", "-i", "eth0", "-p", "tcp", "--dport", "19553", "-j", "DNAT", "--to-destination", "10.200.3.2:9550"],
+            IPT + ["-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp", "--dport", "19553", "-j", "DNAT", "--to-destination", "10.200.3.2:9550"],
+            IPT + ["-I", "FORWARD", "-p", "tcp", "-d", "10.200.3.2", "--dport", "9550", "-j", "ACCEPT"],
+            IPT + ["-I", "INPUT", "-p", "tcp", "--dport", "19553", "-j", "ACCEPT"],
         ])
         for c in calls:
             self.assertNotIn("fcv3", c)
@@ -378,8 +382,8 @@ class DestroyVMTest(unittest.TestCase):
         # vm, or it decides the egress of the next vm on the slot. a vm from
         # before egress (no egress_mode) and one from before namespaces (its
         # tap had the veth's name) take the same path.
-        purges = [PURGE_ACCEPT, PURGE_DROP, ["iptables", "-D"] + OUTBOUND_REPLY[2:],
-                  ["iptables", "-D"] + RETURN_ACCEPT[2:]]
+        purges = [PURGE_ACCEPT, PURGE_DROP, IPT + ["-D"] + OUTBOUND_REPLY[4:],
+                  IPT + ["-D"] + RETURN_ACCEPT[4:]]
         for extra in ({"egress_mode": "direct"}, {"egress_mode": "proxy"}, {}):
             with self.subTest(extra=extra):
                 shutil.rmtree(self.vms / "vm-a", ignore_errors=True)
