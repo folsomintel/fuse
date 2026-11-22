@@ -1273,15 +1273,68 @@ func TestEnvironmentAction_Fork_HappyPath(t *testing.T) {
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("fork: code = %d, body = %s", rr.Code, rr.Body.String())
 	}
-	var env Environment
-	if err := json.NewDecoder(rr.Body).Decode(&env); err != nil {
-		t.Fatalf("decode environment: %v", err)
+	var out ForkEnvironmentResponse
+	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+		t.Fatalf("decode fork response: %v", err)
 	}
+	// a fork of one still answers a list.
+	if len(out.Children) != 1 {
+		t.Fatalf("children = %+v, want one", out.Children)
+	}
+	env := out.Children[0]
 	if env.ID == "" || env.ID == "fuse-task-1" {
 		t.Errorf("fork id = %q, want a new distinct id", env.ID)
 	}
 	if env.State != "running" {
 		t.Errorf("fork state = %q, want running", env.State)
+	}
+}
+
+func TestEnvironmentAction_Fork_Count(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	if rr := doJSON(t, r, http.MethodPost, "/v1/environments", CreateEnvironmentRequest{
+		TaskID:         "task-1",
+		Spec:           ResourceSpec{CPUs: 2, RamMB: 1024},
+		ManifestInline: encodeManifest(t),
+	}); rr.Code != http.StatusCreated {
+		t.Fatalf("create source: code = %d", rr.Code)
+	}
+
+	count := 3
+	rr := doJSON(t, r, http.MethodPost, "/v1/environments/fuse-task-1?action=fork", ForkEnvironmentRequest{Count: &count})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("fork: code = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var out ForkEnvironmentResponse
+	if err := json.NewDecoder(rr.Body).Decode(&out); err != nil {
+		t.Fatalf("decode fork response: %v", err)
+	}
+	if len(out.Children) != count {
+		t.Fatalf("%d children, want %d", len(out.Children), count)
+	}
+	seen := map[string]bool{"fuse-task-1": true}
+	for _, c := range out.Children {
+		if seen[c.ID] || c.State != "running" {
+			t.Errorf("child %+v, want a distinct running environment", c)
+		}
+		seen[c.ID] = true
+	}
+}
+
+func TestEnvironmentAction_Fork_RejectsBadCount(t *testing.T) {
+	h, _, _ := newTestHandler(t)
+	r := mustRouter(t, h)
+
+	for _, body := range []string{`{"count":0}`, `{"count":-2}`, `{"count":1001}`, `{"count":"3"}`} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/environments/fuse-task-1?action=fork", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rr := httptest.NewRecorder()
+		r.ServeHTTP(rr, req)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("body %s: code = %d, want 400; body = %s", body, rr.Code, rr.Body.String())
+		}
 	}
 }
 

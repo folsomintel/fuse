@@ -4,9 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -42,6 +46,9 @@ type ForkRequest struct {
 	TaskID          string `json:"task_id"`
 	Comment         string `json:"comment,omitempty"`
 	ReuseSnapshotID string `json:"reuse_snapshot_id,omitempty"`
+	// Live resumes the fork from a live seed's memory image: the seed the
+	// handler takes is live, and a reused one must be.
+	Live bool `json:"live,omitempty"`
 }
 
 // ForkPlan is what ForkBegin settled. every later step reads it from the
@@ -52,6 +59,7 @@ type ForkPlan struct {
 	NewVMID      string `json:"new_vm_id"`
 	TaskID       string `json:"task_id"`
 	Comment      string `json:"comment,omitempty"`
+	Live         bool   `json:"live,omitempty"`
 	// Seed is the reused snapshot the fork boots from. empty when the fork
 	// snapshots the source itself.
 	Seed      SnapshotRecord `json:"seed"`
@@ -86,38 +94,155 @@ func (fm *FleetManager) isForkPlaceholder(v *vm) bool {
 	return strings.HasPrefix(v.taskID, forkTaskPrefix)
 }
 
-// durableForkVM is forkEnvironment on restate: it names the new vm, runs the
-// handler and waits for it.
-func (fm *FleetManager) durableForkVM(ctx context.Context, d DurableForker, srcVMID string, opts ForkOptions) (string, error) {
+// MaxForkCount bounds the children one fork request makes.
+const MaxForkCount = 1000
+
+// forkFanout is how many of a fork's children run at once.
+const forkFanout = 8
+
+// forkChildren is ForkEnvironment on restate: one durable fork per child,
+// each keyed by its own new vm id. a single child takes its seed inside its
+// handler, as a fork always has. several share one seed, taken here once
+// (or reused) and handed to every child as its reuse_snapshot_id, so a
+// child's rollback never deletes it. a failed child does not undo its
+// siblings: the ids returned are the children that forked, and the error
+// names the first failure. the seed this took is deleted only when every
+// child failed for good.
+func (fm *FleetManager) forkChildren(ctx context.Context, d DurableForker, srcVMID string, opts ForkOptions) ([]string, error) {
+	count := max(opts.Count, 1)
+	if count > MaxForkCount {
+		return nil, fmt.Errorf("fork count %d is over the limit of %d", count, MaxForkCount)
+	}
 	fm.mu.RLock()
 	_, ok := fm.vms[srcVMID]
 	fm.mu.RUnlock()
 	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrVMNotFound, srcVMID)
+		return nil, fmt.Errorf("%w: %s", ErrVMNotFound, srcVMID)
 	}
-	taskID := forkTaskID(srcVMID, IdempotencyKey(ctx))
+	key := IdempotencyKey(ctx)
+	req := ForkRequest{Comment: opts.Comment, ReuseSnapshotID: opts.ReuseSnapshotID, Live: opts.Live}
+	if count == 1 {
+		id, err := fm.forkChild(ctx, d, srcVMID, key, 0, req)
+		if err != nil {
+			return nil, err
+		}
+		return []string{id}, nil
+	}
+
+	seed, taken, err := fm.forkSeed(ctx, srcVMID, opts)
+	if err != nil {
+		return nil, err
+	}
+	req = ForkRequest{ReuseSnapshotID: seed.SnapshotID, Live: opts.Live}
+	ids := make([]string, count)
+	errs := make([]error, count)
+	sem := make(chan struct{}, forkFanout)
+	var wg sync.WaitGroup
+	for i := range count {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			ids[i], errs[i] = fm.forkChild(ctx, d, srcVMID, key, i, req)
+		}()
+	}
+	wg.Wait()
+
+	var (
+		forked  []string
+		first   error
+		firstAt int
+		settled = true
+	)
+	for i, err := range errs {
+		if err == nil {
+			forked = append(forked, ids[i])
+			continue
+		}
+		if first == nil {
+			first, firstAt = err, i
+		}
+		// a child restate has not settled may still be running on the seed.
+		settled = settled && IsSettled(err)
+	}
+	if first == nil {
+		return forked, nil
+	}
+	if len(forked) == 0 && taken && settled {
+		fm.deleteCheckpoint(ctx, seed)
+	}
+	return forked, fmt.Errorf("fork %s: %d of %d children failed (forked: [%s]); child %d: %w",
+		srcVMID, count-len(forked), count, strings.Join(forked, ", "), firstAt, first)
+}
+
+// forkSeed is the one seed a multi-child fork shares: the reused snapshot, or
+// a snapshot of the source taken here (taken). it runs the fork's checks
+// first, so a fork every child would refuse does not pause the source. the
+// snapshot goes through the source's Environment.Snapshot under the
+// request's idempotency key, so a retry gets the same seed back instead of
+// taking another.
+func (fm *FleetManager) forkSeed(ctx context.Context, srcVMID string, opts ForkOptions) (seed SnapshotRecord, taken bool, err error) {
+	src, existing, err := fm.checkFork(ctx, srcVMID, opts.ReuseSnapshotID, opts.Live)
+	if err != nil {
+		return SnapshotRecord{}, false, err
+	}
+	if err := fm.forkFitsSomewhere(src, opts.Live); err != nil {
+		return SnapshotRecord{}, false, err
+	}
+	if opts.ReuseSnapshotID != "" {
+		return existing, false, nil
+	}
+	wctx, cancel := durableWait(ctx)
+	defer cancel()
+	seed, err = fm.durableSnapshotsClient().Snapshot(wctx, srcVMID, SnapshotOptions{Comment: opts.Comment, Live: opts.Live})
+	if err != nil {
+		return SnapshotRecord{}, false, err
+	}
+	if err := forkSeedKind(seed, opts.Live); err != nil {
+		fm.deleteCheckpoint(ctx, seed)
+		return SnapshotRecord{}, false, err
+	}
+	return seed, true, nil
+}
+
+// forkSeedKind refuses a live fork's seed that came back a disk snapshot: a
+// host agent too old to take live snapshots answers a live request with a
+// disk one, and nothing could resume from it.
+func forkSeedKind(seed SnapshotRecord, live bool) error {
+	if live && seed.Kind != SnapshotKindLive {
+		return fmt.Errorf("%w: seed snapshot %s came back a %s snapshot, with no memory image for a live fork to resume; the source's host agent cannot take live snapshots",
+			ErrSnapshotNotSeedable, seed.SnapshotID, seed.Kind)
+	}
+	return nil
+}
+
+// forkChild runs child i of a fork through d and waits for it.
+func (fm *FleetManager) forkChild(ctx context.Context, d DurableForker, srcVMID, key string, i int, req ForkRequest) (string, error) {
+	taskID := forkTaskID(srcVMID, key, i)
 	newVMID := fm.prefix + taskID
+	req.SourceVMID, req.TaskID = srcVMID, taskID
 	ctx, cancel := durableWait(ctx)
 	defer cancel()
-	if err := d.Fork(ctx, newVMID, ForkRequest{
-		SourceVMID:      srcVMID,
-		TaskID:          taskID,
-		Comment:         opts.Comment,
-		ReuseSnapshotID: opts.ReuseSnapshotID,
-	}); err != nil {
+	if err := d.Fork(ctx, newVMID, req); err != nil {
 		return "", err
 	}
 	return newVMID, nil
 }
 
-// forkTaskID names a fork. a retry carrying an idempotency key derives the
-// same name, so restate attaches it to the invocation the first request
-// started instead of forking again.
-func forkTaskID(srcVMID, idempotencyKey string) string {
+// forkTaskID names child i of a fork. a retry carrying an idempotency key
+// derives the same names, so restate attaches each child to the invocation
+// the first request started instead of forking again. child 0 keeps the name
+// a single fork always had.
+func forkTaskID(srcVMID, idempotencyKey string, i int) string {
 	if idempotencyKey == "" {
 		return forkTaskPrefix + NewEventID()
 	}
-	sum := sha256.Sum256([]byte(srcVMID + "\x00" + idempotencyKey))
+	in := srcVMID + "\x00" + idempotencyKey
+	if i > 0 {
+		in += "\x00" + strconv.Itoa(i)
+	}
+	sum := sha256.Sum256([]byte(in))
 	return forkTaskPrefix + hex.EncodeToString(sum[:16])
 }
 
@@ -165,14 +290,14 @@ func (fm *FleetManager) forkTargetEnv(ctx context.Context, plan ForkPlan) (*vm, 
 // ForkBegin checks that the source can be forked as asked. it writes
 // nothing, so what it refuses a retry refuses too.
 func (fm *FleetManager) ForkBegin(ctx context.Context, vmID string, req ForkRequest) (ForkPlan, error) {
-	src, seed, err := fm.checkFork(ctx, req.SourceVMID, req.ReuseSnapshotID)
+	src, seed, err := fm.checkFork(ctx, req.SourceVMID, req.ReuseSnapshotID, req.Live)
 	if err != nil {
 		return ForkPlan{}, err
 	}
 	// a fork no host has room for is refused here, before the seed snapshot
 	// pauses the source, so a retried burst does not snapshot it each time.
 	// place still runs the full check (it also knows whether the seed moves).
-	if err := fm.forkFitsSomewhere(src); err != nil {
+	if err := fm.forkFitsSomewhere(src, req.Live); err != nil {
 		return ForkPlan{}, err
 	}
 	return ForkPlan{
@@ -181,6 +306,7 @@ func (fm *FleetManager) ForkBegin(ctx context.Context, vmID string, req ForkRequ
 		NewVMID:      vmID,
 		TaskID:       req.TaskID,
 		Comment:      req.Comment,
+		Live:         req.Live,
 		Seed:         seed,
 		CreatedAt:    time.Now(),
 	}, nil
@@ -240,11 +366,14 @@ func (fm *FleetManager) ForkPlace(ctx context.Context, plan ForkPlan, seed Snaps
 	if hostID != "" {
 		return hostID, nil
 	}
+	if err := forkSeedKind(seed, plan.Live); err != nil {
+		return "", err
+	}
 	srcProvider, err := fm.providerForVM(plan.SourceHostID)
 	if err != nil {
 		return "", err
 	}
-	hostID, _, err = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed)
+	hostID, _, err = fm.placeFork(ctx, spec, plan.SourceHostID, srcProvider, seed, plan.Live)
 	if err != nil {
 		return "", err
 	}
@@ -289,12 +418,18 @@ func (fm *FleetManager) ForkArtifact(ctx context.Context, plan ForkPlan, seed Sn
 }
 
 // ForkCreate creates the fork on its host: from the seed checkpoint on the
-// source's host, or from localID, the seed's copy, anywhere else. the create
-// is keyed on the step, so a retry gets the agent's first answer back.
+// source's host, or from localID, the seed's copy, anywhere else. a live fork
+// is always the latter, resumed from the copy's memory image. the create is
+// keyed on the step, so a retry gets the agent's first answer back.
 func (fm *FleetManager) ForkCreate(ctx context.Context, plan ForkPlan, seed SnapshotRecord, hostID, localID string) error {
 	v, err := fm.forkTarget(plan)
 	if err != nil {
 		return err
+	}
+	if liveForkOffSource(plan.Live, hostID, plan.SourceHostID) {
+		// placeFork never picks it; a resume here would rmtree the source's
+		// vm dir (see liveForkOffSource).
+		return errLiveForkNoHost(plan.SourceHostID, "the fork was placed there")
 	}
 	var env Environment
 	if hostID == plan.SourceHostID {
@@ -312,12 +447,19 @@ func (fm *FleetManager) ForkCreate(ctx context.Context, plan ForkPlan, seed Snap
 		fm.mu.Lock()
 		v.spec.SeedSnapshotID = localID
 		v.spec.PinnedHostID = hostID
+		v.spec.ResumeSeed = plan.Live
 		spec := v.spec
 		fm.mu.Unlock()
 		fm.touchArtifact(localID, seed.SnapshotID)
 		env, err = fm.migrateProvider(hostID).Create(ctx, spec)
 	}
 	if err != nil {
+		// the host agent's 409 is a resume it refuses (another cpu or
+		// firecracker build, see resume_plan).
+		var httpErr *HTTPStatusError
+		if plan.Live && errors.As(err, &httpErr) && httpErr.Code == http.StatusConflict {
+			return fmt.Errorf("%w: host %s cannot resume a live fork of vm %s: %w", ErrSnapshotNotSeedable, hostID, plan.SourceVMID, err)
+		}
 		return fmt.Errorf("fork vm %s from snapshot %s: %w", plan.SourceVMID, seed.SnapshotID, err)
 	}
 	fm.mu.Lock()

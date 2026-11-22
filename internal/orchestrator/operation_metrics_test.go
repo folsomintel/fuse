@@ -32,7 +32,7 @@ func TestLifecycleOperationsAreReported(t *testing.T) {
 	ctx := context.Background()
 
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
-	forkID, err := fm.ForkEnvironment(ctx, srcID, ForkOptions{})
+	forkID, err := forkOne(ctx, fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

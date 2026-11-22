@@ -182,7 +182,7 @@ func (f *forking) run() (orchestrator.SnapshotRecord, error) {
 	if seed.SnapshotID == "" {
 		var err error
 		seed, err = restate.Object[orchestrator.SnapshotRecord](ctx, EnvironmentObject, plan.SourceVMID, "Snapshot").
-			Request(orchestrator.SnapshotOptions{Comment: plan.Comment})
+			Request(orchestrator.SnapshotOptions{Comment: plan.Comment, Live: plan.Live})
 		if err != nil {
 			return seed, err
 		}

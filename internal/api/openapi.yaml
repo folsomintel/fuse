@@ -409,16 +409,29 @@ paths:
           (`--draining-timeout`, default 5m30s) is destroyed by the
           reconcile loop, unless a hitl decision is pending on it or its
           destroy is gated.
-        - `fork` — create a new environment seeded from a checkpoint of
-          this one. With `reuse_snapshot_id` empty the server snapshots
-          the source first; otherwise it reuses that ready snapshot (it
-          must belong to this VM). The fork lands on the source's host
-          when it fits there, otherwise on another host of the same
-          backend when the seed can be copied; when neither has room it
-          is refused with 503 `unavailable` (and a `Retry-After`) rather
-          than overcommitting the source's host. It receives its own
-          guest credentials (fused is restarted), and is returned as a
-          new Environment with 201. GPU environments
+        - `fork` — create `count` new environments (default 1) seeded
+          from one checkpoint of this one. With `reuse_snapshot_id` empty
+          the server snapshots the source once for every child;
+          otherwise it reuses that ready snapshot (it must belong to this
+          VM). Each child lands on the source's host when it fits there,
+          otherwise on another host of the same backend when the seed can
+          be copied; when neither has room it is refused with 503
+          `unavailable` (and a `Retry-After`) rather than overcommitting
+          the source's host. Each child receives its own guest
+          credentials (fused is restarted). The answer is always a list:
+          201 with a ForkEnvironmentResponse (`children`), even for a
+          count of 1. Children's ids derive from the `Idempotency-Key`,
+          so the same key and count replay the same children. Each child
+          is its own durable fork: a failed child does not undo its
+          siblings. When any child fails the call answers with the first
+          failure's status, and its message names the children that did
+          fork; they keep running. With `live` every child resumes from
+          a live snapshot's memory image instead of cold-booting its
+          rootfs (a live seed is taken, or `reuse_snapshot_id` must name
+          a live snapshot). A live child cannot resume on its source's
+          own host yet, so it always lands on another host; with no other
+          host that can take it the fork is refused with 409 `conflict`.
+          GPU environments
           (spec.gpus > 0, including MIG) and QEMU-hosted environments
           cannot be forked: a vfio device cannot be checkpointed, so the
           request returns 409 `conflict`. That is a permanent property of
@@ -479,11 +492,16 @@ paths:
         - 501 `unimplemented` — the provider has no guest to exec into
           (e.g. the in-memory stub).
 
-        **Fork error mapping.** Fork returns 409 `conflict` for three
+        **Fork error mapping.** Fork returns 400 `invalid_argument` for a
+        `count` below 1 or above 1000, and 409 `conflict` for these
         distinct preconditions:
 
         - the reused snapshot (`reuse_snapshot_id`) is not in state
           `ready`;
+        - the reused snapshot's kind does not match `live`: a live
+          snapshot without `live`, or a disk snapshot with it;
+        - a `live` fork has no host other than the source's to resume
+          on, or the target host refused the resume;
         - the source holds a GPU passthrough device (permanent — do not
           retry);
         - with `reuse_snapshot_id` empty, the implicit seed snapshot is
@@ -557,14 +575,15 @@ paths:
                   - $ref: "#/components/schemas/Intervention"
         "201":
           description: |
-            Fork succeeded (body is the new Environment), or a `request`
-            was raised (body is the pending Intervention; wait on it with
+            Fork succeeded (body is a ForkEnvironmentResponse listing
+            every child), or a `request` was raised (body is the pending
+            Intervention; wait on it with
             GET /v1/interventions/{interventionId}?wait=).
           content:
             application/json:
               schema:
                 oneOf:
-                  - $ref: "#/components/schemas/Environment"
+                  - $ref: "#/components/schemas/ForkEnvironmentResponse"
                   - $ref: "#/components/schemas/Intervention"
         "202":
           description: |
@@ -592,9 +611,10 @@ paths:
         "204":
           description: |
             Action succeeded with no body. Always for rotate-token; for
-            drain and fork only in the rare race where the action
-            succeeded but the environment record could not be re-read to
-            build a response body.
+            drain only in the rare race where the action succeeded but the
+            environment record could not be re-read to build a response
+            body (fork answers that race with a 500; retry it with the
+            same Idempotency-Key).
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
@@ -3649,6 +3669,34 @@ components:
         comment:
           type: string
           description: Free-form note attached to the seed snapshot.
+        live:
+          type: boolean
+          default: false
+          description: |
+            Resume every child from a live snapshot's memory image instead
+            of cold-booting its rootfs. The source must be running. With
+            `reuse_snapshot_id` empty a live seed is taken; otherwise it
+            must name a live snapshot. A live child lands on a host other
+            than the source's (409 when there is none).
+        count:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 1
+          description: |
+            How many children to fork from the one seed, which is taken
+            once. Out of range is a 400.
+
+    ForkEnvironmentResponse:
+      type: object
+      description: 201 body of POST /v1/environments/{vmId}?action=fork.
+      required: [children]
+      properties:
+        children:
+          type: array
+          description: Every child the fork made, in order, even for a count of 1.
+          items:
+            $ref: "#/components/schemas/Environment"
 
     MigrateEnvironmentRequest:
       type: object
@@ -3731,9 +3779,9 @@ components:
             pauses the guest for the length of the capture. The
             resulting artifact is pinned to the host that took it: a
             memory image depends on that host's CPU model and
-            Firecracker version. Fork reads only a snapshot's rootfs,
-            so forking a live snapshot silently yields a cold-booting
-            environment.
+            Firecracker version. A fork reads only a snapshot's rootfs
+            unless it is a `live` fork, so forking a live snapshot without
+            `live` is refused with 409.
 
             Asking for it on a provider without live-snapshot support
             is a 501, not a 409. Check the response's `kind` rather
@@ -4601,7 +4649,7 @@ components:
           type: object
           description: |
             The call's response body on success: an Environment for create,
-            fork, migrate and drain, a Snapshot for snapshot, an Image for
+            migrate and drain, a ForkEnvironmentResponse for fork, a Snapshot for snapshot, an Image for
             image.convert (status_code 202), absent for destroy and restore
             (204), and a HeldResponse when a hitl gate held the action
             (status_code 202).
@@ -4687,7 +4735,7 @@ components:
           $ref: "#/components/schemas/ComputerActionResponse"
         env_id:
           type: string
-          description: The environment a fork or migrate produced.
+          description: The environment a fork or migrate produced (a fork of several children names its first).
         snapshot_id:
           type: string
           description: The snapshot a snapshot action produced.

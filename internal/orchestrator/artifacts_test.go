@@ -598,7 +598,7 @@ func TestForkEnvironment_fallsBackOffTheSourceHost(t *testing.T) {
 		t.Fatalf("provision source: %v", err)
 	}
 
-	forkID, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
+	forkID, err := forkOne(ctx, fm, "fuse-task-src", ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestForkEnvironment_refusesWhenTheArtifactCannotMove(t *testing.T) {
 		t.Fatalf("provision source: %v", err)
 	}
 
-	_, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
+	_, err := forkOne(ctx, fm, "fuse-task-src", ForkOptions{})
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("fork err = %v, want ErrNoCapacity", err)
 	}
@@ -673,7 +673,7 @@ func TestForkEnvironment_refusesWhenNoHostFits(t *testing.T) {
 		t.Fatalf("provision source: %v", err)
 	}
 
-	_, err := fm.ForkEnvironment(ctx, "fuse-task-src", ForkOptions{})
+	_, err := forkOne(ctx, fm, "fuse-task-src", ForkOptions{})
 	if !errors.Is(err, ErrNoCapacity) {
 		t.Fatalf("fork err = %v, want ErrNoCapacity", err)
 	}

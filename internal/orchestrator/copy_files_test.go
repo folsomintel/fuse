@@ -90,7 +90,7 @@ func TestForkEnvironmentUploadsOnlyCredentials(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-fork-copy")
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}

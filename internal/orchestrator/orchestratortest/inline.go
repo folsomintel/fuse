@@ -565,7 +565,7 @@ func (d *Inline) forkRun(ctx context.Context, f *forking) (orchestrator.Snapshot
 	seed := plan.Seed
 	if seed.SnapshotID == "" {
 		var err error
-		seed, err = d.snapshotLocked(ctx, plan.SourceVMID, orchestrator.SnapshotOptions{Comment: plan.Comment})
+		seed, err = d.snapshotLocked(ctx, plan.SourceVMID, orchestrator.SnapshotOptions{Comment: plan.Comment, Live: plan.Live})
 		if err != nil {
 			return seed, err
 		}

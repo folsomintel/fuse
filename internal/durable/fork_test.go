@@ -20,6 +20,7 @@ type forkFleet struct {
 	reuse     orchestrator.SnapshotRecord
 	destroyed chan string
 	deleted   string
+	seedLive  bool
 }
 
 func newForkFleet() *forkFleet {
@@ -27,11 +28,19 @@ func newForkFleet() *forkFleet {
 }
 
 func (f *forkFleet) ForkBegin(ctx context.Context, vmID string, req orchestrator.ForkRequest) (orchestrator.ForkPlan, error) {
-	plan := orchestrator.ForkPlan{SourceVMID: req.SourceVMID, SourceHostID: "h1", NewVMID: vmID, TaskID: req.TaskID, Comment: req.Comment}
+	plan := orchestrator.ForkPlan{SourceVMID: req.SourceVMID, SourceHostID: "h1", NewVMID: vmID, TaskID: req.TaskID, Comment: req.Comment, Live: req.Live}
 	if req.ReuseSnapshotID != "" {
 		plan.Seed = f.reuse
 	}
 	return plan, f.enter(ctx, "fork_begin")
+}
+
+// SnapshotBegin records whether the seed was asked for live.
+func (f *forkFleet) SnapshotBegin(ctx context.Context, vm string, opts orchestrator.SnapshotOptions) (orchestrator.SnapshotPlan, error) {
+	f.mu.Lock()
+	f.seedLive = opts.Live
+	f.mu.Unlock()
+	return f.snapFleet.SnapshotBegin(ctx, vm, opts)
 }
 
 func (f *forkFleet) ForkPlaceholder(ctx context.Context, _ orchestrator.ForkPlan) error {
@@ -155,6 +164,27 @@ func TestForkReuseSkipsSnapshot(t *testing.T) {
 	want := "fork_begin,placeholder,place,artifact,create,ingress,credentials,upload,start_agent,running,task,lineage"
 	if got := fleet.steps(); got != want {
 		t.Fatalf("steps %s, want %s", got, want)
+	}
+}
+
+// TestForkLiveTakesALiveSeed: a live fork asks the source's snapshot for a
+// live seed.
+func TestForkLiveTakesALiveSeed(t *testing.T) {
+	fleet := newForkFleet()
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	req := forkRequest(uniqueVM("src"))
+	req.Live = true
+	if err := client.Fork(ctx, uniqueVM("fork-live"), req); err != nil {
+		t.Fatalf("fork: %v", err)
+	}
+	fleet.mu.Lock()
+	live := fleet.seedLive
+	fleet.mu.Unlock()
+	if !live {
+		t.Fatal("seed snapshot was not asked for live")
 	}
 }
 

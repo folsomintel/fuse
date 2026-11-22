@@ -79,7 +79,7 @@ func TestForkEnvironment_snapshotsSourceAndRegistersRunning(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{Comment: "forked"})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{Comment: "forked"})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestForkEnvironment_reuseSnapshotDoesNotCreateExtra(t *testing.T) {
 		t.Fatalf("list source snapshots: %v", err)
 	}
 
-	newID, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
+	newID, err := forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestForkEnvironment_rejectsNonRunning(t *testing.T) {
 	fm.vms[srcID].state = VMStateDraining
 	fm.mu.Unlock()
 
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{}); err == nil {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{}); err == nil {
 		t.Fatal("expected fork of non-running vm to fail")
 	}
 }
@@ -191,7 +191,7 @@ func TestForkEnvironment_providerNotForkable(t *testing.T) {
 	})
 	srcID := provisionSnapshotTestVM(t, fm, "task-1")
 
-	_, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{})
+	_, err := forkOne(context.Background(), fm, srcID, ForkOptions{})
 	if err == nil {
 		t.Fatal("expected fork to fail when provider does not implement SnapshotForkable")
 	}
@@ -254,7 +254,7 @@ func TestForkEnvironment_rejectsLiveSeed(t *testing.T) {
 		t.Fatalf("seed kind = %q, want live; the test provider did not take a live snapshot", seed.Kind)
 	}
 
-	_, err = fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
+	_, err = forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID})
 	if !errors.Is(err, ErrSnapshotNotSeedable) {
 		t.Fatalf("err = %v, want ErrSnapshotNotSeedable", err)
 	}
@@ -284,7 +284,19 @@ func TestForkEnvironment_diskSeedStillWorks(t *testing.T) {
 		t.Fatalf("seed kind = live, want disk")
 	}
 
-	if _, err := fm.ForkEnvironment(context.Background(), srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID}); err != nil {
+	if _, err := forkOne(context.Background(), fm, srcID, ForkOptions{ReuseSnapshotID: seed.SnapshotID}); err != nil {
 		t.Fatalf("fork from a disk snapshot: %v", err)
 	}
+}
+
+// forkOne forks one child of srcVMID and returns its id.
+func forkOne(ctx context.Context, fm *FleetManager, srcVMID string, opts ForkOptions) (string, error) {
+	ids, err := fm.ForkEnvironment(ctx, srcVMID, opts)
+	if err != nil {
+		return "", err
+	}
+	if len(ids) != 1 {
+		return "", fmt.Errorf("fork returned %d children, want 1", len(ids))
+	}
+	return ids[0], nil
 }
