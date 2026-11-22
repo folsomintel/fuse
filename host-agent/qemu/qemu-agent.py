@@ -875,6 +875,13 @@ def undo_create(meta: dict) -> None:
     the index and the gpus. every step tolerates a missing piece, so this is
     safe at any point after reserve_vm, including on an agent restarted
     mid-create."""
+    if not meta.get("pid"):
+        # qemu writes its pidfile before start_qemu returns, so a create the
+        # agent stopped in before it saved the pid still has it on disk.
+        try:
+            meta["pid"] = int((vm_dir(meta["vm_id"]) / "qemu.pid").read_text().strip())
+        except (OSError, ValueError):
+            pass
     stop_qemu(meta)
     del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_tap(meta["tap"])

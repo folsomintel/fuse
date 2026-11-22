@@ -290,6 +290,15 @@ class RestartTest(BootTestCase):
         self.teardown_net.assert_called_once_with(5, "eth0")
         self.assertNotIn(5, fc_agent.used_indices())
 
+    def test_restart_kills_a_firecracker_whose_pid_was_never_saved(self):
+        self.write_meta("a", 5, creating=True)
+        with mock.patch.object(fc_agent, "rebuild_net", side_effect=AssertionError("relaunched")):
+            fc_agent.reattach_vms()
+        sock = fc_agent.sock_path("a")
+        kills = [c.args[0] for c in fc_agent.sudo.call_args_list if c.args[0][:1] == ["pkill"]]
+        self.assertIn(["pkill", "-9", "-f", "--", f"firecracker --api-sock {sock}"], kills)
+        self.assertIn(["pkill", "-9", "-f", "--", f"--sock {sock.with_suffix('.uffd')}"], kills)
+
     def test_restart_still_relaunches_a_finished_vm(self):
         self.write_meta("a", 5)
         with mock.patch.object(fc_agent, "rebuild_net") as rebuild:

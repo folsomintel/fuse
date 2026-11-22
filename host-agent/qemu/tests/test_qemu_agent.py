@@ -1132,6 +1132,16 @@ class BootConcurrencyTest(unittest.TestCase):
         self.assertFalse(qemu_agent.vm_dir("a").exists())
         self.teardown_tap.assert_called_once_with("qv4")
 
+    def test_restart_kills_a_qemu_whose_pid_was_never_saved(self):
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        (qemu_agent.vm_dir("a") / "qemu.pid").write_text("4242\n")
+        qemu_agent.save_meta({"vm_id": "a", "index": 4, "tap": "qv4", "host_port": 19554,
+                              "guest_ip": "10.200.4.2", "creating": True})
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=AssertionError("relaunched")):
+            qemu_agent.reattach_vms()
+        self.assertEqual(qemu_agent.stop_qemu.call_args.args[0]["pid"], 4242)
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+
     def test_every_iptables_call_waits_for_the_lock(self):
         calls = []
 

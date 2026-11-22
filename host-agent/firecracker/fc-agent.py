@@ -1534,9 +1534,18 @@ def undo_create(meta: dict) -> None:
     slot. every step tolerates a missing piece, so this is safe at any point
     after reserve_vm, including on an agent restarted mid-create."""
     stop_firecracker(meta)
+    kill_by_sock(meta["vm_id"])
     del_agent_forward(meta["host_port"], meta["guest_ip"])
     teardown_net(meta["index"], host_iface())
     shutil.rmtree(vm_dir(meta["vm_id"]), ignore_errors=True)
+
+
+def kill_by_sock(vm_id: str) -> None:
+    """kills the firecracker and fc-uffd of vm_id found by their socket
+    paths, for a create the agent stopped in before it saved their pids."""
+    sock = sock_path(vm_id)
+    sudo(["pkill", "-9", "-f", "--", f"firecracker --api-sock {sock}"], check=False)
+    sudo(["pkill", "-9", "-f", "--", f"--sock {sock.with_suffix('.uffd')}"], check=False)
 
 
 def destroy_vm(vm_id: str) -> None:
