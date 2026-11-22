@@ -526,19 +526,27 @@ class Run:
                 if not fuse.is_not_found(e):
                     log(f"destroy {vm_id}: {e}")
 
+        def delete_snapshot(snapshot_id: str) -> None:
+            try:
+                self.client.snapshots.delete(snapshot_id)
+            except fuse.ApiError as e:
+                if not fuse.is_not_found(e):
+                    log(f"delete snapshot {snapshot_id}: {e}")
+
+        def delete_lineage(vm_id: str) -> None:
+            # each copy's fork-seed-* lineage record outlives its vm and is a
+            # child of the seed, so it has to go before the seed can
+            for s in self.client.snapshots.list(vm_id=vm_id):
+                delete_snapshot(s.id)
+
         with ThreadPoolExecutor(max_workers=16) as pool:
             list(pool.map(destroy, ids))
-        # the live seed the fork took of main; it can only go once its
-        # children have
+            list(pool.map(delete_lineage, ids))
+        # the live seed the fork took of main
         if self.main_id:
             for s in self.client.snapshots.list(vm_id=self.main_id):
-                if s.id in snapshots_before:
-                    continue
-                try:
-                    self.client.snapshots.delete(s.id)
-                except fuse.ApiError as e:
-                    if not fuse.is_not_found(e):
-                        log(f"delete snapshot {s.id}: {e}")
+                if s.id not in snapshots_before:
+                    delete_snapshot(s.id)
 
     def audit(self, baseline: Optional[dict[str, Any]]) -> None:
         if self.leak_audit is None or baseline is None:
