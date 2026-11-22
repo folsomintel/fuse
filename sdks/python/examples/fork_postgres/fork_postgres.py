@@ -389,27 +389,33 @@ class Run:
         )
         log(f"build artifact {build}")
         # the cli refuses --from-build next to an `image:`, since both name the
-        # rootfs to boot, so main boots from a copy of the Fusefile without it
-        boot = self.out / "Fusefile.boot"
-        lines = Path(a.fusefile).read_text().splitlines(keepends=True)
+        # rootfs to boot, so main boots from a copy of the Fusefile without it.
+        # the copy sits beside the original, since the cli resolves relative
+        # source paths against the file passed with -f
+        src = Path(a.fusefile)
+        boot = src.with_name(f".{src.name}.{self.run_id}.boot")
+        lines = src.read_text().splitlines(keepends=True)
         boot.write_text("".join(ln for ln in lines if not ln.startswith("image:")))
-        out = fuse_cli(
-            [
-                "up",
-                "-f",
-                str(boot),
-                "--from-build",
-                build,
-                "--task-id",
-                self.run_id,
-                "--no-wait",
-                "-o",
-                "json",
-            ],
-            a.fuse_bin,
-            a.context,
-            900,
-        )
+        try:
+            out = fuse_cli(
+                [
+                    "up",
+                    "-f",
+                    str(boot),
+                    "--from-build",
+                    build,
+                    "--task-id",
+                    self.run_id,
+                    "--no-wait",
+                    "-o",
+                    "json",
+                ],
+                a.fuse_bin,
+                a.context,
+                900,
+            )
+        finally:
+            boot.unlink(missing_ok=True)
         vm_id = json.loads(out).get("id", "")
         if not vm_id:
             raise SystemExit(f"fuse up printed no environment id: {out[:300]}")
