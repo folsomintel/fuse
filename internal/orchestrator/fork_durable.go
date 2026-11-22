@@ -129,7 +129,20 @@ func (fm *FleetManager) forkChildren(ctx context.Context, d DurableForker, srcVM
 		return []string{id}, nil
 	}
 
-	seed, taken, err := fm.forkSeed(ctx, srcVMID, opts)
+	// a retry of a fan-out whose children already exist replays them, so it
+	// must not be refused for capacity those very children now hold
+	replay := false
+	if key != "" {
+		fm.mu.RLock()
+		for i := range count {
+			if _, ok := fm.vms[fm.prefix+forkTaskID(srcVMID, key, i)]; ok {
+				replay = true
+				break
+			}
+		}
+		fm.mu.RUnlock()
+	}
+	seed, taken, err := fm.forkSeed(ctx, srcVMID, opts, replay)
 	if err != nil {
 		return nil, err
 	}
@@ -190,14 +203,17 @@ func (fm *FleetManager) forkChildren(ctx context.Context, d DurableForker, srcVM
 // first, so a fork every child would refuse does not pause the source. the
 // snapshot goes through the source's Environment.Snapshot under the
 // request's idempotency key, so a retry gets the same seed back instead of
-// taking another.
-func (fm *FleetManager) forkSeed(ctx context.Context, srcVMID string, opts ForkOptions) (seed SnapshotRecord, taken bool, err error) {
+// taking another. a replay skips the placement check: its children are
+// already placed.
+func (fm *FleetManager) forkSeed(ctx context.Context, srcVMID string, opts ForkOptions, replay bool) (seed SnapshotRecord, taken bool, err error) {
 	src, existing, err := fm.checkFork(ctx, srcVMID, opts.ReuseSnapshotID, opts.Live)
 	if err != nil {
 		return SnapshotRecord{}, false, err
 	}
-	if err := fm.forkFitsSomewhere(src, opts.Live); err != nil {
-		return SnapshotRecord{}, false, err
+	if !replay {
+		if err := fm.forkFitsSomewhere(src, opts.Live); err != nil {
+			return SnapshotRecord{}, false, err
+		}
 	}
 	if opts.ReuseSnapshotID != "" {
 		return existing, false, nil
