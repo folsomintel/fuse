@@ -162,7 +162,8 @@ OPERATION_FAILED = "failed"
   restate ui), so it is empty.
 - `status_code`, with `result` on success or `error` on failure, is what the
   call itself would have answered. `result` is the decoded response body: an
-  environment for create, fork, migrate and drain, a snapshot for snapshot,
+  environment for create, migrate and drain, `{"children": [...]}` for fork,
+  a snapshot for snapshot,
   an image for image.convert (with `status_code` 202), and `None` for destroy
   and restore.
 - `retry_after` is the seconds the call's `Retry-After` asked for, set on a

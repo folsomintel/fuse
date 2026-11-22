@@ -50,10 +50,10 @@ Four things to know before using it:
 - it costs the environment's full configured memory in bytes on **every** create,
   and per-tenant byte quotas were calibrated for rootfs-only snapshots
 - the guest is paused for the duration of the capture
-- it cannot be forked from. `fuse environment fork` reads only the rootfs, so a
-  fork of a live snapshot cold-boots without the memory
-- it is pinned to the host that took it. A memory image depends on that host's
-  CPU model and Firecracker version, and does not travel
+- only `fuse environment fork --live` can fork from it. A plain fork reads only
+  the rootfs, so it refuses a live snapshot with a 409
+- it only resumes on a host with the same CPU model and Firecracker version as
+  the one that took it
 
 `--live` against a backend with no live-snapshot support returns 501 /
 `unimplemented`, with a message telling you to retry without it. And the `kind`

@@ -153,7 +153,8 @@ func (o *Operation) Done() bool
   restate ui), so it is empty.
 - `StatusCode`, with `Result` on success or `Error` on failure, is what the
   call itself would have answered. `Result` is the raw response body: an
-  `EnvironmentInfo` for create, fork, migrate and drain, a `Snapshot` for
+  `EnvironmentInfo` for create, migrate and drain, `{"children": [...]}` for
+  fork, a `Snapshot` for
   snapshot, an `Image` for image.convert (with `StatusCode` 202), and empty for
   destroy and restore.
 - `RetryAfter` is the seconds the call's `Retry-After` asked for, set on a

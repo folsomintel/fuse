@@ -148,9 +148,17 @@ last one.
 fuse environment fork <id> --comment "branch for experiment"
 ```
 
-Forking creates a new environment from an existing one's state, either by taking a
+Forking creates new environments from an existing one's state, either by taking a
 fresh snapshot or reusing an existing one via `--reuse-snapshot`. The source keeps
 running and is not modified.
+
+`--count N` makes N children from that one seed. The seed is taken once, and each
+child is its own fork: one that fails does not undo its siblings. The answer is
+always a list, `201` with `{"children": [...]}` even for one child, and the SDKs'
+`Fork` returns that list. If any child fails, the call returns the first
+failure's status. Its message names the children that did fork, and those keep
+running. Children's IDs come from the request's `Idempotency-Key`, so retrying
+with the same key and count gets you the same children back.
 
 The fork is a full environment of its own: its own ID, its own IP and ports, and its
 own guest credentials. Because it boots a copy of the source's disk, it starts out
@@ -167,11 +175,21 @@ seed snapshot there, as long as the snapshot can be copied. When no host has roo
 the fork is refused with `503` `unavailable` and a `Retry-After`, and nothing is
 created; the CLI and the SDKs retry it a few times before giving up.
 
-A fork cold-boots the snapshot's disk rather than resuming the source's memory:
-expect a normal boot, not a sub-second resume. That is true of
-[live snapshots](/docs/concepts/snapshots#two-kinds) too, fork reads a snapshot's
-rootfs and nothing else, so forking one gives you its disk half without the
-memory it captured.
+A plain fork cold-boots the snapshot's disk rather than resuming the source's
+memory, so expect a normal boot, not a sub-second resume. It refuses a
+[live snapshot](/docs/concepts/snapshots#two-kinds) with `409`, because a live
+snapshot's disk is only consistent alongside its memory image.
+
+```bash
+fuse environment fork <id> --live --count 10
+```
+
+`--live` forks from memory instead. It takes a live seed (or reuses the live
+snapshot named by `--reuse-snapshot`), and every child resumes from that memory
+image with its processes intact. A live child cannot resume on its source's own
+host yet, so it always lands on another host of the same backend, with the same
+CPU model and Firecracker build, and the seed's memory image is copied there.
+With no other host that can take it, the fork is refused with `409` `conflict`.
 
 See [Snapshots](/docs/concepts/snapshots): forking is unavailable wherever
 snapshotting is (i.e. QEMU/GPU environments).

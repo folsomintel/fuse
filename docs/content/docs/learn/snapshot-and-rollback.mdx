@@ -127,12 +127,14 @@ see is the difference in how long it takes and what survives: a live restore
 comes back with the processes still running and the memory intact, where the disk
 restore in step 3 rebooted.
 
-One thing you cannot do with a live snapshot is fork from it. Fork copies a
-snapshot's disk to seed a new environment, and that is all it looks at. A live
-snapshot's disk was copied without quiescing the guest filesystem, because the
-page cache is captured in the memory image instead, so that disk only mounts
-cleanly with the memory image beside it. Fork rejects a live snapshot with a
-`409` rather than handing you a copy that cannot boot. If you want a copy rather
+One thing a plain fork cannot do with a live snapshot is boot from it. A plain
+fork copies a snapshot's disk to seed a new environment, and that is all it looks
+at. A live snapshot's disk was copied without quiescing the guest filesystem,
+because the page cache is captured in the memory image instead, so that disk only
+mounts cleanly with the memory image beside it. A plain fork rejects a live
+snapshot with a `409` rather than handing you a copy that cannot boot. A fork
+with `--live` resumes the memory image instead, see
+[Forking](/docs/concepts/environments#forking). If you want a cold copy rather
 than a rewind, take a disk snapshot and read
 [Lesson 3](/docs/learn/fork-to-debug).
 
@@ -148,8 +150,8 @@ fuse environment destroy fuse-lesson2 --yes
 - **Disk is the default.** It captures the disk only, and restoring it reboots.
 - **`--live` also captures memory** and vCPU state, so restoring resumes instead
   of rebooting. It costs the guest's full memory in bytes per snapshot, pauses
-  the guest to take it, is pinned to the host that took it, and cannot be forked
-  from.
+  the guest to take it, only resumes on a host with the same CPU and
+  Firecracker build, and only a `--live` fork can fork from it.
 - Restore is **destructive to the current disk** and in-place. The snapshot
   survives, the environment's current state does not.
 - Snapshots do not work on GPU environments at all, live or disk, a
