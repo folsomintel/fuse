@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.4.0](https://github.com/folsomintel/fuse/compare/v1.3.0...v1.4.0) (2026-11-23)
+
+
+### Features
+
+* add live postgres fork demo example ([ff7f333](https://github.com/folsomintel/fuse/commit/ff7f333e0236ec030f60c2631057e090f882a6e5))
+* boot vms in parallel by reserving the slot under the create lock and waiting on the xtables lock ([e9e2ccd](https://github.com/folsomintel/fuse/commit/e9e2ccd7cef819ffc7552e6e587e5ffbaf088c15))
+* boot vms in parallel on one host by reserving the slot under the create lock ([8c2da65](https://github.com/folsomintel/fuse/commit/8c2da6528c8faaddb94b7d8141c9b49cf10d0191))
+* **fork:** live fork and count fan-out with a list response ([96a3f23](https://github.com/folsomintel/fuse/commit/96a3f23cc3043aebf761d8d45aec7b7ac183fa1d))
+* **fork:** live fork and count fan-out with a list response ([77cd954](https://github.com/folsomintel/fuse/commit/77cd95415e442a5f7bf60f2660d17922533f63fd))
+* **sdk:** fork returns every child and takes live and count in all four sdks and the cli ([35ce363](https://github.com/folsomintel/fuse/commit/35ce363968009899862f84bc1fa939b9d1a1219d))
+
+
+### Bug Fixes
+
+* boot main from a fusefile without image when using --from-build ([48376df](https://github.com/folsomintel/fuse/commit/48376dfb7af8df2fefc74ba19a5f9a172abb8540))
+* delete each copy's lineage records before the fork seed ([8e08e5f](https://github.com/folsomintel/fuse/commit/8e08e5fa7d2b663c4234b1379a3c0a76a625e79e))
+* delete only the seed this run's fork took, not other snapshots of main ([abaf59f](https://github.com/folsomintel/fuse/commit/abaf59f782213c2d92f34ca335bb728571d54d98))
+* destroy main on every exit and fail the demo on a cold copy ([5b4f3a1](https://github.com/folsomintel/fuse/commit/5b4f3a1f2139c11a4a21dab6aa895debbfd01d9e))
+* **fork:** keep a partly failed fan-out on its restate key so a retry replays its children ([d9bfd80](https://github.com/folsomintel/fuse/commit/d9bfd8025ffef530f507db7251110ec3ec52b3bb))
+* keep a fan-out failure unsettled while any child is unsettled ([582d0e1](https://github.com/folsomintel/fuse/commit/582d0e1788c039151772a8f4f65bee191f129266))
+* keep the fork comment stable so a reused idempotency key replays ([1ee323e](https://github.com/folsomintel/fuse/commit/1ee323eef8a851149d4d6c285113c266ff4ba558))
+* kill a vm process whose pid was never saved when undoing an interrupted create ([cbfb888](https://github.com/folsomintel/fuse/commit/cbfb8880a69426096d875b10e7bf135d5cbe99af))
+* refuse a fork onto its own source vm at once instead of after the create lock wait ([5454787](https://github.com/folsomintel/fuse/commit/5454787e48db797b2c67ce534360ef506b0941fc))
+* serialize resumes of one snapshot on its shared drive path ([0fa35c2](https://github.com/folsomintel/fuse/commit/0fa35c2c954f40f0fbb3bbaddb83aa46bf4150dc))
+* skip the fork capacity check when replaying an existing fan-out ([f55a515](https://github.com/folsomintel/fuse/commit/f55a515a62e0d90ec8ef4c82b9bf9a0d47656336))
+* time copy readiness outside the --parallel limit on heavy work ([693fd5d](https://github.com/folsomintel/fuse/commit/693fd5db1f451466b1fe3b4cd47ca263723e9d0a))
+* write the boot fusefile beside the original so relative sources resolve ([0235945](https://github.com/folsomintel/fuse/commit/023594501f6671c5c45f956dd64e2999b68660e6))
+
 ## [1.3.0](https://github.com/folsomintel/fuse/compare/v1.2.0...v1.3.0) (2026-11-20)
 
 
