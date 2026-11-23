@@ -161,6 +161,11 @@ def sudo(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return run(["sudo", "-n"] + cmd, check=check)
 
 
+# every iptables call waits for the xtables lock instead of failing when a
+# parallel create holds it. bounded so a stuck holder cannot hang a create.
+IPTABLES = ["iptables", "-w", "30"]
+
+
 def teardown_tap(tap: str) -> None:
     sudo(["ip", "link", "del", tap], check=False)
 
@@ -174,16 +179,16 @@ def host_iface() -> str:
 def add_agent_forward(host_port: int, guest_ip: str, iface: str) -> None:
     """DNAT <host>:host_port -> guest_ip:FUSED_PORT, plus FORWARD allow."""
     rules = [
-        ["iptables", "-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
+        IPTABLES + ["-t", "nat", "-I", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
         # Also accept traffic arriving via lo (so 127.0.0.1:<host_port> works).
-        ["iptables", "-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp",
+        IPTABLES + ["-t", "nat", "-I", "OUTPUT", "-o", "lo", "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
-        ["iptables", "-I", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        IPTABLES + ["-I", "FORWARD", "-p", "tcp", "-d", guest_ip,
          "--dport", str(FUSED_PORT), "-j", "ACCEPT"],
-        ["iptables", "-I", "INPUT", "-p", "tcp", "--dport", str(host_port),
+        IPTABLES + ["-I", "INPUT", "-p", "tcp", "--dport", str(host_port),
          "-j", "ACCEPT"],
     ]
     for r in rules:
@@ -193,15 +198,15 @@ def add_agent_forward(host_port: int, guest_ip: str, iface: str) -> None:
 def del_agent_forward(host_port: int, guest_ip: str) -> None:
     iface = host_iface()
     rules = [
-        ["iptables", "-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp",
+        IPTABLES + ["-t", "nat", "-D", "PREROUTING", "-i", iface, "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
-        ["iptables", "-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", "tcp",
+        IPTABLES + ["-t", "nat", "-D", "OUTPUT", "-o", "lo", "-p", "tcp",
          "--dport", str(host_port), "-j", "DNAT",
          "--to-destination", f"{guest_ip}:{FUSED_PORT}"],
-        ["iptables", "-D", "FORWARD", "-p", "tcp", "-d", guest_ip,
+        IPTABLES + ["-D", "FORWARD", "-p", "tcp", "-d", guest_ip,
          "--dport", str(FUSED_PORT), "-j", "ACCEPT"],
-        ["iptables", "-D", "INPUT", "-p", "tcp", "--dport", str(host_port),
+        IPTABLES + ["-D", "INPUT", "-p", "tcp", "--dport", str(host_port),
          "-j", "ACCEPT"],
     ]
     for r in rules:

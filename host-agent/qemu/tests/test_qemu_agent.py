@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -962,6 +964,199 @@ class NaturalIdempotencyTest(unittest.TestCase):
             with self.assertRaises(qemu_agent.HTTPError) as e:
                 qemu_agent.create_vm({"name": "a", "cpus": 4})
         self.assertEqual(e.exception.code, 409)
+
+
+def fake_sudo(cmd, check=True):
+    # the only sudo call whose effect a test looks at is destroy's rm -rf.
+    if cmd[:2] == ["rm", "-rf"]:
+        shutil.rmtree(cmd[2], ignore_errors=True)
+    return subprocess.CompletedProcess(cmd, 0)
+
+
+# setUp mocks setup_tap out of create; the -w test calls the real one.
+REAL_SETUP_TAP = qemu_agent.setup_tap
+
+
+class BootConcurrencyTest(unittest.TestCase):
+    """parallel boots (#79): a create holds _create_lock only while it picks
+    an index and gpus and saves the meta that reserves them, then boots under
+    its own vm lock. no hardware: every host and guest call is mocked."""
+
+    WAIT = 5.0
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        root = Path(self.temp_dir.name)
+        vms = root / "agent-state" / "vms"
+        vms.mkdir(parents=True)
+        rootfs = root / "rootfs-cuda.qcow2"
+        rootfs.write_bytes(b"rootfs")
+        self.hold = set()
+        self.booting = {}
+        self.release = threading.Event()
+        self.addCleanup(self.release.set)
+        self.teardown_tap = mock.Mock()
+        patches = [
+            mock.patch.object(qemu_agent, "VMS_DIR", vms),
+            mock.patch.object(qemu_agent.agentlib, "VMS_DIR", vms),
+            mock.patch.object(qemu_agent, "BASE_ROOTFS", rootfs),
+            mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]),
+            mock.patch.object(qemu_agent, "pick_mig_devices", return_value=[]),
+            mock.patch.object(qemu_agent, "sudo", side_effect=fake_sudo),
+            mock.patch.object(qemu_agent, "host_iface", return_value="eth0"),
+            mock.patch.object(qemu_agent, "setup_tap"),
+            mock.patch.object(qemu_agent, "teardown_tap", self.teardown_tap),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "del_agent_forward"),
+            mock.patch.object(qemu_agent, "stop_qemu"),
+            mock.patch.object(qemu_agent, "start_qemu", side_effect=self.start_qemu),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def start_qemu(self, meta):
+        self.booting.setdefault(meta["vm_id"], threading.Event()).set()
+        if meta["vm_id"] in self.hold:
+            assert self.release.wait(self.WAIT), "boot was never released"
+
+    def wait_booting(self, vm_id):
+        deadline = time.monotonic() + self.WAIT
+        while vm_id not in self.booting and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIn(vm_id, self.booting, f"{vm_id} never started booting")
+
+    def create_in_thread(self, name, **req):
+        out = {}
+
+        def run():
+            try:
+                out["meta"] = qemu_agent.create_vm({"name": name, **req})
+            except Exception as e:
+                out["error"] = e
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t, out
+
+    def test_pick_index_skips_the_index_of_a_saved_vm(self):
+        # it used to index the meta text before parsing it, swallow the
+        # TypeError and hand every vm index 1.
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        qemu_agent.save_meta({"vm_id": "a", "index": 1})
+        self.assertEqual(qemu_agent.pick_index(), 2)
+
+    def test_a_full_host_is_a_503_and_leaves_no_dir(self):
+        with mock.patch.object(qemu_agent, "pick_index",
+                               side_effect=qemu_agent.HTTPError(503, "no free vm index")):
+            with self.assertRaises(qemu_agent.HTTPError) as e:
+                qemu_agent.create_vm({"name": "a"})
+        self.assertEqual(e.exception.code, 503)
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+
+    def test_another_vm_creates_while_one_is_booting(self):
+        self.hold = {"a"}
+        ta, out_a = self.create_in_thread("a")
+        self.wait_booting("a")
+        # a's meta already reserves its index and gpus while it boots.
+        reserved = qemu_agent.load_meta("a")
+        self.assertTrue(reserved["creating"])
+        self.assertIn("gpu_slots", reserved)
+        tb, out_b = self.create_in_thread("b")
+        tb.join(self.WAIT)
+        self.assertFalse(tb.is_alive(), "b waited for a's boot")
+        self.assertIn("meta", out_b, out_b.get("error"))
+        self.release.set()
+        ta.join(self.WAIT)
+        self.assertEqual({out_a["meta"]["index"], out_b["meta"]["index"]}, {1, 2})
+        self.assertNotIn("creating", qemu_agent.load_meta("a"))
+
+    def test_parallel_creates_never_share_an_index(self):
+        n = 6
+        barrier = threading.Barrier(n, timeout=self.WAIT)
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=lambda m: barrier.wait()):
+            threads = [self.create_in_thread(f"vm-{i}") for i in range(n)]
+            for t, _ in threads:
+                t.join(self.WAIT * 2)
+        self.assertEqual([o["error"] for _, o in threads if "error" in o], [])
+        self.assertEqual(sorted(o["meta"]["index"] for _, o in threads), list(range(1, n + 1)))
+
+    def test_a_failed_boot_frees_its_index(self):
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                qemu_agent.create_vm({"name": "a"})
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+        self.teardown_tap.assert_called_once_with("qv1")
+        self.assertEqual(qemu_agent.create_vm({"name": "b"})["index"], 1)
+
+    def test_destroy_waits_for_its_own_create_but_not_another_vms(self):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), qemu_agent.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+        def delete(vm_id, out):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=self.WAIT * 2)
+            try:
+                c.request("DELETE", f"/v1/vm/{vm_id}", headers={"Authorization": "Bearer test-token"})
+                out["status"] = c.getresponse().status
+            finally:
+                c.close()
+
+        qemu_agent.create_vm({"name": "c"})
+        self.hold = {"a"}
+        ta, _ = self.create_in_thread("a")
+        self.wait_booting("a")
+        other, same = {}, {}
+        t_other = threading.Thread(target=delete, args=("c", other), daemon=True)
+        t_same = threading.Thread(target=delete, args=("a", same), daemon=True)
+        t_other.start()
+        t_same.start()
+        t_other.join(self.WAIT)
+        self.assertEqual(other.get("status"), 204, "destroy of c waited for a's create")
+        self.assertTrue(t_same.is_alive(), "destroy of a ran in the middle of its create")
+        self.release.set()
+        ta.join(self.WAIT)
+        t_same.join(self.WAIT)
+        self.assertEqual(same.get("status"), 204)
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+
+    def test_restart_undoes_an_unfinished_create(self):
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        qemu_agent.save_meta({"vm_id": "a", "index": 4, "tap": "qv4", "host_port": 19554,
+                              "guest_ip": "10.200.4.2", "creating": True})
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=AssertionError("relaunched")):
+            qemu_agent.reattach_vms()
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+        self.teardown_tap.assert_called_once_with("qv4")
+
+    def test_restart_kills_a_qemu_whose_pid_was_never_saved(self):
+        qemu_agent.vm_dir("a").mkdir(parents=True)
+        (qemu_agent.vm_dir("a") / "qemu.pid").write_text("4242\n")
+        qemu_agent.save_meta({"vm_id": "a", "index": 4, "tap": "qv4", "host_port": 19554,
+                              "guest_ip": "10.200.4.2", "creating": True})
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=AssertionError("relaunched")):
+            qemu_agent.reattach_vms()
+        self.assertEqual(qemu_agent.stop_qemu.call_args.args[0]["pid"], 4242)
+        self.assertFalse(qemu_agent.vm_dir("a").exists())
+
+    def test_every_iptables_call_waits_for_the_lock(self):
+        calls = []
+
+        def record(cmd, check=True):
+            calls.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 1)
+
+        with mock.patch.object(qemu_agent, "sudo", side_effect=record):
+            REAL_SETUP_TAP(3, "eth0")
+            qemu_agent.add_expose_forward(30000, "10.200.3.2", 8080)
+            qemu_agent.del_expose_forward(30000, "10.200.3.2", 8080)
+        ipt = [c for c in calls if "iptables" in c]
+        self.assertTrue(ipt)
+        for c in ipt:
+            self.assertEqual(c[:3], ["iptables", "-w", "30"], c)
 
 
 if __name__ == "__main__":
