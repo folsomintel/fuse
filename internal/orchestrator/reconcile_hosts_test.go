@@ -120,3 +120,28 @@ func TestReconcileRefreshesHostLastSeen(t *testing.T) {
 		t.Errorf("stored last_seen = %v, want the refreshed value persisted", rec.LastSeen)
 	}
 }
+
+// TestMarkHostSeenIgnoresReplacedProvider: a list answered by a provider the
+// host was re-registered away from does not refresh the new registration.
+func TestMarkHostSeenIgnoresReplacedProvider(t *testing.T) {
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	ctx := context.Background()
+	old := newMockProvider()
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h", 1, "a100"), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h", 1, "a100"), newMockProvider()); err != nil {
+		t.Fatal(err)
+	}
+	inlineWait(fm)
+	stale := time.Now().Add(-time.Hour)
+	fm.mu.Lock()
+	fm.hosts["h"].LastSeen = stale
+	fm.mu.Unlock()
+
+	fm.markHostSeen("h", old, time.Now())
+
+	if h, _ := fm.GetHost("h"); !h.LastSeen.Equal(stale) {
+		t.Errorf("last_seen = %v, want it left at %v after an answer from the replaced provider", h.LastSeen, stale)
+	}
+}

@@ -543,7 +543,7 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 			envs, err := p.List(listCtx, fm.prefix)
 			cancel()
 			if err == nil {
-				fm.markHostSeen(hostID, time.Now())
+				fm.markHostSeen(hostID, p, time.Now())
 			}
 			mu.Lock()
 			defer mu.Unlock()
@@ -565,11 +565,13 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 // which makes LastSeen the last time the orchestrator reached the host's
 // agent. it runs as each list returns, so a slow host does not hold back the
 // others. a host that did not answer keeps its old LastSeen, so the gap grows
-// by one reconcile interval per missed cycle.
-func (fm *FleetManager) markHostSeen(hostID string, at time.Time) {
+// by one reconcile interval per missed cycle. p is the provider that answered:
+// a host re-registered while its list was running has a new provider, and an
+// answer from the old agent says nothing about the new one.
+func (fm *FleetManager) markHostSeen(hostID string, p Provider, at time.Time) {
 	fm.mu.Lock()
 	h, ok := fm.hosts[hostID]
-	if !ok || !at.After(h.LastSeen) {
+	if !ok || fm.hostProviders[hostID] != p || !at.After(h.LastSeen) {
 		fm.mu.Unlock()
 		return
 	}
