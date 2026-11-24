@@ -90,6 +90,13 @@ func (fm *FleetManager) ComputerDisplay(ctx context.Context, vmID string) (Guest
 }
 
 func (fm *FleetManager) guestComputer(ctx context.Context, vmID, method, path string, body []byte) (GuestHTTPResponse, error) {
+	return fm.guestHTTP(ctx, vmID, method, path, body, true)
+}
+
+// guestHTTP makes one call to the guest agent. touch says whether the call
+// counts as activity for the idle reaper; a read-only check like doctor does
+// not, or polling it would keep an idle environment alive forever.
+func (fm *FleetManager) guestHTTP(ctx context.Context, vmID, method, path string, body []byte, touch bool) (GuestHTTPResponse, error) {
 	env, err := fm.guestEnvironment(ctx, vmID)
 	if err != nil {
 		return GuestHTTPResponse{}, err
@@ -106,7 +113,9 @@ func (fm *FleetManager) guestComputer(ctx context.Context, vmID, method, path st
 
 	// driving the desktop is activity: a computer-use loop is exactly the
 	// kind of caller the idle reaper must not shoot mid-session.
-	fm.touchActivity(vmID)
+	if touch {
+		fm.touchActivity(vmID)
+	}
 
 	// TLS on the guest is on iff per-VM credentials were minted, which is
 	// also exactly when a guest token exists; fused makes the same decision
