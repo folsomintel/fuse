@@ -418,6 +418,7 @@ func TestBuildSentinels(t *testing.T) {
 		{orchestrator.ErrBuildNotFound, http.StatusNotFound},
 		{orchestrator.ErrBuildConflict, http.StatusConflict},
 		{orchestrator.ErrOtherIncarnation, http.StatusConflict},
+		{fmt.Errorf("exec: %w", &orchestrator.HTTPStatusError{Code: http.StatusPreconditionFailed, Body: "vm x is epoch 2"}), http.StatusConflict},
 		{fmt.Errorf("provision vm fuse-x: %w", &orchestrator.IncarnationError{VMID: "fuse-x", Host: 2, Want: 1}), http.StatusConflict},
 		{orchestrator.ErrBuildNotStarted, http.StatusServiceUnavailable},
 		{fmt.Errorf("destroy: %w: dial tcp: connection refused", orchestrator.ErrRestateUnavailable), http.StatusServiceUnavailable},

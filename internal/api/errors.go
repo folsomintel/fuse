@@ -61,8 +61,10 @@ func classifyFleetError(err error) (status int, code string) {
 		return http.StatusOK, ""
 	case errors.Is(err, orchestrator.ErrTaskAlreadyAssigned),
 		errors.Is(err, orchestrator.ErrBuildConflict),
-		// a later create of the same task id holds the vm on its host.
-		errors.Is(err, orchestrator.ErrOtherIncarnation):
+		// a later create of the same task id holds the vm on its host, or
+		// replaced it while this request waited.
+		errors.Is(err, orchestrator.ErrOtherIncarnation),
+		orchestrator.IsStaleEpoch(err):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrEnvLocked):
 		return http.StatusLocked, CodeLocked

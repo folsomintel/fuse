@@ -58,6 +58,7 @@ from agentlib import (  # noqa: E402
     do_upload,
     epoch_fence_create,
     epoch_record,
+    epoch_touch,
     goarch,
     host_authority,
     host_iface,
@@ -4372,6 +4373,7 @@ class Handler(agentlib.BaseHandler):
                     with vm_lock(vm_id):
                         self._fence(vm_id, method)
                         destroy_vm(vm_id)
+                        epoch_touch(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)

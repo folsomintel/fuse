@@ -174,6 +174,21 @@ class EpochTest(unittest.TestCase):
         self.assertEqual(self.call("POST", "/v1/vm/x/exec", {"cmd": ["true"]}, epoch=9)[0], 200)
         self.assertEqual(self.call("DELETE", "/v1/vm/x")[0], 204)
 
+    def test_fenced_create_adopts_a_pre_fencing_vm(self):
+        self.assertEqual(self.create()[0], 200)
+        code, body = self.create(epoch=5)
+        self.assertEqual(code, 200, body)
+
+    def test_destroy_restarts_the_record_clock(self):
+        self.assertEqual(self.create(epoch=5)[0], 200)
+        rec = fc_agent.agentlib.epoch_dir() / "x"
+        os.utime(rec, (0, 0))
+        self.assertEqual(self.call("DELETE", "/v1/vm/x", epoch=5)[0], 204)
+        self.assertGreater(rec.stat().st_mtime, 0)
+        with mock.patch.object(fc_agent.agentlib, "_epoch_last_sweep", 0.0):
+            fc_agent.agentlib.epoch_sweep()
+        self.assertTrue(rec.exists())
+
     def test_malformed_epoch_is_rejected(self):
         for bad in ("0", "-1", "abc", "1.5"):
             self.assertEqual(self.create(epoch=bad)[0], 400)

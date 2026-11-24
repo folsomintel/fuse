@@ -825,6 +825,15 @@ def epoch_record(vm_id: str, epoch: int) -> None:
     epoch_sweep()
 
 
+def epoch_touch(vm_id: str) -> None:
+    """restart the record's clock when its vm is destroyed, so it is kept
+    EPOCH_TOMBSTONE_TTL from the destroy rather than from the create."""
+    try:
+        os.utime(epoch_dir() / vm_id)
+    except OSError:
+        pass
+
+
 def epoch_sweep(now: float | None = None) -> None:
     """drop the records of vms long destroyed, at most once per interval."""
     global _epoch_last_sweep
@@ -852,11 +861,13 @@ def epoch_fence_create(vm_id: str, existing: dict | None, epoch: int) -> None:
         return
     if existing:
         have = int(existing.get("epoch") or 0)
-        if have == epoch:
+        # a vm made before fencing is not checked: the create spec decides,
+        # as it did before.
+        if have == epoch or have == 0:
             return
         if have > epoch:
             raise HTTPError(412, f"vm {vm_id} is epoch {have}; a create for epoch {epoch} is stale")
-        raise HTTPError(409, f"vm {vm_id} is held by an older incarnation (epoch {have or 'unset'}); destroy it first")
+        raise HTTPError(409, f"vm {vm_id} is held by an older incarnation (epoch {have}); destroy it first")
     seen = epoch_seen(vm_id)
     if epoch <= seen:
         raise HTTPError(412, f"vm {vm_id} was already created at epoch {seen}; a create for epoch {epoch} is stale")

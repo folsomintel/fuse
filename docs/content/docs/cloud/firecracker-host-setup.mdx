@@ -357,8 +357,8 @@ new one. The agent saves the epoch a VM was created with and answers `412` to
 a mutating call for any other epoch. A create gets `412` when its epoch is no
 newer than the newest the host has created under that ID, which the agent keeps
 in `epochs/` under its state dir for 30 days after the VM is destroyed. A
-create for a newer epoch while an older VM still holds the ID gets `409`
-instead of that VM. The VM objects returned by the create, get and list calls
+create for a newer epoch while a VM with an older epoch still holds the ID
+gets `409` instead of that VM. The VM objects returned by the create, get and list calls
 carry `epoch`. Requests without the header, and VMs created before the agent
 supported it, are not checked. Reads are never checked.
 
