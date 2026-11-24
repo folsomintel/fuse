@@ -33,9 +33,13 @@ func writeRetryLater(w http.ResponseWriter, code, message string, details map[st
 }
 
 // retryLater reports whether a fleet error answered with status is a 503 a
-// retry can fix. the guest having no display (ErrGuestUnavailable) is not.
+// retry can fix. the guest having no display (ErrGuestUnavailable) is not,
+// and neither is a hung guest (ErrGuestTimeout), where a retry only stacks
+// another full wait.
 func retryLater(status int, err error) bool {
-	return status == http.StatusServiceUnavailable && !errors.Is(err, orchestrator.ErrGuestUnavailable)
+	return status == http.StatusServiceUnavailable &&
+		!errors.Is(err, orchestrator.ErrGuestUnavailable) &&
+		!errors.Is(err, orchestrator.ErrGuestTimeout)
 }
 
 // writeError writes an Error envelope with the given HTTP status and
@@ -76,6 +80,7 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrHostPinUnschedulable),
 		errors.Is(err, orchestrator.ErrNoLabelMatch),
 		errors.Is(err, orchestrator.ErrGuestUnavailable),
+		errors.Is(err, orchestrator.ErrGuestTimeout),
 		errors.Is(err, orchestrator.ErrBuildNotStarted),
 		errors.Is(err, orchestrator.ErrImageHostFailed),
 		errors.Is(err, orchestrator.ErrRestateUnavailable):

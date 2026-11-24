@@ -176,7 +176,12 @@ func main() {
 	// Reconcile the display with the declared desktop geometry, off the
 	// serving path: a restarting display answers 503 on the computer routes
 	// until it is back, which is the contract those routes already have.
-	go applyDesktop(c.desktop, c.display)
+	// The doctor then runs once into the journal, after the reconcile so it
+	// reports the display as it was left rather than mid-restart.
+	go func() {
+		applyDesktop(c.desktop, c.display)
+		newDoctor(c, probe).logReport()
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -249,6 +254,10 @@ func newHandler(c config, creds *credentials, manifestBytes []byte, secretCount 
 	mux.HandleFunc("/v1/computer/screenshot", protect(creds, comp.handleScreenshot))
 	mux.HandleFunc("/v1/computer/display", protect(creds, comp.handleDisplay))
 	mux.HandleFunc("/v1/computer/stream", protect(creds, comp.handleStream))
+
+	// the guest self-check. bearer-protected: it names the image's tooling
+	// and resource usage, which /health deliberately does not. see doctor.go.
+	mux.HandleFunc("/v1/doctor", protect(creds, newDoctor(c, probe).handle))
 	return mux
 }
 

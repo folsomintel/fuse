@@ -114,6 +114,7 @@ per transition, and ends on its own after a terminal state
 | `drain(vm_id)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `fork(vm_id, options=fuse.ForkOptions(...))` | Create `count` new environments (default 1) seeded from one snapshot of this one; returns `list[EnvironmentInfo]`, every child in order. |
 | `rotate_token(vm_id)` | Re-issue the guest's credentials without recreating the VM. |
+| `doctor(vm_id)` | Run the in-guest self-check; returns a `DoctorReport` with one `DoctorCheck` per piece (identity, dbus, disk, memory, each display piece, healthcheck, dns, egress, clock). A failing check is a `fuse.DOCTOR_FAIL` line, not an exception. |
 
 `fork` always returns a list, even for one child, and a fork a hitl gate held
 comes back as a one-element list once approved. `live=True` resumes every child

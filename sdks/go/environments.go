@@ -567,6 +567,37 @@ func (s *EnvironmentsService) settleComputer(ctx context.Context, held *Interven
 	return settled.Result.Computer, nil
 }
 
+// Doctor runs the environment's in-guest self-check: the guest agent
+// reports on itself, identity, dbus, disk, memory, each display piece, the
+// healthcheck, dns, egress and the clock. A failing check is a DoctorFail
+// line in a successful response, not an error.
+func (s *EnvironmentsService) Doctor(ctx context.Context, vmID string) (*DoctorReport, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("environments service is not configured")
+	}
+	if vmID == "" {
+		return nil, errors.New("vm id is required")
+	}
+	path := "/v1/environments/" + url.PathEscape(vmID) + "/doctor"
+	req, err := s.t.newRequest(ctx, http.MethodGet, path, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.t.do(req)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckResponse(resp); err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var res DoctorReport
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("decode doctor report: %w", err)
+	}
+	return &res, nil
+}
+
 // ComputerDisplay reports whether the environment has a live display and at
 // what geometry. Up is false with a reason on an image with no desktop.
 func (s *EnvironmentsService) ComputerDisplay(ctx context.Context, vmID string) (*ComputerDisplay, error) {

@@ -1,0 +1,79 @@
+---
+title: fuse doctor
+sidebar:
+  icon: stethoscope
+description: Run an environment's in-guest self-check
+---
+
+```bash
+fuse doctor <id> [-o json]
+```
+
+Asks the environment's guest agent (fused) to check the pieces the sandbox
+depends on and prints one `STATUS name: detail` line per check. The checks run
+inside the guest, so they see what the workload sees rather than what the host
+thinks is running. Every check runs whatever the others found.
+
+| Check | What it looks at |
+| --- | --- |
+| `agent` | fused's version and uptime. |
+| `machine-id` | `/etc/machine-id` holds a 32-character hex id. It is printed in full so you can compare environments: two that share an id share the identity journald, dbus and dhcp key on. |
+| `dbus` | The system bus socket exists. A warn, not a fail, since a bring-your-own image can run without one. |
+| `disk` | Free space on the root filesystem. |
+| `memory` | Available memory. |
+| `xdotool`, `scrot` | The desktop tools the computer surface drives are installed. |
+| `display` | The X display is up, and its geometry matches the Fusefile's `desktop` block. |
+| `wm` | The window manager running, and whether it is the one the `desktop` block asked for. |
+| `vnc` | The vnc server behind `fuse desktop` accepts connections. |
+| `healthcheck` | The verdict of the Fusefile's `healthcheck` probe. |
+| `dns` | The guest resolver answers for `example.com`. |
+| `egress` | A plain http request to `example.com` gets an answer, through the egress proxy when the environment has one. |
+| `clock` | The guest clock against the `Date` header of that response. |
+
+Each check is `PASS`, `WARN`, `FAIL` or `SKIP`. `SKIP` means the check doesn't
+apply: the display pieces on an image with no desktop, `healthcheck` when none
+was declared, `dns` under proxied egress (names resolve at the proxy), and
+`clock` when egress is down. A guest agent that doesn't answer within 20s is
+reported as a 503 `unavailable` error rather than a report. On a desktop image each display piece is reported
+on its own, so a missing `scrot` and a dead display show as two lines, not one.
+
+A display at the wrong geometry, a window manager other than the one declared,
+or a probe still in its start period is a `WARN`. Disk or memory warns under
+10% free and fails under 2%. The clock warns past 5s of skew and fails past 5
+minutes.
+
+The last line is the overall status: the worst check, with `SKIP` counting as
+`PASS`. The command exits 1 when it is `FAIL`, so it can gate a script; `WARN`
+exits 0.
+
+```bash
+$ fuse doctor fuse-abc123
+PASS agent: fused v1.5.0, up 12m4s
+PASS machine-id: 4c1f0e8b2a7d4e5f9a0b1c2d3e4f5a6b
+PASS dbus: system bus at /run/dbus/system_bus_socket
+PASS disk: 7.1GiB free of 9.8GiB on /
+PASS memory: 1.4GiB available of 1.9GiB
+PASS xdotool: installed
+PASS scrot: installed
+WARN display: :1 1024x768, desktop declares 1280x800
+PASS wm: xfwm4
+FAIL vnc: vnc server not reachable at 127.0.0.1:5900: dial tcp 127.0.0.1:5900: connect: connection refused
+SKIP healthcheck: no healthcheck declared
+PASS dns: resolved example.com
+PASS egress: reached example.com direct
+PASS clock: 0s off example.com
+
+FAIL fused v1.5.0
+```
+
+fused also runs the checks once at boot and writes the same lines to its
+journal, prefixed `doctor:`, so a guest that comes up broken says so without
+anyone asking: `journalctl -u fused | grep doctor:`. The boot run skips `dns`,
+`egress` and `clock`, so starting or forking an environment sends nothing off
+the guest; those three run only when you call `fuse doctor`. On a network with
+no route to `example.com`, `egress` fails and the command exits 1.
+
+The environment must be running. An image baked with a fused older than this
+command answers 501; rebuild it to pick up the check. The same report is
+`GET /v1/environments/{vmId}/doctor` in the [HTTP API](/reference/api) and
+`doctor` on the environments service in every SDK.

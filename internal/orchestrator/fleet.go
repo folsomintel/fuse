@@ -109,6 +109,13 @@ var (
 	// provider, and it can clear on its own (the desktop units restarting).
 	ErrGuestUnavailable = errors.New("guest surface unavailable")
 
+	// ErrGuestTimeout is returned by GuestDoctor when the guest agent did
+	// not answer within the doctor budget: the vm is running but fused is
+	// wedged, which is the very case doctor is asked about. It is a 503, not
+	// a 500, and carries no Retry-After, since an automatic retry would only
+	// stack another full budget on a guest that is already hung.
+	ErrGuestTimeout = errors.New("guest agent did not answer in time")
+
 	// ErrGPUUnsupported is returned by CreateSnapshot and ForkEnvironment
 	// when the target vm holds a gpu passthrough device. A vfio device
 	// cannot be checkpointed (d4), so this is a permanent property of the

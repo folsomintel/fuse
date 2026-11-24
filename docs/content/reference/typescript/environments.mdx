@@ -112,6 +112,7 @@ cancel early. See the full walkthrough in
 | `drain(vmId)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `fork(vmId, { reuse_snapshot_id, comment, live, count })` | Create `count` new environments (default 1) seeded from one snapshot of this one; resolves to `EnvironmentInfo[]`, every child in order. |
 | `rotateToken(vmId)` | Re-issue the guest's credentials without recreating the VM. |
+| `doctor(vmId)` | Run the in-guest self-check; resolves to a `DoctorReport` with one `DoctorCheck` per piece (identity, dbus, disk, memory, each display piece, healthcheck, dns, egress, clock). A failing check is a `"fail"` line, not a rejection. |
 
 The two option bags differ in case on purpose. `list` takes a client-side
 filter object, so it is camelCase; `fork` sends its object straight through as

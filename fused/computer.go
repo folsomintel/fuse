@@ -121,6 +121,16 @@ type computer struct {
 	vncAddr string
 	run     func(ctx context.Context, argv []string) (string, error)
 	ready   func() error
+	// pieces reports each thing the surface needs, one by one; ready is
+	// built on it. a field for the same reason as run.
+	pieces func() []displayPiece
+}
+
+// displayPiece is one thing the computer surface depends on, with the reason
+// it is missing, or a nil err when it is present.
+type displayPiece struct {
+	name string
+	err  error
 }
 
 func newComputer(display string) *computer {
@@ -129,6 +139,7 @@ func newComputer(display string) *computer {
 	}
 	c := &computer{display: display, vncAddr: vncAddr}
 	c.run = c.execRun
+	c.pieces = c.checkPieces
 	c.ready = c.checkReady
 	return c
 }
@@ -143,20 +154,38 @@ func (c *computer) socketPath() string {
 	return "/tmp/.X11-unix/X" + num
 }
 
-// checkReady reports why the surface cannot serve, or nil when it can. The
-// checks name the missing piece so a caller on a non-desktop image learns
-// what is absent rather than getting a bare 503.
-func (c *computer) checkReady() error {
-	if _, err := exec.LookPath("xdotool"); err != nil {
-		return fmt.Errorf("xdotool not installed; this is not a desktop image")
+// checkPieces checks every piece the surface needs and reports each one, so
+// a caller learns everything that is missing rather than the first thing.
+func (c *computer) checkPieces() []displayPiece {
+	out := make([]displayPiece, 0, 3)
+	for _, bin := range []string{"xdotool", "scrot"} {
+		p := displayPiece{name: bin}
+		if _, err := exec.LookPath(bin); err != nil {
+			p.err = fmt.Errorf("%s not installed; this is not a desktop image", bin)
+		}
+		out = append(out, p)
 	}
-	if _, err := exec.LookPath("scrot"); err != nil {
-		return fmt.Errorf("scrot not installed; this is not a desktop image")
-	}
+	p := displayPiece{name: "display"}
 	if _, err := os.Stat(c.socketPath()); err != nil {
-		return fmt.Errorf("display %s is not up (no socket at %s)", c.display, c.socketPath())
+		p.err = fmt.Errorf("display %s is not up (no socket at %s)", c.display, c.socketPath())
 	}
-	return nil
+	return append(out, p)
+}
+
+// checkReady reports why the surface cannot serve, or nil when it can. Every
+// missing piece is named, so a caller on a non-desktop image learns what is
+// absent rather than getting a bare 503.
+func (c *computer) checkReady() error {
+	var missing []string
+	for _, p := range c.pieces() {
+		if p.err != nil {
+			missing = append(missing, p.err.Error())
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(missing, "; "))
 }
 
 // execRun executes one argv against the display and returns its stdout.

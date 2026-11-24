@@ -7,6 +7,7 @@ import {
 import type {
   ComputerAction,
   ComputerDisplay,
+  DoctorReport,
   ComputerResult,
   ComputerToolResult,
   CreateRequest,
@@ -572,6 +573,19 @@ export class EnvironmentsService {
         body: { note: body.note || undefined },
         signal: opts.signal,
       },
+    );
+  }
+
+  /** Run the environment's in-guest self-check: the guest agent reports on
+   * itself, identity, dbus, disk, memory, each display piece, the
+   * healthcheck, dns, egress and the clock. A failing check is a "fail" line in a successful
+   * response, not a thrown error. */
+  async doctor(vmId: string, opts: CallOptions = {}): Promise<DoctorReport> {
+    requireArg(vmId, "vm id");
+    return this.t.json<DoctorReport>(
+      "GET",
+      `/v1/environments/${encodeURIComponent(vmId)}/doctor`,
+      { signal: opts.signal },
     );
   }
 
