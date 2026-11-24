@@ -181,11 +181,12 @@ export interface ComputerDisplay {
 
 /** A doctor check's outcome. "skip" means the check does not apply (display
  * checks on an image with no desktop); a report's status is never "skip". */
-export type DoctorStatus = "ok" | "warn" | "fail" | "skip";
+export type DoctorStatus = "pass" | "warn" | "fail" | "skip";
 
 /** DoctorCheck is one line of an environment's in-guest self-check. name is
- * today one of agent, display, wm, vnc, healthcheck, disk or memory; the
- * guest agent owns the list, so treat an unknown name as one more line. */
+ * today one of agent, machine-id, dbus, disk, memory, xdotool, scrot,
+ * display, wm, vnc, healthcheck, dns, egress or clock; the guest agent owns
+ * the list, so treat an unknown name as one more line. */
 export interface DoctorCheck {
   name: string;
   status: DoctorStatus;
@@ -193,7 +194,7 @@ export interface DoctorCheck {
 }
 
 /** DoctorReport is the guest agent's self-check. status is the worst of the
- * checks' statuses, with skip counting as ok. */
+ * checks' statuses, with skip counting as pass. */
 export interface DoctorReport {
   status: DoctorStatus;
   vm_id?: string;

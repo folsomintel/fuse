@@ -1068,11 +1068,13 @@ paths:
       summary: Run the environment's in-guest self-check
       description: |
         Ask the guest agent (fused) to check the pieces the sandbox depends
-        on and report each one: `agent`, `display`, `wm`, `vnc`,
-        `healthcheck`, `disk` and `memory`. Each check is `ok`, `warn`,
-        `fail` or `skip` (it does not apply: display checks on an image with
-        no desktop, `healthcheck` when none was declared), and `status` is
-        the worst of them with `skip` counting as `ok`.
+        on and report each one: `agent`, `machine-id`, `dbus`, `disk`,
+        `memory`, the display pieces (`xdotool`, `scrot`, `display`, `wm`,
+        `vnc`), `healthcheck`, `dns`, `egress` and `clock`. Every check runs
+        whatever the others found. Each is `pass`, `warn`, `fail` or `skip`
+        (it does not apply: display pieces on an image with no desktop,
+        `healthcheck` when none was declared, `dns` under proxied egress),
+        and `status` is the worst of them with `skip` counting as `pass`.
 
         Answers 200 whatever the checks found, since the report is the
         answer. A failing check is a `fail` line, not an error status.
@@ -3302,9 +3304,10 @@ components:
         name:
           type: string
           description: |
-            Which piece was checked: today `agent`, `display`, `wm`, `vnc`,
-            `healthcheck`, `disk` or `memory`. The guest agent owns the list,
-            so treat an unknown name as one more line, not an error.
+            Which piece was checked: today `agent`, `machine-id`, `dbus`,
+            `disk`, `memory`, `xdotool`, `scrot`, `display`, `wm`, `vnc`,
+            `healthcheck`, `dns`, `egress` or `clock`. The guest agent owns
+            the list, so treat an unknown name as one more line, not an error.
         status:
           $ref: "#/components/schemas/DoctorStatus"
         message:
@@ -3314,7 +3317,7 @@ components:
 
     DoctorStatus:
       type: string
-      enum: [ok, warn, fail, skip]
+      enum: [pass, warn, fail, skip]
       description: |
         A check's outcome. `skip` means the check does not apply; the
         report-level status is never `skip`.

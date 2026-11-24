@@ -13,8 +13,8 @@ import (
 const guestDoctorTimeout = 20 * time.Second
 
 // GuestDoctor relays the guest agent's self-check (fused's GET /v1/doctor):
-// agent, display, window manager, vnc, healthcheck, disk and memory, each
-// graded ok/warn/fail/skip. Like ComputerDisplay the body passes through
+// identity, dbus, disk, memory, each display piece, the healthcheck, dns,
+// egress and the clock, each graded pass/warn/fail/skip. Like ComputerDisplay the body passes through
 // verbatim, since the check list is owned by the guest agent and grows with
 // the image rather than with the control plane.
 //

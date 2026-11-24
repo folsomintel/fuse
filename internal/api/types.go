@@ -554,7 +554,7 @@ type ComputerDisplay struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// DoctorCheck is one line of an environment's self-check. Status is ok,
+// DoctorCheck is one line of an environment's self-check. Status is pass,
 // warn, fail or skip (the check does not apply, e.g. display checks on an
 // image with no desktop).
 type DoctorCheck struct {
@@ -565,7 +565,7 @@ type DoctorCheck struct {
 
 // DoctorReport is the body of GET /v1/environments/{vmId}/doctor, produced
 // by the guest agent. Status is the worst of the checks' statuses, with skip
-// counting as ok.
+// counting as pass.
 type DoctorReport struct {
 	Status  string        `json:"status"`
 	VMID    string        `json:"vm_id,omitempty"`

@@ -19,7 +19,7 @@ def test_doctor_reads_report() -> None:
                 "vm_id": "vm-1",
                 "version": "v1.4.0",
                 "checks": [
-                    {"name": "display", "status": "ok", "message": ":1 1280x800"},
+                    {"name": "display", "status": "pass", "message": ":1 1280x800"},
                     {"name": "vnc", "status": "fail", "message": "vnc server not reachable"},
                     {"name": "healthcheck", "status": "skip"},
                 ],

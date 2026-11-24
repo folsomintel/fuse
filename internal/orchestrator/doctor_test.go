@@ -20,7 +20,7 @@ func TestGuestDoctorIsNotActivity(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok","version":"v1","checks":[]}`))
+		_, _ = w.Write([]byte(`{"status":"pass","version":"v1","checks":[]}`))
 	}))
 	defer srv.Close()
 	mockEnvOf(fm, vmID).url = strings.TrimPrefix(srv.URL, "http://")

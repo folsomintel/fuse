@@ -14,7 +14,7 @@ string_enum! {
     /// [`DoctorReport::status`].
     pub enum DoctorStatus {
         /// The check passed.
-        Ok => "ok",
+        Pass => "pass",
         /// Something is off but not broken, e.g. the display is up at a
         /// different geometry from the one declared.
         Warn => "warn",
@@ -27,8 +27,9 @@ string_enum! {
 }
 
 /// One line of an environment's in-guest self-check. `name` is today one
-/// of agent, display, wm, vnc, healthcheck, disk or memory; the guest agent
-/// owns the list, so treat an unknown name as one more line.
+/// of agent, machine-id, dbus, disk, memory, xdotool, scrot, display, wm,
+/// vnc, healthcheck, dns, egress or clock; the guest agent owns the list, so
+/// treat an unknown name as one more line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoctorCheck {
     pub name: String,
@@ -38,7 +39,7 @@ pub struct DoctorCheck {
 }
 
 /// The guest agent's self-check. `status` is the worst of the checks'
-/// statuses, with skip counting as ok.
+/// statuses, with skip counting as pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DoctorReport {
     pub status: DoctorStatus,
@@ -53,7 +54,7 @@ pub struct DoctorReport {
 impl Environments {
     /// Runs the environment's in-guest self-check: the guest agent reports
     /// on itself, the display, window manager and vnc server, the
-    /// healthcheck, disk and memory. A failing check is a
+    /// healthcheck, disk, memory, dns, egress and the clock. A failing check is a
     /// [`DoctorStatus::Fail`] line in an `Ok` report, not an `Err`.
     pub async fn doctor(&self, vm_id: &str) -> Result<DoctorReport, Error> {
         require(vm_id, "vm id")?;

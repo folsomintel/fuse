@@ -27,7 +27,7 @@ HEALTH_FAILING = "failing"
 # outcomes carried in DoctorCheck.status and DoctorReport.status. skip means the
 # check does not apply (display checks on an image with no desktop); a report's
 # status is never skip.
-DOCTOR_OK = "ok"
+DOCTOR_PASS = "pass"
 DOCTOR_WARN = "warn"
 DOCTOR_FAIL = "fail"
 DOCTOR_SKIP = "skip"
@@ -302,8 +302,9 @@ class ComputerDisplay(_Model):
 
 class DoctorCheck(_Model):
     # one line of an environment's in-guest self-check. name is today one of
-    # agent, display, wm, vnc, healthcheck, disk or memory; the guest agent owns
-    # the list, so treat an unknown name as one more line.
+    # agent, machine-id, dbus, disk, memory, xdotool, scrot, display, wm, vnc,
+    # healthcheck, dns, egress or clock; the guest agent owns the list, so treat
+    # an unknown name as one more line.
     name: str
     status: str
     message: str = ""
@@ -311,7 +312,7 @@ class DoctorCheck(_Model):
 
 class DoctorReport(_Model):
     # the guest agent's self-check. status is the worst of the checks'
-    # statuses, with skip counting as ok.
+    # statuses, with skip counting as pass.
     status: str
     vm_id: str = ""
     version: str = ""

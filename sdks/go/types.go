@@ -232,15 +232,16 @@ type ComputerDisplay struct {
 // DoctorReport.Status. DoctorSkip means the check does not apply (display
 // checks on an image with no desktop); a report's Status is never skip.
 const (
-	DoctorOK   = "ok"
+	DoctorPass = "pass"
 	DoctorWarn = "warn"
 	DoctorFail = "fail"
 	DoctorSkip = "skip"
 )
 
 // DoctorCheck is one line of an environment's in-guest self-check. Name is
-// today one of agent, display, wm, vnc, healthcheck, disk or memory; the
-// guest agent owns the list, so treat an unknown name as one more line.
+// today one of agent, machine-id, dbus, disk, memory, xdotool, scrot,
+// display, wm, vnc, healthcheck, dns, egress or clock; the guest agent owns
+// the list, so treat an unknown name as one more line.
 type DoctorCheck struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"`
@@ -248,7 +249,7 @@ type DoctorCheck struct {
 }
 
 // DoctorReport is the guest agent's self-check. Status is the worst of the
-// checks' statuses, with skip counting as ok.
+// checks' statuses, with skip counting as pass.
 type DoctorReport struct {
 	Status  string        `json:"status"`
 	VMID    string        `json:"vm_id,omitempty"`

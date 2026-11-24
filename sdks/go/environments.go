@@ -569,7 +569,7 @@ func (s *EnvironmentsService) settleComputer(ctx context.Context, held *Interven
 
 // Doctor runs the environment's in-guest self-check: the guest agent
 // reports on itself, the display, window manager and vnc server, the
-// healthcheck, disk and memory. A failing check is a DoctorFail line in a
+// healthcheck, disk, memory, dns, egress and the clock. A failing check is a DoctorFail line in a
 // successful response, not an error.
 func (s *EnvironmentsService) Doctor(ctx context.Context, vmID string) (*DoctorReport, error) {
 	if s == nil || s.t == nil {

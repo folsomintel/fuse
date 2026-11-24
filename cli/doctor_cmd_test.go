@@ -45,7 +45,7 @@ func TestDoctorPrintsChecks(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("warn must exit 0, got %d", code)
 	}
-	for _, want := range []string{"display", "desktop declares 1280x800", "healthcheck", "skip"} {
+	for _, want := range []string{"WARN display: :1 1024x768, desktop declares 1280x800", "SKIP healthcheck: no healthcheck declared"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output missing %q:\n%s", want, out)
 		}

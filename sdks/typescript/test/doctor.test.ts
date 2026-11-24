@@ -19,7 +19,7 @@ describe("environments.doctor", () => {
           vm_id: "vm-1",
           version: "v1.4.0",
           checks: [
-            { name: "display", status: "ok", message: ":1 1280x800" },
+            { name: "display", status: "pass", message: ":1 1280x800" },
             { name: "vnc", status: "fail", message: "vnc server not reachable" },
             { name: "healthcheck", status: "skip" },
           ],
@@ -33,7 +33,7 @@ describe("environments.doctor", () => {
     expect(res.checks).toHaveLength(3);
     expect(res.checks[0]).toEqual({
       name: "display",
-      status: "ok",
+      status: "pass",
       message: ":1 1280x800",
     });
     expect(res.checks[2]?.status).toBe("skip");

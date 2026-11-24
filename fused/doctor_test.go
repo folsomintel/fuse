@@ -1,36 +1,57 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
-// testDoctor returns a doctor on a healthy desktop: the display answers
-// 1024x768, the wm is recorded, vnc dials, and memory is half free.
+var testNow = time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+
+// testDoctor returns a doctor on a healthy desktop with direct egress: every
+// display piece present at 1024x768, the wm recorded, vnc dialing, dns and
+// egress answering, the clock in step, and disk and memory half free.
 func testDoctor(t *testing.T) *doctor {
 	t.Helper()
 	comp, _ := testComputer(t)
+	comp.pieces = func() []displayPiece {
+		return []displayPiece{{name: "xdotool"}, {name: "scrot"}, {name: "display"}}
+	}
 	dir := t.TempDir()
-	meminfo := filepath.Join(dir, "meminfo")
-	if err := os.WriteFile(meminfo, []byte("MemTotal:       2048000 kB\nMemFree:  100 kB\nMemAvailable:   1024000 kB\n"), 0o644); err != nil {
-		t.Fatal(err)
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
 	return &doctor{
-		vmID:         "vm-1",
-		comp:         comp,
-		desktopPath:  filepath.Join(dir, "desktop.json"),
-		meminfoPath:  meminfo,
-		rootPath:     dir,
-		desktopImage: func() bool { return true },
-		liveWM:       func() string { return "xfwm4" },
-		dial:         func(string) error { return nil },
-		diskUsage:    func(string) (uint64, uint64, error) { return 50 << 30, 100 << 30, nil },
+		vmID:          "vm-1",
+		comp:          comp,
+		desktopPath:   filepath.Join(dir, "desktop.json"),
+		egressPath:    filepath.Join(dir, "egress.json"),
+		meminfoPath:   write("meminfo", "MemTotal:       2048000 kB\nMemFree:  100 kB\nMemAvailable:   1024000 kB\n"),
+		machineIDPath: write("machine-id", "0123456789abcdef0123456789abcdef\n"),
+		dbusPath:      write("bus", ""),
+		rootPath:      dir,
+		liveWM:        func() string { return "xfwm4" },
+		dial:          func(string) error { return nil },
+		diskUsage:     func(string) (uint64, uint64, error) { return 50 << 30, 100 << 30, nil },
+		lookup:        func(context.Context, string) error { return nil },
+		fetch: func(context.Context, string, *url.URL) (time.Time, error) {
+			return testNow.Add(-time.Second), nil
+		},
+		now: func() time.Time { return testNow },
 	}
 }
 
@@ -44,47 +65,85 @@ func checksByName(r doctorReport) map[string]doctorCheck {
 
 func TestDoctorHealthyDesktop(t *testing.T) {
 	r := testDoctor(t).report(context.Background())
-	if r.Status != checkOK {
-		t.Fatalf("status = %s, want ok: %+v", r.Status, r.Checks)
+	if r.Status != checkPass {
+		t.Fatalf("status = %s, want pass: %+v", r.Status, r.Checks)
 	}
-	got := checksByName(r)
-	for _, name := range []string{"agent", "display", "wm", "vnc", "healthcheck", "disk", "memory"} {
-		if _, ok := got[name]; !ok {
-			t.Fatalf("missing check %q in %+v", name, r.Checks)
+	want := []string{"agent", "machine-id", "dbus", "disk", "memory", "xdotool", "scrot", "display", "wm", "vnc", "healthcheck", "dns", "egress", "clock"}
+	if len(r.Checks) != len(want) {
+		t.Fatalf("checks = %+v, want %v", r.Checks, want)
+	}
+	for i, name := range want {
+		if r.Checks[i].Name != name {
+			t.Fatalf("check %d = %q, want %q", i, r.Checks[i].Name, name)
 		}
 	}
+	got := checksByName(r)
 	if got["display"].Message != ":1 1024x768" {
 		t.Fatalf("display message = %q", got["display"].Message)
+	}
+	if got["machine-id"].Message != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("machine-id message = %q", got["machine-id"].Message)
 	}
 	if got["healthcheck"].Status != checkSkip {
 		t.Fatalf("healthcheck with no probe = %s, want skip", got["healthcheck"].Status)
 	}
 }
 
-func TestDoctorSkipsDisplayOnHeadlessImage(t *testing.T) {
+func TestDoctorSkipsDesktopOnHeadlessImage(t *testing.T) {
 	d := testDoctor(t)
-	d.desktopImage = func() bool { return false }
+	d.comp.pieces = func() []displayPiece {
+		return []displayPiece{
+			{name: "xdotool", err: errors.New("xdotool not installed")},
+			{name: "scrot", err: errors.New("scrot not installed")},
+			{name: "display", err: errors.New("display :1 is not up")},
+		}
+	}
 	r := d.report(context.Background())
-	if r.Status != checkOK {
+	if r.Status != checkPass {
 		t.Fatalf("headless image must not fail doctor: %+v", r.Checks)
 	}
-	for _, name := range []string{"display", "wm", "vnc"} {
-		if s := checksByName(r)[name].Status; s != checkSkip {
-			t.Fatalf("%s = %s, want skip", name, s)
+	for _, name := range []string{"xdotool", "scrot", "display", "wm", "vnc"} {
+		if c := checksByName(r)[name]; c.Status != checkSkip || c.Message != "not a desktop image" {
+			t.Fatalf("%s = %+v, want skip", name, c)
 		}
 	}
 }
 
-func TestDoctorDisplayDown(t *testing.T) {
+// a desktop image missing one piece reports that piece, not just the first
+// failure, and keeps going.
+func TestDoctorReportsEachDisplayPiece(t *testing.T) {
 	d := testDoctor(t)
-	d.comp.ready = func() error { return errors.New("display :1 is not up") }
-	r := d.report(context.Background())
-	got := checksByName(r)
-	if r.Status != checkFail || got["display"].Status != checkFail {
-		t.Fatalf("dead display should fail: %+v", r.Checks)
+	d.comp.pieces = func() []displayPiece {
+		return []displayPiece{
+			{name: "xdotool"},
+			{name: "scrot", err: errors.New("scrot not installed")},
+			{name: "display", err: errors.New("display :1 is not up")},
+		}
 	}
-	if got["vnc"].Status != checkSkip || got["wm"].Status != checkSkip {
-		t.Fatalf("wm/vnc cannot be judged without a display: %+v", r.Checks)
+	got := checksByName(d.report(context.Background()))
+	if got["xdotool"].Status != checkPass || got["scrot"].Status != checkFail || got["display"].Status != checkFail {
+		t.Fatalf("pieces = %+v %+v %+v", got["xdotool"], got["scrot"], got["display"])
+	}
+	if got["wm"].Status != checkSkip || got["vnc"].Status != checkSkip {
+		t.Fatalf("wm/vnc cannot be judged without a display: %+v %+v", got["wm"], got["vnc"])
+	}
+	if got["disk"].Status != checkPass || got["egress"].Status != checkPass {
+		t.Fatal("a display failure must not stop the later checks")
+	}
+}
+
+func TestCheckReadyNamesEveryMissingPiece(t *testing.T) {
+	c := newComputer(":1")
+	c.pieces = func() []displayPiece {
+		return []displayPiece{
+			{name: "xdotool", err: errors.New("xdotool not installed")},
+			{name: "scrot"},
+			{name: "display", err: errors.New("display :1 is not up")},
+		}
+	}
+	err := c.ready()
+	if err == nil || err.Error() != "xdotool not installed; display :1 is not up" {
+		t.Fatalf("ready = %v", err)
 	}
 }
 
@@ -116,7 +175,7 @@ func TestDoctorVNCDown(t *testing.T) {
 
 func TestDoctorHealthcheckVerdicts(t *testing.T) {
 	for state, want := range map[string]string{
-		healthPassing:  checkOK,
+		healthPassing:  checkPass,
 		healthStarting: checkWarn,
 		healthFailing:  checkFail,
 	} {
@@ -129,6 +188,135 @@ func TestDoctorHealthcheckVerdicts(t *testing.T) {
 		if r.Status != want {
 			t.Fatalf("probe %s -> overall %s, want %s", state, r.Status, want)
 		}
+	}
+}
+
+func TestDoctorMachineID(t *testing.T) {
+	for name, body := range map[string]string{"empty": "", "short": "abc\n", "not hex": strings.Repeat("z", 32)} {
+		d := testDoctor(t)
+		if err := os.WriteFile(d.machineIDPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if s := checksByName(d.report(context.Background()))["machine-id"].Status; s != checkFail {
+			t.Fatalf("%s machine-id = %s, want fail", name, s)
+		}
+	}
+	d := testDoctor(t)
+	d.machineIDPath = filepath.Join(t.TempDir(), "missing")
+	if s := checksByName(d.report(context.Background()))["machine-id"].Status; s != checkFail {
+		t.Fatalf("missing machine-id = %s, want fail", s)
+	}
+}
+
+func TestDoctorNoDBusIsWarn(t *testing.T) {
+	d := testDoctor(t)
+	d.dbusPath = filepath.Join(t.TempDir(), "missing")
+	if s := checksByName(d.report(context.Background()))["dbus"].Status; s != checkWarn {
+		t.Fatalf("dbus = %s, want warn", s)
+	}
+}
+
+func TestDoctorNetworkDown(t *testing.T) {
+	d := testDoctor(t)
+	d.lookup = func(context.Context, string) error { return errors.New("no such host") }
+	d.fetch = func(context.Context, string, *url.URL) (time.Time, error) {
+		return time.Time{}, errors.New("connection refused")
+	}
+	got := checksByName(d.report(context.Background()))
+	if got["dns"].Status != checkFail || got["egress"].Status != checkFail {
+		t.Fatalf("dns/egress = %+v %+v", got["dns"], got["egress"])
+	}
+	if got["clock"].Status != checkSkip {
+		t.Fatalf("clock without egress = %+v, want skip", got["clock"])
+	}
+}
+
+func TestDoctorClockSkew(t *testing.T) {
+	for skew, want := range map[time.Duration]string{
+		2 * time.Second:   checkPass,
+		-30 * time.Second: checkWarn,
+		10 * time.Minute:  checkFail,
+	} {
+		d := testDoctor(t)
+		d.fetch = func(context.Context, string, *url.URL) (time.Time, error) { return testNow.Add(-skew), nil }
+		if c := checksByName(d.report(context.Background()))["clock"]; c.Status != want {
+			t.Fatalf("skew %s = %+v, want %s", skew, c, want)
+		}
+	}
+}
+
+// under proxied egress the guest resolver is off the path, and the egress
+// request must go through the proxy the workload uses.
+func TestDoctorProxiedEgress(t *testing.T) {
+	d := testDoctor(t)
+	if err := os.WriteFile(d.egressPath, []byte(`{"mode":"proxy","protocol":"socks5","endpoint":"socks5://10.0.0.1:1080"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotProxy *url.URL
+	d.lookup = func(context.Context, string) error {
+		t.Error("dns must not be checked under proxied egress")
+		return nil
+	}
+	d.fetch = func(_ context.Context, _ string, proxy *url.URL) (time.Time, error) {
+		gotProxy = proxy
+		return testNow, nil
+	}
+	got := checksByName(d.report(context.Background()))
+	if got["dns"].Status != checkSkip {
+		t.Fatalf("dns = %+v, want skip", got["dns"])
+	}
+	if gotProxy == nil || gotProxy.String() != "socks5://10.0.0.1:1080" {
+		t.Fatalf("egress went via %v, want the socks5 proxy", gotProxy)
+	}
+	if got["egress"].Message != "reached example.com via socks5://10.0.0.1:1080" {
+		t.Fatalf("egress message = %q", got["egress"].Message)
+	}
+}
+
+func TestEgressProxy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "egress.json")
+	if u, err := egressProxy(path); u != nil || err != nil {
+		t.Fatalf("missing file = %v %v, want direct", u, err)
+	}
+	for body, want := range map[string]string{
+		`{"mode":"direct"}`: "",
+		`{"mode":"proxy","protocol":"http","endpoint":"10.0.0.1:3128"}`: "http://10.0.0.1:3128",
+		`{"mode":"proxy","endpoint":"10.0.0.1:1080"}`:                   "socks5://10.0.0.1:1080",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		u, err := egressProxy(path)
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		if got := ""; u != nil {
+			got = u.String()
+			if got != want {
+				t.Fatalf("%s -> %s, want %s", body, got, want)
+			}
+		} else if want != "" {
+			t.Fatalf("%s -> direct, want %s", body, want)
+		}
+	}
+	if err := os.WriteFile(path, []byte(`{"mode":"proxy"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := egressProxy(path); err == nil {
+		t.Fatal("a proxied policy with no endpoint must be an error")
+	}
+}
+
+func TestFetchDateReadsHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Date", testNow.Format(http.TimeFormat))
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	got, err := fetchDate(context.Background(), srv.URL, nil)
+	if err != nil || !got.Equal(testNow) {
+		t.Fatalf("fetchDate = %v %v, want %v (any status counts as reached)", got, err, testNow)
 	}
 }
 
@@ -162,7 +350,7 @@ func TestFreeStatus(t *testing.T) {
 		free, total uint64
 		want        string
 	}{
-		{50, 100, checkOK},
+		{50, 100, checkPass},
 		{5, 100, checkWarn},
 		{1, 100, checkFail},
 		{0, 0, checkWarn},
@@ -174,8 +362,30 @@ func TestFreeStatus(t *testing.T) {
 	}
 }
 
+func TestDoctorLogReportWritesOneLinePerCheck(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	d := testDoctor(t)
+	d.dial = func(string) error { return errors.New("refused") }
+	d.logReport()
+	out := buf.String()
+	for _, want := range []string{"doctor: PASS display: :1 1024x768", "doctor: FAIL vnc: vnc server not reachable", "doctor: SKIP healthcheck: no healthcheck declared", "doctor: FAIL\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("log missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestDoctorRouteIsProtected(t *testing.T) {
-	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1"}, newCredentials("secret-token"), nil, 0, false, nil))
+	// an unparseable egress file keeps the real doctor off the network: the
+	// egress check fails on the file instead of dialing out from ci.
+	egress := filepath.Join(t.TempDir(), "egress.json")
+	if err := os.WriteFile(egress, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(newHandler(config{vmID: "fuse-1", egress: egress}, newCredentials("secret-token"), nil, 0, false, nil))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "/v1/doctor")

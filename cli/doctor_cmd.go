@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/spf13/cobra"
 
 	fuse "github.com/folsomintel/fuse/sdks/go"
@@ -11,12 +14,13 @@ func newDoctorCmd() *cobra.Command {
 		Use:   "doctor <id>",
 		Short: "Run an environment's in-guest self-check",
 		Long: "Ask an environment's guest agent to check the pieces the sandbox depends\n" +
-			"on and print one line per check: the agent itself, the display, window\n" +
-			"manager and vnc server (desktop images), the healthcheck, disk and memory.\n\n" +
+			"on and print one line per check: identity, dbus, disk and memory, each\n" +
+			"display piece (desktop images), the healthcheck, dns, egress and the clock.\n\n" +
 			"    fuse doctor vm-1\n" +
 			"    fuse doctor vm-1 -o json\n\n" +
-			"Each check is ok, warn, fail or skip (it does not apply here). The command\n" +
-			"exits 1 when any check fails, so it can gate a script.",
+			"Each check is PASS, WARN, FAIL or SKIP (it does not apply here), and every\n" +
+			"check runs whatever the others found. The command exits 1 when any check\n" +
+			"fails, so it can gate a script.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cl, _, err := app.client()
@@ -42,27 +46,33 @@ func newDoctorCmd() *cobra.Command {
 	}
 }
 
+// renderDoctor prints one `PASS name: detail` line per check, the same lines
+// fused writes to its journal at boot, then the overall verdict.
 func renderDoctor(rep *fuse.DoctorReport) {
-	rows := make([][]string, 0, len(rep.Checks))
 	for _, c := range rep.Checks {
-		rows = append(rows, []string{c.Name, doctorStyle(c.Status), dash(c.Message)})
+		line := doctorStyle(c.Status) + " " + c.Name
+		if c.Message != "" {
+			line += ": " + c.Message
+		}
+		fmt.Println(line)
 	}
-	renderTable([]string{"check", "status", "detail"}, rows)
-	infof("%s  %s", doctorStyle(rep.Status), styleFaint.Render("fused "+dash(rep.Version)))
+	fmt.Println()
+	fmt.Println(doctorStyle(rep.Status) + " " + styleFaint.Render("fused "+dash(rep.Version)))
 }
 
-// doctorStyle colors a check outcome.
+// doctorStyle renders a check outcome as its padded uppercase label, colored.
 func doctorStyle(status string) string {
+	label := fmt.Sprintf("%-4s", strings.ToUpper(status))
 	switch status {
-	case fuse.DoctorOK:
-		return styleGood.Render(status)
+	case fuse.DoctorPass:
+		return styleGood.Render(label)
 	case fuse.DoctorWarn:
-		return styleWarn.Render(status)
+		return styleWarn.Render(label)
 	case fuse.DoctorFail:
-		return styleBad.Render(status)
+		return styleBad.Render(label)
 	case fuse.DoctorSkip:
-		return styleFaint.Render(status)
+		return styleFaint.Render(label)
 	default:
-		return status
+		return label
 	}
 }

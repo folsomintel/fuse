@@ -16,7 +16,7 @@ async fn doctor_reads_the_report() {
             "vm_id": "vm-1",
             "version": "v1.4.0",
             "checks": [
-                {"name": "display", "status": "ok", "message": ":1 1280x800"},
+                {"name": "display", "status": "pass", "message": ":1 1280x800"},
                 {"name": "vnc", "status": "fail", "message": "vnc server not reachable"},
                 {"name": "healthcheck", "status": "skip"},
                 {"name": "gpu", "status": "degraded"},
