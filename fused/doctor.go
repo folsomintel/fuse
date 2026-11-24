@@ -107,6 +107,10 @@ type doctor struct {
 	// response's Date header.
 	fetch func(ctx context.Context, target string, proxy *url.URL) (time.Time, error)
 	now   func() time.Time
+	// offline skips dns, egress and clock. The boot-time run sets it, so
+	// starting a sandbox (or forking a hundred) sends nothing off the guest;
+	// the network checks run only when someone asks.
+	offline bool
 }
 
 func newDoctor(c config, probe *prober) *doctor {
@@ -185,8 +189,10 @@ func (d *doctor) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 // logReport runs the checks once and writes one line each to the journal,
-// so a guest that boots broken says so without anyone asking.
+// so a guest that boots broken says so without anyone asking. It runs
+// offline: see doctor.offline.
 func (d *doctor) logReport() {
+	d.offline = true
 	ctx, cancel := context.WithTimeout(context.Background(), doctorTimeout)
 	defer cancel()
 	r := d.report(ctx)
@@ -388,6 +394,9 @@ func (d *doctor) checkHealthcheck() doctorCheck {
 // resolve at the proxy, and direct traffic is dropped on the host), so dns is
 // a skip and the egress request goes through the proxy the workload uses.
 func (d *doctor) checkNetwork(ctx context.Context) []doctorCheck {
+	if d.offline {
+		return skipAll([]string{"dns", "egress", "clock"}, "not run at boot")
+	}
 	proxy, proxyErr := egressProxy(d.egressPath)
 
 	dns := doctorCheck{Name: "dns"}

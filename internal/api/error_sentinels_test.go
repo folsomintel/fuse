@@ -485,6 +485,7 @@ func TestRetryAfterOnRetryLater503s(t *testing.T) {
 		{fmt.Errorf("%w: need 2CPU", orchestrator.ErrNoCapacity), "5"},
 		{orchestrator.ErrNoHosts, "5"},
 		{fmt.Errorf("%w: no display", orchestrator.ErrGuestUnavailable), ""},
+		{fmt.Errorf("%w: vm-1 did not answer", orchestrator.ErrGuestTimeout), ""},
 	} {
 		rr := httptest.NewRecorder()
 		writeFleetError(rr, tc.err)

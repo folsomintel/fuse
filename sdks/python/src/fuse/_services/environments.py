@@ -276,8 +276,8 @@ class EnvironmentsService:
 
     def doctor(self, vm_id: str) -> DoctorReport:
         # runs the environment's in-guest self-check: the guest agent reports on
-        # itself, the display, window manager and vnc server, the healthcheck,
-        # disk and memory. a failing check is a "fail" line in a successful
+        # itself, identity, dbus, disk, memory, each display piece, the
+        # healthcheck, dns, egress and the clock. a failing check is a "fail" line in a successful
         # response, not a raised error.
         if not vm_id:
             raise ValueError("vm id is required")

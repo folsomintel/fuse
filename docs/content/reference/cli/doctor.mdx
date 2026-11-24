@@ -33,7 +33,8 @@ thinks is running. Every check runs whatever the others found.
 Each check is `PASS`, `WARN`, `FAIL` or `SKIP`. `SKIP` means the check doesn't
 apply: the display pieces on an image with no desktop, `healthcheck` when none
 was declared, `dns` under proxied egress (names resolve at the proxy), and
-`clock` when egress is down. On a desktop image each display piece is reported
+`clock` when egress is down. A guest agent that doesn't answer within 20s is
+reported as a 503 `unavailable` error rather than a report. On a desktop image each display piece is reported
 on its own, so a missing `scrot` and a dead display show as two lines, not one.
 
 A display at the wrong geometry, a window manager other than the one declared,
@@ -65,9 +66,12 @@ PASS clock: 0s off example.com
 FAIL fused v1.5.0
 ```
 
-fused also runs the same checks once at boot and writes the same lines to its
+fused also runs the checks once at boot and writes the same lines to its
 journal, prefixed `doctor:`, so a guest that comes up broken says so without
-anyone asking: `journalctl -u fused | grep doctor:`.
+anyone asking: `journalctl -u fused | grep doctor:`. The boot run skips `dns`,
+`egress` and `clock`, so starting or forking an environment sends nothing off
+the guest; those three run only when you call `fuse doctor`. On a network with
+no route to `example.com`, `egress` fails and the command exits 1.
 
 The environment must be running. An image baked with a fused older than this
 command answers 501; rebuild it to pick up the check. The same report is

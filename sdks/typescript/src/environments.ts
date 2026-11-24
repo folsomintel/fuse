@@ -577,8 +577,8 @@ export class EnvironmentsService {
   }
 
   /** Run the environment's in-guest self-check: the guest agent reports on
-   * itself, the display, window manager and vnc server, the healthcheck,
-   * disk and memory. A failing check is a "fail" line in a successful
+   * itself, identity, dbus, disk, memory, each display piece, the
+   * healthcheck, dns, egress and the clock. A failing check is a "fail" line in a successful
    * response, not a thrown error. */
   async doctor(vmId: string, opts: CallOptions = {}): Promise<DoctorReport> {
     requireArg(vmId, "vm id");

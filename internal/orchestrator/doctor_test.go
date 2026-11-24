@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,5 +52,28 @@ func TestGuestDoctorIsNotActivity(t *testing.T) {
 	fm.mu.RUnlock()
 	if !got.After(stale) {
 		t.Fatal("computer action should count as activity")
+	}
+}
+
+// a guest that never answers is reported as ErrGuestTimeout, which the api
+// maps to a 503, rather than the bare deadline error that would be a 500.
+func TestGuestDoctorHungGuestIsTimeout(t *testing.T) {
+	p := newMockProvider()
+	fm := newInlineFleet(FleetConfig{Provider: p, Prefix: "fuse-"})
+	vmID := provisionRunning(t, fm)
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+	mockEnvOf(fm, vmID).url = strings.TrimPrefix(srv.URL, "http://")
+
+	old := guestDoctorTimeout
+	guestDoctorTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { guestDoctorTimeout = old })
+
+	_, err := fm.GuestDoctor(context.Background(), vmID)
+	if !errors.Is(err, ErrGuestTimeout) {
+		t.Fatalf("err = %v, want ErrGuestTimeout", err)
 	}
 }

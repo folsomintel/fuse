@@ -1093,6 +1093,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "503":
+          description: |
+            The guest agent did not answer within 20s: the environment is
+            running but fused is wedged. Carries no Retry-After.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "501":
           description: |
             The environment has no reachable guest agent, or its guest agent

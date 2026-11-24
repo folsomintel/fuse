@@ -249,7 +249,7 @@ func TestDoctorClockSkew(t *testing.T) {
 // request must go through the proxy the workload uses.
 func TestDoctorProxiedEgress(t *testing.T) {
 	d := testDoctor(t)
-	if err := os.WriteFile(d.egressPath, []byte(`{"mode":"proxy","protocol":"socks5","endpoint":"socks5://10.0.0.1:1080"}`), 0o644); err != nil {
+	if err := os.WriteFile(d.egressPath, []byte(`{"mode":"proxy","protocol":"socks5","endpoint":"socks5h://10.0.0.1:1080"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	var gotProxy *url.URL
@@ -265,10 +265,10 @@ func TestDoctorProxiedEgress(t *testing.T) {
 	if got["dns"].Status != checkSkip {
 		t.Fatalf("dns = %+v, want skip", got["dns"])
 	}
-	if gotProxy == nil || gotProxy.String() != "socks5://10.0.0.1:1080" {
+	if gotProxy == nil || gotProxy.String() != "socks5h://10.0.0.1:1080" {
 		t.Fatalf("egress went via %v, want the socks5 proxy", gotProxy)
 	}
-	if got["egress"].Message != "reached example.com via socks5://10.0.0.1:1080" {
+	if got["egress"].Message != "reached example.com via socks5h://10.0.0.1:1080" {
 		t.Fatalf("egress message = %q", got["egress"].Message)
 	}
 }
@@ -369,9 +369,14 @@ func TestDoctorLogReportWritesOneLinePerCheck(t *testing.T) {
 
 	d := testDoctor(t)
 	d.dial = func(string) error { return errors.New("refused") }
+	d.lookup = func(context.Context, string) error { t.Error("the boot run must not touch the network"); return nil }
+	d.fetch = func(context.Context, string, *url.URL) (time.Time, error) {
+		t.Error("the boot run must not touch the network")
+		return testNow, nil
+	}
 	d.logReport()
 	out := buf.String()
-	for _, want := range []string{"doctor: PASS display: :1 1024x768", "doctor: FAIL vnc: vnc server not reachable", "doctor: SKIP healthcheck: no healthcheck declared", "doctor: FAIL\n"} {
+	for _, want := range []string{"doctor: PASS display: :1 1024x768", "doctor: FAIL vnc: vnc server not reachable", "doctor: SKIP healthcheck: no healthcheck declared", "doctor: SKIP egress: not run at boot", "doctor: FAIL\n"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("log missing %q:\n%s", want, out)
 		}
