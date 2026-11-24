@@ -25,7 +25,7 @@ const orphanKey = "orphan"
 // method per step. *FleetManager satisfies it.
 type Orphans interface {
 	OrphanCheck(ctx context.Context, vmID string) (bool, error)
-	OrphanDestroyOnHost(ctx context.Context, vmID, hostID string) error
+	OrphanDestroyOnHost(ctx context.Context, vmID, hostID string, epoch int64) error
 	OrphanDestroyed(ctx context.Context, vmID string) error
 	OrphanFailed(ctx context.Context, vmID string, attempt int, lastErr string, deadLetter bool) error
 }
@@ -82,7 +82,7 @@ func destroyOrphan(ctx restate.ObjectContext, fleet Orphans, req orchestrator.Or
 	// the attempt's outcome is the step's value, not its error, so a failure
 	// is journaled once and counted instead of retried inside the step.
 	lastErr, err := Run(ctx, opOrphan, "host_destroy", func(c context.Context) (string, error) {
-		if err := fleet.OrphanDestroyOnHost(c, vmID, req.HostID); err != nil {
+		if err := fleet.OrphanDestroyOnHost(c, vmID, req.HostID, req.Epoch); err != nil {
 			return err.Error(), nil
 		}
 		return "", nil

@@ -255,9 +255,11 @@ func (fm *FleetManager) DestroyOnHost(ctx context.Context, vmID, hostID string) 
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, destroyStepTimeout)
+	ctx, cancel := context.WithTimeout(fm.epochCtx(ctx, vmID), destroyStepTimeout)
 	defer cancel()
-	if err := provider.Destroy(ctx, vmID); err != nil && !IsNotFound(err) {
+	// a 412 is the host holding another incarnation under the id: this one
+	// is gone already, and the other is not this destroy's to take.
+	if err := provider.Destroy(ctx, vmID); err != nil && !IsNotFound(err) && !IsStaleEpoch(err) {
 		fm.logger.WarnContext(ctx, "destroy attempt failed", "vm", vmID, "host", hostID, "err", err)
 		return err
 	}

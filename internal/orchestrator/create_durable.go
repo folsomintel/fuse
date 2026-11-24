@@ -393,7 +393,7 @@ func (fm *FleetManager) createBoot(ctx context.Context, vmID string, req CreateR
 		egress:    status,
 	}
 	if needEnv && b.env == nil {
-		env, err := p.Get(ctx, vmID)
+		env, err := p.Get(fm.epochCtx(ctx, vmID), vmID)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("look up vm %s on its host: %w", vmID, err)
 		}
@@ -649,7 +649,7 @@ func (fm *FleetManager) CreateRestoreOrCreate(ctx context.Context, vmID string, 
 	if err != nil {
 		return false, err
 	}
-	env, fromCache, err := restoreOrCreate(ctx, b.p, b.in.spec)
+	env, fromCache, err := restoreOrCreate(fm.epochCtx(ctx, vmID), b.p, b.in.spec)
 	if err != nil {
 		return false, provisionErr(vmID, err, run.sensitive())
 	}

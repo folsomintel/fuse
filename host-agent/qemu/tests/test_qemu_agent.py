@@ -847,7 +847,7 @@ class IdempotencyTest(unittest.TestCase):
     def test_concurrent_repeat_waits_for_the_first(self):
         started, release = threading.Event(), threading.Event()
 
-        def slow_create(req):
+        def slow_create(req, epoch=0):
             started.set()
             release.wait(5)
             return {"vm_id": "a", "url": "u"}
@@ -1157,6 +1157,103 @@ class BootConcurrencyTest(unittest.TestCase):
         self.assertTrue(ipt)
         for c in ipt:
             self.assertEqual(c[:3], ["iptables", "-w", "30"], c)
+
+
+class EpochTest(unittest.TestCase):
+    """per-vm epoch fencing (#374), as in test_fc_agent_epoch: a create for
+    a newer incarnation never adopts an older one's vm, a stale create
+    cannot bring back a destroyed incarnation, and a mutating request for
+    another incarnation is refused."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state = root / "agent-state"
+        (state / "vms").mkdir(parents=True)
+        (root / "rootfs.qcow2").write_bytes(b"default")
+        patches = [
+            mock.patch.object(qemu_agent, "STATE_DIR", state),
+            mock.patch.object(qemu_agent, "VMS_DIR", state / "vms"),
+            mock.patch.object(qemu_agent.agentlib, "STATE_DIR", state),
+            mock.patch.object(qemu_agent.agentlib, "VMS_DIR", state / "vms"),
+            mock.patch.object(qemu_agent, "BASE_ROOTFS", root / "rootfs.qcow2"),
+            mock.patch.object(qemu_agent, "VFIO_INVENTORY", root / "vfio-inventory.txt"),
+            mock.patch.object(qemu_agent, "MIG_INVENTORY", root / "mig-inventory.txt"),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), qemu_agent.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def create(self, epoch):
+        with (
+            mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]),
+            mock.patch.object(qemu_agent, "pick_mig_devices", return_value=[]),
+            mock.patch.object(qemu_agent, "setup_tap", return_value=("qv1", "10.200.1.1", "10.200.1.2")),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "sudo"),
+            mock.patch.object(qemu_agent, "start_qemu"),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ):
+            return qemu_agent.create_vm({"name": "x"}, epoch=epoch)
+
+    def call(self, method, path, body=None, epoch=None):
+        headers = {"Authorization": "Bearer test-token"}
+        if epoch is not None:
+            headers["X-Fuse-Epoch"] = str(epoch)
+        data = json.dumps(body).encode() if body is not None else None
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            c.request(method, path, body=data, headers=headers)
+            r = c.getresponse()
+            return r.status, r.read()
+        finally:
+            c.close()
+
+    def destroy(self, epoch):
+        with (
+            mock.patch.object(qemu_agent, "stop_qemu"),
+            mock.patch.object(qemu_agent, "del_agent_forward"),
+            mock.patch.object(qemu_agent, "teardown_tap"),
+            mock.patch.object(qemu_agent, "sudo", side_effect=lambda cmd, check=True: shutil.rmtree(cmd[2], ignore_errors=True)),
+        ):
+            return self.call("DELETE", "/v1/vm/x", epoch=epoch)[0]
+
+    def test_newer_create_does_not_adopt_an_older_incarnation(self):
+        self.assertEqual(self.create(1)["epoch"], 1)
+        self.assertEqual(self.create(1)["epoch"], 1)
+        with self.assertRaises(qemu_agent.HTTPError) as e:
+            self.create(2)
+        self.assertEqual(e.exception.code, 409)
+
+    def test_stale_create_cannot_bring_back_a_destroyed_incarnation(self):
+        self.create(2)
+        self.assertEqual(self.destroy(2), 204)
+        for epoch in (1, 2):
+            with self.assertRaises(qemu_agent.HTTPError) as e:
+                self.create(epoch)
+            self.assertEqual(e.exception.code, 412)
+        self.assertEqual(self.create(3)["epoch"], 3)
+
+    def test_request_for_another_incarnation_is_refused(self):
+        self.create(2)
+        with mock.patch.object(qemu_agent.agentlib, "ssh_exec", return_value=(0, b"", b"")):
+            self.assertEqual(self.call("POST", "/v1/vm/x/exec", {"cmd": ["true"]}, epoch=1)[0], 412)
+            self.assertEqual(self.call("POST", "/v1/vm/x/exec", {"cmd": ["true"]}, epoch=2)[0], 200)
+        self.assertEqual(self.destroy(3), 412)
+        self.assertIsNotNone(qemu_agent.load_meta("x"))
+        self.assertEqual(self.destroy(2), 204)
+        self.assertIsNone(qemu_agent.load_meta("x"))
+
+    def test_listing_reports_each_vm_epoch(self):
+        self.create(4)
+        code, body = self.call("GET", "/v1/vm")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["vms"][0]["epoch"], 4)
 
 
 if __name__ == "__main__":

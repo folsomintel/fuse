@@ -105,17 +105,22 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 	if err := p.doJSON(ctx, http.MethodPost, "/v1/vm", reqBody, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker create vm: %w", err)
 	}
-	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
+	return p.envFromResponse(ctx, resp.VMID, resp.URL, resp.HostIP, resp.GuestIP, resp.Epoch), nil
 }
 
 // envFromResponse builds the handle for a vm the agent reported, defaulting
-// the url the way every call site used to.
-func (p *Provider) envFromResponse(vmID, url, hostIP, guestIP string) *remoteEnv {
+// the url the way every call site used to. the handle is for the incarnation
+// ctx names, else the one the agent reported.
+func (p *Provider) envFromResponse(ctx context.Context, vmID, url, hostIP, guestIP string, epoch int64) *remoteEnv {
+	if e := orchestrator.VMEpochFrom(ctx); e != 0 {
+		epoch = e
+	}
 	env := &remoteEnv{
 		id:      vmID,
 		url:     url,
 		hostIP:  hostIP,
 		guestIP: guestIP,
+		epoch:   epoch,
 		client:  p,
 	}
 	if env.url == "" {
@@ -181,10 +186,11 @@ func (p *Provider) CreateFromCheckpoint(ctx context.Context, spec orchestrator.S
 	if err := p.doJSON(ctx, http.MethodPost, path, reqBody, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker fork vm %s from snapshot %s: %w", srcVMID, checkpointID, err)
 	}
-	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
+	return p.envFromResponse(ctx, resp.VMID, resp.URL, resp.HostIP, resp.GuestIP, resp.Epoch), nil
 }
 
-// Get returns an existing sandbox.
+// Get returns an existing sandbox. under a ctx that names an incarnation, a
+// vm the agent holds for another one is an orchestrator.IncarnationError.
 func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environment, error) {
 	if p.stub != nil {
 		return p.stub.Get(ctx, name)
@@ -194,7 +200,10 @@ func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environme
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("firecracker get vm: %w", err)
 	}
-	return p.envFromResponse(resp.VMID, resp.URL, resp.HostIP, resp.GuestIP), nil
+	if err := orchestrator.CheckIncarnation(ctx, name, resp.Epoch); err != nil {
+		return nil, err
+	}
+	return p.envFromResponse(ctx, resp.VMID, resp.URL, resp.HostIP, resp.GuestIP, resp.Epoch), nil
 }
 
 // MemoryStatus reports how much of a lazily resumed vm's memory has arrived.
@@ -240,7 +249,7 @@ func (p *Provider) List(ctx context.Context, prefix string) ([]orchestrator.Envi
 	}
 	envs := make([]orchestrator.Environment, 0, len(resp.VMs))
 	for _, vm := range resp.VMs {
-		envs = append(envs, p.envFromResponse(vm.VMID, vm.URL, vm.HostIP, vm.GuestIP))
+		envs = append(envs, p.envFromResponse(ctx, vm.VMID, vm.URL, vm.HostIP, vm.GuestIP, vm.Epoch))
 	}
 	return envs, nil
 }
@@ -346,6 +355,11 @@ type remoteEnv struct {
 	hostIP  string
 	guestIP string
 
+	// epoch is the incarnation this handle is for. every mutating call made
+	// through it carries it, so a handle that outlives its vm cannot reach
+	// a later vm under the same id. 0 when unknown, which is not fenced.
+	epoch int64
+
 	// authToken is the per-VM bearer token callers must present when
 	// reaching url. It is populated by Boot via SetToken once
 	// VMCredentials have been generated (and refreshed by token
@@ -363,6 +377,7 @@ type remoteEnv struct {
 
 var (
 	_ orchestrator.Environment      = (*remoteEnv)(nil)
+	_ orchestrator.Epoched          = (*remoteEnv)(nil)
 	_ orchestrator.Attacher         = (*remoteEnv)(nil)
 	_ orchestrator.TokenSetter      = (*remoteEnv)(nil)
 	_ orchestrator.EndpointReporter = (*remoteEnv)(nil)
@@ -394,6 +409,18 @@ func (e *remoteEnv) EgressAddresses() (listenIP, guestIP string) {
 func (e *remoteEnv) Name() string { return e.id }
 func (e *remoteEnv) URL() string  { return e.url }
 
+// Epoch is the incarnation the handle is for, satisfying orchestrator.Epoched.
+func (e *remoteEnv) Epoch() int64 { return e.epoch }
+
+// fenced is ctx for a call through the handle: one for the handle's
+// incarnation unless ctx already names one.
+func (e *remoteEnv) fenced(ctx context.Context) context.Context {
+	if orchestrator.VMEpochFrom(ctx) != 0 {
+		return ctx
+	}
+	return orchestrator.WithVMEpoch(ctx, e.epoch)
+}
+
 // Token returns the per-VM auth token (VMCredentials.AuthToken)
 // previously installed via SetToken. Empty until Boot/rotation sets it.
 func (e *remoteEnv) Token() string {
@@ -421,7 +448,7 @@ func (e *remoteEnv) Exec(ctx context.Context, cmd []string, opts orchestrator.Ex
 		req.TimeoutMS = int(opts.Timeout.Milliseconds())
 	}
 	var resp execResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
 		return orchestrator.ExecResult{}, fmt.Errorf("exec: %w", err)
 	}
 	return orchestrator.ExecResult{
@@ -446,7 +473,7 @@ func (e *remoteEnv) Attach(ctx context.Context, spec orchestrator.AttachSpec) (i
 func (e *remoteEnv) ExecStream(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
 	req := execRequest{Cmd: append([]string{name}, args...)}
 	var resp execResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
 		return fmt.Errorf("exec stream: %w", err)
 	}
 	if len(resp.Stdout) > 0 {
@@ -463,7 +490,7 @@ func (e *remoteEnv) ExecStream(ctx context.Context, stdout, stderr io.Writer, na
 
 func (e *remoteEnv) Upload(ctx context.Context, data []byte, path string) error {
 	req := uploadRequest{Path: path, ContentB64: base64.StdEncoding.EncodeToString(data)}
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/upload", e.id), req, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/upload", e.id), req, nil)
 }
 
 // StartAgent launches the guest agent. It FIRST tries the generalized
@@ -495,7 +522,7 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		TunnelConfig: spec.TunnelConfigPath,
 	}
 	var resp startAgentResponse
-	err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp)
+	err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp)
 	if err == nil {
 		// an agent that predates the tunnel ignores the field and says nothing
 		// back. the environment's url is on the proxy by now, so a guest with
@@ -526,7 +553,7 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		Gateway:      spec.Gateway,
 		GatewayToken: spec.GatewayToken,
 	}
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-surfd", e.id), req, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-surfd", e.id), req, nil)
 }
 
 // setEndpoints records the endpoints reported by the last StartAgent call.
@@ -602,14 +629,14 @@ func (e *remoteEnv) CheckpointDiff(ctx context.Context, comment, parent string, 
 
 // Resume thaws a guest a keepPaused diff left frozen.
 func (e *remoteEnv) Resume(ctx context.Context) error {
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/resume", e.id), struct{}{}, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/resume", e.id), struct{}{}, nil)
 }
 
 // snapshot is the one wire call behind every checkpoint path.
 func (e *remoteEnv) snapshot(ctx context.Context, req snapshotRequest) (orchestrator.Checkpoint, error) {
 	comment := req.Comment
 	var resp snapshotResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/snapshot", e.id), req, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/snapshot", e.id), req, &resp); err != nil {
 		return orchestrator.Checkpoint{}, fmt.Errorf("snapshot: %w", err)
 	}
 	// The kind comes back from the agent rather than being assumed from what
@@ -640,16 +667,16 @@ func snapshotKind(s string) orchestrator.SnapshotKind {
 
 func (e *remoteEnv) Restore(ctx context.Context, checkpointID string) error {
 	req := restoreRequest{SnapshotID: checkpointID}
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/restore", e.id), req, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/restore", e.id), req, nil)
 }
 
 func (e *remoteEnv) DeleteCheckpoint(ctx context.Context, checkpointID string) error {
-	return e.client.doJSON(ctx, http.MethodDelete, fmt.Sprintf("/v1/vm/%s/snapshots/%s", e.id, checkpointID), nil, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodDelete, fmt.Sprintf("/v1/vm/%s/snapshots/%s", e.id, checkpointID), nil, nil)
 }
 
 func (e *remoteEnv) ListCheckpoints(ctx context.Context) ([]orchestrator.Checkpoint, error) {
 	var resp listSnapshotsResponse
-	if err := e.client.doJSON(ctx, http.MethodGet, fmt.Sprintf("/v1/vm/%s/snapshots", e.id), nil, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodGet, fmt.Sprintf("/v1/vm/%s/snapshots", e.id), nil, &resp); err != nil {
 		return nil, fmt.Errorf("list snapshots: %w", err)
 	}
 	out := make([]orchestrator.Checkpoint, 0, len(resp.Snapshots))
@@ -715,6 +742,9 @@ type createVMResponse struct {
 	URL     string `json:"url"`
 	HostIP  string `json:"host_ip"`
 	GuestIP string `json:"guest_ip"`
+	// Epoch is the incarnation the agent created the vm for, 0 from an
+	// agent that predates epoch fencing or for a vm made without one.
+	Epoch int64 `json:"epoch"`
 }
 
 // egressResponse is the agent's answer to POST /v1/vm/{id}/egress.
@@ -743,6 +773,9 @@ type getVMResponse struct {
 	URL     string `json:"url"`
 	HostIP  string `json:"host_ip"`
 	GuestIP string `json:"guest_ip"`
+	// Epoch is the incarnation the agent created the vm for, 0 from an
+	// agent that predates epoch fencing or for a vm made without one.
+	Epoch int64 `json:"epoch"`
 }
 
 // capacityResponse is the GET /v1/capacity response: the host agent's real
@@ -773,6 +806,9 @@ type listVMEntry struct {
 	URL     string `json:"url"`
 	HostIP  string `json:"host_ip"`
 	GuestIP string `json:"guest_ip"`
+	// Epoch is the incarnation the agent created the vm for, 0 from an
+	// agent that predates epoch fencing or for a vm made without one.
+	Epoch int64 `json:"epoch"`
 }
 
 type uploadRequest struct {

@@ -30,7 +30,7 @@ func (f *orphanFleet) OrphanCheck(context.Context, string) (bool, error) {
 	return !f.tracked, nil
 }
 
-func (f *orphanFleet) OrphanDestroyOnHost(context.Context, string, string) error {
+func (f *orphanFleet) OrphanDestroyOnHost(context.Context, string, string, int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.attempts++

@@ -1504,7 +1504,8 @@ func (fm *FleetManager) reattachVMFromProvider(ctx context.Context, v *vm) error
 	if providerErr != nil {
 		return providerErr
 	}
-	env, err := lookupProvider.Get(ctx, v.id)
+	// v may not be tracked yet, so its epoch comes from v itself.
+	env, err := lookupProvider.Get(WithVMEpoch(ctx, v.epoch()), v.id)
 	if err != nil {
 		return err
 	}

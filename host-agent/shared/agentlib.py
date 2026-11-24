@@ -779,6 +779,100 @@ def idem_end(key: str) -> None:
         ev.set()
 
 
+# epoch fencing. a vm id is reused when an environment is destroyed and
+# created again under the same task id, so a request sent for one
+# incarnation can reach the next: one queued behind the vm lock after its
+# caller gave up, or a retry from a step that outlived its vm. a mutating
+# request may carry X-Fuse-Epoch, the incarnation it is for. one for a vm
+# whose saved epoch differs is refused with 412, and so is a create for an
+# epoch no newer than the newest this host has made under the id, which is
+# kept on disk past the vm's destroy. a request without the header, or a vm
+# made before fencing, is not checked.
+EPOCH_HEADER = "X-Fuse-Epoch"
+EPOCH_RE = re.compile(r"[1-9][0-9]{0,17}")
+# how long the newest epoch of a destroyed vm is kept. a request delayed
+# longer than this is not one the fence has to stop.
+EPOCH_TOMBSTONE_TTL = 30 * 24 * 3600.0
+EPOCH_SWEEP_INTERVAL = 3600.0
+_epoch_lock = threading.Lock()
+_epoch_last_sweep = 0.0
+
+
+def epoch_dir() -> Path:
+    return STATE_DIR / "epochs"
+
+
+def epoch_seen(vm_id: str) -> int:
+    """the newest epoch a create under vm_id has succeeded with, or 0."""
+    try:
+        return int((epoch_dir() / vm_id).read_text())
+    except (OSError, ValueError):
+        return 0
+
+
+def epoch_record(vm_id: str, epoch: int) -> None:
+    """keep epoch as vm_id's newest, unless a newer one is kept already."""
+    with _epoch_lock:
+        if epoch <= epoch_seen(vm_id):
+            return
+        d = epoch_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        p = d / vm_id
+        # a fresh file renamed into place, so a reader never sees a partial one.
+        tmp = p.with_name(f"{vm_id}.{uuid.uuid4().hex}.tmp")
+        tmp.write_text(str(epoch))
+        os.replace(tmp, p)
+    epoch_sweep()
+
+
+def epoch_sweep(now: float | None = None) -> None:
+    """drop the records of vms long destroyed, at most once per interval."""
+    global _epoch_last_sweep
+    now = time.time() if now is None else now
+    with _epoch_lock:
+        if now - _epoch_last_sweep < EPOCH_SWEEP_INTERVAL:
+            return
+        _epoch_last_sweep = now
+    try:
+        entries = list(epoch_dir().iterdir())
+    except OSError:
+        return
+    for p in entries:
+        try:
+            if not (VMS_DIR / p.name).exists() and now - p.stat().st_mtime > EPOCH_TOMBSTONE_TTL:
+                p.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def epoch_fence_create(vm_id: str, existing: dict | None, epoch: int) -> None:
+    """refuse a create for epoch unless it is the vm already there, or a new
+    incarnation of an id this host has no vm under. callers hold the vm lock."""
+    if not epoch:
+        return
+    if existing:
+        have = int(existing.get("epoch") or 0)
+        if have == epoch:
+            return
+        if have > epoch:
+            raise HTTPError(412, f"vm {vm_id} is epoch {have}; a create for epoch {epoch} is stale")
+        raise HTTPError(409, f"vm {vm_id} is held by an older incarnation (epoch {have or 'unset'}); destroy it first")
+    seen = epoch_seen(vm_id)
+    if epoch <= seen:
+        raise HTTPError(412, f"vm {vm_id} was already created at epoch {seen}; a create for epoch {epoch} is stale")
+
+
+def epoch_fence(vm_id: str, epoch: int) -> None:
+    """refuse a request for epoch on a vm of another incarnation. a missing
+    vm, or one made before fencing, is left to the handler. callers hold the
+    vm lock, so the vm cannot change incarnation before the request runs."""
+    if not epoch:
+        return
+    have = int((load_meta(vm_id) or {}).get("epoch") or 0)
+    if have and have != epoch:
+        raise HTTPError(412, f"vm {vm_id} is epoch {have}; this request is for epoch {epoch}")
+
+
 class BaseHandler(BaseHTTPRequestHandler):
     """Request plumbing both agents share: auth, bounded JSON bodies,
     responses, idempotent replay and request ids. Each agent's Handler
@@ -864,6 +958,21 @@ class BaseHandler(BaseHTTPRequestHandler):
         if rec is None:
             self._idem = (key, request)
         return rec
+
+    def _epoch(self) -> int:
+        """the request's X-Fuse-Epoch, or 0 when it carries none."""
+        headers = getattr(self, "headers", None)
+        raw = headers.get(EPOCH_HEADER, "") if headers is not None else ""
+        if not raw:
+            return 0
+        if not EPOCH_RE.fullmatch(raw):
+            raise HTTPError(400, f"invalid {EPOCH_HEADER}")
+        return int(raw)
+
+    def _fence(self, vm_id: str, method: str) -> None:
+        """epoch_fence for a mutating request. reads are never fenced."""
+        if method in ("POST", "PUT", "DELETE"):
+            epoch_fence(vm_id, self._epoch())
 
     def _remember(self, code: int, ctype: str, body: bytes) -> None:
         # stored before the response is written, so a client that drops the

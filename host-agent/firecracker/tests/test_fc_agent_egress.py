@@ -756,7 +756,7 @@ class ExecEnvTest(unittest.TestCase):
 class VMPublicTest(unittest.TestCase):
     def test_reports_the_tap_ends_and_the_mode(self):
         pub = fc_agent.vm_public({"vm_id": "vm-a", "url": "u", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2", "egress_mode": "proxy"})
-        self.assertEqual(pub, {"vm_id": "vm-a", "url": "u", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2", "egress_mode": "proxy"})
+        self.assertEqual(pub, {"vm_id": "vm-a", "url": "u", "host_ip": "10.200.3.1", "guest_ip": "10.200.3.2", "egress_mode": "proxy", "epoch": 0})
 
     def test_pre_egress_meta_reads_as_direct(self):
         pub = fc_agent.vm_public({"vm_id": "vm-a"})

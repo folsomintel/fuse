@@ -56,9 +56,11 @@ func NewClient() *http.Client {
 			return fmt.Errorf("%w: %s", ErrRedirectNotAllowed, req.URL.Redacted())
 		},
 		// mutating calls made under WithIdempotencyKey carry a key and are
-		// retried on a lost response; every attempt carries the request id
-		// and trace context and gets a client span; see internal/telemetry.
-		Transport: &idempotencyTransport{Base: &telemetry.Transport{Peer: "host-agent", Base: &http.Transport{
+		// retried on a lost response, and those made under
+		// orchestrator.WithVMEpoch carry the incarnation they are for; every
+		// attempt carries the request id and trace context and gets a client
+		// span; see internal/telemetry.
+		Transport: &epochTransport{Base: &idempotencyTransport{Base: &telemetry.Transport{Peer: "host-agent", Base: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout:   agentDialTimeout,
@@ -68,7 +70,7 @@ func NewClient() *http.Client {
 			ResponseHeaderTimeout: agentResponseHeaderTimeout,
 			IdleConnTimeout:       agentIdleConnTimeout,
 			MaxIdleConnsPerHost:   4,
-		}}},
+		}}}},
 	}
 }
 

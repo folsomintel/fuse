@@ -19,6 +19,9 @@ type OrphanDestroyRequest struct {
 	HostID string `json:"host_id,omitempty"`
 	// MaxRetries is how many failed attempts dead-letter the orphan.
 	MaxRetries int `json:"max_retries"`
+	// Epoch is the incarnation the host listed, so the destroy cannot take a
+	// later vm created under the id in the meantime. 0 is not fenced.
+	Epoch int64 `json:"epoch,omitempty"`
 }
 
 // OrphanDestroyResult is what one DestroyOrphan invocation found.
@@ -61,7 +64,7 @@ func (fm *FleetManager) durableOrphans() DurableOrphans {
 // already in flight for it. it runs off the reconcile goroutine and waits for
 // the invocation, so the next cycle neither doubles it up nor keeps sending
 // an orphan the handler has dead-lettered.
-func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string) {
+func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string, epoch int64) {
 	fm.mu.Lock()
 	if fm.orphanInFlight[vmID] {
 		fm.mu.Unlock()
@@ -70,7 +73,7 @@ func (fm *FleetManager) sendOrphanDestroy(d DurableOrphans, vmID, hostID string)
 	fm.orphanInFlight[vmID] = true
 	fm.mu.Unlock()
 
-	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries}
+	req := OrphanDestroyRequest{HostID: hostID, MaxRetries: fm.orphanDestroyMaxRetries, Epoch: epoch}
 	fm.destroySends.Add(1)
 	go func() {
 		defer fm.destroySends.Done()
@@ -118,15 +121,25 @@ func (fm *FleetManager) OrphanCheck(_ context.Context, vmID string) (bool, error
 }
 
 // OrphanDestroyOnHost is one attempt at destroying the orphan on its host,
-// bounded like the in-process pass.
-func (fm *FleetManager) OrphanDestroyOnHost(ctx context.Context, vmID, hostID string) error {
+// bounded like the in-process pass, and only the incarnation the host
+// listed at epoch.
+func (fm *FleetManager) OrphanDestroyOnHost(ctx context.Context, vmID, hostID string, epoch int64) error {
 	provider, err := fm.providerForVM(hostID)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, fm.orphanDestroyTimeout)
+	ctx, cancel := context.WithTimeout(WithVMEpoch(ctx, epoch), fm.orphanDestroyTimeout)
 	defer cancel()
-	return provider.Destroy(ctx, vmID)
+	return destroyOrphan(ctx, provider, vmID)
+}
+
+// destroyOrphan destroys the orphan vmID through p. a 412 is the host
+// holding a later incarnation under the id, so the orphan it listed is gone.
+func destroyOrphan(ctx context.Context, p Provider, vmID string) error {
+	if err := p.Destroy(ctx, vmID); err != nil && !IsStaleEpoch(err) {
+		return err
+	}
+	return nil
 }
 
 // OrphanDestroyed closes out an orphan that is gone from its host: whatever

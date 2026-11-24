@@ -295,7 +295,7 @@ func (fm *FleetManager) forkTargetEnv(ctx context.Context, plan ForkPlan) (*vm, 
 	if env != nil {
 		return v, env, nil
 	}
-	env, err = fm.migrateProvider(hostID).Get(ctx, plan.NewVMID)
+	env, err = fm.migrateProvider(hostID).Get(fm.epochCtx(ctx, plan.NewVMID), plan.NewVMID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("look up forked vm %s on host %s: %w", plan.NewVMID, hostID, err)
 	}
@@ -465,7 +465,7 @@ func (fm *FleetManager) ForkCreate(ctx context.Context, plan ForkPlan, seed Snap
 		fm.mu.RLock()
 		spec := v.spec
 		fm.mu.RUnlock()
-		env, err = forkable.CreateFromCheckpoint(ctx, spec, plan.SourceVMID, seed.SnapshotID)
+		env, err = forkable.CreateFromCheckpoint(fm.epochCtx(ctx, plan.NewVMID), spec, plan.SourceVMID, seed.SnapshotID)
 	} else {
 		// only these two fields, never the whole spec: placement may have
 		// bound resources onto v.spec.
@@ -476,7 +476,7 @@ func (fm *FleetManager) ForkCreate(ctx context.Context, plan ForkPlan, seed Snap
 		spec := v.spec
 		fm.mu.Unlock()
 		fm.touchArtifact(localID, seed.SnapshotID)
-		env, err = fm.migrateProvider(hostID).Create(ctx, spec)
+		env, err = fm.migrateProvider(hostID).Create(fm.epochCtx(ctx, plan.NewVMID), spec)
 	}
 	if err != nil {
 		// the host agent's 409 is a resume it refuses (another cpu or

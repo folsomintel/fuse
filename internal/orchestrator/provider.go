@@ -816,9 +816,24 @@ func restoreLatest(ctx context.Context, env Environment) bool {
 // restore is kept rather than created over, which is what a retried durable
 // boot step needs (create-if-absent). fork's durable boot reuses this shape
 // with CreateFromCheckpoint.
+//
+// under a ctx that names an incarnation (WithVMEpoch), a vm an earlier
+// incarnation left under the name is not this boot's to restore: it is
+// destroyed, fenced to its own epoch, and the vm created fresh. one a later
+// incarnation holds means this boot is the stale one, and it fails.
 func restoreOrCreate(ctx context.Context, p Provider, spec Spec) (env Environment, fromCache bool, err error) {
-	if existing, getErr := p.Get(ctx, spec.Name); getErr == nil {
+	existing, getErr := p.Get(ctx, spec.Name)
+	if getErr == nil {
 		return existing, restoreLatest(ctx, existing), nil
+	}
+	var other *IncarnationError
+	if errors.As(getErr, &other) {
+		if other.Host > other.Want {
+			return nil, false, getErr
+		}
+		if err := p.Destroy(WithVMEpoch(ctx, other.Host), spec.Name); err != nil && !IsNotFound(err) && !IsStaleEpoch(err) {
+			return nil, false, fmt.Errorf("destroy vm %s an earlier incarnation left: %w", spec.Name, err)
+		}
 	}
 	env, err = p.Create(ctx, spec)
 	if err != nil && spec.ImageDigest != "" && IsNotFound(err) {

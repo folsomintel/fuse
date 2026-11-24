@@ -26,7 +26,7 @@ func (f *fakeOrphans) DestroyOrphan(ctx context.Context, vmID string, req Orphan
 	if f.dead {
 		return OrphanDestroyResult{DeadLettered: true}, f.fm.OrphanFailed(ctx, vmID, req.MaxRetries, "host down", true)
 	}
-	if err := f.fm.OrphanDestroyOnHost(ctx, vmID, req.HostID); err != nil {
+	if err := f.fm.OrphanDestroyOnHost(ctx, vmID, req.HostID, req.Epoch); err != nil {
 		return OrphanDestroyResult{}, err
 	}
 	return OrphanDestroyResult{}, f.fm.OrphanDestroyed(ctx, vmID)

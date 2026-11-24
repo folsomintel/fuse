@@ -347,7 +347,7 @@ func (fm *FleetManager) migrateTargetEnv(ctx context.Context, plan MigratePlan) 
 	if env != nil {
 		return v, env, nil
 	}
-	env, err = fm.migrateProvider(plan.TargetHostID).Get(ctx, plan.NewVMID)
+	env, err = fm.migrateProvider(plan.TargetHostID).Get(fm.epochCtx(ctx, plan.NewVMID), plan.NewVMID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("look up migrated vm %s on host %s: %w", plan.NewVMID, plan.TargetHostID, err)
 	}
@@ -388,7 +388,7 @@ func (fm *FleetManager) MigrateCreate(ctx context.Context, plan MigratePlan, see
 		fm.mu.RLock()
 		spec := v.spec
 		fm.mu.RUnlock()
-		env, err = forkable.CreateFromCheckpoint(ctx, spec, plan.SourceVMID, seed.SnapshotID)
+		env, err = forkable.CreateFromCheckpoint(fm.epochCtx(ctx, plan.NewVMID), spec, plan.SourceVMID, seed.SnapshotID)
 	} else {
 		fm.mu.Lock()
 		v.spec.SeedSnapshotID = localID
@@ -397,7 +397,7 @@ func (fm *FleetManager) MigrateCreate(ctx context.Context, plan MigratePlan, see
 		spec := v.spec
 		fm.mu.Unlock()
 		fm.touchArtifact(localID, seed.SnapshotID)
-		env, err = fm.migrateProvider(plan.TargetHostID).Create(ctx, spec)
+		env, err = fm.migrateProvider(plan.TargetHostID).Create(fm.epochCtx(ctx, plan.NewVMID), spec)
 	}
 	if err != nil {
 		var httpErr *HTTPStatusError
@@ -755,7 +755,7 @@ func (fm *FleetManager) MigrateResumeSource(ctx context.Context, plan MigratePla
 	fm.mu.RUnlock()
 	if env == nil {
 		var err error
-		env, err = fm.migrateProvider(plan.SourceHostID).Get(ctx, plan.SourceVMID)
+		env, err = fm.migrateProvider(plan.SourceHostID).Get(fm.epochCtx(ctx, plan.SourceVMID), plan.SourceVMID)
 		if IsNotFound(err) {
 			return nil
 		}
