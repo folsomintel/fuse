@@ -1,0 +1,54 @@
+---
+title: fuse doctor
+sidebar:
+  icon: stethoscope
+description: Run an environment's in-guest self-check
+---
+
+```bash
+fuse doctor <id> [-o json]
+```
+
+Asks the environment's guest agent (fused) to check the pieces the sandbox
+depends on and prints one line per check. The checks run inside the guest, so
+they see what the workload sees rather than what the host thinks is running.
+
+| Check | What it looks at |
+| --- | --- |
+| `agent` | fused's version and uptime. |
+| `display` | The X display is up, and its geometry matches the Fusefile's `desktop` block. |
+| `wm` | The window manager running, and whether it is the one the `desktop` block asked for. |
+| `vnc` | The vnc server behind `fuse desktop` accepts connections. |
+| `healthcheck` | The verdict of the Fusefile's `healthcheck` probe. |
+| `disk` | Free space on the root filesystem. |
+| `memory` | Available memory. |
+
+Each check is `ok`, `warn`, `fail` or `skip`. `skip` means the check doesn't
+apply: the display, wm and vnc checks on an image with no desktop, or
+`healthcheck` when none was declared. A display at the wrong geometry, a
+window manager other than the one declared, or a probe still in its start
+period is a `warn`. Disk or memory warns under 10% free and fails under 2%.
+
+The overall status is the worst check, with `skip` counting as `ok`. The command
+exits 1 when it is `fail`, so it can gate a script; `warn` exits 0.
+
+```bash
+$ fuse doctor fuse-abc123
+╭─────────────┬────────┬────────────────────────────────────────╮
+│ check       │ status │ detail                                 │
+├─────────────┼────────┼────────────────────────────────────────┤
+│ agent       │ ok     │ fused v1.5.0, up 12m4s                 │
+│ display     │ warn   │ :1 1024x768, desktop declares 1280x800 │
+│ wm          │ ok     │ xfwm4                                  │
+│ vnc         │ ok     │ listening on 127.0.0.1:5900            │
+│ healthcheck │ skip   │ no healthcheck declared                │
+│ disk        │ ok     │ 7.1GiB free of 9.8GiB on /             │
+│ memory      │ ok     │ 1.4GiB available of 1.9GiB             │
+╰─────────────┴────────┴────────────────────────────────────────╯
+warn  fused v1.5.0
+```
+
+The environment must be running. An image baked with a fused older than this
+command answers 501; rebuild it to pick up the check. The same report is
+`GET /v1/environments/{vmId}/doctor` in the [HTTP API](/reference/api) and
+`doctor` on the environments service in every SDK.

@@ -233,6 +233,11 @@ func (h *Handler) register(r chi.Router) {
 	// computerStream in computer.go.
 	r.Get("/v1/environments/{vmId}/computer/stream", h.computerStream)
 
+	// The guest self-check: a read-only report from fused on the pieces the
+	// sandbox depends on (display, vnc, healthcheck, disk, memory). See
+	// doctor.go.
+	r.Get("/v1/environments/{vmId}/doctor", h.environmentDoctor)
+
 	// Interventions are their own resource: a human decides them by id, often
 	// from somewhere that never saw the environment. Raising one is an
 	// environment action (?action=request).

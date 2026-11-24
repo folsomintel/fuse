@@ -169,6 +169,7 @@ scripted automation, use `Exec` for that. Also master-token only.
 | `Drain(ctx, vmID)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `Fork(ctx, vmID, ForkOptions{...})` | Create `Count` new environments (default 1) seeded from one snapshot of this one; returns `[]EnvironmentInfo`, every child in order. |
 | `RotateToken(ctx, vmID)` | Re-issue the guest's credentials without recreating the VM. |
+| `Doctor(ctx, vmID)` | Run the in-guest self-check; returns a `*DoctorReport` with one `DoctorCheck` per piece (agent, display, wm, vnc, healthcheck, disk, memory). A failing check is a `DoctorFail` line, not an error. |
 
 `Fork` always returns a list, even for one child, and a fork a hitl gate held
 comes back as a one-element list once approved. `ForkOptions{Live: true}`

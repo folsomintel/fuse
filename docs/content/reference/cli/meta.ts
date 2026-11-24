@@ -11,6 +11,7 @@ export default defineMeta({
     "hosts",
     "environment",
     "computer",
+    "doctor",
     "up",
     "build",
     "validate",

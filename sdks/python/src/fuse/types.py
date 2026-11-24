@@ -24,6 +24,14 @@ HEALTH_STARTING = "starting"
 HEALTH_PASSING = "passing"
 HEALTH_FAILING = "failing"
 
+# outcomes carried in DoctorCheck.status and DoctorReport.status. skip means the
+# check does not apply (display checks on an image with no desktop); a report's
+# status is never skip.
+DOCTOR_OK = "ok"
+DOCTOR_WARN = "warn"
+DOCTOR_FAIL = "fail"
+DOCTOR_SKIP = "skip"
+
 
 # hitl intervention kinds. ask and review are raised by request_human;
 # exec, lifecycle and computer are raised by a gate holding that surface.
@@ -290,6 +298,24 @@ class ComputerDisplay(_Model):
     wm: str = ""
     # why the display is down, when it is.
     error: str = ""
+
+
+class DoctorCheck(_Model):
+    # one line of an environment's in-guest self-check. name is today one of
+    # agent, display, wm, vnc, healthcheck, disk or memory; the guest agent owns
+    # the list, so treat an unknown name as one more line.
+    name: str
+    status: str
+    message: str = ""
+
+
+class DoctorReport(_Model):
+    # the guest agent's self-check. status is the worst of the checks'
+    # statuses, with skip counting as ok.
+    status: str
+    vm_id: str = ""
+    version: str = ""
+    checks: list[DoctorCheck] = Field(default_factory=list)
 
 
 class ComputerToolResult(_Model):

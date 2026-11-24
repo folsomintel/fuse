@@ -15,6 +15,7 @@ from ..types import (
     ComputerResult,
     ComputerToolResult,
     CreateRequest,
+    DoctorReport,
     EnvironmentInfo,
     EnvironmentPage,
     Event,
@@ -272,6 +273,17 @@ class EnvironmentsService:
         path = f"/v1/environments/{quote(vm_id, safe='')}/computer"
         resp = self._t.request("GET", path)
         return ComputerDisplay.model_validate(resp.json())
+
+    def doctor(self, vm_id: str) -> DoctorReport:
+        # runs the environment's in-guest self-check: the guest agent reports on
+        # itself, the display, window manager and vnc server, the healthcheck,
+        # disk and memory. a failing check is a "fail" line in a successful
+        # response, not a raised error.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        path = f"/v1/environments/{quote(vm_id, safe='')}/doctor"
+        resp = self._t.request("GET", path)
+        return DoctorReport.model_validate(resp.json())
 
     def exec(
         self,

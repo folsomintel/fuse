@@ -53,6 +53,7 @@ mod apikeys;
 mod builds;
 mod client;
 mod computer;
+mod doctor;
 mod environments;
 mod error;
 mod events;
@@ -75,6 +76,7 @@ pub use computer::{
     ComputerAction, ComputerActionKind, ComputerDisplay, ComputerResult, ComputerToolResult,
     Coordinate, ImageSource, Region, ScrollDirection, ToolResultBlock,
 };
+pub use doctor::{DoctorCheck, DoctorReport, DoctorStatus};
 pub use environments::{
     EnvironmentPage, Environments, ExecCommand, ExecRequest, ExecResult, ListEnvironmentsOptions,
 };

@@ -249,6 +249,10 @@ func newHandler(c config, creds *credentials, manifestBytes []byte, secretCount 
 	mux.HandleFunc("/v1/computer/screenshot", protect(creds, comp.handleScreenshot))
 	mux.HandleFunc("/v1/computer/display", protect(creds, comp.handleDisplay))
 	mux.HandleFunc("/v1/computer/stream", protect(creds, comp.handleStream))
+
+	// the guest self-check. bearer-protected: it names the image's tooling
+	// and resource usage, which /health deliberately does not. see doctor.go.
+	mux.HandleFunc("/v1/doctor", protect(creds, newDoctor(c, probe).handle))
 	return mux
 }
 

@@ -1059,6 +1059,49 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /v1/environments/{vmId}/doctor:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    get:
+      tags: [environments]
+      operationId: environmentDoctor
+      summary: Run the environment's in-guest self-check
+      description: |
+        Ask the guest agent (fused) to check the pieces the sandbox depends
+        on and report each one: `agent`, `display`, `wm`, `vnc`,
+        `healthcheck`, `disk` and `memory`. Each check is `ok`, `warn`,
+        `fail` or `skip` (it does not apply: display checks on an image with
+        no desktop, `healthcheck` when none was declared), and `status` is
+        the worst of them with `skip` counting as `ok`.
+
+        Answers 200 whatever the checks found, since the report is the
+        answer. A failing check is a `fail` line, not an error status.
+      responses:
+        "200":
+          description: The self-check report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoctorReport"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The environment is not running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: |
+            The environment has no reachable guest agent, or its guest agent
+            predates doctor (rebuild the image on a newer fused).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /v1/environments/{vmId}/computer/stream:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -3251,6 +3294,49 @@ components:
         error:
           type: string
           description: Why the display is down, when it is.
+
+    DoctorCheck:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: |
+            Which piece was checked: today `agent`, `display`, `wm`, `vnc`,
+            `healthcheck`, `disk` or `memory`. The guest agent owns the list,
+            so treat an unknown name as one more line, not an error.
+        status:
+          $ref: "#/components/schemas/DoctorStatus"
+        message:
+          type: string
+          description: What was found, e.g. `:1 1280x800` or why it failed.
+          example: ":1 1280x800"
+
+    DoctorStatus:
+      type: string
+      enum: [ok, warn, fail, skip]
+      description: |
+        A check's outcome. `skip` means the check does not apply; the
+        report-level status is never `skip`.
+
+    DoctorReport:
+      type: object
+      required: [status, version, checks]
+      description: The guest self-check report.
+      properties:
+        status:
+          $ref: "#/components/schemas/DoctorStatus"
+        vm_id:
+          type: string
+          description: The environment the guest agent reports as.
+        version:
+          type: string
+          description: The guest agent's version.
+          example: v1.4.0
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DoctorCheck"
 
     Health:
       type: object
