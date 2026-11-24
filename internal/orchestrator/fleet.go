@@ -1322,7 +1322,6 @@ func (fm *FleetManager) reconcile(ctx context.Context) {
 		fm.logger.Error("reconcile list failed, host unreachable this cycle", "host", hostID, "err", err)
 	}
 	summary.HostsUnreachable = len(listing.unreachable)
-	fm.markHostsSeen(listing)
 	envs := listing.envs
 
 	providerVMs := make(map[string]bool, len(envs))
