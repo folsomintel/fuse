@@ -329,7 +329,6 @@ func renderHostDetail(h *fuse.Host) {
 	for _, w := range h.Warnings {
 		warnf("warning: %s", w)
 	}
-	warnf("note: last_seen is set at registration and not refreshed; it is not a liveness signal")
 }
 
 // newHostActionCmd builds a simple by-id action command (cordon/uncordon).

@@ -146,9 +146,9 @@ unchanged fleet land on the same host.
 
 The list of what is *not* consulted is the more useful half of the model:
 
-- **Host liveness.** `last_seen` is recorded at registration and never
-  refreshed, and no gate reads it. A host whose agent died an hour ago is still
-  a placement candidate until someone cordons it.
+- **Host liveness.** `last_seen` is refreshed every reconcile cycle, but no
+  gate reads it. A host whose agent died an hour ago is still a placement
+  candidate until someone cordons it.
 - **Real utilization.** Every number is the orchestrator's own bookkeeping
   against what it has allocated. Nothing polls the host to ask what it is
   actually doing, so work started outside Fuse is invisible.

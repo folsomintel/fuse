@@ -4238,6 +4238,7 @@ components:
         last_seen:
           type: string
           format: date-time
+          description: Last time the orchestrator reached the host's agent. Refreshed every reconcile cycle (30s by default) while the agent answers.
         created_at:
           type: string
           format: date-time

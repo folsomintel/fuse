@@ -506,6 +506,8 @@ type vmListing struct {
 	// same ids. a vm on one is neither missing nor gone: nothing is known
 	// about it until its host answers again.
 	unreachable map[string]error
+	// seen holds when each host's list answered, for the hosts that did.
+	seen map[string]time.Time
 }
 
 // reachable reports whether hostID answered this cycle's list.
@@ -527,7 +529,7 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 	fm.mu.RUnlock()
 
 	var mu sync.Mutex
-	out := vmListing{hostOf: make(map[string]string), unreachable: make(map[string]error)}
+	out := vmListing{hostOf: make(map[string]string), unreachable: make(map[string]error), seen: make(map[string]time.Time)}
 
 	var wg sync.WaitGroup
 	for hostID, p := range providers {
@@ -541,6 +543,7 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 				out.unreachable[hostID] = err
 				return
 			}
+			out.seen[hostID] = time.Now()
 			out.envs = append(out.envs, envs...)
 			for _, env := range envs {
 				out.hostOf[env.Name()] = hostID
@@ -549,6 +552,27 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 	}
 	wg.Wait()
 	return out
+}
+
+// markHostsSeen moves each host that answered this cycle's list to the time it
+// answered, which makes LastSeen the last time the orchestrator reached the
+// host's agent. a host that did not answer keeps its old LastSeen, so the gap
+// grows by one reconcile interval per missed cycle.
+func (fm *FleetManager) markHostsSeen(listing vmListing) {
+	var changed []string
+	fm.mu.Lock()
+	for hostID, at := range listing.seen {
+		h, ok := fm.hosts[hostID]
+		if !ok || !at.After(h.LastSeen) {
+			continue
+		}
+		h.LastSeen = at
+		changed = append(changed, hostID)
+	}
+	fm.mu.Unlock()
+	for _, hostID := range changed {
+		fm.persistHostBackground(hostID)
+	}
 }
 
 // ── Conversion helpers ────────────────────────────────────────────

@@ -274,9 +274,10 @@ went wrong, not as a work queue.
 
 ## What the loop does not do
 
-- **It does not detect a dead host agent.** `last_seen` is never refreshed and
-  nothing sweeps for unreachable hosts. A dead agent surfaces only as the
-  unreachable host described above, every cycle until it answers.
+- **It does not act on a dead host agent.** Each host whose list answers has
+  its `last_seen` moved to that moment, so a dead agent shows as a `last_seen`
+  that stops advancing. Nothing cordons or sweeps the host; it surfaces only as
+  the unreachable host described above, every cycle until it answers.
 - **It does not drain hosts.** The `draining` host state exists but no eviction
   logic backs it.
 - **It does not re-probe capacity.** Host capacity is fixed at registration.
