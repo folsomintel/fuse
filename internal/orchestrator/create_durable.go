@@ -165,6 +165,9 @@ type CreateState struct {
 	FromCache bool `json:"from_cache,omitempty"`
 	// Endpoints is what the guest agent published as it started.
 	Endpoints []Endpoint `json:"endpoints,omitempty"`
+	// Epoch is the vm's incarnation, kept so the cleanup destroy of a vm
+	// the abandon dropped is fenced to it.
+	Epoch int64 `json:"epoch,omitempty"`
 }
 
 // CreateIngress is a published vm: the sidecar config its guest needs,
@@ -511,7 +514,7 @@ func (fm *FleetManager) CreateBegin(ctx context.Context, vmID string, req Create
 		fm.publishStateChange(vmID, "")
 	}
 	fm.logger.InfoContext(ctx, "provisioning vm", "vm", vmID, "task", req.TaskID)
-	return CreateState{Credentials: sealedCreds}, nil
+	return CreateState{Credentials: sealedCreds, Epoch: VMEpoch(createdAt)}, nil
 }
 
 // CreateBeginFailed cleans up after a begin that failed for good: a vm
@@ -1005,6 +1008,13 @@ const staleMigrateAfter = 24 * time.Hour
 // with hosts has nothing to destroy; only a hostless fleet's default
 // provider can hold it.
 func (fm *FleetManager) abandonStaleCreate(ctx context.Context, vmID, taskID, hostID, cause string) {
+	// read before the abandon drops the vm.
+	fm.mu.RLock()
+	var epoch int64
+	if v, ok := fm.vms[vmID]; ok {
+		epoch = v.epoch()
+	}
+	fm.mu.RUnlock()
 	if err := fm.CreateAbandon(ctx, vmID, CreateRequest{TaskID: taskID}, cause); err != nil {
 		fm.logger.Warn("abandon stale create failed, retrying next cycle", "vm", vmID, "err", err)
 		return
@@ -1014,6 +1024,6 @@ func (fm *FleetManager) abandonStaleCreate(ctx context.Context, vmID, taskID, ho
 	hostless := len(fm.hosts) == 0
 	fm.mu.Unlock()
 	if hostID != "" || hostless {
-		fm.cleanupFailedCreate(vmID, hostID)
+		fm.cleanupFailedCreate(vmID, hostID, epoch)
 	}
 }

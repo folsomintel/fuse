@@ -301,7 +301,7 @@ func (f *forking) compensate(cause error) error {
 		// the vm is no longer tracked, so the destroy is told its host. it
 		// runs on this object once the fork has ended.
 		restate.ObjectSend(ctx, EnvironmentObject, plan.NewVMID, "Destroy").
-			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonForkRollback, HostID: f.hostID})
+			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonForkRollback, HostID: f.hostID, Epoch: orchestrator.VMEpoch(plan.CreatedAt)})
 	}
 	f.release()
 	if f.seed.SnapshotID != "" {

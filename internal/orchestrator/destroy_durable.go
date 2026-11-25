@@ -31,6 +31,10 @@ type DestroyRequest struct {
 	// HostID names the host to destroy on when the fleet no longer tracks
 	// the vm, as after a failed create, which drops the vm before cleanup.
 	HostID string `json:"host_id,omitempty"`
+	// Epoch is the incarnation to destroy when the fleet no longer tracks
+	// the vm, so a cleanup that waits on the host cannot take a vm created
+	// under the id since. 0 takes the tracked vm's epoch, or none.
+	Epoch int64 `json:"epoch,omitempty"`
 }
 
 // DestroyTarget is what DestroyBegin found.
@@ -130,11 +134,11 @@ func (fm *FleetManager) destroyAsync(vmID, reason string) {
 }
 
 // cleanupFailedCreate tears down a vm a failed create already dropped from
-// the fleet, on hostID.
-func (fm *FleetManager) cleanupFailedCreate(vmID, hostID string) {
+// the fleet, on hostID: the incarnation at epoch.
+func (fm *FleetManager) cleanupFailedCreate(vmID, hostID string, epoch int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := fm.durableDestroyer().SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: hostID}); err != nil {
+	if err := fm.durableDestroyer().SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: hostID, Epoch: epoch}); err != nil {
 		fm.logger.Error("send durable cleanup destroy failed", "vm", vmID, "host", hostID, "err", err)
 	}
 }
@@ -244,7 +248,8 @@ func (fm *FleetManager) DestroyReleaseEgress(ctx context.Context, vmID string) e
 
 // DestroyOnHost destroys the vm on its host. a vm the host does not have is
 // already destroyed. an attempt restarts the vm's teardown clock, so
-// reconcile does not re-send a destroy that is still retrying.
+// reconcile does not re-send a destroy that is still retrying. the delete is
+// for the incarnation ctx names (DestroyRequest.Epoch), else the tracked vm's.
 func (fm *FleetManager) DestroyOnHost(ctx context.Context, vmID, hostID string) error {
 	fm.mu.Lock()
 	if v, ok := fm.vms[vmID]; ok {
@@ -255,7 +260,10 @@ func (fm *FleetManager) DestroyOnHost(ctx context.Context, vmID, hostID string) 
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(fm.epochCtx(ctx, vmID), destroyStepTimeout)
+	if VMEpochFrom(ctx) == 0 {
+		ctx = fm.epochCtx(ctx, vmID)
+	}
+	ctx, cancel := context.WithTimeout(ctx, destroyStepTimeout)
 	defer cancel()
 	// a 412 is the host holding another incarnation under the id: this one
 	// is gone already, and the other is not this destroy's to take.

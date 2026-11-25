@@ -202,3 +202,15 @@ func TestRestoreOrCreateKeysTheReplacementApart(t *testing.T) {
 		t.Fatalf("keys %q, want %q", p.keys, want)
 	}
 }
+
+func TestDestroyOnHostTakesTheRequestEpoch(t *testing.T) {
+	// a cleanup of a vm the fleet dropped names its incarnation itself.
+	p := &incarnationProvider{mockProvider: newMockProvider()}
+	fm := newInlineFleet(FleetConfig{Provider: p, StateStore: NewMemoryStateStore(), Prefix: "fuse-"})
+	if err := fm.DestroyOnHost(WithVMEpoch(context.Background(), 123), "fuse-gone", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.destroys) != 1 || p.destroys[0] != 123 {
+		t.Fatalf("destroys under epochs %v, want one under 123", p.destroys)
+	}
+}
