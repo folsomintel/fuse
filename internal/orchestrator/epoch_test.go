@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -154,5 +155,45 @@ func TestVMEpochSurvivesStorePrecision(t *testing.T) {
 	}
 	if VMEpoch(at.Add(time.Millisecond)) <= VMEpoch(at) {
 		t.Fatal("a later incarnation's epoch is not newer")
+	}
+}
+
+// keyProvider records the idempotency key each mutating call would carry.
+type keyProvider struct {
+	*incarnationProvider
+	keys []string
+}
+
+func (p *keyProvider) key(ctx context.Context) string {
+	if name, n, ok := NextIdempotencyPart(ctx); ok {
+		return name + "/" + strconv.FormatInt(n, 10)
+	}
+	return "step"
+}
+
+func (p *keyProvider) Destroy(ctx context.Context, name string) error {
+	p.keys = append(p.keys, "DELETE "+p.key(ctx))
+	return p.incarnationProvider.Destroy(ctx, name)
+}
+
+func (p *keyProvider) Create(ctx context.Context, spec Spec) (Environment, error) {
+	p.keys = append(p.keys, "POST "+p.key(ctx))
+	return p.incarnationProvider.Create(ctx, spec)
+}
+
+func TestRestoreOrCreateKeysTheReplacementApart(t *testing.T) {
+	// a retry after the old vm is gone makes only the create; it must be keyed
+	// as the first attempt's create was, not take the delete's number.
+	p := &keyProvider{incarnationProvider: &incarnationProvider{mockProvider: newMockProvider(), host: 100}}
+	ctx := context.Background()
+	if _, err := p.mockProvider.Create(ctx, Spec{Name: "vm"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restoreOrCreate(WithVMEpoch(ctx, 200), p, Spec{Name: "vm"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"DELETE replace-incarnation/1", "POST step"}
+	if len(p.keys) != 2 || p.keys[0] != want[0] || p.keys[1] != want[1] {
+		t.Fatalf("keys %q, want %q", p.keys, want)
 	}
 }

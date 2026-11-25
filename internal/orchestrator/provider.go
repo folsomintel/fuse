@@ -831,7 +831,10 @@ func restoreOrCreate(ctx context.Context, p Provider, spec Spec) (env Environmen
 		if other.Host > other.Want {
 			return nil, false, getErr
 		}
-		if err := p.Destroy(WithVMEpoch(ctx, other.Host), spec.Name); err != nil && !IsNotFound(err) && !IsStaleEpoch(err) {
+		// a named part, so a retry of the step that finds the old vm already
+		// gone keys its create as the first attempt did.
+		replaceCtx := WithIdempotencyPart(WithVMEpoch(ctx, other.Host), "replace-incarnation")
+		if err := p.Destroy(replaceCtx, spec.Name); err != nil && !IsNotFound(err) && !IsStaleEpoch(err) {
 			return nil, false, fmt.Errorf("destroy vm %s an earlier incarnation left: %w", spec.Name, err)
 		}
 	}
