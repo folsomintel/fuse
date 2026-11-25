@@ -829,7 +829,10 @@ func restoreOrCreate(ctx context.Context, p Provider, spec Spec) (env Environmen
 	var other *IncarnationError
 	if errors.As(getErr, &other) {
 		if other.Host > other.Want {
-			return nil, false, getErr
+			// a later create of the task holds the vm: this boot is a stale
+			// replay. ErrTaskAlreadyAssigned is a create sentinel, so the
+			// refusal is permanent and reaches the api as a 409.
+			return nil, false, fmt.Errorf("%w: %w", ErrTaskAlreadyAssigned, getErr)
 		}
 		// a named part, so a retry of the step that finds the old vm already
 		// gone keys its create as the first attempt did.

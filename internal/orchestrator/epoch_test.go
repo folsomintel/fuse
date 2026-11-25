@@ -72,8 +72,13 @@ func TestRestoreOrCreateRefusesForALaterIncarnation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _, err := restoreOrCreate(WithVMEpoch(ctx, 200), p, Spec{Name: "vm"})
-	if !errors.Is(err, ErrOtherIncarnation) {
-		t.Fatalf("err = %v, want ErrOtherIncarnation", err)
+	if !errors.Is(err, ErrOtherIncarnation) || !errors.Is(err, ErrTaskAlreadyAssigned) {
+		t.Fatalf("err = %v, want ErrOtherIncarnation and ErrTaskAlreadyAssigned", err)
+	}
+	// a create sentinel, so the durable create stops retrying and carries
+	// it across restate as a 409.
+	if !PermanentCreateError(err) {
+		t.Fatal("a create refused for a later incarnation is retried")
 	}
 	if len(p.destroys) != 0 || len(p.creates) != 0 {
 		t.Fatalf("a stale boot destroyed %v and created %v; want neither", p.destroys, p.creates)
