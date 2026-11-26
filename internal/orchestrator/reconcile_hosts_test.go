@@ -81,3 +81,67 @@ func TestReconcileSingleProviderListFailure(t *testing.T) {
 		t.Errorf("summary = %+v, want 1 unreachable and nothing missing", got)
 	}
 }
+
+// TestReconcileRefreshesHostLastSeen: a host whose list answers has last_seen
+// moved to that cycle, in memory and in the store, so it survives a restart. a
+// host whose list fails keeps its old last_seen.
+func TestReconcileRefreshesHostLastSeen(t *testing.T) {
+	store := NewMemoryStateStore()
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-", StateStore: store})
+	ctx := context.Background()
+	if err := fm.RegisterHost(ctx, gpuFleetHost("up", 1, "a100"), newMockProvider()); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.RegisterHost(ctx, gpuFleetHost("down", 1, "a100"), &listFailProvider{mockProvider: newMockProvider()}); err != nil {
+		t.Fatal(err)
+	}
+	inlineWait(fm)
+	stale := time.Now().Add(-time.Hour).Truncate(time.Second)
+	fm.mu.Lock()
+	fm.hosts["up"].LastSeen = stale
+	fm.hosts["down"].LastSeen = stale
+	fm.mu.Unlock()
+
+	before := time.Now()
+	fm.reconcile(ctx)
+	fm.bg.Wait()
+
+	if h, _ := fm.GetHost("up"); h.LastSeen.Before(before) {
+		t.Errorf("reachable host last_seen = %v, want refreshed to this cycle", h.LastSeen)
+	}
+	if h, _ := fm.GetHost("down"); !h.LastSeen.Equal(stale) {
+		t.Errorf("unreachable host last_seen = %v, want it left at %v", h.LastSeen, stale)
+	}
+	rec, err := store.GetHost(ctx, "up")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.LastSeen.Before(before) {
+		t.Errorf("stored last_seen = %v, want the refreshed value persisted", rec.LastSeen)
+	}
+}
+
+// TestMarkHostSeenIgnoresReplacedProvider: a list answered by a provider the
+// host was re-registered away from does not refresh the new registration.
+func TestMarkHostSeenIgnoresReplacedProvider(t *testing.T) {
+	fm := newInlineFleet(FleetConfig{Provider: newMockProvider(), Prefix: "fuse-"})
+	ctx := context.Background()
+	old := newMockProvider()
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h", 1, "a100"), old); err != nil {
+		t.Fatal(err)
+	}
+	if err := fm.RegisterHost(ctx, gpuFleetHost("h", 1, "a100"), newMockProvider()); err != nil {
+		t.Fatal(err)
+	}
+	inlineWait(fm)
+	stale := time.Now().Add(-time.Hour)
+	fm.mu.Lock()
+	fm.hosts["h"].LastSeen = stale
+	fm.mu.Unlock()
+
+	fm.markHostSeen("h", old, time.Now())
+
+	if h, _ := fm.GetHost("h"); !h.LastSeen.Equal(stale) {
+		t.Errorf("last_seen = %v, want it left at %v after an answer from the replaced provider", h.LastSeen, stale)
+	}
+}

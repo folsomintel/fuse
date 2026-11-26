@@ -48,13 +48,15 @@ Nothing re-probes an existing host, so after upgrading the orchestrator every
 host that was already registered shows `-` until it is registered again. When the listed hosts run more than one release, a warning
 on stderr names each release and the hosts on it, since live migration needs
 both hosts on the same release. Only the listed page is compared, pass
-`--all-pages` to check the whole fleet. Like LAST SEEN, the version is read
-once at registration and not refreshed, so it can lag a host that ran
-`fc-update` after it registered.
+`--all-pages` to check the whole fleet. The version is read once at
+registration and not refreshed, so it can lag a host that ran `fc-update` after
+it registered.
 
-LAST SEEN is stamped at registration and never refreshed, it is **not** a
-liveness signal and the scheduler never consults it. Judge reachability from
-the STATE column and the host agent's own health endpoint instead.
+LAST SEEN is the last time the orchestrator reached the host's agent. The
+reconcile loop refreshes it every cycle (30s by default), so a value more than a
+couple of cycles old means the agent stopped answering. The scheduler never
+consults it: a host with a stale LAST SEEN is still a placement candidate until
+it is cordoned.
 
 ## Select
 

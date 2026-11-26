@@ -514,6 +514,11 @@ func (l vmListing) reachable(hostID string) bool {
 	return !down
 }
 
+// hostListTimeout bounds one host's reconcile list, so a host that stops
+// answering is unreachable for the cycle instead of holding the next cycle
+// back for every other host.
+const hostListTimeout = 30 * time.Second
+
 // listAllHostVMs collects VMs from all registered host providers, in
 // parallel. a host whose list fails is recorded as unreachable rather than
 // failing the whole listing, so one bad host cannot stall reconcile for the
@@ -534,7 +539,12 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 		wg.Add(1)
 		go func(hostID string, p Provider) {
 			defer wg.Done()
-			envs, err := p.List(ctx, fm.prefix)
+			listCtx, cancel := context.WithTimeout(ctx, hostListTimeout)
+			envs, err := p.List(listCtx, fm.prefix)
+			cancel()
+			if err == nil {
+				fm.markHostSeen(hostID, p, time.Now())
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
@@ -549,6 +559,25 @@ func (fm *FleetManager) listAllHostVMs(ctx context.Context) vmListing {
 	}
 	wg.Wait()
 	return out
+}
+
+// markHostSeen moves a host whose list just answered to the time it answered,
+// which makes LastSeen the last time the orchestrator reached the host's
+// agent. it runs as each list returns, so a slow host does not hold back the
+// others. a host that did not answer keeps its old LastSeen, so the gap grows
+// by one reconcile interval per missed cycle. p is the provider that answered:
+// a host re-registered while its list was running has a new provider, and an
+// answer from the old agent says nothing about the new one.
+func (fm *FleetManager) markHostSeen(hostID string, p Provider, at time.Time) {
+	fm.mu.Lock()
+	h, ok := fm.hosts[hostID]
+	if !ok || fm.hostProviders[hostID] != p || !at.After(h.LastSeen) {
+		fm.mu.Unlock()
+		return
+	}
+	h.LastSeen = at
+	fm.mu.Unlock()
+	fm.persistHostBackground(hostID)
 }
 
 // ── Conversion helpers ────────────────────────────────────────────

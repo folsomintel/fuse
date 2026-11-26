@@ -62,8 +62,8 @@ rather than on the error message (`host <id> still has vm <id> assigned`).
 Drain the host's environments before removing it.
 
 `Host.state` is one of `active`, `cordoned`, or `draining`. `Host.last_seen`
-is set once at registration and never refreshed, it is not a liveness
-signal. `host.capacity.firecracker` is the firecracker release the host agent
+is the last time the orchestrator reached the host's agent, refreshed every
+reconcile cycle (30s by default). `host.capacity.firecracker` is the firecracker release the host agent
 reported at registration and `host.capacity.firecracker_pinned` the release its
 `fc-agent.py` pins. Both are probed (a declared value is ignored), read only at
 registration, set only on `capacity`, and absent on `qemu` hosts and on hosts

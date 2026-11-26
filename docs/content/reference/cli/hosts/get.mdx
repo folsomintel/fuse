@@ -29,10 +29,9 @@ cpus          4 / 16
 ram mb        8192 / 65536
 storage gb    100 / 500
 vms           1 / 20
-last seen     2026-01-15 10:00 (3m)
+last seen     2026-01-15 10:00 (12s)
 created       2026-01-15 10:00
 updated       2026-01-15 10:00
-note: last_seen is set at registration and not refreshed; it is not a liveness signal
 ```
 
 A GPU host adds a `gpus` row, and a MIG host a `mig` row listing each declared
@@ -54,10 +53,9 @@ storage gb    100 / 2000
 vms           2 / 8
 gpus          1 / 4 (a100)
 mig           1g.10gb 2 / 4, 2g.20gb 0 / 2
-last seen     2026-01-15 10:00 (3m)
+last seen     2026-01-15 10:00 (12s)
 created       2026-01-15 10:00
 updated       2026-01-15 10:00
-note: last_seen is set at registration and not refreshed; it is not a liveness signal
 ```
 
 The `gpus` row appears only when the host has whole-device GPU capacity, and the
@@ -71,5 +69,6 @@ the release its `fc-agent.py` pins in parentheses when the two differ (for
 example `v1.16.0 (pinned v1.17.0)`). It is `-` on a `qemu` host, an agent too
 old to report it, or a host registered before the orchestrator stored it.
 
-`last seen` is set once at registration and is never refreshed afterward, it is
-not a liveness signal, don't use it to detect a dead host agent.
+`last seen` is the last time the orchestrator reached the host's agent. The
+reconcile loop refreshes it every cycle (30s by default), so a value more than a
+couple of cycles old means the agent stopped answering.
