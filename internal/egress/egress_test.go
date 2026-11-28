@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -31,7 +32,7 @@ func TestNormalize(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.in.Normalize(); got != tc.want {
+			if got := tc.in.Normalize(); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Normalize(%+v) = %+v, want %+v", tc.in, got, tc.want)
 			}
 		})

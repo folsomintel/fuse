@@ -38,16 +38,16 @@ if command -v apt-get >/dev/null 2>&1; then
   $SUDO apt-get update -y
   $SUDO apt-get install -y --no-install-recommends \
     podman python3 curl ca-certificates tar \
-    iptables nftables iproute2 e2fsprogs util-linux coreutils \
+    iptables nftables iproute2 conntrack e2fsprogs util-linux coreutils \
     openssh-client procps openssl
 elif command -v dnf >/dev/null 2>&1; then
   log "dnf: installing host dependencies"
   $SUDO dnf install -y \
     podman python3 curl ca-certificates tar \
-    iptables nftables iproute e2fsprogs util-linux coreutils \
+    iptables nftables iproute conntrack-tools e2fsprogs util-linux coreutils \
     openssh-clients procps-ng openssl
 else
-  die "unsupported package manager (need apt-get or dnf); install manually: podman docker python3 curl tar iptables nftables iproute2 e2fsprogs util-linux openssh-client procps openssl"
+  die "unsupported package manager (need apt-get or dnf); install manually: podman docker python3 curl tar iptables nftables iproute2 conntrack e2fsprogs util-linux openssh-client procps openssl"
 fi
 ok "packages installed"
 

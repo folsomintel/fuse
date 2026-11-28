@@ -42,12 +42,14 @@ _HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(_HERE), str(_HERE.parent / "shared")]
 import agentlib  # noqa: E402
 from agentlib import (  # noqa: E402
+    EGRESS_RESOLVER,
     FUSED_PORT,
     HTTPError,
     IPTABLES,
     _ssh_control_path,
     add_agent_forward,
     compose_up_command,
+    create_egress_allow,
     create_spec_digest,
     del_agent_forward,
     do_attach,
@@ -64,9 +66,12 @@ from agentlib import (  # noqa: E402
     now_iso,
     parse_attach_spec,
     pid_alive,
+    purge_egress_allow,
+    replace_egress_allow,
     resolve_public_host,
     sanitize_name,
     save_meta,
+    set_egress_allow,
     ssh_exec,
     sudo,
     teardown_tap,
@@ -539,6 +544,9 @@ def setup_tap(idx: int, iface: str) -> tuple[str, str, str]:
     sudo(["ip", "addr", "add", f"{host_ip}/30", "dev", tap])
     sudo(["ip", "link", "set", tap, "up"])
     sudo(["sysctl", "-w", "net.ipv4.ip_forward=1"])
+    # an allowlist chain an earlier holder of the index left would keep
+    # deciding this tap's egress.
+    purge_egress_allow(sudo, tap, iface)
     for chk, add in [
         (IPTABLES + ["-t", "nat", "-C", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"],
          IPTABLES + ["-t", "nat", "-A", "POSTROUTING", "-o", iface, "-j", "MASQUERADE"]),
@@ -766,6 +774,7 @@ def reserve_vm(req: dict, name: str, vm_id: str) -> tuple[dict, Path]:
     egress_mode = (req.get("egress") or {}).get("mode") or "direct"
     if egress_mode != "direct":
         raise HTTPError(400, f"egress mode {egress_mode!r} is not supported on the qemu backend; only direct egress is")
+    egress_allow = create_egress_allow(req, egress_mode)
     
     # Resolve the source rootfs before any allocation, so a rejected or unknown
     # image fails fast with no vm dir, tap, forward, or gpu claim to roll back.
@@ -830,6 +839,8 @@ def reserve_vm(req: dict, name: str, vm_id: str) -> tuple[dict, Path]:
         # and undoes the create, so the index and gpus are not held forever.
         "creating": True,
     }
+    if egress_allow:
+        meta["egress_allow"] = egress_allow
     try:
         d.mkdir(parents=True)
         save_meta(meta)
@@ -847,6 +858,7 @@ def boot_vm(meta: dict, source_rootfs: Path) -> None:
     try:
         iface = host_iface()
         setup_tap(meta["index"], iface)
+        apply_egress_allow(meta, iface)
         add_agent_forward(meta["host_port"], guest_ip, iface)
         # Guard against a stale multiplexed connection from a previous VM that
         # held this same guest ip (indices, and so ips, get reused).
@@ -869,8 +881,8 @@ def boot_vm(meta: dict, source_rootfs: Path) -> None:
             ssh_exec(
                 guest_ip,
                 "ip route show default | grep -q . || ip route add default via "
-                f"{host_ip}; grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || "
-                "echo nameserver 1.1.1.1 > /etc/resolv.conf",
+                f"{host_ip}; grep -q {EGRESS_RESOLVER} /etc/resolv.conf 2>/dev/null || "
+                f"echo nameserver {EGRESS_RESOLVER} > /etc/resolv.conf",
             )
         meta.pop("creating")
         save_meta(meta)
@@ -893,8 +905,34 @@ def undo_create(meta: dict) -> None:
             pass
     stop_qemu(meta)
     del_agent_forward(meta["host_port"], meta["guest_ip"])
+    release_egress_allow(meta)
     teardown_tap(meta["tap"])
     shutil.rmtree(vm_dir(meta["vm_id"]), ignore_errors=True)
+
+
+def apply_egress_allow(meta: dict, iface: str) -> None:
+    """puts a vm's allowlist on the outbound leg setup_tap just made a
+    plain accept, before the guest runs."""
+    if meta.get("egress_allow"):
+        set_egress_allow(sudo, meta["tap"], iface, meta["egress_allow"])
+
+
+def release_egress_allow(meta: dict) -> None:
+    """removes the allowlist chains of a vm that records one, for destroy
+    and a failed create. chains a crash left behind a meta that does not
+    record them go when setup_tap next takes the index."""
+    if meta.get("egress_allow"):
+        purge_egress_allow(sudo, meta["tap"], host_iface())
+
+
+def put_egress_allow(vm_id: str, body: dict) -> dict:
+    """PUT /v1/vm/{id}/egress/allow, as on the firecracker agent. every vm
+    here is direct, so there is no 409 to give."""
+    meta = load_meta(vm_id)
+    if not meta:
+        raise HTTPError(404, "vm not found")
+    return {"cidrs": replace_egress_allow(sudo, meta, body["cidrs"], host_iface())}
+
 
 def reapply_mig_layout() -> None:
     """Re-apply the persisted MIG layout (qemu-mig-setup.sh) so freed instances
@@ -930,6 +968,7 @@ def destroy_vm(vm_id: str) -> None:
         # endpoints written before the protocol field existed are tcp.
         del_expose_forward(endpoint["host_port"], meta["guest_ip"],
                            endpoint["port"], endpoint.get("protocol", "tcp"))
+    release_egress_allow(meta)
     teardown_tap(meta["tap"])
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
     sudo(["rm", "-rf", str(vm_dir(vm_id))], check=False)
@@ -1215,6 +1254,13 @@ class Handler(agentlib.BaseHandler):
                         destroy_vm(vm_id)
                         epoch_touch(vm_id)
                     return self._text(204, "")
+            # a vm's outbound allowlist, replaced in place under the vm lock.
+            m = re.fullmatch(r"/v1/vm/([^/]+)/egress/allow", path)
+            if m and method == "PUT":
+                vm_id = sanitize_name(m.group(1))
+                with vm_lock(vm_id):
+                    self._fence(vm_id, method)
+                    return self._json(200, put_egress_allow(vm_id, self._read_json()))
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
             if m:
@@ -1347,6 +1393,7 @@ def reattach_vms() -> None:
             iface = host_iface()
             tap, host_ip, guest_ip = setup_tap(meta["index"], iface)
             meta["tap"], meta["host_ip"], meta["guest_ip"] = tap, host_ip, guest_ip
+            apply_egress_allow(meta, iface)
             if "host_port" in meta:
                 del_agent_forward(meta["host_port"], guest_ip)
                 add_agent_forward(meta["host_port"], guest_ip, iface)

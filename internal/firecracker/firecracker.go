@@ -79,8 +79,9 @@ func New(cfg Config) *Provider {
 }
 
 var (
-	_ orchestrator.Provider         = (*Provider)(nil)
-	_ orchestrator.SnapshotForkable = (*Provider)(nil)
+	_ orchestrator.Provider          = (*Provider)(nil)
+	_ orchestrator.SnapshotForkable  = (*Provider)(nil)
+	_ orchestrator.EgressAllowSetter = (*Provider)(nil)
 )
 
 // Create provisions a new sandbox.
@@ -156,6 +157,27 @@ func (p *Provider) DestroyEgress(ctx context.Context, vmID string) error {
 		return nil
 	}
 	return err
+}
+
+// SetEgressAllow replaces a direct vm's outbound allowlist on its host,
+// satisfying orchestrator.EgressAllowSetter, and returns the list as the
+// agent normalized it. an empty list lifts the restriction. the agent
+// answers 404 for an unknown vm, 409 for a proxy-mode one and 400 for a
+// malformed cidr, each surfaced as an *orchestrator.HTTPStatusError.
+func (p *Provider) SetEgressAllow(ctx context.Context, vmID string, cidrs []string) ([]string, error) {
+	if p.stub != nil {
+		return nil, fmt.Errorf("firecracker stub has no egress rules")
+	}
+	if cidrs == nil {
+		// null is not a list to the agent; an empty one lifts the allowlist.
+		cidrs = []string{}
+	}
+	var resp egressAllowWire
+	path := fmt.Sprintf("/v1/vm/%s/egress/allow", vmID)
+	if err := p.doJSON(ctx, http.MethodPut, path, egressAllowWire{CIDRs: cidrs}, &resp); err != nil {
+		return nil, fmt.Errorf("firecracker set egress allow: %w", err)
+	}
+	return resp.CIDRs, nil
 }
 
 // CreateFromCheckpoint provisions a brand-new sandbox seeded from an existing
@@ -711,27 +733,31 @@ type createVMRequest struct {
 	// HugePages boots the guest with 2M pages. the agent refuses with 409
 	// when the host has not reserved enough of them.
 	HugePages bool `json:"huge_pages,omitempty"`
-	// Egress carries the vm's egress mode. the agent decides the tap's
-	// forward rule at create time, so this has to travel with the create and
-	// not with the later egress call. omitted for direct so an older agent
-	// sees byte-for-byte the request it always did.
+	// Egress carries the vm's egress mode and allowlist. the agent decides
+	// the tap's forward rule at create time, so this has to travel with the
+	// create and not with the later egress call. omitted for plain direct so
+	// an older agent sees byte-for-byte the request it always did.
 	Egress *egressWire `json:"egress,omitempty"`
 }
 
-// egressWire is the create-time half of the agent's egress contract: only
-// the mode, because that is all the tap rules depend on. the backend, if
-// any, is brought up afterwards through egress.HostRequest.
+// egressWire is the create-time half of the agent's egress contract: the
+// mode and the allowlist, because that is all the tap rules depend on. the
+// backend, if any, is brought up afterwards through egress.HostRequest.
 type egressWire struct {
-	Mode string `json:"mode"`
+	Mode  string   `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
 }
 
 // egressWireFor returns the create-time egress field for spec, or nil for
-// direct so the field is omitted entirely.
+// direct with no allowlist so the field is omitted entirely.
 func egressWireFor(spec orchestrator.Spec) *egressWire {
-	if !spec.Egress.IsProxy() {
-		return nil
+	if spec.Egress.IsProxy() {
+		return &egressWire{Mode: string(egress.ModeProxy), Allow: spec.Egress.Allow}
 	}
-	return &egressWire{Mode: string(egress.ModeProxy)}
+	if len(spec.Egress.Allow) > 0 {
+		return &egressWire{Mode: string(egress.ModeDirect), Allow: spec.Egress.Allow}
+	}
+	return nil
 }
 
 // createVMResponse is what the agent reports for a vm. host_ip and guest_ip
@@ -745,6 +771,12 @@ type createVMResponse struct {
 	// Epoch is the incarnation the agent created the vm for, 0 from an
 	// agent that predates epoch fencing or for a vm made without one.
 	Epoch int64 `json:"epoch"`
+}
+
+// egressAllowWire is both the body and the answer of PUT
+// /v1/vm/{id}/egress/allow.
+type egressAllowWire struct {
+	CIDRs []string `json:"cidrs"`
 }
 
 // egressResponse is the agent's answer to POST /v1/vm/{id}/egress.

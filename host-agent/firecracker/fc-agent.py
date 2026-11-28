@@ -45,12 +45,14 @@ _HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(_HERE), str(_HERE.parent / "shared")]
 import agentlib  # noqa: E402
 from agentlib import (  # noqa: E402
+    EGRESS_RESOLVER,
     FUSED_PORT,
     HTTPError,
     IPTABLES,
     _ssh_control_path,
     add_agent_forward,
     compose_up_command,
+    create_egress_allow,
     create_spec_digest,
     del_agent_forward,
     do_attach,
@@ -67,10 +69,13 @@ from agentlib import (  # noqa: E402
     now_iso,
     parse_attach_spec,
     pid_alive,
+    purge_egress_allow,
+    replace_egress_allow,
     resolve_public_host,
     run,
     sanitize_name,
     save_meta,
+    set_egress_allow,
     ssh_exec,
     sudo,
     teardown_tap,
@@ -573,6 +578,7 @@ def host_rules(dev: str, iface: str, egress_mode: str) -> None:
     # skipped by -C and never reach the top.
     for rule in vm_rules(dev, iface):
         purge_rule(rule)
+    purge_egress_allow(sudo, dev, iface)
     if egress_mode == "proxy":
         # the established accept is inserted after the drop and so sits above
         # it: replies on connections that came in (the orchestrator's to
@@ -599,6 +605,7 @@ def teardown_net(idx: int, iface: str) -> None:
     tap = tap_name(idx)
     for rule in vm_rules(tap, iface):
         purge_rule(rule)
+    purge_egress_allow(sudo, tap, iface)
     sudo(["ip", "netns", "del", netns_name(idx)], check=False)
     teardown_tap(tap)
 
@@ -616,6 +623,7 @@ def rebuild_net(meta: dict) -> None:
         setup_tap(meta["index"], iface, meta.get("egress_mode", "direct"), guest_net_of(meta))
     else:
         setup_legacy_tap(meta["index"], iface, meta.get("egress_mode", "direct"))
+    apply_egress_allow(meta, iface)
     if "host_port" in meta:
         add_agent_forward(meta["host_port"], meta["guest_ip"], iface)
     Path(_ssh_control_path(meta["guest_ip"])).unlink(missing_ok=True)
@@ -654,7 +662,25 @@ def guest_network_fixup(gateway: str, egress_mode: str) -> str:
     route = f"ip route show default | grep -q . || ip route add default via {gateway}; "
     if egress_mode == "proxy":
         return route + "echo nameserver 127.0.0.1 > /etc/resolv.conf"
-    return route + "grep -q 1.1.1.1 /etc/resolv.conf 2>/dev/null || echo nameserver 1.1.1.1 > /etc/resolv.conf"
+    return route + (f"grep -q {EGRESS_RESOLVER} /etc/resolv.conf 2>/dev/null || "
+                    f"echo nameserver {EGRESS_RESOLVER} > /etc/resolv.conf")
+
+
+def apply_egress_allow(meta: dict, iface: str) -> None:
+    """puts a direct vm's allowlist on the outbound leg host_rules just made
+    a plain accept. runs before the guest does (a create, a rebuild), so
+    the moment of plain accept carries no guest traffic."""
+    if meta.get("egress_allow"):
+        set_egress_allow(sudo, meta["tap"], iface, meta["egress_allow"])
+
+
+def put_egress_allow(vm_id: str, body: dict) -> dict:
+    """PUT /v1/vm/{id}/egress/allow: replaces a direct vm's allowlist while
+    it runs. an empty list lifts it."""
+    meta = load_meta(vm_id)
+    if not meta:
+        raise HTTPError(404, "vm not found")
+    return {"cidrs": replace_egress_allow(sudo, meta, body["cidrs"], host_iface())}
 
 def proxy_url(meta: dict, scheme: str, port: int) -> str:
     """the egress proxy url as the guest dials it: its gateway, which
@@ -1393,6 +1419,7 @@ def reserve_vm(req: dict, name: str, vm_id: str,
     the slot is taken from here on, and image eviction sees the image the
     meta names, so it leaves the image alone while boot_vm copies it."""
     egress_mode = parse_egress_mode(req)
+    egress_allow = create_egress_allow(req, egress_mode)
     # the same create sent again (a retry that lost its response) gets the vm
     # it made, before any allocation that vm itself would now fail. a
     # different spec under the name is still the 409 below.
@@ -1485,6 +1512,8 @@ def reserve_vm(req: dict, name: str, vm_id: str,
     }
     if base_image:
         meta["image"] = base_image
+    if egress_allow:
+        meta["egress_allow"] = egress_allow
     try:
         d.mkdir(parents=True)
         (d / "snapshots").mkdir()
@@ -1503,6 +1532,7 @@ def boot_vm(meta: dict, source_rootfs: Path, resume: dict | None) -> None:
     try:
         iface = host_iface()
         setup_tap(meta["index"], iface, meta["egress_mode"], guest_net)
+        apply_egress_allow(meta, iface)
         add_agent_forward(meta["host_port"], guest_ip, iface)
         # Guard against a stale multiplexed connection from a previous VM that
         # held this same guest ip (indices, and so ips, get reused).
@@ -4375,6 +4405,15 @@ class Handler(agentlib.BaseHandler):
                         destroy_vm(vm_id)
                         epoch_touch(vm_id)
                     return self._text(204, "")
+            # a direct vm's outbound allowlist, replaced in place. under the
+            # vm lock like every mutation of the vm, so it cannot interleave
+            # with a create, a restore or a destroy.
+            m = re.fullmatch(r"/v1/vm/([^/]+)/egress/allow", path)
+            if m and method == "PUT":
+                vm_id = sanitize_name(m.group(1))
+                with vm_lock(vm_id):
+                    self._fence(vm_id, method)
+                    return self._json(200, put_egress_allow(vm_id, self._read_json()))
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
             if m:

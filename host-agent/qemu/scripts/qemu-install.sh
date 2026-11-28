@@ -14,6 +14,8 @@ command -v qemu-system-x86_64 >/dev/null 2>&1 || need_pkgs+=(qemu-system-x86)
 [ -f /usr/share/OVMF/OVMF_CODE.fd ] || need_pkgs+=(ovmf)
 command -v qemu-nbd >/dev/null 2>&1 || need_pkgs+=(qemu-utils)
 command -v iptables >/dev/null 2>&1 || need_pkgs+=(iptables)
+# the egress allowlist flushes a vm's no-longer-allowed connections with it.
+command -v conntrack >/dev/null 2>&1 || need_pkgs+=(conntrack)
 if [ ${#need_pkgs[@]} -gt 0 ]; then
   log "apt install: ${need_pkgs[*]}"
   sudo apt-get update -qq
