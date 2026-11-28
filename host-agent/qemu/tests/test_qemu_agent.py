@@ -1256,5 +1256,141 @@ class EpochTest(unittest.TestCase):
         self.assertEqual(json.loads(body)["vms"][0]["epoch"], 4)
 
 
+
+def capture(present=()):
+    """records every sudo argv. a -C or -D answers present once for each
+    argv suffix in present, and absent otherwise."""
+    calls = []
+    remaining = [list(p) for p in present]
+
+    def fake(cmd, check=True):
+        calls.append(list(cmd))
+        if cmd[:2] == ["rm", "-rf"]:
+            shutil.rmtree(cmd[2], ignore_errors=True)
+            return subprocess.CompletedProcess(cmd, 0)
+        probing = "-C" in cmd or "-D" in cmd
+        for rule in remaining:
+            if probing and cmd[-len(rule):] == rule:
+                remaining.remove(rule)
+                return subprocess.CompletedProcess(cmd, 0)
+        return subprocess.CompletedProcess(cmd, 1)
+
+    return calls, fake
+
+
+IPT = ["iptables", "-w", "30"]
+QV_ACCEPT = ["FORWARD", "-i", "qv1", "-o", "eth0", "-j", "ACCEPT"]
+QV_JUMP_A = ["FORWARD", "-i", "qv1", "-o", "eth0", "-j", "FUSE-EG-qv1-A"]
+
+
+class EgressAllowTest(unittest.TestCase):
+    """the direct egress allowlist (#449), as on the firecracker agent: the
+    same agentlib chain, keyed on the qemu tap."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        state = root / "agent-state"
+        (state / "vms").mkdir(parents=True)
+        (root / "rootfs.qcow2").write_bytes(b"default")
+        self.calls, fake = capture()
+        patches = [
+            mock.patch.object(qemu_agent, "STATE_DIR", state),
+            mock.patch.object(qemu_agent, "VMS_DIR", state / "vms"),
+            mock.patch.object(qemu_agent.agentlib, "STATE_DIR", state),
+            mock.patch.object(qemu_agent.agentlib, "VMS_DIR", state / "vms"),
+            mock.patch.object(qemu_agent, "BASE_ROOTFS", root / "rootfs.qcow2"),
+            mock.patch.object(qemu_agent, "VFIO_INVENTORY", root / "vfio-inventory.txt"),
+            mock.patch.object(qemu_agent, "MIG_INVENTORY", root / "mig-inventory.txt"),
+            mock.patch.object(qemu_agent, "pick_gpu_slots", return_value=[]),
+            mock.patch.object(qemu_agent, "pick_index", return_value=1),
+            mock.patch.object(qemu_agent, "host_iface", return_value="eth0"),
+            mock.patch.object(qemu_agent, "sudo", side_effect=fake),
+            mock.patch.object(qemu_agent, "add_agent_forward"),
+            mock.patch.object(qemu_agent, "del_agent_forward"),
+            mock.patch.object(qemu_agent, "teardown_tap"),
+            mock.patch.object(qemu_agent, "stop_qemu"),
+            mock.patch.object(qemu_agent, "start_qemu", side_effect=lambda meta: self.calls.append(["<boot>"])),
+            mock.patch.object(qemu_agent, "wait_for_ssh", return_value=False),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_create_with_allow_jumps_to_the_chain_before_the_guest_boots(self):
+        meta = qemu_agent.create_vm({"name": "x", "egress": {"mode": "direct", "allow": ["10.1.2.3/8"]}})
+        self.assertEqual(qemu_agent.load_meta("x")["egress_allow"], ["10.0.0.0/8"])
+        self.assertEqual(meta["tap"], "qv1")
+        jump = self.calls.index(IPT + ["-I"] + QV_JUMP_A)
+        self.assertIn(IPT + ["-A", "FUSE-EG-qv1-A", "-d", "10.0.0.0/8", "-j", "ACCEPT"], self.calls)
+        self.assertLess(jump, self.calls.index(["<boot>"]))
+        self.assertLess(self.calls.index(IPT + ["-I"] + QV_ACCEPT), jump)
+        self.assertGreater(self.calls.index(IPT + ["-D"] + QV_ACCEPT), jump)
+
+    def test_bad_allow_is_a_400_before_anything_is_allocated(self):
+        for egress in ({"allow": ["10.0.0.0/99"]}, {"mode": "proxy", "allow": ["10.0.0.0/8"]}):
+            with self.subTest(egress=egress), self.assertRaises(qemu_agent.HTTPError) as e:
+                qemu_agent.create_vm({"name": "x", "egress": egress})
+            self.assertEqual(e.exception.code, 400)
+        self.assertEqual(self.calls, [])
+        self.assertFalse(qemu_agent.vm_dir("x").exists())
+
+    def test_setup_tap_clears_a_chain_an_earlier_holder_left(self):
+        REAL_SETUP_TAP(1, "eth0")
+        self.assertIn(IPT + ["-X", "FUSE-EG-qv1-A"], self.calls)
+        self.assertIn(IPT + ["-X", "FUSE-EG-qv1-B"], self.calls)
+        self.assertLess(self.calls.index(IPT + ["-X", "FUSE-EG-qv1-B"]), self.calls.index(IPT + ["-I"] + QV_ACCEPT))
+
+    def test_put_replaces_records_and_flushes(self):
+        qemu_agent.create_vm({"name": "x"})
+        self.calls.clear()
+        self.assertEqual(qemu_agent.put_egress_allow("x", {"cidrs": ["1.2.3.4"]}), {"cidrs": ["1.2.3.4/32"]})
+        self.assertEqual(qemu_agent.load_meta("x")["egress_allow"], ["1.2.3.4/32"])
+        self.assertIn(["conntrack", "-D", "-s", "10.200.1.2"], self.calls)
+        self.assertEqual(qemu_agent.put_egress_allow("x", {"cidrs": []}), {"cidrs": []})
+        self.assertNotIn("egress_allow", qemu_agent.load_meta("x"))
+
+    def test_put_status_codes(self):
+        with self.assertRaises(qemu_agent.HTTPError) as e:
+            qemu_agent.put_egress_allow("missing", {"cidrs": []})
+        self.assertEqual(e.exception.code, 404)
+        qemu_agent.create_vm({"name": "x"})
+        with self.assertRaises(qemu_agent.HTTPError) as e:
+            qemu_agent.put_egress_allow("x", {"cidrs": ["nope"]})
+        self.assertEqual(e.exception.code, 400)
+
+    def test_route(self):
+        qemu_agent.create_vm({"name": "x"})
+        handler = qemu_agent.Handler.__new__(qemu_agent.Handler)
+        handler.path = "/v1/vm/x/egress/allow"
+        handler.headers = {}
+        handler._auth = lambda: True
+        handler._read_json = lambda *a, **k: {"cidrs": ["1.2.3.4"]}
+        handler._json = mock.Mock(return_value=None)
+        handler._text = mock.Mock(return_value=None)
+        handler._route("PUT")
+        handler._json.assert_called_once_with(200, {"cidrs": ["1.2.3.4/32"]})
+
+    def test_destroy_and_a_failed_create_purge_the_chains(self):
+        qemu_agent.create_vm({"name": "x", "egress": {"allow": ["10.0.0.0/8"]}})
+        self.calls.clear()
+        qemu_agent.destroy_vm("x")
+        self.assertIn(IPT + ["-D"] + QV_JUMP_A, self.calls)
+        self.assertIn(IPT + ["-X", "FUSE-EG-qv1-A"], self.calls)
+        with mock.patch.object(qemu_agent, "start_qemu", side_effect=RuntimeError("boot failed")):
+            with self.assertRaises(RuntimeError):
+                qemu_agent.create_vm({"name": "y", "egress": {"allow": ["10.0.0.0/8"]}})
+        self.assertGreater(len([c for c in self.calls if c == IPT + ["-X", "FUSE-EG-qv1-A"]]), 1)
+
+    def test_reattach_reapplies_the_list(self):
+        qemu_agent.create_vm({"name": "x", "egress": {"allow": ["10.0.0.0/8"]}})
+        self.calls.clear()
+        with mock.patch.object(qemu_agent, "setup_tap", return_value=("qv1", "10.200.1.1", "10.200.1.2")):
+            qemu_agent.reattach_vms()
+        self.assertIn(IPT + ["-A", "FUSE-EG-qv1-A", "-d", "10.0.0.0/8", "-j", "ACCEPT"], self.calls)
+        self.assertIn(IPT + ["-I"] + QV_JUMP_A, self.calls)
+
+
 if __name__ == "__main__":
     unittest.main()
