@@ -1,5 +1,31 @@
 # Changelog
 
+## [1.5.0](https://github.com/folsomintel/fuse/compare/v1.4.0...v1.5.0) (2026-11-28)
+
+
+### Features
+
+* add an in-guest doctor self-check with fuse doctor and GET /v1/environments/{vmId}/doctor ([c5568f5](https://github.com/folsomintel/fuse/commit/c5568f5c9c23fdb7bee0b60075ff616479b27cb8))
+* add fuse doctor, an in-guest self-check across fused, api, cli and all four sdks ([330ca1b](https://github.com/folsomintel/fuse/commit/330ca1bb0bdb7c22cfa4ae2f29acd8d79fdcd1d3))
+* cover the rest of [#203](https://github.com/folsomintel/fuse/issues/203) in doctor: each display piece, machine-id, dbus, dns, egress, clock and a boot-time run ([2c2b845](https://github.com/folsomintel/fuse/commit/2c2b845506c53fb5b0a240de2ca80dce8ef05994))
+* fence host-agent requests to the vm incarnation they were made for ([96b70ef](https://github.com/folsomintel/fuse/commit/96b70eff33fb4d4855bb4a30fdb8444065ffafe5))
+* fence host-agent requests to the vm incarnation they were made for ([4e379e5](https://github.com/folsomintel/fuse/commit/4e379e50b5f4099e8f404d29a79565040d00cbf6))
+* refresh host last_seen every reconcile cycle so it tracks agent liveness ([5298a2f](https://github.com/folsomintel/fuse/commit/5298a2fb5ea29c82e105e1ac011b53a7ce9a3958))
+* refresh host last_seen every reconcile cycle so it tracks agent liveness ([562c0ad](https://github.com/folsomintel/fuse/commit/562c0ad06885dd43f2de246492229ff1c67bbed5))
+
+
+### Bug Fixes
+
+* answer a hung guest's doctor with 503 and keep the boot-time doctor off the network ([23c7504](https://github.com/folsomintel/fuse/commit/23c7504216fb0ad7e60598c46f4992b7a6e1204e))
+* answer a stale-epoch host refusal with 409, keep epoch records 30 days from destroy, adopt pre-fencing vms ([f28cae3](https://github.com/folsomintel/fuse/commit/f28cae37a2892c30531da6a306c3d9e9fd054e2b))
+* bound the doctor relay and stop it counting as idle activity ([ddd268e](https://github.com/folsomintel/fuse/commit/ddd268e3e1f307cb1dc4484f220c36049abcb522))
+* fence the cleanup destroy of a vm a failed create, fork or migrate dropped to its epoch ([dfdf2e2](https://github.com/folsomintel/fuse/commit/dfdf2e21e11373892de373fc12925f2e2a9d23d2))
+* ignore a list answer from a provider the host was re-registered away from ([0a6c01b](https://github.com/folsomintel/fuse/commit/0a6c01b8752c895f36a40a7de3b8a17ba18f3ca3))
+* key the delete of an earlier incarnation apart so a retried boot keeps its create key ([a2b801b](https://github.com/folsomintel/fuse/commit/a2b801b051cb7c60daba557d606318ddcade0201))
+* map a create lost to a later incarnation to 409 and document the epoch header ([b0a1ff3](https://github.com/folsomintel/fuse/commit/b0a1ff3a16221adbddf93bc8b8304b1065fc9528))
+* refresh each host's last_seen as its list answers and bound the list at 30s ([e0ca3d6](https://github.com/folsomintel/fuse/commit/e0ca3d60a4559df7770940549851508346a9eda8))
+* refuse a boot a later incarnation of its vm supersedes as a task conflict ([3c866a0](https://github.com/folsomintel/fuse/commit/3c866a0cb0cbbf7f2e4d61f9d333b97a8e6e5b01))
+
 ## [1.4.0](https://github.com/folsomintel/fuse/compare/v1.3.0...v1.4.0) (2026-11-23)
 
 
