@@ -392,6 +392,173 @@ class HTTPError(Exception):
 EXEC_TIMEOUT_MAX = 600.0  # ceiling on any single guest command
 
 
+# -- Direct egress allowlist ----------------------------------------------------
+# a direct vm's outbound leg, its device -> iface on the host FORWARD chain,
+# is a plain accept. with an allowlist it is a jump to a chain of the vm's
+# own: replies, dns to the guest's resolver, one accept per cidr, then a drop
+# (FORWARD has no default-deny, issue #208). the chain has two names, -A and
+# -B, so a replacement is built in full under the free one before the jump
+# moves to it: no moment has the vm half open or half closed, and none has
+# no outbound rule at all. the functions take the agent's sudo so each
+# agent's tests capture these calls the way they capture its own.
+
+# the resolver guest_network_fixup points a direct guest at. an allowlist
+# always lets dns to it through, or no allowed name would resolve.
+EGRESS_RESOLVER = "1.1.1.1"
+# each cidr is one iptables call under the vm lock, so the list is bounded.
+EGRESS_ALLOW_MAX = 256
+
+
+def parse_egress_allow(cidrs) -> list[str]:
+    """normalizes an allowlist: ipv4 only, a bare address is a /32, host
+    bits are dropped, duplicates go and the order stays. anything else is a
+    400."""
+    if not isinstance(cidrs, list):
+        raise HTTPError(400, "egress allow must be a list of ipv4 cidrs")
+    out: list[str] = []
+    for c in cidrs:
+        try:
+            net = str(ipaddress.IPv4Network(c.strip(), strict=False))
+        except (AttributeError, ValueError):
+            raise HTTPError(400, f"egress allow entry {c!r} is not an ipv4 cidr")
+        if net not in out:
+            out.append(net)
+    if len(out) > EGRESS_ALLOW_MAX:
+        raise HTTPError(400, f"egress allow has {len(out)} cidrs; at most {EGRESS_ALLOW_MAX} are allowed")
+    return out
+
+
+def create_egress_allow(req: dict, egress_mode: str) -> list[str]:
+    """the allowlist a create asks for, checked before anything is
+    allocated. a proxy vm's egress is its backend, so an allowlist on one is
+    a bad request rather than something to ignore."""
+    allow = parse_egress_allow((req.get("egress") or {}).get("allow") or [])
+    if allow and egress_mode != "direct":
+        raise HTTPError(400, f"egress allow needs direct egress, not {egress_mode!r}")
+    return allow
+
+
+def egress_chains(dev: str) -> tuple[str, str]:
+    """the two names of dev's allowlist chain. keyed on the device, which
+    carries the slot and differs between the two agents' devices; 15 chars
+    at most, so a name stays inside iptables' 28."""
+    return f"FUSE-EG-{dev}-A", f"FUSE-EG-{dev}-B"
+
+
+def _outbound(dev: str, iface: str, target: str) -> list[str]:
+    return ["FORWARD", "-i", dev, "-o", iface, "-j", target]
+
+
+def _purge(sudo_fn, rule: list[str]) -> None:
+    """deletes every copy of a FORWARD rule, bounded like fc-agent's
+    purge_rule."""
+    for _ in range(16):
+        if sudo_fn(IPTABLES + ["-D"] + rule, check=False).returncode != 0:
+            return
+
+
+def _drop_chain(sudo_fn, dev: str, iface: str, chain: str) -> None:
+    """removes the jump to chain, then the chain. tolerates either missing."""
+    _purge(sudo_fn, _outbound(dev, iface, chain))
+    sudo_fn(IPTABLES + ["-F", chain], check=False)
+    sudo_fn(IPTABLES + ["-X", chain], check=False)
+
+
+def purge_egress_allow(sudo_fn, dev: str, iface: str) -> None:
+    """removes both of dev's allowlist chains and their jumps: teardown, and
+    a slot whose earlier holder left them."""
+    for chain in egress_chains(dev):
+        _drop_chain(sudo_fn, dev, iface, chain)
+
+
+def egress_chain_rules(chain: str, cidrs: list[str]) -> list[list[str]]:
+    """the rules of an allowlist chain, in order, without the iptables verb."""
+    rules = [[chain, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"]]
+    for proto in ("udp", "tcp"):
+        rules.append([chain, "-d", f"{EGRESS_RESOLVER}/32", "-p", proto, "--dport", "53", "-j", "ACCEPT"])
+    rules += [[chain, "-d", c, "-j", "ACCEPT"] for c in cidrs]
+    rules.append([chain, "-j", "DROP"])
+    return rules
+
+
+def set_egress_allow(sudo_fn, dev: str, iface: str, cidrs: list[str]) -> None:
+    """points dev's outbound leg at cidrs, or back at the plain accept when
+    cidrs is empty. the new leg is in place before the old one goes."""
+    a, b = egress_chains(dev)
+    accept = _outbound(dev, iface, "ACCEPT")
+    if cidrs:
+        # build under whichever name the live jump does not use. whatever a
+        # crash mid-swap left under that name goes first.
+        live_a = sudo_fn(IPTABLES + ["-C"] + _outbound(dev, iface, a), check=False).returncode == 0
+        new, old = (b, a) if live_a else (a, b)
+        _drop_chain(sudo_fn, dev, iface, new)
+        sudo_fn(IPTABLES + ["-N", new])
+        for rule in egress_chain_rules(new, cidrs):
+            sudo_fn(IPTABLES + ["-A"] + rule)
+        leg, stale = _outbound(dev, iface, new), [old]
+    else:
+        leg, stale = accept, [a, b]
+    if sudo_fn(IPTABLES + ["-C"] + leg, check=False).returncode != 0:
+        sudo_fn(IPTABLES + ["-I"] + leg)
+    if cidrs:
+        _purge(sudo_fn, accept)
+    for chain in stale:
+        _drop_chain(sudo_fn, dev, iface, chain)
+
+
+def flush_egress_conntrack(sudo_fn, guest_ip: str, old: list[str], new: list[str]) -> None:
+    """forgets the guest's tracked connections a new allowlist no longer
+    allows, so an established flow cannot outlive its accept: its next
+    packet is new again and meets the drop. guest_ip is the source the host
+    sees, the veth address the namespace nats the guest to (a pre-namespace
+    vm's own address). -s matches a connection's original source, so only
+    connections the guest opened match: the orchestrator's to fused and an
+    expose's were opened from outside, their original source is the client
+    and the guest is only in their reply tuple, so they are never flushed.
+    best effort: a host without conntrack logs and keeps the new rules."""
+    if not new:
+        return
+    if not old:
+        cmds = [["conntrack", "-D", "-s", guest_ip]]
+    else:
+        cmds = []
+        for c in old:
+            if c not in new:
+                net = ipaddress.IPv4Network(c)
+                cmds.append(["conntrack", "-D", "-s", guest_ip, "-d", str(net.network_address),
+                             "--mask-dst", str(net.netmask)])
+    for cmd in cmds:
+        try:
+            cp = sudo_fn(cmd, check=False)
+        except OSError as e:
+            print(f"[{NAME}] conntrack flush for {guest_ip} skipped: {e}", flush=True)
+            return
+        # conntrack answers a delete that matched nothing with a nonzero exit
+        # and a "0 flow entries" line, which is not a failure.
+        err = (getattr(cp, "stderr", b"") or b"").decode(errors="replace")
+        if cp.returncode != 0 and "flow entries" not in err:
+            print(f"[{NAME}] conntrack flush for {guest_ip} failed (is conntrack installed?): {err.strip()}", flush=True)
+            return
+
+
+def replace_egress_allow(sudo_fn, meta: dict, cidrs, iface: str) -> list[str]:
+    """PUT /v1/vm/{id}/egress/allow for either agent, under the vm lock:
+    swaps the rules, flushes what is no longer allowed, then records the
+    list. the same list twice gives the same rules and the same answer."""
+    if meta.get("egress_mode", "direct") != "direct":
+        raise HTTPError(409, f"vm {meta['vm_id']} has proxy egress; an allowlist needs a direct-mode vm")
+    cidrs = parse_egress_allow(cidrs)
+    old = meta.get("egress_allow") or []
+    set_egress_allow(sudo_fn, meta["tap"], iface, cidrs)
+    flush_egress_conntrack(sudo_fn, meta["guest_ip"], old, cidrs)
+    if cidrs:
+        meta["egress_allow"] = cidrs
+    else:
+        meta.pop("egress_allow", None)
+    save_meta(meta)
+    return cidrs
+
+
 # -- Attach (interactive pty) -------------------------------------------------
 #
 # The orchestrator relays a fuse-attach/1 stream between the CLI and this

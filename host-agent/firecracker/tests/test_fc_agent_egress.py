@@ -87,6 +87,13 @@ DIRECT_SEQUENCE = [
     IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "DROP"],
     IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
     IPT + ["-D", "FORWARD", "-i", "eth0", "-o", "fcv3", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+    # and any allowlist chain it left, both names, jump first.
+    IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "FUSE-EG-fcv3-A"],
+    IPT + ["-F", "FUSE-EG-fcv3-A"],
+    IPT + ["-X", "FUSE-EG-fcv3-A"],
+    IPT + ["-D", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "FUSE-EG-fcv3-B"],
+    IPT + ["-F", "FUSE-EG-fcv3-B"],
+    IPT + ["-X", "FUSE-EG-fcv3-B"],
     IPT + ["-t", "nat", "-C", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
     IPT + ["-t", "nat", "-A", "POSTROUTING", "-o", "eth0", "-j", "MASQUERADE"],
     IPT + ["-C", "FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"],
@@ -163,7 +170,7 @@ class SetupTapTest(unittest.TestCase):
             fc_agent.setup_tap(3, "eth0", "proxy")
         outbound = {"ACCEPT", "DROP"}
         stripped = [c for c in calls if not (c[:3] == IPT and c[3] in ("-C", "-I", "-D") and c[4] == "FORWARD" and c[6] == "fcv3" and c[-1] in outbound)]
-        expected = [c for c in DIRECT_SEQUENCE if not (c[:3] == IPT and c[4] == "FORWARD" and c[6] == "fcv3")]
+        expected = [c for c in DIRECT_SEQUENCE if not (c[:3] == IPT and c[4] == "FORWARD" and c[6] == "fcv3" and c[-1] in outbound)]
         self.assertEqual(stripped, expected)
 
 
@@ -762,6 +769,359 @@ class VMPublicTest(unittest.TestCase):
         pub = fc_agent.vm_public({"vm_id": "vm-a"})
         self.assertEqual(pub["egress_mode"], "direct")
         self.assertEqual(pub["host_ip"], "")
+
+
+
+# the direct egress allowlist (#449): a per-vm chain the outbound leg jumps
+# to, swapped under two names so a replace is never half applied.
+CHAIN_A, CHAIN_B = "FUSE-EG-fcv3-A", "FUSE-EG-fcv3-B"
+JUMP_A = ["FORWARD", "-i", "fcv3", "-o", "eth0", "-j", CHAIN_A]
+JUMP_B = ["FORWARD", "-i", "fcv3", "-o", "eth0", "-j", CHAIN_B]
+ACCEPT = ["FORWARD", "-i", "fcv3", "-o", "eth0", "-j", "ACCEPT"]
+
+
+def chain_body(chain, cidrs):
+    rules = [IPT + ["-A", chain, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+             IPT + ["-A", chain, "-d", "1.1.1.1/32", "-p", "udp", "--dport", "53", "-j", "ACCEPT"],
+             IPT + ["-A", chain, "-d", "1.1.1.1/32", "-p", "tcp", "--dport", "53", "-j", "ACCEPT"]]
+    rules += [IPT + ["-A", chain, "-d", c, "-j", "ACCEPT"] for c in cidrs]
+    return rules + [IPT + ["-A", chain, "-j", "DROP"]]
+
+
+class EgressAllowParseTest(unittest.TestCase):
+    def test_normalizes_dedupes_and_keeps_order(self):
+        got = fc_agent.agentlib.parse_egress_allow(
+            ["10.1.2.3/8", "1.2.3.4", " 192.168.0.0/16 ", "10.0.0.0/8", "1.2.3.4/32"])
+        self.assertEqual(got, ["10.0.0.0/8", "1.2.3.4/32", "192.168.0.0/16"])
+
+    def test_bad_entries_are_a_400(self):
+        for bad in (["nope"], ["::1"], ["10.0.0.0/33"], [5], [None], "10.0.0.0/8", None):
+            with self.subTest(bad=bad), self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.agentlib.parse_egress_allow(bad)
+            self.assertEqual(caught.exception.code, 400)
+
+    def test_the_list_is_bounded(self):
+        many = [f"10.0.{i // 256}.{i % 256}" for i in range(fc_agent.agentlib.EGRESS_ALLOW_MAX + 1)]
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            fc_agent.agentlib.parse_egress_allow(many)
+        self.assertEqual(caught.exception.code, 400)
+
+    def test_the_fixup_and_the_chain_share_the_resolver(self):
+        self.assertIn(fc_agent.EGRESS_RESOLVER, fc_agent.guest_network_fixup("172.16.0.1", "direct"))
+
+
+class EgressAllowRulesTest(unittest.TestCase):
+    def set(self, cidrs, present=()):
+        calls, fake = capture_sudo(present=present)
+        with mock.patch.object(fc_agent, "sudo", side_effect=fake):
+            fc_agent.agentlib.set_egress_allow(fc_agent.sudo, "fcv3", "eth0", cidrs)
+        return calls
+
+    def test_from_unrestricted_builds_a_then_jumps_then_drops_the_accept(self):
+        calls = self.set(["10.0.0.0/8"], present=[ACCEPT])
+        new = calls.index(IPT + ["-N", CHAIN_A])
+        body = chain_body(CHAIN_A, ["10.0.0.0/8"])
+        self.assertEqual(calls[new + 1:new + 1 + len(body)], body)
+        jump = calls.index(IPT + ["-I"] + JUMP_A)
+        self.assertGreater(jump, new + len(body))
+        # the accept goes only once the jump is in: no window with neither.
+        self.assertLess(jump, calls.index(IPT + ["-D"] + ACCEPT))
+        self.assertNotIn(IPT + ["-N", CHAIN_B], calls)
+
+    def test_replace_builds_the_other_name_before_moving_the_jump(self):
+        # A is live: the -C for its jump answers present.
+        calls = self.set(["1.2.3.4/32"], present=[["-C"] + JUMP_A, ["-D"] + JUMP_A])
+        self.assertNotIn(IPT + ["-N", CHAIN_A], calls)
+        built = calls.index(IPT + ["-A", CHAIN_B, "-j", "DROP"])
+        jump = calls.index(IPT + ["-I"] + JUMP_B)
+        unjump = calls.index(IPT + ["-D"] + JUMP_A)
+        self.assertLess(built, jump)
+        self.assertLess(jump, unjump)
+        self.assertLess(unjump, calls.index(IPT + ["-F", CHAIN_A]))
+        self.assertLess(calls.index(IPT + ["-F", CHAIN_A]), calls.index(IPT + ["-X", CHAIN_A]))
+        self.assertNotIn(IPT + ["-I"] + ACCEPT, calls)
+
+    def test_replace_clears_what_a_crash_left_under_the_new_name(self):
+        calls = self.set(["1.2.3.4/32"], present=[["-C"] + JUMP_A])
+        self.assertLess(calls.index(IPT + ["-X", CHAIN_B]), calls.index(IPT + ["-N", CHAIN_B]))
+
+    def test_empty_list_restores_the_plain_accept_before_the_chain_goes(self):
+        calls = self.set([], present=[["-D"] + JUMP_A])
+        accept = calls.index(IPT + ["-I"] + ACCEPT)
+        self.assertLess(accept, calls.index(IPT + ["-D"] + JUMP_A))
+        for chain in (CHAIN_A, CHAIN_B):
+            self.assertIn(IPT + ["-X", chain], calls)
+        self.assertFalse(any(c[3] == "-N" for c in calls))
+
+    def test_empty_list_on_an_unrestricted_vm_keeps_its_accept(self):
+        calls = self.set([], present=[["-C"] + ACCEPT])
+        self.assertNotIn(IPT + ["-I"] + ACCEPT, calls)
+        self.assertNotIn(IPT + ["-D"] + ACCEPT, calls)
+
+    def test_same_list_twice_gives_the_same_chain(self):
+        first = self.set(["10.0.0.0/8"])
+        second = self.set(["10.0.0.0/8"], present=[["-C"] + JUMP_A, ["-D"] + JUMP_A])
+        self.assertEqual([c[5:] for c in first if c[3] == "-A"], [c[5:] for c in second if c[3] == "-A"])
+
+    def test_chain_names_fit_iptables(self):
+        for chain in fc_agent.agentlib.egress_chains(fc_agent.tap_name(fc_agent.SLOT_MAX)):
+            self.assertLessEqual(len(chain), 28)
+
+
+class EgressAllowVMTest(unittest.TestCase):
+    """the PUT handler, teardown and rebuild, over a vm dir in a tmp dir."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vms = Path(self.tmp.name) / "vms"
+        self.vms.mkdir()
+        for target, value in (("VMS_DIR", self.vms), ("SSH_CONTROL_DIR", Path(self.tmp.name))):
+            for mod in (fc_agent, fc_agent.agentlib):
+                p = mock.patch.object(mod, target, value)
+                p.start()
+                self.addCleanup(p.stop)
+        for mod in (fc_agent, fc_agent.agentlib):
+            p = mock.patch.object(mod, "host_iface", return_value="eth0")
+            p.start()
+            self.addCleanup(p.stop)
+
+    def write_meta(self, **extra):
+        (self.vms / "vm-a").mkdir()
+        meta = {"vm_id": "vm-a", "index": 3, "tap": "fcv3", "netns": "fcns3", "host_ip": "10.208.0.3",
+                "guest_ip": "10.209.0.3", "guest_net": dict(fc_agent.GUEST_NET), "egress_mode": "direct"}
+        meta.update(extra)
+        fc_agent.save_meta(meta)
+
+    def put(self, cidrs, present=(), conntrack=None):
+        calls, fake = capture_sudo(present=present)
+
+        def sudo(cmd, check=True):
+            if cmd[0] == "conntrack" and conntrack is not None:
+                calls.append(list(cmd))
+                return conntrack(cmd)
+            return fake(cmd, check)
+
+        with mock.patch.object(fc_agent, "sudo", side_effect=sudo):
+            return fc_agent.put_egress_allow("vm-a", {"cidrs": cidrs}), calls
+
+    def test_unknown_vm_is_a_404(self):
+        with self.assertRaises(fc_agent.HTTPError) as caught:
+            fc_agent.put_egress_allow("vm-missing", {"cidrs": []})
+        self.assertEqual(caught.exception.code, 404)
+
+    def test_proxy_vm_is_a_409_and_untouched(self):
+        self.write_meta(egress_mode="proxy")
+        with mock.patch.object(fc_agent, "sudo", side_effect=AssertionError("sudo must not run")):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.put_egress_allow("vm-a", {"cidrs": ["10.0.0.0/8"]})
+        self.assertEqual(caught.exception.code, 409)
+        self.assertNotIn("egress_allow", fc_agent.load_meta("vm-a"))
+
+    def test_bad_cidr_is_a_400_and_untouched(self):
+        self.write_meta(egress_allow=["10.0.0.0/8"])
+        with mock.patch.object(fc_agent, "sudo", side_effect=AssertionError("sudo must not run")):
+            with self.assertRaises(fc_agent.HTTPError) as caught:
+                fc_agent.put_egress_allow("vm-a", {"cidrs": ["10.0.0.0/8", "bogus"]})
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(fc_agent.load_meta("vm-a")["egress_allow"], ["10.0.0.0/8"])
+
+    def test_records_the_normalized_list_and_an_empty_one_lifts_it(self):
+        self.write_meta()
+        resp, _ = self.put(["1.2.3.4", "10.9.9.9/8", "1.2.3.4/32"])
+        self.assertEqual(resp, {"cidrs": ["1.2.3.4/32", "10.0.0.0/8"]})
+        self.assertEqual(fc_agent.load_meta("vm-a")["egress_allow"], ["1.2.3.4/32", "10.0.0.0/8"])
+        again, _ = self.put(["1.2.3.4", "10.9.9.9/8"], present=[["-C"] + JUMP_A])
+        self.assertEqual(again, resp)
+        resp, calls = self.put([])
+        self.assertEqual(resp, {"cidrs": []})
+        self.assertNotIn("egress_allow", fc_agent.load_meta("vm-a"))
+        self.assertFalse(any(c[0] == "conntrack" for c in calls), "lifting the list flushes nothing")
+
+    def test_from_unrestricted_flushes_what_the_guest_opened(self):
+        # -s is the original source. the orchestrator's connection to fused
+        # has the orchestrator as its original source, so it is not matched.
+        self.write_meta()
+        _, calls = self.put(["10.0.0.0/8"])
+        self.assertEqual([c for c in calls if c[0] == "conntrack"], [["conntrack", "-D", "-s", "10.209.0.3"]])
+        self.assertGreater(calls.index(["conntrack", "-D", "-s", "10.209.0.3"]), calls.index(IPT + ["-I"] + JUMP_A))
+
+    def test_a_replace_flushes_only_the_removed_cidrs(self):
+        self.write_meta(egress_allow=["10.0.0.0/8", "1.2.3.4/32"])
+        _, calls = self.put(["1.2.3.4/32", "192.168.0.0/16"], present=[["-C"] + JUMP_A])
+        self.assertEqual([c for c in calls if c[0] == "conntrack"], [
+            ["conntrack", "-D", "-s", "10.209.0.3", "-d", "10.0.0.0", "--mask-dst", "255.0.0.0"],
+        ])
+
+    def test_a_legacy_vm_flushes_by_its_own_address(self):
+        self.write_meta(netns=None, guest_net=None, guest_ip="10.200.3.2", host_ip="10.200.3.1")
+        _, calls = self.put(["10.0.0.0/8"])
+        self.assertIn(["conntrack", "-D", "-s", "10.200.3.2"], calls)
+
+    def test_missing_conntrack_is_best_effort(self):
+        self.write_meta()
+        missing = lambda cmd: subprocess.CompletedProcess(cmd, 1, b"", b"sudo: conntrack: command not found")
+        with mock.patch("builtins.print") as printed:
+            resp, calls = self.put(["10.0.0.0/8"], conntrack=missing)
+        self.assertEqual(resp, {"cidrs": ["10.0.0.0/8"]})
+        self.assertIn(IPT + ["-I"] + JUMP_A, calls)
+        self.assertEqual(fc_agent.load_meta("vm-a")["egress_allow"], ["10.0.0.0/8"])
+        self.assertTrue(any("conntrack" in str(c) for c in printed.call_args_list))
+
+        def gone(cmd):
+            raise FileNotFoundError("sudo")
+
+        shutil.rmtree(self.vms / "vm-a")
+        self.write_meta()
+        resp, _ = self.put(["10.0.0.0/8"], conntrack=gone)
+        self.assertEqual(resp, {"cidrs": ["10.0.0.0/8"]})
+
+    def test_an_empty_match_is_not_reported(self):
+        self.write_meta()
+        empty = lambda cmd: subprocess.CompletedProcess(
+            cmd, 1, b"", b"conntrack v1.4.7 (conntrack-tools): 0 flow entries have been deleted.\n")
+        with mock.patch("builtins.print") as printed:
+            self.put(["10.0.0.0/8"], conntrack=empty)
+        printed.assert_not_called()
+
+    def test_teardown_purges_both_chains_before_the_namespace(self):
+        calls, fake = capture_sudo()
+        with mock.patch.object(fc_agent, "sudo", side_effect=fake), \
+             mock.patch.object(fc_agent.agentlib, "sudo", side_effect=fake):
+            fc_agent.teardown_net(3, "eth0")
+        ns = calls.index(["ip", "netns", "del", "fcns3"])
+        for chain, jump in ((CHAIN_A, JUMP_A), (CHAIN_B, JUMP_B)):
+            self.assertLess(calls.index(IPT + ["-D"] + jump), ns)
+            self.assertLess(calls.index(IPT + ["-X", chain]), ns)
+
+    def test_rebuild_reapplies_the_recorded_list(self):
+        for extra in ({}, {"netns": None, "guest_net": None, "guest_ip": "10.200.3.2"}):
+            with self.subTest(extra=extra):
+                shutil.rmtree(self.vms / "vm-a", ignore_errors=True)
+                self.write_meta(egress_allow=["10.0.0.0/8"], **extra)
+                calls, fake = capture_sudo()
+                with mock.patch.object(fc_agent, "sudo", side_effect=fake), \
+                     mock.patch.object(fc_agent, "add_agent_forward"), \
+                     mock.patch.object(fc_agent, "del_agent_forward"):
+                    fc_agent.rebuild_net(fc_agent.load_meta("vm-a"))
+                # the plain accept host_rules makes, then the allowlist over it.
+                accept = calls.index(IPT + ["-I"] + ACCEPT)
+                self.assertLess(accept, calls.index(IPT + ["-N", CHAIN_A]))
+                self.assertLess(calls.index(IPT + ["-I"] + JUMP_A), calls.index(IPT + ["-D"] + ACCEPT, accept))
+                self.assertFalse(any(c[0] == "conntrack" for c in calls))
+
+    def test_rebuild_without_a_list_is_unchanged(self):
+        self.write_meta()
+        calls, fake = capture_sudo()
+        with mock.patch.object(fc_agent, "sudo", side_effect=fake), \
+             mock.patch.object(fc_agent, "add_agent_forward"), \
+             mock.patch.object(fc_agent, "del_agent_forward"):
+            fc_agent.rebuild_net(fc_agent.load_meta("vm-a"))
+        self.assertFalse(any(c[3:4] == ["-N"] for c in calls if c[:3] == IPT))
+
+
+class EgressAllowCreateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.vms = root / "vms"
+        self.vms.mkdir()
+        rootfs = root / "rootfs.ext4"
+        rootfs.write_bytes(b"rootfs")
+        self.calls, fake = capture_sudo()
+        patches = [
+            mock.patch.object(fc_agent, "VMS_DIR", self.vms),
+            mock.patch.object(fc_agent.agentlib, "VMS_DIR", self.vms),
+            mock.patch.object(fc_agent.agentlib, "STATE_DIR", root),
+            mock.patch.object(fc_agent, "BASE_ROOTFS", rootfs),
+            mock.patch.object(fc_agent, "sudo", side_effect=fake),
+            mock.patch.object(fc_agent, "host_iface", return_value="eth0"),
+            mock.patch.object(fc_agent, "add_agent_forward"),
+            mock.patch.object(fc_agent, "start_firecracker",
+                              side_effect=lambda meta: self.calls.append(["<boot>"])),
+            mock.patch.object(fc_agent, "wait_for_ssh", return_value=False),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_bad_allow_is_a_400_before_anything_is_allocated(self):
+        for egress in ({"allow": ["nope"]}, {"mode": "proxy", "allow": ["10.0.0.0/8"]}):
+            with self.subTest(egress=egress), \
+                 mock.patch.object(fc_agent, "pick_index", side_effect=AssertionError("no index must be picked")):
+                with self.assertRaises(fc_agent.HTTPError) as caught:
+                    fc_agent.create_vm({"name": "x", "egress": egress})
+            self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(self.calls, [])
+
+    def test_allow_builds_the_chain_and_jump_before_the_guest_boots(self):
+        meta = fc_agent.create_vm({"name": "x", "egress": {"mode": "direct", "allow": ["1.2.3.4"]}})
+        self.assertEqual(meta["egress_allow"], ["1.2.3.4/32"])
+        tap = meta["tap"]
+        jump = IPT + ["-I", "FORWARD", "-i", tap, "-o", "eth0", "-j", f"FUSE-EG-{tap}-A"]
+        self.assertIn(IPT + ["-A", f"FUSE-EG-{tap}-A", "-d", "1.2.3.4/32", "-j", "ACCEPT"], self.calls)
+        self.assertLess(self.calls.index(jump), self.calls.index(["<boot>"]))
+        self.assertLess(self.calls.index(jump),
+                        self.calls.index(IPT + ["-D", "FORWARD", "-i", tap, "-o", "eth0", "-j", "ACCEPT"],
+                                         self.calls.index(IPT + ["-I", "FORWARD", "-i", tap, "-o", "eth0", "-j", "ACCEPT"])))
+
+    def test_no_allow_builds_no_chain(self):
+        meta = fc_agent.create_vm({"name": "x", "egress": {"mode": "direct", "allow": []}})
+        self.assertNotIn("egress_allow", meta)
+        self.assertFalse(any(c[3:4] == ["-N"] for c in self.calls if c[:3] == IPT))
+
+
+class EgressAllowRouteTest(unittest.TestCase):
+    """the PUT route: auth, the vm lock, the json in and out."""
+
+    def setUp(self):
+        import http.client
+        import threading
+        from http.server import ThreadingHTTPServer
+        self.http = http.client
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.vms = root / "vms"
+        self.vms.mkdir()
+        _, fake = capture_sudo()
+        patches = [
+            mock.patch.object(fc_agent, "VMS_DIR", self.vms),
+            mock.patch.object(fc_agent.agentlib, "VMS_DIR", self.vms),
+            mock.patch.object(fc_agent.agentlib, "STATE_DIR", root),
+            mock.patch.object(fc_agent, "sudo", side_effect=fake),
+            mock.patch.object(fc_agent, "host_iface", return_value="eth0"),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), fc_agent.Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+
+    def put(self, vm_id, body):
+        c = self.http.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            c.request("PUT", f"/v1/vm/{vm_id}/egress/allow", body=json.dumps(body).encode(),
+                      headers={"Authorization": "Bearer test-token", "Content-Type": "application/json"})
+            r = c.getresponse()
+            return r.status, r.read()
+        finally:
+            c.close()
+
+    def test_status_codes(self):
+        (self.vms / "vm-a").mkdir()
+        fc_agent.save_meta({"vm_id": "vm-a", "index": 3, "tap": "fcv3", "guest_ip": "10.209.0.3", "egress_mode": "direct"})
+        (self.vms / "vm-p").mkdir()
+        fc_agent.save_meta({"vm_id": "vm-p", "index": 4, "tap": "fcv4", "guest_ip": "10.209.0.4", "egress_mode": "proxy"})
+        code, body = self.put("vm-a", {"cidrs": ["1.2.3.4"]})
+        self.assertEqual((code, json.loads(body)), (200, {"cidrs": ["1.2.3.4/32"]}))
+        self.assertEqual(self.put("vm-missing", {"cidrs": []})[0], 404)
+        self.assertEqual(self.put("vm-p", {"cidrs": ["1.2.3.4"]})[0], 409)
+        self.assertEqual(self.put("vm-a", {"cidrs": ["1.2.3.4/40"]})[0], 400)
+        self.assertEqual(self.put("vm-a", {})[0], 400)
 
 
 if __name__ == "__main__":
