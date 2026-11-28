@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"net/url"
 	"path"
 	"path/filepath"
@@ -579,7 +580,13 @@ func validateEgress(eg *Egress) []error {
 			errs = append(errs, fmt.Errorf(
 				"egress.secret: %q requires mode %q", eg.Secret, EgressModeProxy))
 		}
-		return errs
+		return append(errs, validateEgressAllow(eg.Allow)...)
+	}
+
+	// a proxy vm's egress is its backend, so an allowlist on one is a
+	// mistake to refuse, never one to ignore.
+	if len(eg.Allow) > 0 {
+		errs = append(errs, fmt.Errorf("egress.allow: requires mode %q", EgressModeDirect))
 	}
 
 	if strings.TrimSpace(eg.Provider) == "" {
@@ -593,6 +600,49 @@ func validateEgress(eg *Egress) []error {
 		}
 	}
 	return errs
+}
+
+// maxEgressAllow mirrors internal/egress.MaxAllow.
+const maxEgressAllow = 256
+
+// validateEgressAllow mirrors internal/egress.NormalizeAllow: every entry is
+// an ipv4 cidr or a bare ipv4 address, and at most 256 distinct cidrs remain
+// once host bits are dropped.
+func validateEgressAllow(allow []string) []error {
+	var errs []error
+	seen := make(map[netip.Prefix]bool, len(allow))
+	for i, c := range allow {
+		prefix, ok := parseIPv4Prefix(strings.TrimSpace(c))
+		if !ok {
+			errs = append(errs, fmt.Errorf("egress.allow[%d]: %q is not an ipv4 cidr", i, c))
+			continue
+		}
+		seen[prefix.Masked()] = true
+	}
+	if len(seen) > maxEgressAllow {
+		errs = append(errs, fmt.Errorf(
+			"egress.allow: has %d cidrs; at most %d are allowed", len(seen), maxEgressAllow))
+	}
+	return errs
+}
+
+// parseIPv4Prefix reads "a.b.c.d/n" or a bare "a.b.c.d" (a /32).
+func parseIPv4Prefix(s string) (netip.Prefix, bool) {
+	var prefix netip.Prefix
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		prefix = p
+	} else {
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			return netip.Prefix{}, false
+		}
+		prefix = netip.PrefixFrom(addr, 32)
+	}
+	return prefix, prefix.Addr().Is4()
 }
 
 // hitl timeout bounds. they mirror internal/hitl, which this package does

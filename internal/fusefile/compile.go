@@ -100,6 +100,7 @@ type EgressSpec struct {
 	Provider string         `json:"provider,omitempty"`
 	Protocol EgressProtocol `json:"protocol,omitempty"`
 	Secret   string         `json:"secret,omitempty"`
+	Allow    []string       `json:"allow,omitempty"`
 }
 
 // HitlSpec is the compiled hitl block. It mirrors internal/api.HitlSpec,
@@ -657,6 +658,9 @@ func compileEgress(f *Fusefile) *EgressSpec {
 		return nil
 	}
 	spec := &EgressSpec{Mode: f.Egress.Mode, Provider: f.Egress.Provider, Protocol: f.Egress.Protocol, Secret: f.Egress.Secret}
+	if len(f.Egress.Allow) > 0 {
+		spec.Allow = append([]string(nil), f.Egress.Allow...)
+	}
 	if spec.Mode == "" {
 		spec.Mode = EgressModeDirect
 	}

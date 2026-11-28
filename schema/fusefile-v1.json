@@ -414,6 +414,11 @@
         "secret": {
           "type": "string",
           "description": "Name of the secret holding the provider's credential, for a provider that takes one (wireguard: a base64 wg-quick config). Supplied at fuse up like any secret, but delivered to the host's egress backend only, never into the guest. Only valid with mode proxy."
+        },
+        "allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Restrict outbound traffic to these IPv4 CIDRs; a bare address is a /32. At most 256 after dedupe. Empty or absent is unrestricted. DNS to the guest's resolver stays allowed. Only valid with mode direct."
         }
       }
     },

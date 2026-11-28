@@ -546,6 +546,12 @@ type Egress struct {
 	// or "http". Empty means socks5, applied in compileEgress for the same
 	// reason expose's tcp default is applied in compileExpose.
 	Protocol EgressProtocol `yaml:"protocol,omitempty"`
+
+	// Allow restricts a direct environment's outbound traffic to these ipv4
+	// cidrs (a bare address is a /32), at most 256 after dedupe. Empty is
+	// unrestricted. dns to the guest's resolver stays allowed. Rejected
+	// with mode proxy, whose egress is its backend.
+	Allow []string `yaml:"allow,omitempty"`
 }
 
 // EnvValue is either a literal value or a secret reference. exactly one is set.
