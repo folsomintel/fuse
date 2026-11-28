@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -58,6 +59,10 @@ func TestValidate(t *testing.T) {
 		{"proxy unknown protocol", Spec{Mode: ModeProxy, Provider: "mock", Protocol: "ftp"}, `unknown protocol "ftp"`},
 		{"unknown mode", Spec{Mode: "tunnel"}, `unknown mode "tunnel"`},
 		{"mode is case sensitive", Spec{Mode: "Proxy", Provider: "mock"}, `unknown mode "Proxy"`},
+		{"direct allow", Spec{Allow: []string{"10.0.0.0/8", "1.2.3.4"}}, ""},
+		{"direct bad allow", Spec{Allow: []string{"example.com"}}, `allow entry "example.com" is not an ipv4 cidr`},
+		{"proxy with allow", Spec{Mode: ModeProxy, Provider: "mock", Allow: []string{"10.0.0.0/8"}}, `allow requires mode "direct"`},
+		{"proxy with empty allow", Spec{Mode: ModeProxy, Provider: "mock", Allow: []string{}}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,6 +77,41 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate(%+v) = %v, want error containing %q", tc.in, err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestNormalizeAllow pins the same normalization the host agents apply
+// (agentlib.parse_egress_allow), so the api refuses what they would.
+func TestNormalizeAllow(t *testing.T) {
+	got, err := NormalizeAllow([]string{" 10.1.2.3/8", "1.2.3.4", "10.0.0.0/8", "0.0.0.0/0", "1.2.3.4/32"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"10.0.0.0/8", "1.2.3.4/32", "0.0.0.0/0"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	if got, err := NormalizeAllow([]string{}); err != nil || got != nil {
+		t.Fatalf("empty: got %v, %v, want nil, nil", got, err)
+	}
+	for _, bad := range []string{"", "example.com", "::1", "2001:db8::/32", "::ffff:1.2.3.4", "1.2.3.4/33", "1.2.3", "01.2.3.4"} {
+		if _, err := NormalizeAllow([]string{bad}); err == nil {
+			t.Errorf("NormalizeAllow(%q) accepted it", bad)
+		}
+	}
+
+	max := make([]string, 0, MaxAllow+1)
+	for i := 0; i <= MaxAllow; i++ {
+		max = append(max, fmt.Sprintf("10.%d.%d.0/24", i/256, i%256))
+	}
+	if _, err := NormalizeAllow(max[:MaxAllow]); err != nil {
+		t.Fatalf("%d cidrs: %v", MaxAllow, err)
+	}
+	if _, err := NormalizeAllow(max); err == nil || !strings.Contains(err.Error(), "at most 256") {
+		t.Fatalf("%d cidrs: got %v, want refused", MaxAllow+1, err)
+	}
+	// the bound counts after dedupe, like the agent's.
+	if _, err := NormalizeAllow(append(max[:MaxAllow:MaxAllow], max[0])); err != nil {
+		t.Fatalf("%d cidrs plus a duplicate: %v", MaxAllow, err)
 	}
 }
 
