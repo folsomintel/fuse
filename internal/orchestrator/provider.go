@@ -635,6 +635,15 @@ type EgressAddresser interface {
 	EgressAddresses() (listenIP, guestIP string)
 }
 
+// EgressAllowSetter is implemented by providers whose host agent can
+// replace a direct-egress vm's outbound allowlist while it runs. it returns
+// the list as the host normalized it; an empty list lifts the restriction.
+// the host's refusals (unknown vm, proxy-mode vm, malformed cidr) come back
+// as an *HTTPStatusError with 404, 409 or 400.
+type EgressAllowSetter interface {
+	SetEgressAllow(ctx context.Context, vmID string, cidrs []string) ([]string, error)
+}
+
 // egressAddresses returns env.EgressAddresses() when env implements
 // EgressAddresser, or two empty strings otherwise.
 func egressAddresses(env Environment) (listenIP, guestIP string) {

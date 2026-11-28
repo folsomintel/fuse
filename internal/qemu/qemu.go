@@ -81,7 +81,10 @@ func New(cfg Config) *Provider {
 	return p
 }
 
-var _ orchestrator.Provider = (*Provider)(nil)
+var (
+	_ orchestrator.Provider          = (*Provider)(nil)
+	_ orchestrator.EgressAllowSetter = (*Provider)(nil)
+)
 
 // Create provisions a new sandbox. When spec.GPUs > 0, the GPU count and kind
 // are forwarded to the host agent so it can attach VFIO devices; GPUs == 0
@@ -123,6 +126,27 @@ func (p *Provider) envFor(ctx context.Context, vmID, url string, epoch int64) *r
 		epoch = e
 	}
 	return &remoteEnv{id: vmID, url: url, epoch: epoch, client: p}
+}
+
+// SetEgressAllow replaces a vm's outbound allowlist on its host,
+// satisfying orchestrator.EgressAllowSetter, and returns the list as the
+// agent normalized it. an empty list lifts the restriction. the agent
+// answers 404 for an unknown vm and 400 for a malformed cidr, each
+// surfaced as an *orchestrator.HTTPStatusError.
+func (p *Provider) SetEgressAllow(ctx context.Context, vmID string, cidrs []string) ([]string, error) {
+	if p.stub != nil {
+		return nil, errors.New("qemu stub has no egress rules")
+	}
+	if cidrs == nil {
+		// null is not a list to the agent; an empty one lifts the allowlist.
+		cidrs = []string{}
+	}
+	var resp egressAllowWire
+	path := fmt.Sprintf("/v1/vm/%s/egress/allow", vmID)
+	if err := p.doJSON(ctx, http.MethodPut, path, egressAllowWire{CIDRs: cidrs}, &resp); err != nil {
+		return nil, fmt.Errorf("qemu set egress allow: %w", err)
+	}
+	return resp.CIDRs, nil
 }
 
 // Get returns an existing sandbox. under a ctx that names an incarnation, a
@@ -383,20 +407,31 @@ type createVMRequest struct {
 	// picking locally. empty on count-map hosts (issue #41).
 	MIGInstanceUUIDs []string `json:"mig_instance_uuids,omitempty"`
 	// Egress carries a proxy-mode request so the qemu agent can refuse it
-	// explicitly (it supports direct egress only). omitted for direct, so
-	// an older agent sees the request it always did.
+	// explicitly (it supports direct egress only), and a direct vm's
+	// allowlist. omitted for plain direct, so an older agent sees the
+	// request it always did.
 	Egress *egressWire `json:"egress,omitempty"`
 }
 
 type egressWire struct {
-	Mode string `json:"mode"`
+	Mode  string   `json:"mode"`
+	Allow []string `json:"allow,omitempty"`
 }
 
 func egressWireFor(spec orchestrator.Spec) *egressWire {
-	if !spec.Egress.IsProxy() {
-		return nil
+	if spec.Egress.IsProxy() {
+		return &egressWire{Mode: string(egress.ModeProxy), Allow: spec.Egress.Allow}
 	}
-	return &egressWire{Mode: string(egress.ModeProxy)}
+	if len(spec.Egress.Allow) > 0 {
+		return &egressWire{Mode: string(egress.ModeDirect), Allow: spec.Egress.Allow}
+	}
+	return nil
+}
+
+// egressAllowWire is both the body and the answer of PUT
+// /v1/vm/{id}/egress/allow.
+type egressAllowWire struct {
+	CIDRs []string `json:"cidrs"`
 }
 
 type createVMResponse struct {

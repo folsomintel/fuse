@@ -29,6 +29,9 @@ type Spec struct {
 	// the value is resolved from the create request's secrets at provision
 	// time and handed to the provider alone, never to the guest.
 	Secret string `json:"secret,omitempty"`
+	// Allow is a direct vm's outbound allowlist, ipv4 cidrs. empty is
+	// unrestricted. the host agent enforces it and refuses it on proxy.
+	Allow []string `json:"allow,omitempty"`
 }
 
 func (s Spec) IsProxy() bool { return s.Mode == ModeProxy }

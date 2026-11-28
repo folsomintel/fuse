@@ -1,6 +1,7 @@
 package api
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -222,12 +223,12 @@ func TestToAPIHealth(t *testing.T) {
 func TestToOrchestratorEgress(t *testing.T) {
 	absent := toOrchestratorEgress(nil)
 	explicit := toOrchestratorEgress(&EgressSpec{Mode: "direct"})
-	if absent != explicit || absent.Mode != egress.ModeDirect {
+	if !reflect.DeepEqual(absent, explicit) || absent.Mode != egress.ModeDirect {
 		t.Errorf("absent = %+v, explicit direct = %+v, want both {Mode: direct}", absent, explicit)
 	}
 	got := toOrchestratorEgress(&EgressSpec{Mode: "proxy", Provider: "mock"})
 	want := egress.Spec{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("proxy = %+v, want %+v", got, want)
 	}
 	withSecret := toOrchestratorEgress(&EgressSpec{Mode: "proxy", Provider: "wireguard", Secret: "WG_CONF"})
