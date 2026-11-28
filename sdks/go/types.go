@@ -145,6 +145,12 @@ type EgressSpec struct {
 	// reads a base64 wg-quick config. The value goes to the host's egress
 	// backend only and is left out of the secrets the guest receives.
 	Secret string `json:"secret,omitempty"`
+	// Allow restricts a direct environment's outbound traffic to these
+	// ipv4 cidrs (a bare address is a /32), at most 256 after dedupe. Empty
+	// is unrestricted. dns to the guest's resolver stays allowed. Proxy
+	// mode refuses it. EnvironmentsService.SetEgressAllow replaces it while
+	// the environment runs.
+	Allow []string `json:"allow,omitempty"`
 }
 
 // EgressStatus is how the environment's outbound traffic is actually routed.
@@ -155,6 +161,9 @@ type EgressStatus struct {
 	Provider string `json:"provider,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+	// Allow is the outbound allowlist the host enforces, normalized
+	// ("10.0.0.0/8", "1.2.3.4/32"). Absent when unrestricted. Direct only.
+	Allow []string `json:"allow,omitempty"`
 	// Health is the endpoint's last probe verdict, present only for proxy
 	// egress and only from a server that probes.
 	Health *EgressHealth `json:"health,omitempty"`

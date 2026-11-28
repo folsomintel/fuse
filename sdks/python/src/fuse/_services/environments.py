@@ -16,6 +16,7 @@ from ..types import (
     ComputerToolResult,
     CreateRequest,
     DoctorReport,
+    EgressStatus,
     EnvironmentInfo,
     EnvironmentPage,
     Event,
@@ -96,9 +97,10 @@ class EnvironmentsService:
         # key and request returns the first call's result instead of running
         # again. without one the call sends a fresh random key. this applies
         # to every mutating call (create, destroy, drain, fork, migrate,
-        # snapshots.create, snapshots.restore). a call that outlasts the
-        # server's wait is followed through client.operations until it
-        # finishes, so it returns or raises exactly as a direct answer would.
+        # set_egress_allow, snapshots.create, snapshots.restore). a call that
+        # outlasts the server's wait is followed through client.operations
+        # until it finishes, so it returns or raises exactly as a direct
+        # answer would.
         resp = call_operation(
             self._t, "POST", "/v1/environments", body=request, idempotency_key=idempotency_key
         )
@@ -443,6 +445,29 @@ class EnvironmentsService:
             "POST", path, params={"action": "release"}, body=ReleaseRequest(note=note or None)
         )
         return Intervention.model_validate(resp.json())
+
+    def set_egress_allow(
+        self, vm_id: str, cidrs: Sequence[str], *, idempotency_key: Optional[str] = None
+    ) -> EgressStatus:
+        # replaces a running direct environment's outbound ipv4 allowlist and
+        # returns its egress status. the server normalizes the cidrs (a bare
+        # address is a /32, host bits dropped, duplicates removed, at most
+        # 256). an empty list lifts the restriction. connections the new list
+        # no longer allows are cut. a proxy environment, or one that is not
+        # running, raises a conflict.
+        if not vm_id:
+            raise ValueError("vm id is required")
+        if isinstance(cidrs, str):
+            raise TypeError("cidrs must be a list of strings, not a str")
+        resp = call_operation(
+            self._t,
+            "PUT",
+            f"/v1/environments/{quote(vm_id, safe='')}/egress/allow",
+            # a plain dict, so an empty list is sent as [] rather than dropped.
+            body={"allow": list(cidrs)},
+            idempotency_key=idempotency_key,
+        )
+        return EgressStatus.model_validate(resp.json())
 
     def rotate_token(self, vm_id: str) -> None:
         if not vm_id:

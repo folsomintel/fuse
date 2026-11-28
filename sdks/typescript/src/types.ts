@@ -268,6 +268,11 @@ export interface EgressSpec {
    * wg-quick config. The value goes to the host's egress backend only and is
    * left out of the secrets the guest receives. */
   secret?: string;
+  /** Direct only: restrict outbound traffic to these IPv4 cidrs (a bare
+   * address is a /32), at most 256 after dedupe. Empty or absent is
+   * unrestricted. dns to the guest's resolver stays allowed. Replace it
+   * while the environment runs with environments.setEgressAllow. */
+  allow?: string[];
 }
 
 /**
@@ -280,6 +285,9 @@ export interface EgressStatus {
   provider?: string;
   protocol?: string;
   endpoint?: string;
+  /** the outbound allowlist the host enforces, normalized ("10.0.0.0/8",
+   * "1.2.3.4/32"). Absent when unrestricted. Direct only. */
+  allow?: string[];
   /** the endpoint's last probe verdict; proxy only. */
   health?: EgressHealth;
 }
@@ -1214,13 +1222,14 @@ export interface OperationError {
 
 /**
  * Operation is one run of a mutating call (create, destroy, fork, migrate,
- * snapshot, restore, drain or image.convert). Once it finished, status_code
+ * snapshot, restore, drain, image.convert or egress.allow). Once it finished, status_code
  * with result (on a 2xx) or error (otherwise) is what the call itself would
  * have answered.
  */
 export interface Operation {
   id: string;
-  /** create, destroy, fork, migrate, snapshot, restore, drain or image.convert. */
+  /** create, destroy, fork, migrate, snapshot, restore, drain, image.convert
+   * or egress.allow. */
   kind: string;
   /** One of OperationState. */
   state: string;
@@ -1235,7 +1244,8 @@ export interface Operation {
   status_code?: number;
   /** The call's response body on success: an EnvironmentInfo for create,
    * migrate and drain, a ForkResponse for fork, a Snapshot for snapshot, an Image for
-   * image.convert, absent for destroy and restore, and a held response when
+   * image.convert, an EgressStatus for egress.allow, absent for destroy and
+   * restore, and a held response when
    * a hitl gate held the action. */
   result?: unknown;
   error?: OperationError;

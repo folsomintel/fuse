@@ -12,8 +12,8 @@ use crate::interventions::{wait_intervention, HumanRequest, ReviewRequest, Revie
 use crate::operations::CallOptions;
 use crate::transport::{pagination, require, Transport, MAX_PAGE_LIMIT};
 use crate::types::{
-    CreateRequest, EnvironmentInfo, EnvironmentState, ForkOptions, ForkResponse, HitlKind,
-    Intervention, MigrateOptions,
+    CreateRequest, EgressStatus, EnvironmentInfo, EnvironmentState, ForkOptions, ForkResponse,
+    HitlKind, Intervention, MigrateOptions,
 };
 
 // mirrors the orchestrator's own default guest-command bound. it is what the
@@ -26,6 +26,13 @@ const DEFAULT_EXEC_SERVER_TIMEOUT: Duration = Duration::from_secs(60);
 // it a command that runs for exactly its guest timeout would race the
 // client's deadline.
 const EXEC_HTTP_OVERHEAD: Duration = Duration::from_secs(30);
+
+// the body of PUT /v1/environments/{id}/egress/allow. allow is always
+// serialized: an empty list is how the restriction is lifted.
+#[derive(Serialize)]
+struct SetEgressAllowBody {
+    allow: Vec<String>,
+}
 
 /// Filters and pagination for [`Environments::list`] and
 /// [`Environments::list_page`].
@@ -395,6 +402,50 @@ impl Environments {
             .query(&[("action", "migrate")])
             .json(&options);
         self.send_env(call.apply(request)).await
+    }
+
+    /// Replaces a running direct environment's outbound ipv4 allowlist and
+    /// returns its egress status. The server normalizes the cidrs (a bare
+    /// address is a /32, host bits dropped, duplicates removed, at most 256).
+    /// An empty list lifts the restriction. Connections the new list no
+    /// longer allows are cut. A proxy environment, or one that is not
+    /// running, answers 409.
+    pub async fn set_egress_allow<I, S>(&self, vm_id: &str, cidrs: I) -> Result<EgressStatus, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.set_egress_allow_with_options(vm_id, cidrs, CallOptions::new())
+            .await
+    }
+
+    /// Replaces the egress allowlist with per-call options such as an
+    /// idempotency key. One that outlasts the server's wait is followed
+    /// through its operation transparently.
+    pub async fn set_egress_allow_with_options<I, S>(
+        &self,
+        vm_id: &str,
+        cidrs: I,
+        options: CallOptions,
+    ) -> Result<EgressStatus, Error>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        require(vm_id, "vm id")?;
+        // the server requires the key, so an empty list goes out as [].
+        let body = SetEgressAllowBody {
+            allow: cidrs.into_iter().map(Into::into).collect(),
+        };
+        let request = self
+            .t
+            .request(
+                Method::PUT,
+                &["v1", "environments", vm_id, "egress", "allow"],
+            )
+            .json(&body);
+        let (_, body) = self.t.send_operation(options.apply(request)).await?;
+        decode_body(&body)
     }
 
     /// Rotates the environment's own credentials.

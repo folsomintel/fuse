@@ -567,6 +567,13 @@ pub struct EgressSpec {
     /// is left out of the secrets the guest receives.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secret: Option<String>,
+    /// Direct only: restricts outbound traffic to these ipv4 cidrs (a bare
+    /// address is a /32), at most 256 after dedupe. `None` or empty is
+    /// unrestricted. dns to the guest's resolver stays allowed. Replace it
+    /// while the environment runs with
+    /// [`Environments::set_egress_allow`](crate::Environments::set_egress_allow).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
 }
 
 impl EgressSpec {
@@ -577,6 +584,20 @@ impl EgressSpec {
             provider: Some(provider.into()),
             protocol: None,
             secret: None,
+            allow: None,
+        }
+    }
+
+    /// Direct egress restricted to `cidrs`.
+    pub fn direct_allow<I, S>(cidrs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            mode: Some(EgressMode::Direct),
+            allow: Some(cidrs.into_iter().map(Into::into).collect()),
+            ..Self::default()
         }
     }
 
@@ -605,6 +626,10 @@ pub struct EgressStatus {
     pub protocol: Option<EgressProtocol>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// The outbound allowlist the host enforces, normalized (`10.0.0.0/8`,
+    /// `1.2.3.4/32`). `None` when unrestricted. Direct only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allow: Option<Vec<String>>,
     /// The endpoint's last probe verdict; proxy only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<EgressHealth>,
@@ -2409,6 +2434,7 @@ string_enum! {
         Restore => "restore",
         Drain => "drain",
         ImageConvert => "image.convert",
+        EgressAllow => "egress.allow",
     }
 }
 
@@ -2441,7 +2467,7 @@ pub struct OperationError {
 }
 
 /// One run of a mutating call (create, destroy, fork, migrate, drain,
-/// snapshot, restore, image.convert), from
+/// snapshot, restore, image.convert, egress.allow), from
 /// [`Operations::get`](crate::Operations::get). Once it finished,
 /// `status_code` with `result` (2xx) or `error` (otherwise) are what the
 /// call itself would have answered.
@@ -2462,7 +2488,7 @@ pub struct Operation {
     pub status_code: Option<u16>,
     /// The call's response body on success: an environment for create,
     /// migrate and drain, a [`ForkResponse`] for fork, a snapshot for snapshot, an image for
-    /// image.convert, absent for destroy and restore, and a held response
+    /// image.convert, an egress status for egress.allow, absent for destroy and restore, and a held response
     /// when a hitl gate held the action (status 202).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,

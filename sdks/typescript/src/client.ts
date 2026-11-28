@@ -41,7 +41,7 @@ export interface FuseClientOptions {
   onOperation?: (accepted: OperationAccepted) => void;
   /** How many times a call that sends an Idempotency-Key (create, fork,
    * migrate, drain, destroy, snapshot create and restore, image convert,
-   * build create) and is answered 503 is sent again under the same key
+   * set egress allow, build create) and is answered 503 is sent again under the same key
    * before the 503 is thrown. Each retry waits at least the server's
    * Retry-After, or a backoff doubling from 1s without one, plus up to half
    * again as jitter. Defaults to 3; 0 turns retrying off. */

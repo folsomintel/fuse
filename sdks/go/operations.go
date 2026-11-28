@@ -31,7 +31,7 @@ const (
 )
 
 // Operation is one run of a mutating call (create, destroy, fork, migrate,
-// snapshot, restore, drain or image.convert). Once it finished, StatusCode
+// snapshot, restore, drain, image.convert or egress.allow). Once it finished, StatusCode
 // with Result (on a 2xx) or Error (otherwise) is what the call itself would
 // have answered.
 type Operation struct {
@@ -44,7 +44,8 @@ type Operation struct {
 	StatusCode int        `json:"status_code,omitempty"`
 	// Result is the call's response body on success: an EnvironmentInfo for
 	// create, fork, migrate and drain, a Snapshot for snapshot, an Image
-	// for image.convert, empty for destroy and restore.
+	// for image.convert, an EgressStatus for egress.allow, empty for destroy
+	// and restore.
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  *ErrorBody      `json:"error,omitempty"`
 	// RetryAfter is the seconds the call's Retry-After asked for, set on a
