@@ -3504,6 +3504,14 @@ components:
             with no working local DNS by design, so a client must resolve
             names at the proxy: `socks5h://`, or http CONNECT, which always
             does.
+        secret:
+          type: string
+          description: |
+            Proxy only: the name of an entry in the request's `secrets` that
+            holds the provider's credential, for a provider that takes one
+            (`wireguard` reads a base64 wg-quick config). The value goes to
+            the host's egress backend only and is left out of the secrets
+            the guest receives.
         allow:
           type: array
           maxItems: 256

@@ -9,8 +9,10 @@ Every environment gets outbound network access one of two ways. `direct` is
 NAT straight out of the host, the behaviour every environment had before the
 field existed. `proxy` routes every outbound connection through a backend the
 orchestrator provisions, health-checks and tears down, and installs no direct
-route at all. This guide is about the second one: what it costs, how to ask
-for it, and how a workload inside the guest is expected to use it.
+route at all. Most of this guide is about the second one: what it costs, how
+to ask for it, and how a workload inside the guest is expected to use it.
+`direct` can also be narrowed to an IPv4 allowlist, covered in
+[Direct allowlist](#direct-allowlist).
 
 ## The two modes
 
@@ -104,8 +106,77 @@ const info = await client.environments.get(env.id);
 `endpoint` is the host end of the vm's veth, an address that means nothing to
 anyone not already inside the sandbox. `health` reads `unknown` until the
 orchestrator's reconcile tick (30s by default) has probed the endpoint once.
-A direct environment reports `{ mode: "direct" }` and nothing else, so a
-caller can tell "not proxied" from "this server predates the field".
+A direct environment reports `{ mode: "direct" }`, plus its `allow` list
+when it has [one](#direct-allowlist), so a caller can tell "not proxied" from
+"this server predates the field".
+
+## Direct allowlist
+
+A `direct` environment can be limited to a list of IPv4 destinations with
+`allow`. Everything else it tries to reach outside the host is dropped:
+
+```yaml
+egress:
+  mode: direct # the default, so this line is optional
+  allow:
+    - 10.0.0.0/8
+    - 203.0.113.7 # a bare address is a /32
+```
+
+The same list goes on the create request (`egress: { mode: "direct", allow:
+[...] }`), or on the CLI as
+[`fuse environment create --egress-allow`](/reference/cli/environment/create),
+repeated once per cidr. The list can be replaced while the environment runs,
+without a restart:
+
+```bash
+fuse environment egress allow fuse-abc123 10.0.0.0/8 198.51.100.0/24
+fuse environment egress allow fuse-abc123 --clear   # unrestricted again
+```
+
+That is `PUT /v1/environments/{vmId}/egress/allow` with `{"allow": [...]}`
+underneath, and `setEgressAllow` / `SetEgressAllow` / `set_egress_allow` in
+the [SDKs](/reference/typescript/environments#egress-allowlist).
+
+What the list is, exactly:
+
+- **Direct mode only.** `allow` with `mode: proxy` is refused (`400` on
+  create, `409` on a replace), because a proxy environment's way out is its
+  backend. Restrict that at the backend instead.
+- **IPv4 cidrs.** A bare address is a `/32`, host bits are dropped
+  (`10.1.2.3/8` becomes `10.0.0.0/8`) and duplicates go, in the order given.
+  At most 256 cidrs after that. An IPv6 entry, a hostname or anything else
+  that is not an IPv4 cidr is a `400`, and `fuse validate` catches it in a
+  Fusefile before anything is sent.
+- **DNS stays open.** DNS to the guest's resolver, `1.1.1.1` on udp and tcp
+  port 53, is always allowed, or no allowed name would resolve. The list
+  filters addresses, not names.
+- **Empty lifts it.** An empty or absent list is unrestricted direct egress,
+  exactly as before the field existed. The replace call needs the `allow` key
+  in its body, so a misspelt body cannot lift a restriction; the CLI refuses
+  to run without cidrs unless `--clear` is given.
+- **Narrowing cuts open connections.** When a replace drops a range, the
+  host deletes the guest's tracked connections to it, so their next packet
+  meets the drop instead of riding an old accept. Going from unrestricted to
+  a list deletes all of the guest's outbound connections; those to allowed
+  addresses simply reconnect. This needs `conntrack` on the host and is best
+  effort: without it the new rules still apply to new connections.
+- **Only traffic leaving the host.** The filter sits on the vm's outbound
+  leg to the host's uplink. Traffic from the guest to the host itself and
+  traffic between environments on the same host do not take that leg and are
+  not covered.
+
+Every read reports the list the host enforces, normalized:
+
+```json
+{ "mode": "direct", "allow": ["10.0.0.0/8", "203.0.113.7/32"] }
+```
+
+`allow` is absent when the environment is unrestricted. A replace emits a
+`vm.egress_allow_set` event carrying the new list, and a fork or migrate
+started afterwards carries the list the environment had at that moment. A
+replace on an environment that is not running, or one being migrated, is a
+`409`.
 
 ## DNS
 
@@ -288,7 +359,7 @@ the host and makes every other path impossible. It is not:
   share one WARP connection, and the exit address is whatever Cloudflare
   assigns it.
 - **A content filter or allowlist.** Nothing inspects what goes through the
-  proxy. See
+  proxy, and proxy mode takes no `allow` list. See
   [Security hardening](/docs/cloud/security#proxy-egress-is-a-policy-not-a-filter)
   for the exact guarantee.
 
@@ -296,6 +367,8 @@ the host and makes every other path impossible. It is not:
 
 - [Fusefile: egress](/docs/concepts/fusefile#egress) for the block's
   fields and validation rules.
+- [`fuse environment egress allow`](/reference/cli/environment/egress) to
+  replace a running environment's allowlist.
 - [Reconciliation: egress health](/docs/concepts/reconcile#egress-health)
   for how the probe runs and what it does not do.
 - [WARP egress host setup](/docs/cloud/warp-host-setup) to bring up the

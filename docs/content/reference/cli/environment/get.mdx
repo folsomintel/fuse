@@ -34,6 +34,15 @@ updated         2026-01-15 10:01
 endpoint http   10.0.0.5:41337  ->  guest :8080
 ```
 
+An `egress` row shows how outbound traffic is routed: `direct`, or `proxy`
+followed by the provider, the endpoint and the last probe verdict. A direct
+environment with an [allowlist](/reference/cli/environment/egress) adds
+`allow` and the normalized list:
+
+```
+egress          direct  allow 10.0.0.0/8, 203.0.113.7/32
+```
+
 The `agent` row is the host-side DNAT address for the guest agent
 (`FUSE_HOST_PORT_BASE` plus the VM's slot index), not the in-guest port, and it
 carries no scheme. It is the environment's `url` field on the wire.

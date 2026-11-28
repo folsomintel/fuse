@@ -35,6 +35,7 @@ on disk at all.
 | `--gateway-url` | Gateway URL. |
 | `--gateway-token` | Gateway token. |
 | `--secret` | Secret as `key=value`. Repeatable. |
+| `--egress-allow` | Restrict outbound traffic to this IPv4 cidr or bare address (a `/32`). Repeatable, at most 256. Asks for `direct` egress. See [egress allow](/reference/cli/environment/egress). |
 | `--follow` | Stream provisioning events until a terminal state, instead of returning immediately. |
 
 ## Examples
@@ -51,6 +52,14 @@ fuse environment create \
 ```bash
 fuse environment create --task-id my-task --startup-script @./start.sh --secret pg_password=hunter2
 ```
+
+```bash
+# outbound traffic only to the internal network and one api
+fuse environment create --task-id my-task --egress-allow 10.0.0.0/8 --egress-allow 203.0.113.7
+```
+
+The cidrs are validated by the orchestrator, so a malformed or IPv6 entry comes
+back as an `invalid argument` error rather than a local one.
 
 ## GPUs
 

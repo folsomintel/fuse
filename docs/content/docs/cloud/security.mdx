@@ -217,10 +217,11 @@ is not:
 
 - **No content inspection.** Nothing looks at what goes through the proxy.
   A proxy-mode environment can fetch anything the backend can reach.
-- **No allowlist.** There is no per-environment destination policy. If you
-  need one, the place to apply it is the backend: a Zero Trust organisation's
-  gateway rules for `cloudflare-warp`, the VPN server's own rules for
-  `wireguard`, nothing for `mock`.
+- **No allowlist.** Proxy mode has no per-environment destination policy,
+  and refuses `egress.allow`. If you need one, the place to apply it is the
+  backend: a Zero Trust organisation's gateway rules for `cloudflare-warp`,
+  the VPN server's own rules for `wireguard`, nothing for `mock`. A `direct`
+  environment can take an IPv4 allowlist instead; see below.
 - **The mock is not private.** `mock` is a socks5 server inside the
   orchestrator process, egressing from wherever that process runs. It
   proves the policy is enforced; it hides nothing and is registered only
@@ -242,6 +243,30 @@ sends it only to the host agent, which writes it once, mode 600 under
 `/run/fuse-wireguard/` (tmpfs), for the bridge's unit to read as a systemd
 credential. See
 [WireGuard egress host setup](/docs/cloud/wireguard-host-setup#how-it-works).
+
+## The direct egress allowlist
+
+A `direct` environment with an [`egress.allow`](/docs/guides/egress#direct-allowlist)
+list has its tap's outbound leg (`FORWARD -i <tap> -o <iface>`) pointed at a
+chain of its own instead of a plain accept. The chain accepts replies to
+connections already tracked, DNS to `1.1.1.1` on port 53, one rule per
+allowed cidr, and drops the rest. Like proxy mode it sits on the host, out of
+reach of anything inside the guest.
+
+It is a destination filter on IPv4 addresses and nothing more:
+
+- **Only the outbound leg to the host's uplink.** Traffic from the guest to
+  the host itself (the host end of its veth, the host agent's ports) and
+  traffic between environments on the same host do not cross that leg and are
+  not filtered by it.
+- **Addresses, not names.** A cidr allows whatever answers at those addresses,
+  and DNS to `1.1.1.1` is always open, so the guest can still resolve any
+  name; it just cannot connect to an address outside the list.
+- **Cut on narrowing, best effort.** Replacing the list deletes the guest's
+  tracked connections to ranges the new list drops, so an open flow does not
+  outlive its accept. That needs `conntrack` on the host; without it the
+  agent logs the failure and keeps the new rules, and an already established
+  connection can carry on until it closes.
 
 ## What this doesn't cover
 

@@ -91,9 +91,9 @@ fuse environment destroy <id>    # tear down (phase 2, or from any state)
 
 ## Long operations and retries
 
-Create, destroy, fork, migrate, drain, snapshot create, snapshot restore and
-image convert run on the orchestrator as **operations**, off the request that
-started them.
+Create, destroy, fork, migrate, drain, snapshot create, snapshot restore,
+image convert and an egress allowlist replace run on the orchestrator as
+**operations**, off the request that started them.
 The request waits for its operation up to the server's attach bound, 10
 seconds below its `-write-timeout` (50s by default), and answers as it always
 has when the operation finishes in time. One that takes longer, a cold boot
