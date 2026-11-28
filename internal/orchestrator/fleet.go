@@ -236,6 +236,9 @@ type vm struct {
 	// health is the last verdict read back from the guest, or nil before the
 	// first successful read. Live state, never persisted (see health.go).
 	health *HealthStatus
+	// egressAllowMu serializes SetEgressAllow on this vm across its host
+	// call. taken before fm.mu, never under it.
+	egressAllowMu sync.Mutex
 }
 
 func (v *vm) toInfo() VMInfo {
