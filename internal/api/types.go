@@ -161,11 +161,19 @@ type Health struct {
 // credential, for a provider that takes one (wireguard: a base64 wg-quick
 // config). The value goes to the host's egress backend and is left out of
 // the secrets the guest receives.
+//
+// Allow is a direct environment's outbound allowlist: ipv4 cidrs (a bare
+// address is a /32), at most 256 after dedupe. Empty is unrestricted. With
+// a list, the host drops every outbound connection to anywhere else, except
+// dns to the guest's resolver. Proxy mode refuses it. PUT
+// /v1/environments/{vmId}/egress/allow replaces it while the environment
+// runs.
 type EgressSpec struct {
-	Mode     string `json:"mode,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-	Secret   string `json:"secret,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	Provider string   `json:"provider,omitempty"`
+	Protocol string   `json:"protocol,omitempty"`
+	Secret   string   `json:"secret,omitempty"`
+	Allow    []string `json:"allow,omitempty"`
 }
 
 // EgressStatus is the resolved outbound policy of an environment. Mode is
@@ -177,6 +185,9 @@ type EgressStatus struct {
 	Provider string `json:"provider,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
 	Endpoint string `json:"endpoint,omitempty"`
+	// Allow is the outbound allowlist the host enforces, normalized
+	// (10.0.0.0/8, 1.2.3.4/32). Absent when unrestricted. Direct only.
+	Allow []string `json:"allow,omitempty"`
 	// Health is the proxy endpoint's last probe verdict. Absent for direct
 	// egress, and "unknown" until the first probe has run. Like the
 	// environment healthcheck it reports and nothing acts on it: an
@@ -318,6 +329,14 @@ type CreateSnapshotRequest struct {
 	// old to know about the flag answers with a disk snapshot; the Kind on
 	// the response says which happened.
 	Live bool `json:"live,omitempty"`
+}
+
+// SetEgressAllowRequest is the body of PUT
+// /v1/environments/{vmId}/egress/allow. Allow replaces the environment's
+// outbound allowlist; an empty list (or null) lifts it. The field itself is
+// required, so a misspelt body cannot lift a restriction by accident.
+type SetEgressAllowRequest struct {
+	Allow []string `json:"allow"`
 }
 
 // ForkEnvironmentRequest is the optional body for

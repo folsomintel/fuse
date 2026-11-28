@@ -104,12 +104,14 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrInterventionResolved),
 		errors.Is(err, orchestrator.ErrNoTakeover),
 		errors.Is(err, orchestrator.ErrTakeoverHeld),
-		errors.Is(err, orchestrator.ErrImageNotReady):
+		errors.Is(err, orchestrator.ErrImageNotReady),
+		errors.Is(err, orchestrator.ErrEgressAllowConflict):
 		return http.StatusConflict, CodeConflict
 	case errors.Is(err, orchestrator.ErrExecUnsupported),
 		errors.Is(err, orchestrator.ErrAttachUnsupported),
 		errors.Is(err, orchestrator.ErrSnapshotUnsupported),
-		errors.Is(err, orchestrator.ErrComputerUnsupported):
+		errors.Is(err, orchestrator.ErrComputerUnsupported),
+		errors.Is(err, orchestrator.ErrEgressAllowUnsupported):
 		return http.StatusNotImplemented, CodeUnimplemented
 	case errors.Is(err, secrets.ErrSecretsValidation),
 		errors.Is(err, orchestrator.ErrStartupScriptTimeout),
@@ -120,7 +122,8 @@ func classifyFleetError(err error) (status int, code string) {
 		errors.Is(err, orchestrator.ErrHitlNeedsKey),
 		errors.Is(err, orchestrator.ErrInvalidIntervention),
 		errors.Is(err, orchestrator.ErrInvalidImage),
-		errors.Is(err, orchestrator.ErrImageUnsupported):
+		errors.Is(err, orchestrator.ErrImageUnsupported),
+		errors.Is(err, orchestrator.ErrEgressAllowInvalid):
 		return http.StatusBadRequest, CodeInvalidArgument
 	default:
 		return http.StatusInternalServerError, CodeInternal

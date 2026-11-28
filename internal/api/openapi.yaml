@@ -700,6 +700,86 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
 
+  /v1/environments/{vmId}/egress/allow:
+    parameters:
+      - $ref: "#/components/parameters/VMID"
+    put:
+      tags: [environments]
+      operationId: setEgressAllow
+      summary: Replace the egress allowlist
+      description: |
+        Replaces a running direct-egress environment's outbound IPv4
+        allowlist while it runs, and answers with its egress status. The
+        list is normalized the way `egress.allow` on create is: a bare
+        address is a /32, host bits are dropped, duplicates go, the order
+        stays, at most 256 cidrs. `[]` (or `null`) lifts the restriction;
+        the field itself is required. The host applies the list before the
+        orchestrator records it, so a refused call leaves the previous list
+        in force and reported. Connections the guest opened that the new
+        list no longer allows are cut. A fork or migrate started afterwards
+        carries the new list.
+
+        Preconditions are reported as 4xx, not 5xx:
+
+        - 400 `invalid_argument`: `allow` missing, not a list, an entry
+          that is not an IPv4 cidr, or more than 256 cidrs.
+        - 404 `not_found`: unknown environment.
+        - 409 `conflict`: the environment uses proxy egress, is not
+          running, or is being migrated.
+        - 501 `unimplemented`: the environment's provider cannot replace
+          an allowlist (e.g. the in-memory stub).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Wait"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetEgressAllowRequest"
+      responses:
+        "200":
+          description: The allowlist is in force; the environment's egress status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EgressStatus"
+        "202":
+          description: |
+            The operation outlasted `?wait=` (or `wait=false`). The body is
+            an OperationAccepted and `Location` points at
+            /v1/operations/{operationId}.
+          headers:
+            Location:
+              schema:
+                type: string
+              description: /v1/operations/{operationId}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationAccepted"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: |
+            The environment uses proxy egress, is not running, or is being
+            migrated; or the `Idempotency-Key` was used for a different
+            request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "501":
+          $ref: "#/components/responses/Unimplemented"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
   /v1/environments/{vmId}/attach:
     parameters:
       - $ref: "#/components/parameters/VMID"
@@ -2730,7 +2810,8 @@ components:
         retry with a fresh key. 1-255 visible ascii characters. Every answer carries the operation's id in
         `Fuse-Operation-Id`. On POST /v1/environments/{vmId} only `drain`,
         `fork` and `migrate` honor it. POST /v1/images (`image.convert`)
-        honors it too.
+        and PUT /v1/environments/{vmId}/egress/allow (`egress.allow`)
+        honor it too.
     Wait:
       name: wait
       in: query
@@ -3423,6 +3504,21 @@ components:
             with no working local DNS by design, so a client must resolve
             names at the proxy: `socks5h://`, or http CONNECT, which always
             does.
+        allow:
+          type: array
+          maxItems: 256
+          items:
+            type: string
+          description: |
+            Direct only: the outbound IPv4 allowlist, e.g.
+            `["10.0.0.0/8", "1.2.3.4"]`. A bare address is a /32, host bits
+            are dropped and duplicates go; at most 256 cidrs after that.
+            Empty or absent is unrestricted. With a list the host drops
+            every outbound connection to anywhere else, except dns to the
+            guest's resolver. A malformed entry, an IPv6 one, or any list
+            with `mode: proxy` is 400 before anything is scheduled. Replace
+            it while the environment runs with
+            PUT /v1/environments/{vmId}/egress/allow.
 
     EgressStatus:
       type: object
@@ -3445,6 +3541,14 @@ components:
             `socks5h://10.200.3.1:1080`. A host-local address useless to
             anyone not already inside the sandbox, and never a credential.
             Proxy only.
+        allow:
+          type: array
+          items:
+            type: string
+          description: |
+            The outbound allowlist the host enforces, normalized
+            (`10.0.0.0/8`, `1.2.3.4/32`). Absent when unrestricted. Direct
+            only.
         health:
           allOf:
             - $ref: "#/components/schemas/EgressHealth"
@@ -3753,6 +3857,19 @@ components:
         stderr:
           type: string
           example: ""
+
+    SetEgressAllowRequest:
+      type: object
+      required: [allow]
+      properties:
+        allow:
+          type: array
+          nullable: true
+          items:
+            type: string
+          description: |
+            The new allowlist, IPv4 cidrs or bare addresses. `[]` (or
+            `null`) lifts the restriction.
 
     ForkEnvironmentRequest:
       type: object
@@ -4726,7 +4843,7 @@ components:
           type: string
         kind:
           type: string
-          enum: [create, destroy, fork, migrate, snapshot, restore, drain, image.convert]
+          enum: [create, destroy, fork, migrate, snapshot, restore, drain, image.convert, egress.allow]
         state:
           type: string
           enum: [running, succeeded, failed]
@@ -4748,7 +4865,7 @@ components:
           description: |
             The call's response body on success: an Environment for create,
             migrate and drain, a ForkEnvironmentResponse for fork, a Snapshot for snapshot, an Image for
-            image.convert (status_code 202), absent for destroy and restore
+            image.convert (status_code 202), an EgressStatus for egress.allow, absent for destroy and restore
             (204), and a HeldResponse when a hitl gate held the action
             (status_code 202).
         error:

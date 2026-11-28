@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -178,10 +179,16 @@ type fakeProvider struct {
 	// blockExec is stamped onto every env Create returns, modelling a
 	// startup script that never terminates.
 	blockExec bool
+
+	// specs is the spec each env was created with, by name.
+	specs map[string]orchestrator.Spec
+	// allowCalls records SetEgressAllow's lists; allowErr is its answer.
+	allowCalls [][]string
+	allowErr   error
 }
 
 func newFakeProvider() *fakeProvider {
-	return &fakeProvider{envs: make(map[string]*fakeEnv)}
+	return &fakeProvider{envs: make(map[string]*fakeEnv), specs: make(map[string]orchestrator.Spec)}
 }
 
 func (p *fakeProvider) Create(_ context.Context, spec orchestrator.Spec) (orchestrator.Environment, error) {
@@ -189,7 +196,37 @@ func (p *fakeProvider) Create(_ context.Context, spec orchestrator.Spec) (orches
 	defer p.mu.Unlock()
 	e := &fakeEnv{name: spec.Name, url: "http://" + spec.Name + ".test", blockExec: p.blockExec}
 	p.envs[spec.Name] = e
+	p.specs[spec.Name] = spec
 	return e, nil
+}
+
+// SetEgressAllow makes fakeProvider an orchestrator.EgressAllowSetter. it
+// normalizes the way the host agent does, or answers allowErr.
+func (p *fakeProvider) SetEgressAllow(_ context.Context, vmID string, cidrs []string) ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.allowCalls = append(p.allowCalls, cidrs)
+	if p.allowErr != nil {
+		return nil, p.allowErr
+	}
+	if _, ok := p.envs[vmID]; !ok {
+		return nil, &orchestrator.HTTPStatusError{Code: http.StatusNotFound, Body: "vm not found"}
+	}
+	got, err := egress.NormalizeAllow(cidrs)
+	if err != nil {
+		return nil, &orchestrator.HTTPStatusError{Code: http.StatusBadRequest, Body: err.Error()}
+	}
+	if got == nil {
+		got = []string{}
+	}
+	return got, nil
+}
+
+// createdSpec is the spec name was created with.
+func (p *fakeProvider) createdSpec(name string) orchestrator.Spec {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.specs[name]
 }
 
 func (p *fakeProvider) Get(_ context.Context, name string) (orchestrator.Environment, error) {
@@ -495,7 +532,7 @@ func TestCreateEnvironment_egressAbsentAndDirectAreTheSame(t *testing.T) {
 		// always reported, so a caller can tell "not proxied" from "server
 		// predates egress"; and identical for both spellings.
 		want := &EgressStatus{Mode: "direct"}
-		if env.Egress == nil || *env.Egress != *want {
+		if env.Egress == nil || !reflect.DeepEqual(*env.Egress, *want) {
 			t.Fatalf("egress = %+v, want %+v", env.Egress, want)
 		}
 	}
@@ -562,6 +599,9 @@ func TestCreateEnvironment_egressRejectedBeforeAnyVMExists(t *testing.T) {
 		{"direct with secret", &EgressSpec{Mode: "direct", Secret: "WG_CONF"}, `secret "WG_CONF" requires mode "proxy"`},
 		{"egress secret not supplied", &EgressSpec{Mode: "proxy", Provider: "mock", Secret: "WG_CONF"}, `secret "WG_CONF" is not among the request's secrets`},
 		{"bad protocol", &EgressSpec{Mode: "proxy", Provider: "mock", Protocol: "ftp"}, `unknown protocol "ftp"`},
+		{"allow not a cidr", &EgressSpec{Allow: []string{"10.0.0.0/8", "example.com"}}, `allow entry "example.com" is not an ipv4 cidr`},
+		{"allow ipv6", &EgressSpec{Allow: []string{"2001:db8::/32"}}, `is not an ipv4 cidr`},
+		{"allow with proxy", &EgressSpec{Mode: "proxy", Provider: "mock", Allow: []string{"10.0.0.0/8"}}, `allow requires mode "direct"`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1254,6 +1294,7 @@ func (p *fakeProvider) CreateFromCheckpoint(_ context.Context, spec orchestrator
 	}
 	src.mu.Unlock()
 	p.envs[spec.Name] = e
+	p.specs[spec.Name] = spec
 	return e, nil
 }
 
