@@ -214,7 +214,7 @@ func (c *inlineCreator) run(ctx context.Context, vmID string, done map[string]bo
 			return aerr
 		}
 		if c.st.Booted {
-			_ = c.destroys.SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: c.st.HostID})
+			_ = c.destroys.SendDestroy(ctx, vmID, DestroyRequest{Reason: DestroyReasonCreateCleanup, HostID: c.st.HostID, Epoch: c.st.Epoch})
 		}
 		return err
 	}
@@ -460,6 +460,11 @@ func TestDurableCreateStartupFailureRollsBack(t *testing.T) {
 			sent, _ := c.destroys.requests()
 			if len(sent) != 1 || sent[0].Reason != DestroyReasonCreateCleanup || sent[0].HostID != "h1" {
 				t.Fatalf("destroys sent %+v, want one create cleanup on h1", sent)
+			}
+			// the abandon dropped the vm, so only the request can fence the
+			// cleanup to it.
+			if sent[0].Epoch == 0 {
+				t.Fatal("the create cleanup carries no epoch")
 			}
 			if p.env("fuse-t4") != nil {
 				t.Fatal("the cleanup destroy left the vm on its host")

@@ -109,14 +109,24 @@ func (p *Provider) Create(ctx context.Context, spec orchestrator.Spec) (orchestr
 		return nil, fmt.Errorf("qemu create vm: %w", err)
 	}
 
-	env := &remoteEnv{id: resp.VMID, url: resp.URL, client: p}
+	env := p.envFor(ctx, resp.VMID, resp.URL, resp.Epoch)
 	if env.url == "" {
 		env.url = fmt.Sprintf("qemu://%s", resp.VMID)
 	}
 	return env, nil
 }
 
-// Get returns an existing sandbox.
+// envFor builds the handle for a vm the agent reported. it is for the
+// incarnation ctx names, else the one the agent reported.
+func (p *Provider) envFor(ctx context.Context, vmID, url string, epoch int64) *remoteEnv {
+	if e := orchestrator.VMEpochFrom(ctx); e != 0 {
+		epoch = e
+	}
+	return &remoteEnv{id: vmID, url: url, epoch: epoch, client: p}
+}
+
+// Get returns an existing sandbox. under a ctx that names an incarnation, a
+// vm the agent holds for another one is an orchestrator.IncarnationError.
 func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environment, error) {
 	if p.stub != nil {
 		return p.stub.Get(ctx, name)
@@ -126,7 +136,10 @@ func (p *Provider) Get(ctx context.Context, name string) (orchestrator.Environme
 	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("qemu get vm: %w", err)
 	}
-	return &remoteEnv{id: resp.VMID, url: resp.URL, client: p}, nil
+	if err := orchestrator.CheckIncarnation(ctx, name, resp.Epoch); err != nil {
+		return nil, err
+	}
+	return p.envFor(ctx, resp.VMID, resp.URL, resp.Epoch), nil
 }
 
 // Destroy tears down a sandbox.
@@ -153,7 +166,7 @@ func (p *Provider) List(ctx context.Context, prefix string) ([]orchestrator.Envi
 	}
 	envs := make([]orchestrator.Environment, 0, len(resp.VMs))
 	for _, vm := range resp.VMs {
-		envs = append(envs, &remoteEnv{id: vm.VMID, url: vm.URL, client: p})
+		envs = append(envs, p.envFor(ctx, vm.VMID, vm.URL, vm.Epoch))
 	}
 	return envs, nil
 }
@@ -201,6 +214,11 @@ type remoteEnv struct {
 	url    string
 	client *Provider
 
+	// epoch is the incarnation this handle is for. every mutating call made
+	// through it carries it, so a handle that outlives its vm cannot reach
+	// a later vm under the same id. 0 when unknown, which is not fenced.
+	epoch int64
+
 	tokenMu   sync.RWMutex
 	authToken string
 
@@ -210,6 +228,7 @@ type remoteEnv struct {
 
 var (
 	_ orchestrator.Environment      = (*remoteEnv)(nil)
+	_ orchestrator.Epoched          = (*remoteEnv)(nil)
 	_ orchestrator.Attacher         = (*remoteEnv)(nil)
 	_ orchestrator.TokenSetter      = (*remoteEnv)(nil)
 	_ orchestrator.EndpointReporter = (*remoteEnv)(nil)
@@ -223,6 +242,18 @@ func (e *remoteEnv) Endpoints() []orchestrator.Endpoint {
 
 func (e *remoteEnv) Name() string { return e.id }
 func (e *remoteEnv) URL() string  { return e.url }
+
+// Epoch is the incarnation the handle is for, satisfying orchestrator.Epoched.
+func (e *remoteEnv) Epoch() int64 { return e.epoch }
+
+// fenced is ctx for a call through the handle: one for the handle's
+// incarnation unless ctx already names one.
+func (e *remoteEnv) fenced(ctx context.Context) context.Context {
+	if orchestrator.VMEpochFrom(ctx) != 0 {
+		return ctx
+	}
+	return orchestrator.WithVMEpoch(ctx, e.epoch)
+}
 
 // Token returns the per-VM auth token previously installed via SetToken.
 func (e *remoteEnv) Token() string {
@@ -248,7 +279,7 @@ func (e *remoteEnv) Exec(ctx context.Context, cmd []string, opts orchestrator.Ex
 		req.TimeoutMS = int(opts.Timeout.Milliseconds())
 	}
 	var resp execResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
 		return orchestrator.ExecResult{}, fmt.Errorf("exec: %w", err)
 	}
 	return orchestrator.ExecResult{
@@ -273,7 +304,7 @@ func (e *remoteEnv) Attach(ctx context.Context, spec orchestrator.AttachSpec) (i
 func (e *remoteEnv) ExecStream(ctx context.Context, stdout, stderr io.Writer, name string, args ...string) error {
 	req := execRequest{Cmd: append([]string{name}, args...)}
 	var resp execResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/exec", e.id), req, &resp); err != nil {
 		return fmt.Errorf("exec stream: %w", err)
 	}
 	if len(resp.Stdout) > 0 {
@@ -290,7 +321,7 @@ func (e *remoteEnv) ExecStream(ctx context.Context, stdout, stderr io.Writer, na
 
 func (e *remoteEnv) Upload(ctx context.Context, data []byte, path string) error {
 	req := uploadRequest{Path: path, ContentB64: base64.StdEncoding.EncodeToString(data)}
-	return e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/upload", e.id), req, nil)
+	return e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/upload", e.id), req, nil)
 }
 
 // StartAgent launches the guest agent via the host agent's /start-agent wire,
@@ -314,7 +345,7 @@ func (e *remoteEnv) StartAgent(ctx context.Context, spec orchestrator.AgentSpec)
 		Expose:       toWireExpose(spec.Expose),
 	}
 	var resp startAgentResponse
-	if err := e.client.doJSON(ctx, http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp); err != nil {
+	if err := e.client.doJSON(e.fenced(ctx), http.MethodPost, fmt.Sprintf("/v1/vm/%s/start-agent", e.id), agentReq, &resp); err != nil {
 		return err
 	}
 	endpoints := make([]orchestrator.Endpoint, len(resp.Endpoints))
@@ -371,11 +402,17 @@ func egressWireFor(spec orchestrator.Spec) *egressWire {
 type createVMResponse struct {
 	VMID string `json:"vm_id"`
 	URL  string `json:"url"`
+	// Epoch is the incarnation the agent created the vm for, 0 from an
+	// agent that predates epoch fencing or for a vm made without one.
+	Epoch int64 `json:"epoch"`
 }
 
 type getVMResponse struct {
 	VMID string `json:"vm_id"`
 	URL  string `json:"url"`
+	// Epoch is the incarnation the agent created the vm for, 0 from an
+	// agent that predates epoch fencing or for a vm made without one.
+	Epoch int64 `json:"epoch"`
 }
 
 // capacityResponse is the GET /v1/capacity response: the host agent's real
@@ -394,8 +431,9 @@ type capacityResponse struct {
 
 type listVMResponse struct {
 	VMs []struct {
-		VMID string `json:"vm_id"`
-		URL  string `json:"url"`
+		VMID  string `json:"vm_id"`
+		URL   string `json:"url"`
+		Epoch int64  `json:"epoch"`
 	} `json:"vms"`
 }
 

@@ -56,6 +56,9 @@ from agentlib import (  # noqa: E402
     do_attach,
     do_exec,
     do_upload,
+    epoch_fence_create,
+    epoch_record,
+    epoch_touch,
     goarch,
     host_authority,
     host_iface,
@@ -1353,24 +1356,30 @@ def resolve_image_path(image: str) -> Path:
 CREATE_VM_LOCK_WAIT = 120.0
 
 
-def create_vm(req: dict, source_rootfs: Path | None = None) -> dict:
+def create_vm(req: dict, source_rootfs: Path | None = None, epoch: int = 0) -> dict:
     """creates and boots a vm. the vm's own lock is held throughout, so a
     retry or a destroy of the same name waits for this create. _create_lock
     is held only while reserve_vm picks the slot and writes the meta that
     reserves it, so the rootfs copy, the boot and the ssh wait of different
-    vms run in parallel."""
+    vms run in parallel. epoch, when set, is the incarnation the create is
+    for (see agentlib.epoch_fence_create)."""
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name)
     lock = vm_lock(vm_id)
     if not lock.acquire(timeout=CREATE_VM_LOCK_WAIT):
         raise HTTPError(409, f"vm {vm_id} is busy with another operation; retry")
     try:
+        epoch_fence_create(vm_id, load_meta(vm_id), epoch)
         with _create_lock:
             meta, source_rootfs, resume = reserve_vm(req, name, vm_id, source_rootfs)
-        if not meta.get("creating"):
-            # the same create sent again: the vm it already made.
-            return meta
-        boot_vm(meta, source_rootfs, resume)
+        if meta.get("creating"):
+            if epoch:
+                meta["epoch"] = epoch
+                save_meta(meta)
+            boot_vm(meta, source_rootfs, resume)
+        # else the same create sent again: the vm it already made.
+        if epoch:
+            epoch_record(vm_id, epoch)
         return meta
     finally:
         lock.release()
@@ -2735,7 +2744,7 @@ def resume_firecracker(meta: dict, resume: dict) -> None:
         forget_artifacts()
 
 
-def fork_vm(src_vm_id: str, req: dict) -> dict:
+def fork_vm(src_vm_id: str, req: dict, epoch: int = 0) -> dict:
     """Create a brand-new VM seeded from one of src_vm_id's snapshots.
 
     This is create_vm with the snapshot's rootfs standing in for the base
@@ -2768,7 +2777,7 @@ def fork_vm(src_vm_id: str, req: dict) -> dict:
     # meaningless here; drop it so create_vm cannot try to resolve it.
     fork_req.pop("image", None)
 
-    return create_vm(fork_req, source_rootfs=snap_rootfs)
+    return create_vm(fork_req, source_rootfs=snap_rootfs, epoch=epoch)
 
 
 # -- Content-addressed artifacts (host-to-host) -------------------------------
@@ -4106,6 +4115,9 @@ def vm_public(meta: dict) -> dict:
         "host_ip": meta.get("host_ip", ""),
         "guest_ip": guest_net["ip"] if guest_net else meta.get("guest_ip", ""),
         "egress_mode": meta.get("egress_mode", "direct"),
+        # the incarnation the vm was created for, 0 for one made before
+        # epoch fencing or without it.
+        "epoch": int(meta.get("epoch") or 0),
     }
 
 
@@ -4311,7 +4323,7 @@ class Handler(agentlib.BaseHandler):
             # /v1/vm collection
             if path == "/v1/vm" and method == "POST":
                 req = self._read_json()
-                meta = create_vm(req)
+                meta = create_vm(req, epoch=self._epoch())
                 return self._json(200, vm_public(meta))
             if path == "/v1/vm" and method == "GET":
                 prefix = query.get("prefix", "")
@@ -4336,6 +4348,7 @@ class Handler(agentlib.BaseHandler):
             if m and method == "DELETE":
                 vm_id = sanitize_name(m.group(1))
                 with vm_lock(vm_id):
+                    self._fence(vm_id, method)
                     snapshot_delete(m.group(2), vm_id)
                 return self._text(204, "")
             m = re.fullmatch(r"/v1/snapshots/([^/]+)", path)
@@ -4358,7 +4371,9 @@ class Handler(agentlib.BaseHandler):
                     # destroy frees the slot last, by removing the vm dir, so
                     # it needs no _create_lock.
                     with vm_lock(vm_id):
+                        self._fence(vm_id, method)
                         destroy_vm(vm_id)
+                        epoch_touch(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -4377,6 +4392,10 @@ class Handler(agentlib.BaseHandler):
                     return None
 
                 with vm_lock(vm_id):
+                    # a fork's epoch is the new vm's, which create_vm checks;
+                    # the source it reads is not fenced.
+                    if action != "fork":
+                        self._fence(vm_id, method)
                     if action == "upload" and method == "POST":
                         # Uploads carry a base64 file, so they get the larger
                         # ceiling rather than the control-plane one.
@@ -4499,7 +4518,7 @@ class Handler(agentlib.BaseHandler):
                         # vm's lock with a timeout, so two forks onto each
                         # other's names cannot deadlock.
                         body = self._read_json()
-                        return self._json(200, vm_public(fork_vm(vm_id, body)))
+                        return self._json(200, vm_public(fork_vm(vm_id, body, self._epoch())))
             # Artifact pull. Bearer-authenticated like everything else here,
             # because the caller is the orchestrator; the grant in the body is
             # for the peer, not for us. The body is a few short fields, so it

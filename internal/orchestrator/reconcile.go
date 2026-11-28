@@ -50,7 +50,7 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, listing vmListing,
 			continue
 		}
 		if durable != nil {
-			fm.sendOrphanDestroy(durable, name, hostOf[name])
+			fm.sendOrphanDestroy(durable, name, hostOf[name], EnvEpoch(e))
 			continue
 		}
 
@@ -61,8 +61,8 @@ func (fm *FleetManager) reconcileOrphans(ctx context.Context, listing vmListing,
 			summary.OrphansFailed++
 			continue
 		}
-		destroyCtx, cancel := context.WithTimeout(ctx, fm.orphanDestroyTimeout)
-		err = provider.Destroy(destroyCtx, name)
+		destroyCtx, cancel := context.WithTimeout(WithVMEpoch(ctx, EnvEpoch(e)), fm.orphanDestroyTimeout)
+		err = destroyOrphan(destroyCtx, provider, name)
 		cancel()
 		if err != nil {
 			fm.logger.Error("orphan destroy failed", "vm", name, "err", err, "attempt", retries+1)

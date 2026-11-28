@@ -166,7 +166,7 @@ func (fm *FleetManager) guestEnvironment(ctx context.Context, vmID string) (Envi
 	if provider == nil {
 		return nil, fmt.Errorf("no provider available for vm %s", vmID)
 	}
-	env, err := provider.Get(ctx, vmID)
+	env, err := provider.Get(fm.epochCtx(ctx, vmID), vmID)
 	if err != nil {
 		return nil, fmt.Errorf("get environment %s: %w", vmID, err)
 	}

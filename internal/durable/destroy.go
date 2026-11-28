@@ -61,7 +61,7 @@ func destroy(ctx restate.ObjectContext, fleet destroyFleet, policy RetryPolicy, 
 	}
 
 	hostErr := step(ctx, "host_destroy", func(c context.Context) error {
-		return fleet.DestroyOnHost(c, vmID, hostID)
+		return fleet.DestroyOnHost(orchestrator.WithVMEpoch(c, req.Epoch), vmID, hostID)
 	}, restate.WithInitialRetryInterval(policy.InitialInterval),
 		restate.WithMaxRetryInterval(policy.MaxInterval),
 		restate.WithMaxRetryAttempts(uint(policy.MaxAttempts)))

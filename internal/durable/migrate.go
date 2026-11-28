@@ -359,7 +359,7 @@ func (m *migration) compensate() error {
 	ctx, fleet, plan := m.ctx, m.fleet, m.plan
 	if m.placed {
 		_, err := restate.Object[restate.Void](ctx, EnvironmentObject, plan.NewVMID, "Destroy").
-			Request(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonMigrateRollback, HostID: plan.TargetHostID})
+			Request(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonMigrateRollback, HostID: plan.TargetHostID, Epoch: orchestrator.VMEpoch(plan.CreatedAt)})
 		if err != nil && !restate.IsTerminalError(err) {
 			return err
 		}

@@ -381,7 +381,7 @@ func (d *Inline) destroy(ctx context.Context, vmID string, req orchestrator.Dest
 	if err := fm.DestroyReleaseEgress(ctx, vmID); err != nil {
 		return held(err, nil)
 	}
-	if err := fm.DestroyOnHost(ctx, vmID, hostID); err != nil {
+	if err := fm.DestroyOnHost(orchestrator.WithVMEpoch(ctx, req.Epoch), vmID, hostID); err != nil {
 		hostErr := bounded(err)
 		if ferr := fm.DestroyFailed(ctx, vmID, req.Reason, hostErr.Error()); ferr != nil {
 			return held(ferr, nil)
@@ -503,7 +503,7 @@ func (d *Inline) compensateCreate(ctx context.Context, vmID string, req orchestr
 		return nil, held(err, orchestrator.PermanentCreateError)
 	}
 	if st.Booted {
-		return &orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonCreateCleanup, HostID: st.HostID}, cause
+		return &orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonCreateCleanup, HostID: st.HostID, Epoch: st.Epoch}, cause
 	}
 	return nil, cause
 }
@@ -635,7 +635,7 @@ func (d *Inline) forkCompensate(ctx context.Context, f *forking, cause error) (*
 	}
 	var cleanup *orchestrator.DestroyRequest
 	if f.booted {
-		cleanup = &orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonForkRollback, HostID: f.hostID}
+		cleanup = &orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonForkRollback, HostID: f.hostID, Epoch: orchestrator.VMEpoch(plan.CreatedAt)}
 	}
 	d.forkRelease(f)
 	if f.seed.SnapshotID != "" {
@@ -1378,7 +1378,7 @@ func (d *Inline) migrateFrozen(ctx context.Context, m *migration, outcome string
 func (d *Inline) migrateCompensate(ctx context.Context, m *migration) error {
 	fm, plan := d.fm, m.plan
 	if m.placed {
-		err := d.destroyLocked(ctx, plan.NewVMID, orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonMigrateRollback, HostID: plan.TargetHostID})
+		err := d.destroyLocked(ctx, plan.NewVMID, orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonMigrateRollback, HostID: plan.TargetHostID, Epoch: orchestrator.VMEpoch(plan.CreatedAt)})
 		if err != nil && !terminal(err) {
 			return err
 		}

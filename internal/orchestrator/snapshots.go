@@ -958,7 +958,7 @@ func (fm *FleetManager) snapshotEnvironment(ctx context.Context, snapshot Snapsh
 	if provider == nil {
 		return nil, fmt.Errorf("no provider available for snapshot %s", snapshot.SnapshotID)
 	}
-	env, err := provider.Get(ctx, snapshot.VMID)
+	env, err := provider.Get(fm.epochCtx(ctx, snapshot.VMID), snapshot.VMID)
 	if err != nil {
 		return nil, fmt.Errorf("get environment %s for snapshot %s: %w", snapshot.VMID, snapshot.SnapshotID, err)
 	}

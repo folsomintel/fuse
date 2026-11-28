@@ -316,3 +316,20 @@ func TestCreateSentinelsSurviveRestate(t *testing.T) {
 		}
 	}
 }
+
+// TestCreateRefusedForALaterIncarnationIsAConflict: a boot that finds a later
+// incarnation of its vm on the host fails for good, and the caller gets the
+// task conflict rather than a retried, anonymous failure.
+func TestCreateRefusedForALaterIncarnationIsAConflict(t *testing.T) {
+	fleet := newCreateFleet()
+	stale := &orchestrator.IncarnationError{VMID: "x", Host: 2, Want: 1}
+	fleet.fail["boot"] = []error{fmt.Errorf("provision vm x: %w: %w", orchestrator.ErrTaskAlreadyAssigned, stale)}
+	client := serveFleet(t, fleet, fastPolicy)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	err := client.Create(ctx, uniqueVM("create-later-incarnation"), createRequest(t))
+	if !errors.Is(err, orchestrator.ErrTaskAlreadyAssigned) {
+		t.Fatalf("create: got %v, want ErrTaskAlreadyAssigned", err)
+	}
+}

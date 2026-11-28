@@ -225,7 +225,7 @@ func compensateCreate(ctx restate.ObjectContext, fleet Creator, policy RetryPoli
 	if st.Booted {
 		// the vm is no longer tracked, so the destroy is told its host.
 		restate.ObjectSend(ctx, EnvironmentObject, vmID, "Destroy").
-			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonCreateCleanup, HostID: st.HostID})
+			Send(orchestrator.DestroyRequest{Reason: orchestrator.DestroyReasonCreateCleanup, HostID: st.HostID, Epoch: st.Epoch})
 	}
 	return cause
 }

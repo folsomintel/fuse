@@ -37,7 +37,7 @@ func (d *inlineDestroyer) run(ctx context.Context, vmID string, req DestroyReque
 		hostID = req.HostID
 	}
 	_ = d.fm.DestroyReleaseEgress(ctx, vmID)
-	if err := d.fm.DestroyOnHost(ctx, vmID, hostID); err != nil {
+	if err := d.fm.DestroyOnHost(WithVMEpoch(ctx, req.Epoch), vmID, hostID); err != nil {
 		_ = d.fm.DestroyFailed(ctx, vmID, req.Reason, err.Error())
 		return err
 	}

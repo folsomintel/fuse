@@ -66,7 +66,7 @@ class IdempotencyTest(unittest.TestCase):
     def fake_create(self):
         calls = []
 
-        def create(req, source_rootfs=None):
+        def create(req, source_rootfs=None, epoch=0):
             calls.append(req)
             return {"vm_id": req["name"], "name": req["name"], "url": f"http://h/{len(calls)}"}
 
@@ -94,7 +94,7 @@ class IdempotencyTest(unittest.TestCase):
         started, release = threading.Event(), threading.Event()
         calls = []
 
-        def slow_create(req, source_rootfs=None):
+        def slow_create(req, source_rootfs=None, epoch=0):
             calls.append(req)
             started.set()
             release.wait(5)

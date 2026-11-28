@@ -53,6 +53,9 @@ from agentlib import (  # noqa: E402
     do_attach,
     do_exec,
     do_upload,
+    epoch_fence_create,
+    epoch_record,
+    epoch_touch,
     goarch,
     host_authority,
     host_iface,
@@ -712,21 +715,27 @@ def stop_qemu(meta: dict) -> None:
 
 # -- VM lifecycle (HTTP surface) ---------------------------------------------
 
-def create_vm(req: dict) -> dict:
+def create_vm(req: dict, epoch: int = 0) -> dict:
     """creates and boots a vm. the vm's own lock is held throughout, so a
     retry or a destroy of the same name waits for this create. _create_lock
     is held only while reserve_vm picks the index and gpus and writes the
     meta that reserves them, so the rootfs copy, the boot and the ssh wait of
-    different vms run in parallel."""
+    different vms run in parallel. epoch, when set, is the incarnation the
+    create is for (see agentlib.epoch_fence_create)."""
     name = req.get("name") or f"vm-{uuid.uuid4().hex[:8]}"
     vm_id = sanitize_name(name)
     with vm_lock(vm_id):
+        epoch_fence_create(vm_id, load_meta(vm_id), epoch)
         with _create_lock:
             meta, source_rootfs = reserve_vm(req, name, vm_id)
-        if not meta.get("creating"):
-            # the same create sent again: the vm it already made.
-            return meta
-        boot_vm(meta, source_rootfs)
+        if meta.get("creating"):
+            if epoch:
+                meta["epoch"] = epoch
+                save_meta(meta)
+            boot_vm(meta, source_rootfs)
+        # else the same create sent again: the vm it already made.
+        if epoch:
+            epoch_record(vm_id, epoch)
         return meta
 
 
@@ -1080,6 +1089,9 @@ def vm_public(meta: dict) -> dict:
         "host_ip": meta.get("host_ip", ""),
         "guest_ip": meta.get("guest_ip", ""),
         "egress_mode": "direct",
+        # the incarnation the vm was created for, 0 for one made before
+        # epoch fencing or without it.
+        "epoch": int(meta.get("epoch") or 0),
     }
 
 
@@ -1177,7 +1189,7 @@ class Handler(agentlib.BaseHandler):
             # /v1/vm collection
             if path == "/v1/vm" and method == "POST":
                 req = self._read_json()
-                meta = create_vm(req)
+                meta = create_vm(req, epoch=self._epoch())
                 return self._json(200, vm_public(meta))
             if path == "/v1/vm" and method == "GET":
                 prefix = query.get("prefix", "")
@@ -1199,7 +1211,9 @@ class Handler(agentlib.BaseHandler):
                     # destroy frees the index and gpus last, by removing the
                     # vm dir, so it needs no _create_lock.
                     with vm_lock(vm_id):
+                        self._fence(vm_id, method)
                         destroy_vm(vm_id)
+                        epoch_touch(vm_id)
                     return self._text(204, "")
             # /v1/vm/{id}/<action>
             m = re.fullmatch(r"/v1/vm/([^/]+)/([a-z-]+)", path)
@@ -1218,6 +1232,7 @@ class Handler(agentlib.BaseHandler):
                     return None
 
                 with vm_lock(vm_id):
+                    self._fence(vm_id, method)
                     if action == "upload" and method == "POST":
                         # Uploads carry a base64 file, so they get the larger
                         # ceiling rather than the control-plane one.
