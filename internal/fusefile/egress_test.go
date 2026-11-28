@@ -1,6 +1,7 @@
 package fusefile
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -201,5 +202,82 @@ func TestCompileEgressSecretIsRequired(t *testing.T) {
 	}
 	if !reflect.DeepEqual(c.RequiredSecrets, []string{"WG_CONF"}) {
 		t.Errorf("required secrets = %v, want [WG_CONF]", c.RequiredSecrets)
+	}
+}
+
+func TestParseEgressAllow(t *testing.T) {
+	f, err := parseEgress(t, "egress:\n  allow:\n    - 10.0.0.0/8\n    - 1.2.3.4\n")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, err := Compile(f)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	want := &EgressSpec{Mode: EgressModeDirect, Allow: []string{"10.0.0.0/8", "1.2.3.4"}}
+	if !reflect.DeepEqual(c.Egress, want) {
+		t.Errorf("egress = %+v, want %+v", c.Egress, want)
+	}
+}
+
+func TestValidateEgressAllowRejects(t *testing.T) {
+	var many strings.Builder
+	many.WriteString("egress:\n  allow:\n")
+	for i := 0; i < 257; i++ {
+		fmt.Fprintf(&many, "    - 10.0.%d.%d\n", i/256, i%256)
+	}
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "not a cidr",
+			body: "egress:\n  allow: [10.0.0.0/33]\n",
+			want: `egress.allow[0]: "10.0.0.0/33" is not an ipv4 cidr`,
+		},
+		{
+			name: "ipv6",
+			body: "egress:\n  allow: [10.0.0.0/8, \"2001:db8::/32\"]\n",
+			want: `egress.allow[1]: "2001:db8::/32" is not an ipv4 cidr`,
+		},
+		{
+			name: "a hostname",
+			body: "egress:\n  allow: [example.com]\n",
+			want: `egress.allow[0]: "example.com" is not an ipv4 cidr`,
+		},
+		{
+			name: "proxy with an allowlist",
+			body: "egress:\n  mode: proxy\n  provider: mock\n  allow: [10.0.0.0/8]\n",
+			want: `egress.allow: requires mode "direct"`,
+		},
+		{
+			name: "more than 256 cidrs",
+			body: many.String(),
+			want: "egress.allow: has 257 cidrs; at most 256 are allowed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseEgress(t, tc.body)
+			if err == nil {
+				t.Fatalf("Parse accepted %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// the 256 bound counts cidrs after dedupe and masking, like the server.
+func TestValidateEgressAllowCountsDistinctCIDRs(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("egress:\n  allow:\n")
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "    - 10.0.0.%d/24\n", i%256)
+	}
+	if _, err := parseEgress(t, b.String()); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
 }

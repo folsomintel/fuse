@@ -86,6 +86,34 @@ const env = await client.environments.create({
 });
 ```
 
+## Egress allowlist
+
+`allow` on a direct `egress` restricts outbound traffic to IPv4 cidrs, and
+`setEgressAllow` replaces the list while the environment runs. It resolves to
+the environment's `EgressStatus`:
+
+```ts
+const env = await client.environments.create({
+  task_id: "agent-1",
+  egress: { mode: "direct", allow: ["10.0.0.0/8"] },
+});
+
+const st = await client.environments.setEgressAllow(env.id, ["10.0.0.0/8", "203.0.113.7"]);
+console.log(st.allow); // ["10.0.0.0/8", "203.0.113.7/32"]
+
+// an empty list lifts the restriction
+await client.environments.setEgressAllow(env.id, []);
+```
+
+The server normalizes the list (a bare address is a `/32`, host bits are
+dropped, duplicates go, at most 256) and the returned status carries the list
+the host now enforces. An empty list lifts the restriction. A proxy
+environment, or one that is not running or is being migrated, is a `409`
+conflict; a malformed or IPv6 entry is a `400`. The call runs as an operation
+(kind `egress.allow`) and takes an idempotency key like the other mutating
+calls. See the [egress guide](/docs/guides/egress#direct-allowlist) for what
+the list covers.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot
@@ -111,6 +139,7 @@ cancel early. See the full walkthrough in
 | `get(vmId)` | Fetch one environment by ID. |
 | `drain(vmId)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `fork(vmId, { reuse_snapshot_id, comment, live, count })` | Create `count` new environments (default 1) seeded from one snapshot of this one; resolves to `EnvironmentInfo[]`, every child in order. |
+| `setEgressAllow(vmId, cidrs)` | Replace a running direct environment's outbound IPv4 allowlist; resolves to its `EgressStatus`. See [Egress allowlist](#egress-allowlist). |
 | `rotateToken(vmId)` | Re-issue the guest's credentials without recreating the VM. |
 | `doctor(vmId)` | Run the in-guest self-check; resolves to a `DoctorReport` with one `DoctorCheck` per piece (identity, dbus, disk, memory, each display piece, healthcheck, dns, egress, clock). A failing check is a `"fail"` line, not a rejection. |
 

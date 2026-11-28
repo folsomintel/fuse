@@ -86,6 +86,36 @@ env = client.environments.create(
 )
 ```
 
+## Egress allowlist
+
+`allow` on a direct `EgressSpec` restricts outbound traffic to IPv4 cidrs,
+and `set_egress_allow` replaces the list while the environment runs. It
+returns the environment's `EgressStatus`:
+
+```python
+env = client.environments.create(
+    fuse.CreateRequest(
+        task_id="agent-1",
+        egress=fuse.EgressSpec(mode="direct", allow=["10.0.0.0/8"]),
+    )
+)
+
+st = client.environments.set_egress_allow(env.id, ["10.0.0.0/8", "203.0.113.7"])
+print(st.allow)  # ['10.0.0.0/8', '203.0.113.7/32']
+
+# an empty list lifts the restriction
+client.environments.set_egress_allow(env.id, [])
+```
+
+The server normalizes the list (a bare address is a `/32`, host bits are
+dropped, duplicates go, at most 256) and the returned status carries the list
+the host now enforces. An empty list lifts the restriction. A proxy
+environment, or one that is not running or is being migrated, is a `409`
+conflict; a malformed or IPv6 entry is a `400`. The call runs as an operation
+(kind `egress.allow`) and takes an idempotency key like the other mutating
+calls. See the [egress guide](/docs/guides/egress#direct-allowlist) for what
+the list covers.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot
@@ -113,6 +143,7 @@ per transition, and ends on its own after a terminal state
 | `get(vm_id)` | Fetch one environment by ID. |
 | `drain(vm_id)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `fork(vm_id, options=fuse.ForkOptions(...))` | Create `count` new environments (default 1) seeded from one snapshot of this one; returns `list[EnvironmentInfo]`, every child in order. |
+| `set_egress_allow(vm_id, cidrs)` | Replace a running direct environment's outbound IPv4 allowlist; returns its `EgressStatus`. See [Egress allowlist](#egress-allowlist). |
 | `rotate_token(vm_id)` | Re-issue the guest's credentials without recreating the VM. |
 | `doctor(vm_id)` | Run the in-guest self-check; returns a `DoctorReport` with one `DoctorCheck` per piece (identity, dbus, disk, memory, each display piece, healthcheck, dns, egress, clock). A failing check is a `fuse.DOCTOR_FAIL` line, not an exception. |
 

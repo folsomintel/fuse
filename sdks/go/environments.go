@@ -384,6 +384,49 @@ func (s *EnvironmentsService) Migrate(ctx context.Context, vmID string, opts Mig
 	return &env, nil
 }
 
+// SetEgressAllow replaces a running direct environment's outbound ipv4
+// allowlist and returns its egress status. The server normalizes cidrs (a
+// bare address is a /32, host bits dropped, duplicates removed, at most 256).
+// An empty or nil cidrs lifts the restriction. Connections the new list no
+// longer allows are cut. A proxy environment, or one that is not running,
+// answers 409.
+func (s *EnvironmentsService) SetEgressAllow(ctx context.Context, vmID string, cidrs []string, opts ...CallOption) (*EgressStatus, error) {
+	if s == nil || s.t == nil {
+		return nil, errors.New("environments service is not configured")
+	}
+	if vmID == "" {
+		return nil, errors.New("vm id is required")
+	}
+	// the server requires the key, so nil goes out as [] rather than null.
+	if cidrs == nil {
+		cidrs = []string{}
+	}
+	path := "/v1/environments/" + url.PathEscape(vmID) + "/egress/allow"
+	req, err := s.t.newRequest(ctx, http.MethodPut, path, nil, setEgressAllowRequest{Allow: cidrs})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.t.doOperation(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckResponse(resp); err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var out EgressStatus
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("decode egress status: %w", err)
+	}
+	return &out, nil
+}
+
+// setEgressAllowRequest is the body of PUT /v1/environments/{id}/egress/allow.
+// allow has no omitempty: an empty list is how the restriction is lifted.
+type setEgressAllowRequest struct {
+	Allow []string `json:"allow"`
+}
+
 func (s *EnvironmentsService) RotateToken(ctx context.Context, vmID string) error {
 	if s == nil || s.t == nil {
 		return errors.New("environments service is not configured")

@@ -359,10 +359,16 @@ class EgressSpec(_Model):
     # holds the provider's credential, for a provider that takes one
     # ("wireguard" reads a base64 wg-quick config); the value goes to the
     # host's egress backend only and is left out of the guest's secrets.
+    #
+    # allow is direct only: it restricts outbound traffic to these ipv4
+    # cidrs (a bare address is a /32), at most 256 after dedupe. none or
+    # empty is unrestricted. dns to the guest's resolver stays allowed.
+    # environments.set_egress_allow replaces it while the environment runs.
     mode: Optional[str] = None
     provider: Optional[str] = None
     protocol: Optional[str] = None
     secret: Optional[str] = None
+    allow: Optional[list[str]] = None
 
 
 class EgressHealth(_Model):
@@ -378,11 +384,14 @@ class EgressHealth(_Model):
 class EgressStatus(_Model):
     # how the environment's outbound traffic is actually routed. mode is
     # always set; provider, protocol and endpoint are present only for proxy
-    # egress. endpoint is a host-local address, never a credential.
+    # egress. endpoint is a host-local address, never a credential. allow is
+    # the outbound allowlist the host enforces, normalized ("10.0.0.0/8",
+    # "1.2.3.4/32"); none when unrestricted, direct only.
     mode: str = ""
     provider: str = ""
     protocol: str = ""
     endpoint: str = ""
+    allow: Optional[list[str]] = None
     health: Optional[EgressHealth] = None
 
 
@@ -1131,7 +1140,7 @@ class ErrorBody(_Model):
 
 class Operation(_Model):
     # one run of a mutating call (create, destroy, fork, migrate, snapshot,
-    # restore, drain or image.convert). once it finished, status_code with
+    # restore, drain, image.convert or egress.allow). once it finished, status_code with
     # result (on a 2xx) or error (otherwise) is what the call itself would
     # have answered.
     id: str = ""
@@ -1143,7 +1152,8 @@ class Operation(_Model):
     status_code: int = 0
     # the call's raw response body on success: an environment for create,
     # migrate and drain, a ForkResponse for fork, a snapshot for snapshot, an image for
-    # image.convert, none for destroy and restore, and a held response when a
+    # image.convert, an egress status for egress.allow, none for destroy and
+    # restore, and a held response when a
     # hitl gate held the action (202).
     result: Optional[Any] = None
     error: Optional[ErrorBody] = None

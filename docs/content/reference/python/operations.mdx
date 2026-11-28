@@ -154,7 +154,7 @@ OPERATION_FAILED = "failed"
 ```
 
 - `kind` is `create`, `destroy`, `fork`, `migrate`, `snapshot`, `restore`,
-  `drain` or `image.convert`.
+  `drain`, `image.convert` or `egress.allow`.
 - `state` is `succeeded` when the call answered 2xx and `failed` otherwise.
   `done` reports whether it is anything but `running`.
 - `step` is the step the operation last reported starting. No operation
@@ -164,8 +164,8 @@ OPERATION_FAILED = "failed"
   call itself would have answered. `result` is the decoded response body: an
   environment for create, migrate and drain, `{"children": [...]}` for fork,
   a snapshot for snapshot,
-  an image for image.convert (with `status_code` 202), and `None` for destroy
-  and restore.
+  an image for image.convert (with `status_code` 202), an egress status for
+  egress.allow, and `None` for destroy and restore.
 - `retry_after` is the seconds the call's `Retry-After` asked for, set on a
   failed operation that answered a retry-later `503`. The retry waits at
   least that long, as it would for a `503` answered directly.

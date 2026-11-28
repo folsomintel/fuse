@@ -32,6 +32,7 @@ func newEnvironmentCmd() *cobra.Command {
 		newEnvMigrateCmd(),
 		newEnvRotateTokenCmd(),
 		newEnvWatchCmd(),
+		newEnvEgressCmd(),
 	)
 	return cmd
 }
@@ -211,6 +212,10 @@ func renderEnvDetail(e *fuse.EnvironmentInfo, display *fuse.ComputerDisplay) {
 				}
 			}
 		}
+		// an allowlist only exists for direct; absent means unrestricted.
+		if len(eg.Allow) > 0 {
+			egress += "  allow " + strings.Join(eg.Allow, ", ")
+		}
 		pairs = append(pairs, [2]string{"egress", egress})
 	}
 	// the desktop is live state read from the guest, not a field of the
@@ -276,6 +281,7 @@ func newEnvCreateCmd() *cobra.Command {
 		gatewayURL    string
 		gatewayToken  string
 		secrets       []string
+		egressAllow   []string
 		hugePages     bool
 		follow        bool
 	)
@@ -331,6 +337,12 @@ func newEnvCreateCmd() *cobra.Command {
 			if cur.ActiveHost != "" && hostID == "" {
 				infof("note: create is orchestrator-scheduled; the active host %q does not pin placement (pass --host %s to pin it)", cur.ActiveHost, cur.ActiveHost)
 			}
+			// the server validates and normalizes the cidrs; the flag only
+			// asks for direct egress restricted to them.
+			var egress *fuse.EgressSpec
+			if len(egressAllow) > 0 {
+				egress = &fuse.EgressSpec{Mode: fuse.EgressModeDirect, Allow: egressAllow}
+			}
 			e, err := cl.Environments.Create(cmd.Context(), fuse.CreateRequest{
 				TaskID: taskID,
 				Spec: fuse.Spec{
@@ -351,6 +363,7 @@ func newEnvCreateCmd() *cobra.Command {
 				StartupScript:  startupVal,
 				GatewayURL:     gatewayURL,
 				GatewayToken:   gatewayToken,
+				Egress:         egress,
 			})
 			if err != nil {
 				return friendly(err)
@@ -386,6 +399,7 @@ func newEnvCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&gatewayURL, "gateway-url", "", "gateway url")
 	cmd.Flags().StringVar(&gatewayToken, "gateway-token", "", "gateway token")
 	cmd.Flags().StringArrayVar(&secrets, "secret", nil, "secret as key=value (repeatable)")
+	cmd.Flags().StringArrayVar(&egressAllow, "egress-allow", nil, "restrict outbound traffic to this ipv4 cidr or address (repeatable, direct egress only)")
 	cmd.Flags().BoolVar(&follow, "follow", false, "stream provisioning events until terminal state")
 	return cmd
 }

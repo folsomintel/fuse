@@ -14,8 +14,8 @@ use crate::types::{Operation, OperationAccepted, OperationState};
 pub(crate) const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
 /// Per-call options for the mutating calls that run as operations:
-/// environments create, destroy, fork, migrate and drain, snapshots create
-/// and restore, and images convert.
+/// environments create, destroy, fork, migrate, drain and set egress allow,
+/// snapshots create and restore, and images convert.
 ///
 /// ```
 /// use fuse::CallOptions;

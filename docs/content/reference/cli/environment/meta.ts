@@ -12,6 +12,7 @@ export default defineMeta({
     "drain",
     "fork",
     "rotate-token",
+    "egress",
     "watch",
     "exec",
     "shell",

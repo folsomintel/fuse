@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +126,7 @@ func TestEnvironmentsGet_decodesEgressStatus(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	want := EgressStatus{Mode: EgressModeProxy, Provider: "mock", Protocol: EgressProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"}
-	if env.Egress == nil || *env.Egress != want {
+	if env.Egress == nil || !reflect.DeepEqual(*env.Egress, want) {
 		t.Fatalf("Egress = %+v, want %+v", env.Egress, want)
 	}
 

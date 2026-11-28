@@ -103,6 +103,43 @@ env, err := client.Environments.Create(ctx, fuse.CreateRequest{
 })
 ```
 
+## Egress allowlist
+
+`Allow` on a direct `EgressSpec` restricts outbound traffic to IPv4 cidrs,
+and `SetEgressAllow` replaces the list while the environment runs. It returns
+the environment's `*EgressStatus`:
+
+```go
+env, err := client.Environments.Create(ctx, fuse.CreateRequest{
+	TaskID: "agent-1",
+	Egress: &fuse.EgressSpec{Mode: fuse.EgressModeDirect, Allow: []string{"10.0.0.0/8"}},
+})
+if err != nil {
+	log.Fatal(err)
+}
+
+st, err := client.Environments.SetEgressAllow(ctx, env.ID, []string{"10.0.0.0/8", "203.0.113.7"})
+if err != nil {
+	log.Fatal(err)
+}
+log.Println(st.Allow) // [10.0.0.0/8 203.0.113.7/32]
+
+// nil or an empty slice lifts the restriction
+_, err = client.Environments.SetEgressAllow(ctx, env.ID, nil)
+```
+
+The server normalizes the list (a bare address is a `/32`, host bits are
+dropped, duplicates go, at most 256) and the returned status carries the list
+the host now enforces. An empty list lifts the restriction. A proxy
+environment, or one that is not running or is being migrated, is a `409`
+conflict; a malformed or IPv6 entry is a `400`. The call runs as an operation
+(kind `egress.allow`) and takes an idempotency key like the other mutating
+calls. See the [egress guide](/docs/guides/egress#direct-allowlist) for what
+the list covers.
+
+`EgressStatus` now holds a slice, so it is no longer comparable with `==`;
+compare with `reflect.DeepEqual` or field by field.
+
 ## Watching state instead of exec
 
 If you need to react to lifecycle transitions rather than run a one-shot
@@ -168,6 +205,7 @@ scripted automation, use `Exec` for that. Also master-token only.
 | `Get(ctx, vmID)` | Fetch one environment by ID. |
 | `Drain(ctx, vmID)` | Phase one of teardown: signal the guest to stop gracefully without destroying the VM. |
 | `Fork(ctx, vmID, ForkOptions{...})` | Create `Count` new environments (default 1) seeded from one snapshot of this one; returns `[]EnvironmentInfo`, every child in order. |
+| `SetEgressAllow(ctx, vmID, cidrs)` | Replace a running direct environment's outbound IPv4 allowlist; returns its `*EgressStatus`. See [Egress allowlist](#egress-allowlist). |
 | `RotateToken(ctx, vmID)` | Re-issue the guest's credentials without recreating the VM. |
 | `Doctor(ctx, vmID)` | Run the in-guest self-check; returns a `*DoctorReport` with one `DoctorCheck` per piece (identity, dbus, disk, memory, each display piece, healthcheck, dns, egress, clock). A failing check is a `DoctorFail` line, not an error. |
 

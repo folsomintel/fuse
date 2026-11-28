@@ -84,10 +84,11 @@ type compiledHealthcheckHTTP struct {
 
 // compiledEgress mirrors fuse.EgressSpec with yaml tags added.
 type compiledEgress struct {
-	Mode     string `json:"mode,omitempty" yaml:"mode,omitempty"`
-	Provider string `json:"provider,omitempty" yaml:"provider,omitempty"`
-	Protocol string `json:"protocol,omitempty" yaml:"protocol,omitempty"`
-	Secret   string `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Mode     string   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	Provider string   `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Protocol string   `json:"protocol,omitempty" yaml:"protocol,omitempty"`
+	Secret   string   `json:"secret,omitempty" yaml:"secret,omitempty"`
+	Allow    []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 }
 
 // compiledHitl mirrors fuse.HitlSpec with yaml tags added.
@@ -365,7 +366,7 @@ func newCompiledRequest(taskID, seedSnapshotID string, c *fusefile.Compiled) com
 		req.Desktop = &compiledDesktop{Width: d.Width, Height: d.Height, WM: d.WM}
 	}
 	if eg := c.Egress; eg != nil {
-		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol), Secret: eg.Secret}
+		req.Egress = &compiledEgress{Mode: string(eg.Mode), Provider: eg.Provider, Protocol: string(eg.Protocol), Secret: eg.Secret, Allow: eg.Allow}
 	}
 	if h := c.Hitl; h != nil {
 		req.Hitl = &compiledHitl{TimeoutSeconds: h.TimeoutSeconds, OnTimeout: h.OnTimeout, RequireActor: h.RequireActor}
@@ -549,6 +550,9 @@ func writeCompiledText(w io.Writer, c *fusefile.Compiled, req compiledRequest) e
 			if eg.Secret != "" {
 				_, _ = fmt.Fprintf(w, "  %-15s %s\n", "secret", eg.Secret)
 			}
+		}
+		if len(eg.Allow) > 0 {
+			_, _ = fmt.Fprintf(w, "  %-15s %s\n", "allow", strings.Join(eg.Allow, ", "))
 		}
 	}
 

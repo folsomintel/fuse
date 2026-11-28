@@ -1,0 +1,73 @@
+---
+title: fuse environment egress allow
+sidebar:
+  icon: shield
+  label: egress allow
+description: Replace a running environment's outbound IPv4 allowlist
+---
+
+```bash
+fuse environment egress allow <id> <cidr>...
+fuse environment egress allow <id> --clear
+```
+
+Replaces the outbound allowlist of a running environment that uses `direct`
+egress. Each argument after the id is an IPv4 cidr or a bare address (a
+`/32`). The new list replaces the old one in full; it is not merged with it.
+See the [egress guide](/docs/guides/egress#direct-allowlist) for what the
+list does and does not cover.
+
+## Flags
+
+| Flag | Purpose |
+| --- | --- |
+| `--clear` | Lift the allowlist, so the environment's direct egress is unrestricted again. |
+
+With no cidrs and no `--clear` the command refuses without sending anything,
+so a missing argument cannot lift a restriction by accident. Passing both is
+refused too.
+
+## Examples
+
+```bash
+fuse environment egress allow fuse-abc123 10.0.0.0/8 203.0.113.7
+# environment "fuse-abc123" may reach 10.0.0.0/8, 203.0.113.7/32
+
+fuse environment egress allow fuse-abc123 --clear
+# lifted the egress allowlist of environment "fuse-abc123"
+```
+
+The printed list is the one the server normalized and the host now enforces:
+a bare address becomes a `/32`, host bits are dropped (`10.1.2.3/8` is
+`10.0.0.0/8`) and duplicates go. With `-o json` the command prints the
+environment's egress status instead, for example
+`{"mode":"direct","allow":["10.0.0.0/8","203.0.113.7/32"]}`.
+[`fuse environment get`](/reference/cli/environment/get) shows the same list
+on its `egress` row.
+
+To start an environment with a list in place, pass `--egress-allow` (repeatable)
+to [`fuse environment create`](/reference/cli/environment/create), or set
+[`egress.allow`](/docs/concepts/fusefile#egress) in a Fusefile.
+
+## Behavior
+
+- Connections the guest opened to a range the new list drops are cut. Their
+  next packet is treated as new and meets the drop.
+- DNS to the guest's resolver (`1.1.1.1`, udp and tcp port 53) is always
+  allowed, or no allowed name would resolve.
+- A fork or migrate started afterwards carries the new list.
+- A call that outlasts the server's wait runs on as operation `egress.allow`;
+  the command says so and waits for it, as other mutating commands do. See
+  [`fuse operation`](/reference/cli/operation).
+
+## Errors
+
+The command exits non-zero on every refusal.
+
+| Status | Cause |
+| --- | --- |
+| `400` | An entry is not an IPv4 cidr (an IPv6 one, a hostname, `/33`), or more than 256 distinct cidrs. Printed as `invalid argument: ...`. |
+| `403` | The token is a scoped key that cannot change this environment. |
+| `404` | No such environment. Printed as `not found: ...`. |
+| `409` | The environment uses `proxy` egress, is not running, or is being migrated. Printed as `conflict: ...`. |
+| `501` | The environment's provider cannot replace an allowlist. |

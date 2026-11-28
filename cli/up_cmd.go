@@ -500,7 +500,7 @@ func toSDKEgress(in *fusefile.EgressSpec) *fuse.EgressSpec {
 	if in == nil {
 		return nil
 	}
-	return &fuse.EgressSpec{Mode: string(in.Mode), Provider: in.Provider, Protocol: string(in.Protocol), Secret: in.Secret}
+	return &fuse.EgressSpec{Mode: string(in.Mode), Provider: in.Provider, Protocol: string(in.Protocol), Secret: in.Secret, Allow: in.Allow}
 }
 
 // toSDKHitl converts the compiler's hitl block into the SDK wire type. Nil

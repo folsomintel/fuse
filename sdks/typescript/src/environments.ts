@@ -11,6 +11,7 @@ import type {
   ComputerResult,
   ComputerToolResult,
   CreateRequest,
+  EgressStatus,
   EnvironmentInfo,
   Event,
   ExecRequest,
@@ -622,6 +623,33 @@ export class EnvironmentsService {
     if (!out.held) return out.value;
     await settleHeld(this.t, out.held, {}, opts);
     return this.get(vmId, opts);
+  }
+
+  /**
+   * Replace a running direct environment's outbound IPv4 allowlist and
+   * return its egress status. The server normalizes the cidrs (a bare
+   * address is a /32, host bits dropped, duplicates removed, at most 256).
+   * An empty list lifts the restriction. Connections the new list no longer
+   * allows are cut. A proxy environment, or one that is not running, throws
+   * a conflict. Follows the operation when it outlasts the server's attach
+   * bound.
+   */
+  async setEgressAllow(
+    vmId: string,
+    cidrs: string[],
+    opts: MutatingCallOptions = {},
+  ): Promise<EgressStatus> {
+    requireArg(vmId, "vm id");
+    // the server requires the key, so an empty list is sent as [].
+    return this.t.json<EgressStatus>(
+      "PUT",
+      `/v1/environments/${encodeURIComponent(vmId)}/egress/allow`,
+      {
+        body: { allow: [...cidrs] },
+        signal: opts.signal,
+        idempotencyKey: idempotencyKey(opts),
+      },
+    );
   }
 
   /** Rotate the per-VM credentials and push them to the guest. */

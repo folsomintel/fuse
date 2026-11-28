@@ -22,7 +22,7 @@ const (
 
 // WithRetry sets how many times a call that sends an Idempotency-Key
 // (create, fork, migrate, drain, destroy, snapshot, restore, image convert,
-// build) and is answered 503 is sent again, under the same key, before the
+// set egress allow, build) and is answered 503 is sent again, under the same key, before the
 // 503 is returned as an error. Other calls are never retried. Each retry waits at least the
 // server's Retry-After, or an exponential backoff without one, plus up to
 // half again as jitter. The default is 3; 0 turns retrying off.

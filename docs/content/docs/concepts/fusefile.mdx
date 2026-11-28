@@ -265,7 +265,7 @@ you can stop reading at [The setup layer cache](#the-setup-layer-cache).
 | `healthcheck.retries` | int | Consecutive failures that flip the verdict to `failing`. Omit for the guest agent's default (`3`). A single failed attempt is never a verdict. |
 | `healthcheck.start_period` | string | Go duration measured from the first attempt, during which failures are not counted. It ends for good once the probe passes once. |
 | `desktop` | `{width, height}` | The geometry of the environment's graphical session, both required, 320 to 3840 each. Requires an image baked with the desktop stack; on any other image the block is inert. Omit the whole block to keep a desktop image's baked default. See [Desktop](#desktop). |
-| `egress` | `{mode, provider, protocol, secret}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`, and a `secret` naming the secret that holds the provider's credential (`wireguard` only). With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. |
+| `egress` | `{mode, provider, protocol, secret, allow}` | Outbound traffic policy. `mode` is `direct` (the default, and what an absent block means) or `proxy`. `proxy` requires `provider`, the name of a proxy backend the orchestrator has registered (`mock` for local development, `cloudflare-warp` for real traffic; see the [egress guide](/docs/guides/egress)), and takes an optional `protocol` of `socks5` (the default) or `http`, and a `secret` naming the secret that holds the provider's credential (`wireguard` only). With `proxy` the host installs no direct route, so a workload that ignores the proxy gets no egress at all. Setting `provider` or `protocol` under `mode: direct` is rejected rather than silently giving direct egress. `allow` is a list of IPv4 cidrs (or bare addresses) a `direct` environment may reach, at most 256; empty or absent is unrestricted, and it is rejected under `mode: proxy`. |
 | `secrets` | list of strings | Secret *names* this environment requires. An empty name is rejected: nothing you could pass to `--secret` would satisfy it. Values are supplied out-of-band via `--secret key=value` or `--secrets-file`, never written into the Fusefile itself. |
 
 ## Naming an environment
@@ -548,6 +548,24 @@ so names have to be resolved at the proxy: `socks5h://`, which is what the
 injected variables carry, or http CONNECT, which always does. The
 [egress guide](/docs/guides/egress) covers the DNS consequences, which
 variables reach which surface, and what a failure looks like.
+
+`allow` narrows `direct` egress to a list of IPv4 destinations:
+
+```yaml
+egress:
+  allow:
+    - 10.0.0.0/8
+    - 203.0.113.7 # a bare address is a /32
+```
+
+Each entry is an IPv4 cidr or a bare address; at most 256 distinct cidrs once
+host bits are dropped. `fuse validate` rejects an IPv6 entry, a hostname or a
+malformed cidr, and any `allow` under `mode: proxy`, before anything is sent.
+DNS to the guest's resolver (`1.1.1.1`) is always allowed, traffic to the
+host itself and to other environments on the host is not covered, and the
+list can be replaced while the environment runs with
+[`fuse environment egress allow`](/reference/cli/environment/egress). See
+[Direct allowlist](/docs/guides/egress#direct-allowlist).
 
 ## Desktop
 

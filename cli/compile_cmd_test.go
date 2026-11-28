@@ -337,6 +337,7 @@ func TestCompiledRequestMirrorsWireTypes(t *testing.T) {
 
 	assertMirror(t, "spec", reflect.TypeFor[fuse.Spec](), reflect.TypeFor[compiledSpec](), nil, nil)
 	assertMirror(t, "request", reflect.TypeFor[fuse.CreateRequest](), reflect.TypeFor[compiledRequest](), skipped, extra)
+	assertMirror(t, "egress", reflect.TypeFor[fuse.EgressSpec](), reflect.TypeFor[compiledEgress](), nil, nil)
 }
 
 func assertMirror(t *testing.T, label string, want, got reflect.Type, skipped, extra map[string]bool) {
