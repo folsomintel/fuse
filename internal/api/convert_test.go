@@ -235,18 +235,27 @@ func TestToOrchestratorEgress(t *testing.T) {
 	if withSecret.Secret != "WG_CONF" {
 		t.Errorf("secret = %q, want WG_CONF carried through", withSecret.Secret)
 	}
+	// the allowlist lands normalized, the way the host agent stores it.
+	allow := toOrchestratorEgress(&EgressSpec{Allow: []string{"10.1.2.3/8", "1.2.3.4", "10.0.0.0/8"}})
+	if want := []string{"10.0.0.0/8", "1.2.3.4/32"}; !reflect.DeepEqual(allow.Allow, want) {
+		t.Errorf("allow = %v, want %v", allow.Allow, want)
+	}
 }
 
 // TestToAPIEgress checks the resolved status reaches the wire and that a vm
 // with no recorded egress (one that predates the field) reports direct
 // rather than an empty mode.
 func TestToAPIEgress(t *testing.T) {
-	got := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"})
+	got := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock", Protocol: egress.ProtocolSOCKS5, Endpoint: "socks5h://10.200.3.1:1080"}, nil)
 	if got == nil || got.Mode != "proxy" || got.Provider != "mock" || got.Protocol != "socks5" || got.Endpoint != "socks5h://10.200.3.1:1080" {
 		t.Errorf("egress = %+v", got)
 	}
-	if got := toAPIEgress(egress.Status{}); got == nil || got.Mode != "direct" || got.Health != nil {
+	if got := toAPIEgress(egress.Status{}, nil); got == nil || got.Mode != "direct" || got.Health != nil {
 		t.Errorf("zero status = %+v, want {Mode: direct} with no health", got)
+	}
+	got = toAPIEgress(egress.Status{Mode: egress.ModeDirect}, []string{"10.0.0.0/8"})
+	if !reflect.DeepEqual(got.Allow, []string{"10.0.0.0/8"}) {
+		t.Errorf("allow = %v, want the spec's list", got.Allow)
 	}
 }
 
@@ -258,15 +267,15 @@ func TestToAPIEgressHealth(t *testing.T) {
 	got := toAPIEgress(egress.Status{
 		Mode: egress.ModeProxy, Provider: "mock", Endpoint: "socks5h://10.200.3.1:1080",
 		Health: egress.Health{State: egress.HealthUnhealthy, Reason: "dial: connection refused", CheckedAt: checked},
-	})
+	}, nil)
 	if got.Health == nil || got.Health.State != "unhealthy" || got.Health.Reason != "dial: connection refused" || !got.Health.CheckedAt.Equal(checked) {
 		t.Errorf("health = %+v", got.Health)
 	}
-	fresh := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock"})
+	fresh := toAPIEgress(egress.Status{Mode: egress.ModeProxy, Provider: "mock"}, nil)
 	if fresh.Health == nil || fresh.Health.State != "unknown" {
 		t.Errorf("unprobed proxy health = %+v, want unknown", fresh.Health)
 	}
-	if direct := toAPIEgress(egress.Status{Mode: egress.ModeDirect}); direct.Health != nil {
+	if direct := toAPIEgress(egress.Status{Mode: egress.ModeDirect}, nil); direct.Health != nil {
 		t.Errorf("direct health = %+v, want omitted", direct.Health)
 	}
 }

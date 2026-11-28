@@ -141,7 +141,7 @@ func (s *PostgresStateStore) UpsertVM(ctx context.Context, vm VMRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshal mig instance uuids for vm %s: %w", vm.ID, err)
 	}
-	egressJSON, err := marshalEgress(vm.Egress)
+	egressJSON, err := marshalEgress(vm.Egress, vm.Spec.Egress.Allow)
 	if err != nil {
 		return fmt.Errorf("marshal egress for vm %s: %w", vm.ID, err)
 	}
@@ -268,11 +268,12 @@ func (s *PostgresStateStore) ListVMs(ctx context.Context) ([]VMRecord, error) {
 		// egress_json defaults to '{}', which reads as direct; the policy is
 		// mirrored back onto the spec so a recovered vm carries what it was
 		// created with.
-		record.Egress, err = unmarshalEgress(row.Egress)
+		var allow []string
+		record.Egress, allow, err = unmarshalEgress(row.Egress)
 		if err != nil {
 			return nil, fmt.Errorf("unmarshal egress for vm %s: %w", record.ID, err)
 		}
-		record.Spec.Egress = egress.Spec{Mode: record.Egress.Mode, Provider: record.Egress.Provider, Protocol: record.Egress.Protocol}
+		record.Spec.Egress = egress.Spec{Mode: record.Egress.Mode, Provider: record.Egress.Provider, Protocol: record.Egress.Protocol, Allow: allow}
 		// a null column is hitl off, the reading of every row that predates it.
 		if len(row.Hitl) > 0 && string(row.Hitl) != "null" {
 			var spec hitl.Spec

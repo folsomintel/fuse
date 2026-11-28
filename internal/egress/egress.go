@@ -3,6 +3,8 @@ package egress
 import (
 	"context"
 	"fmt"
+	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -36,6 +38,54 @@ type Spec struct {
 
 func (s Spec) IsProxy() bool { return s.Mode == ModeProxy }
 
+// MaxAllow bounds a normalized allowlist. the host agents hold the same
+// bound, since each cidr is one iptables rule written under the vm lock.
+const MaxAllow = 256
+
+// NormalizeAllow returns cidrs the way the host agents store them: ipv4
+// only, a bare address is a /32, host bits are dropped, duplicates go and
+// the order stays. an empty list is nil, which reads as unrestricted.
+func NormalizeAllow(cidrs []string) ([]string, error) {
+	var out []string
+	seen := make(map[string]bool, len(cidrs))
+	for _, c := range cidrs {
+		prefix, err := parseIPv4Prefix(strings.TrimSpace(c))
+		if err != nil {
+			return nil, fmt.Errorf("egress: allow entry %q is not an ipv4 cidr", c)
+		}
+		n := prefix.Masked().String()
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	if len(out) > MaxAllow {
+		return nil, fmt.Errorf("egress: allow has %d cidrs; at most %d are allowed", len(out), MaxAllow)
+	}
+	return out, nil
+}
+
+func parseIPv4Prefix(s string) (netip.Prefix, error) {
+	var prefix netip.Prefix
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		prefix = p
+	} else {
+		addr, err := netip.ParseAddr(s)
+		if err != nil {
+			return netip.Prefix{}, err
+		}
+		prefix = netip.PrefixFrom(addr, 32)
+	}
+	if !prefix.Addr().Is4() {
+		return netip.Prefix{}, fmt.Errorf("not ipv4")
+	}
+	return prefix, nil
+}
+
 func (s Spec) Normalize() Spec {
 	if s.Mode == "" {
 		s.Mode = ModeDirect
@@ -62,8 +112,14 @@ func (s Spec) Validate() error {
 		if s.Secret != "" {
 			return fmt.Errorf("egress: secret %q requires mode %q", s.Secret, ModeProxy)
 		}
-		return nil
+		_, err := NormalizeAllow(s.Allow)
+		return err
 	case ModeProxy:
+		// a proxy vm's egress is its backend, so an allowlist on one is a
+		// mistake to refuse, never one to ignore.
+		if len(s.Allow) > 0 {
+			return fmt.Errorf("egress: allow requires mode %q", ModeDirect)
+		}
 		if s.Provider == "" {
 			return fmt.Errorf("egress: mode %q requires a provider", ModeProxy)
 		}

@@ -71,11 +71,11 @@ func TestReapReleasesEgress(t *testing.T) {
 
 // TestEgressLeaseRoundTrips: the stored egress keeps the lease.
 func TestEgressLeaseRoundTrips(t *testing.T) {
-	raw, err := marshalEgress(egress.Status{Mode: egress.ModeProxy, Provider: "wireguard", Lease: "abc"})
+	raw, err := marshalEgress(egress.Status{Mode: egress.ModeProxy, Provider: "wireguard", Lease: "abc"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := unmarshalEgress(raw)
+	got, _, err := unmarshalEgress(raw)
 	if err != nil || got.Lease != "abc" {
 		t.Fatalf("round trip = %+v, %v", got, err)
 	}

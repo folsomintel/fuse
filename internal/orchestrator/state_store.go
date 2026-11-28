@@ -104,25 +104,30 @@ type VMRecord struct {
 }
 
 // persistedEgress is the stored shape of VMRecord.Egress: the policy and
-// the endpoint, never the live health. the column defaults to '{}', which
-// unmarshals to the zero value and reads as direct.
+// the endpoint, never the live health, plus the spec's allowlist, which
+// changes while the vm runs and has nowhere else to live in the row. the
+// column defaults to '{}', which unmarshals to the zero value and reads as
+// direct and unrestricted.
 type persistedEgress struct {
 	Mode     egress.Mode     `json:"mode,omitempty"`
 	Provider string          `json:"provider,omitempty"`
 	Protocol egress.Protocol `json:"protocol,omitempty"`
 	Endpoint string          `json:"endpoint,omitempty"`
 	Lease    string          `json:"lease,omitempty"`
+	Allow    []string        `json:"allow,omitempty"`
 }
 
-func marshalEgress(s egress.Status) ([]byte, error) {
-	return json.Marshal(persistedEgress{Mode: s.Mode, Provider: s.Provider, Protocol: s.Protocol, Endpoint: s.Endpoint, Lease: s.Lease})
+func marshalEgress(s egress.Status, allow []string) ([]byte, error) {
+	return json.Marshal(persistedEgress{Mode: s.Mode, Provider: s.Provider, Protocol: s.Protocol, Endpoint: s.Endpoint, Lease: s.Lease, Allow: allow})
 }
 
-func unmarshalEgress(raw []byte) (egress.Status, error) {
+// unmarshalEgress returns the stored status and the allowlist the spec
+// carries.
+func unmarshalEgress(raw []byte) (egress.Status, []string, error) {
 	var p persistedEgress
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &p); err != nil {
-			return egress.Status{}, err
+			return egress.Status{}, nil, err
 		}
 	}
 	// a row written before the column existed, or by a direct vm, reads
@@ -130,7 +135,7 @@ func unmarshalEgress(raw []byte) (egress.Status, error) {
 	if p.Mode == "" {
 		p.Mode = egress.ModeDirect
 	}
-	return egress.Status{Mode: p.Mode, Provider: p.Provider, Protocol: p.Protocol, Endpoint: p.Endpoint, Lease: p.Lease}, nil
+	return egress.Status{Mode: p.Mode, Provider: p.Provider, Protocol: p.Protocol, Endpoint: p.Endpoint, Lease: p.Lease}, p.Allow, nil
 }
 
 // TaskRecord tracks durable task assignment/run metadata.

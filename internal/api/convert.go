@@ -22,15 +22,16 @@ func toAPIEnvironment(v orchestrator.VMInfo) Environment {
 		Error:     v.Error,
 		Endpoints: toAPIEndpoints(v.Endpoints),
 		Health:    toAPIHealth(v.Health),
-		Egress:    toAPIEgress(v.Egress),
+		Egress:    toAPIEgress(v.Egress, v.Spec.Egress.Allow),
 	}
 }
 
 // toAPIEgress converts the resolved egress policy into the wire shape. it is
 // never nil: a vm created before the field existed, or without asking,
 // reports direct rather than nothing, so a caller can tell "not proxied"
-// from "this server predates egress".
-func toAPIEgress(s egress.Status) *EgressStatus {
+// from "this server predates egress". allow is the vm's current allowlist,
+// which lives on its spec.
+func toAPIEgress(s egress.Status, allow []string) *EgressStatus {
 	mode := s.Mode
 	if mode == "" {
 		mode = egress.ModeDirect
@@ -40,6 +41,7 @@ func toAPIEgress(s egress.Status) *EgressStatus {
 		Provider: s.Provider,
 		Protocol: string(s.Protocol),
 		Endpoint: s.Endpoint,
+		Allow:    allow,
 	}
 	// health only means something for a proxy: direct has no endpoint to
 	// probe, so the field is omitted rather than reporting "unknown".
@@ -61,11 +63,18 @@ func toOrchestratorEgress(e *EgressSpec) egress.Spec {
 	if e == nil {
 		return egress.Spec{}.Normalize()
 	}
+	allow, err := egress.NormalizeAllow(e.Allow)
+	if err != nil {
+		// validateEgress refuses this list first. kept as sent, so the host
+		// agent refuses it too: never an unrestricted vm.
+		allow = e.Allow
+	}
 	return egress.Spec{
 		Mode:     egress.Mode(e.Mode),
 		Provider: e.Provider,
 		Protocol: egress.Protocol(e.Protocol),
 		Secret:   e.Secret,
+		Allow:    allow,
 	}.Normalize()
 }
 

@@ -216,6 +216,10 @@ func (h *Handler) register(r chi.Router) {
 	r.Post("/v1/environments/{vmId}", h.environmentAction)
 	r.Delete("/v1/environments/{vmId}", h.asOperation(OpDestroy, MaxJSONBodyBytes, h.destroyEnvironment))
 
+	// A direct environment's outbound allowlist, replaced whole while it
+	// runs. See egress_allow.go.
+	r.Put("/v1/environments/{vmId}/egress/allow", h.asOperation(OpEgressAllow, MaxJSONBodyBytes, h.setEgressAllow))
+
 	// Attach is a sub-path rather than an ?action= verb because it is a
 	// protocol upgrade, not a JSON call: it has no request body and it never
 	// returns a JSON response.
@@ -281,8 +285,8 @@ func (h *Handler) register(r chi.Router) {
 	r.Get("/v1/hosts/{hostId}/images/{digest}", h.getHostImage)
 
 	// Operations are the mutating routes above run past their own request:
-	// create, destroy, fork, migrate, snapshot, restore and drain. See
-	// operations.go.
+	// create, destroy, fork, migrate, snapshot, restore, drain and the
+	// egress allowlist. See operations.go.
 	r.Get("/v1/operations/{operationId}", h.getOperation)
 
 	r.Post("/v1/builds", h.createBuild)
@@ -685,7 +689,7 @@ func (h *Handler) validateEgress(e *EgressSpec, secretMap map[string]string) err
 	if e == nil {
 		return nil
 	}
-	spec := egress.Spec{Mode: egress.Mode(e.Mode), Provider: e.Provider, Protocol: egress.Protocol(e.Protocol), Secret: e.Secret}
+	spec := egress.Spec{Mode: egress.Mode(e.Mode), Provider: e.Provider, Protocol: egress.Protocol(e.Protocol), Secret: e.Secret, Allow: e.Allow}
 	if err := spec.Validate(); err != nil {
 		return err
 	}

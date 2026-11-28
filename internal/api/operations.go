@@ -42,6 +42,8 @@ const (
 	OpSnapshot = "snapshot"
 	OpRestore  = "restore"
 	OpDrain    = "drain"
+	// OpEgressAllow replaces an environment's egress allowlist.
+	OpEgressAllow = "egress.allow"
 	// OpImageConvert is the name convert keyed restate with before it ran as
 	// an operation, so a convert in flight across an upgrade keeps its key.
 	OpImageConvert = "image.convert"

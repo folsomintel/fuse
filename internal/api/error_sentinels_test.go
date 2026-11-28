@@ -447,6 +447,23 @@ func TestHostSentinels(t *testing.T) {
 	}
 }
 
+// TestEgressAllowSentinels: the egress allowlist refusals, the host's
+// included, are 4xx and never a 500.
+func TestEgressAllowSentinels(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want int
+	}{
+		{orchestrator.ErrEgressAllowInvalid, http.StatusBadRequest},
+		{orchestrator.ErrEgressAllowConflict, http.StatusConflict},
+		{orchestrator.ErrEgressAllowUnsupported, http.StatusNotImplemented},
+	} {
+		if got, _ := classifyFleetError(fmt.Errorf("wrapped: %w", tc.err)); got != tc.want {
+			t.Errorf("%v: status %d, want %d", tc.err, got, tc.want)
+		}
+	}
+}
+
 type persistentStore struct{ *orchestrator.MemoryStateStore }
 
 // refusingBuilds is a restate that does not take a build.
